@@ -1,0 +1,33 @@
+
+- Preliminary version of "Bring your own driver" for V4L2 kernel-mode camera drivers.
+
+To use this, in the host system:
+- cd drivers
+- make
+- sudo insmod ./hololink_i2c.ko
+- sudo insmod ./hololink_camera.ko i2c_bus_number=16 i2c_device_address=0x1A
+- echo "IMX274 0x1A" | sudo tee /sys/bus/i2c/devices/i2c-16/new_device
+
+In the container:
+- python3 examples/linux_camera_player.py
+
+Then, in the host system, you can:
+- v4l2-ctl -d /dev/video1 --all
+- v4l2-ctl -d /dev/video1 --set-ctrl exposure=10000
+- v4l2-ctl -d /dev/video1 --set-ctrl test_pattern=11
+
+To enable trace-level debugging,
+- sudo dmesg -w &
+and enable tracing either at load time:
+- sudo insmod ./hololink_i2c.ko trace=1
+- sudo insmod ./hololink_camera.ko i2c_bus_number=16 i2c_device_address=0x1A trace=1
+or after it's been loaded, at run time:
+- echo 1 | sudo tee /sys/module/hololink_i2c/parameters/trace
+- echo 1 | sudo tee /sys/module/hololink_camera/parameters/trace
+
+Assumptions/To do:
+- Instructions here assume that hololink_i2c.ko sets up I2C device 16
+- Instructions here assume that the video device is /dev/video1
+- Synchronization around I2C transactions is not provided
+- Only one camera instance as currently been tested
+- Camera connections, dimensions, and image configuration are currently hardcoded into examples/linux_camera_player.py; we'll update this to read these parameters from the driver

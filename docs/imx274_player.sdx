@@ -1,0 +1,218 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<diagram>
+    <source>
+        <![CDATA[#
+# SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# See README.md for detailed information.
+
+user:User[ep]
+main:main[a]
+gpu:Gpu[a]
+transport:DpdkUdpTransport[a]
+/control_socket:Socket[a]
+camera:Imx274Cam[a]
+strategy:(Strategy)[a]
+hololink:Hololink[a]
+application:HoloscanApplication[a]
+receiver:HololinkReceiverOperator[a]
+sorter:HololinkSortOperator[a]
+raw10:Raw10CsiToBayerOperator[a]
+isp:ImageProcessorOperator[a]
+demosaic:BayerDemosaicOp[a]
+visualizer:HolovizOp[a]
+equipment:Equipment[ep]
+
+user:main.
+main:application.config
+application:
+main:hololink.start
+hololink:transport.start
+transport:control_socket=control_socket.new
+transport:control_socket.bind to control port
+hololink:hololink.check version id
+hololink:hololink.write_u32...
+hololink:serialize write_u32 request
+hololink:transport.send_control
+transport:equipment.UDP request
+
+
+main:camera.configure
+camera:hololink.configure clock synthesizer
+hololink:hololink.write_u32...
+hololink:equipment....
+camera:hololink.power
+hololink:....
+camera:hololink.configure i2c clock
+hololink:....
+camera:hololink.configure i2c expander
+hololink:....
+camera:camera.version check
+camera:hololink.
+hololink:equipment.i2c transaction...
+camera[1]:camera.reset
+camera:hololink.
+camera[1]:equipment.configure camera
+*7 camera
+No data is streaming from
+the camera here.
+*7
+
+main:application.run
+application:application.compose
+application:{receiver,sorter,raw10,isp,demosaic,visualizer}.(new) &
+application:
+application:add_flows\.\.\.
+application:
+application:raw10.configure
+raw10:payload_size=hololink.payload_size
+*3 raw10
+payload_size is the number of payload
+bytes per UDP packet.
+*3
+raw10:camera.compute_csi_length
+*8 camera
+The camera can adjust the
+number of bytes for MIPI
+FS, FE, PH, and PE here,
+and pass those values back
+to the converter.
+*8
+camera:raw10.compute_csi_length
+*9 raw10
+Converter configures itself
+to handle the incoming MIPI
+data as specified by the camera.
+*9
+raw10[1]:_
+*2 sorter
+Now we know how many udp packets
+the bayer data uses.
+*2
+raw10:sorter.configure
+*4 sorter
+A single buffer of csi_length
+is allocated here
+*4
+sorter:image_data=cp\.full(frame_size, \.\.\.)
+raw10:hololink.set_camera_rcvr_length
+hololink:equipment.write_u32...
+raw10:transport.configure_data_plane
+transport:allocate UDP buffers
+transport:allocate metadata buffers
+transport:create data_socket
+transport:>transport.run_dpdk
+
+raw10:camera.start
+camera:(start streaming)
+camera:camera.set register...
+camera:hololink.i2c_transaction...
+hololink:equipment.write_u32...
+
+application[1]:application.(forever)
+application:receiver.compute
+receiver:udp_data=transport.get_next_frame
+transport:pthread_cond_wait
+transport:(block until a frame is received)
+equipment:transport.frame data &
+transport:transport.[last UDP packet in the frame]
+transport:pthread_cond_signal
+
+application:sorter.compute
+sorter:sort_udp
+*5 sorter
+UDP data is sorted from the unordered
+list of UDP messages passed in to the
+single csi_length buffer allocated above.
+*5
+application:raw10.compute
+raw10:construct uint8 bayer frame
+application:isp.compute
+isp:color correction, etc
+application:demosaic.compute
+demosaic:bayer -> RGB
+application:visualizer.compute
+visualizer:display RGB
+
+main:transport.stop
+transport:control_socket.destroy
+
+
+
+]]>
+    </source>
+    <configuration>
+        <property name="activationBarBorderThickness" value="1"/>
+        <property name="actorWidth" value="25"/>
+        <property name="arrowColor" value="-14803256"/>
+        <property name="arrowSize" value="6"/>
+        <property name="arrowThickness" value="1"/>
+        <property name="colorizeThreads" value="true"/>
+        <property name="destructorWidth" value="30"/>
+        <property name="explicitReturns" value="false"/>
+        <property family="Dialog" name="font" size="12" style="0"/>
+        <property name="fragmentBorderThickness" value="2"/>
+        <property name="fragmentEdgeColor" value="-16751616"/>
+        <property name="fragmentLabelBgColor" value="-36"/>
+        <property name="fragmentMargin" value="8"/>
+        <property name="fragmentPadding" value="10"/>
+        <property name="fragmentTextPadding" value="3"/>
+        <property name="glue" value="10"/>
+        <property name="headHeight" value="35"/>
+        <property name="headLabelPadding" value="5"/>
+        <property name="headWidth" value="100"/>
+        <property name="initialSpace" value="10"/>
+        <property name="labeledBoxBgColor" value="-76"/>
+        <property name="leftMargin" value="5"/>
+        <property name="lifelineThickness" value="1"/>
+        <property name="lineWrap" value="false"/>
+        <property name="lowerMargin" value="5"/>
+        <property name="mainLifelineWidth" value="8"/>
+        <property name="messageLabelSpace" value="3"/>
+        <property name="messageLineLength" value="0"/>
+        <property name="messagePadding" value="6"/>
+        <property name="noteBgColor" value="-76"/>
+        <property name="noteBorderThickness" value="1"/>
+        <property name="noteMargin" value="6"/>
+        <property name="notePadding" value="6"/>
+        <property name="opaqueMessageText" value="false"/>
+        <property name="returnArrowVisible" value="false"/>
+        <property name="rightMargin" value="5"/>
+        <property name="selfMessageHorizontalSpace" value="15"/>
+        <property name="separatorBottomMargin" value="8"/>
+        <property name="separatorTopMargin" value="15"/>
+        <property name="shouldShadowParticipants" value="false"/>
+        <property name="spaceBeforeActivation" value="2"/>
+        <property name="spaceBeforeAnswerToSelf" value="10"/>
+        <property name="spaceBeforeConstruction" value="6"/>
+        <property name="spaceBeforeSelfMessage" value="7"/>
+        <property name="subLifelineWidth" value="6"/>
+        <property name="tc0" value="-1118482"/>
+        <property name="tc1" value="-256"/>
+        <property name="tc2" value="-65536"/>
+        <property name="tc3" value="-16776961"/>
+        <property name="tc4" value="-16711936"/>
+        <property name="tc5" value="-4144960"/>
+        <property name="tc6" value="-65281"/>
+        <property name="tc7" value="-14336"/>
+        <property name="tc8" value="-20561"/>
+        <property name="tc9" value="-12566464"/>
+        <property name="threadNumbersVisible" value="false"/>
+        <property name="threaded" value="true"/>
+        <property name="upperMargin" value="5"/>
+        <property name="verticallySplit" value="false"/>
+    </configuration>
+</diagram>

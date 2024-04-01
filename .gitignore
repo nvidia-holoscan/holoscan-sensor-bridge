@@ -1,0 +1,17 @@
+__pycache__
+.cache
+*.swp
+ci/coverage.xml
+dist
+tags
+cscope.*
+# cache
+.cache
+# build folders
+*.egg-info
+# tao peoplenet files
+*.fp16
+*.onnx
+# NSight profiler files
+*.ncu-rep
+*.nsys-rep

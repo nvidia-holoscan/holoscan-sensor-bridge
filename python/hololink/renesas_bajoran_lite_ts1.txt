@@ -1,0 +1,125 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#########################################################################################
+# RCx25x4A (9.0.0)
+# RC22504A
+# 2023-06-09T13:17:18
+# protocol: I2C
+# offset size: 1
+# mtu: 16
+# All values are in hex
+#
+# WRITE <7-bit I2C address>, <length>, <offset>, <byte stream including offset>
+#   I2C address is included because some offsets may require targeting a different address.
+#   Length is the number of bytes in the stream, including the register offset. This could
+#     be inferred by examining the byte stream but is included for convenience.
+#   Offset is embedded in the byte stream but is listed separately for convenience.
+# WAIT <time_ms>
+#########################################################################################
+# program all registers
+# write 00, 00, 00... to offset 0xFC
+WRITE, 00, 05, FC, FC 00 00 00 00
+# write 33, 10, 4A... to offset 0x00
+WRITE, 00, 11, 00, 00 33 10 4A 30 32 02 00 00 04 00 30 00 00 00 00 00
+# write 00, 00, 19... to offset 0x10
+WRITE, 00, 11, 10, 10 00 00 19 9A 00 00 00 00 00 00 00 F0 00 00 00 00
+# write 00, 00, 00... to offset 0x20
+WRITE, 00, 11, 20, 20 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# write 03, 01, 00... to offset 0x30
+WRITE, 00, 11, 30, 30 03 01 00 00 01 00 00 00 00 00 00 00 00 00 00 00
+# write 03, 01, 00... to offset 0x40
+WRITE, 00, 11, 40, 40 03 01 00 00 01 00 00 00 00 00 00 00 00 00 00 00
+# write 03, 01, 00... to offset 0x50
+WRITE, 00, 11, 50, 50 03 01 00 00 01 00 00 00 00 00 00 00 00 00 00 00
+# write 01, 01, 00... to offset 0x60
+WRITE, 00, 11, 60, 60 01 01 00 00 00 00 10 00 00 00 00 00 00 00 00 00
+# write 00, 00, 00... to offset 0x70
+WRITE, 00, 11, 70, 70 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# write 01, 01, 00... to offset 0x80
+WRITE, 00, 11, 80, 80 01 01 00 00 00 00 10 00 00 00 00 00 00 00 00 00
+# write 00, 00, 00... to offset 0x90
+WRITE, 00, 11, 90, 90 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# write 82, 80, 36... to offset 0xA0
+WRITE, 00, 11, A0, A0 82 80 36 00 00 38 42 5B 10 11 00 00 FF FF FF 1F
+# write 00, 00, 00... to offset 0xB0
+WRITE, 00, 11, B0, B0 00 00 00 00 00 00 00 00 00 00 80 00 00 00 00 00
+# write 90, 01, 00... to offset 0xC0
+WRITE, 00, 11, C0, C0 90 01 00 00 00 00 00 00 00 00 00 00 55 01 FF 00
+# write 1F, 00, 00... to offset 0xD0
+WRITE, 00, 11, D0, D0 1F 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00
+# write 4A, 1E, 01... to offset 0xE0
+WRITE, 00, 11, E0, E0 4A 1E 01 81 22 00 5C 8F 00 00 04 00 00 00 00 00
+# write 0B, 01, 00... to offset 0xF0
+WRITE, 00, 11, F0, F0 0B 01 00 00 44 00 00 00 0D 4D 01 00 00 00 00 00
+# write 00, 01, 00... to offset 0xFC
+WRITE, 00, 05, FC, FC 00 01 00 00
+# write 69, 00, 0B... to offset 0x00
+WRITE, 00, 11, 00, 00 69 00 0B 6C B4 03 00 00 9B 81 08 6C B4 03 00 00
+# write 69, 00, 0B... to offset 0x10
+WRITE, 00, 11, 10, 10 69 00 0B 6C B4 03 00 00 69 00 0B 6C B4 03 00 00
+# write 00, 00, 70... to offset 0x20
+WRITE, 00, 11, 20, 20 00 00 70 00 00 00 70 00 00 00 00 00 00 00 00 00
+# write 10, 2F, 00... to offset 0x30
+WRITE, 00, 11, 30, 30 10 2F 00 02 00 02 00 00 00 00 00 00 00 00 00 00
+# write 21, 06, 44... to offset 0x40
+WRITE, 00, 05, 40, 40 21 06 44 09
+# write 00, 00, 00... to offset 0x45
+WRITE, 00, 11, 45, 45 00 00 00 00 00 00 00 00 00 00 00 52 B8 1E 05 62
+# write 00, 23, 0D... to offset 0x55
+WRITE, 00, 11, 55, 55 00 23 0D 44 3E 64 27 06 1F 45 0F 04 00 00 7A 80
+# write 01, 88, 00... to offset 0x65
+WRITE, 00, 11, 65, 65 01 88 00 00 00 00 25 01 00 01 09 00 00 00 00 00
+# write 00, 00, 00... to offset 0x75
+WRITE, 00, 11, 75, 75 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# write 00, 00, 00... to offset 0x85
+WRITE, 00, 11, 85, 85 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00
+# write 00, 00, 00... to offset 0x95
+WRITE, 00, 11, 95, 95 00 00 00 00 00 00 00 00 00 00 00 2C 3B 00 77 70
+# write 80, 01, 00... to offset 0xA5
+WRITE, 00, 11, A5, A5 80 01 00 00 08 00 00 00 00 00 00 00 00 00 00 F0
+# write 00, D0, 03... to offset 0xB5
+WRITE, 00, 11, B5, B5 00 D0 03 00 00 00 00 BA 00 00 00 1A A6 0F 47 24
+# write 00, 24, 00... to offset 0xC5
+WRITE, 00, 11, C5, C5 00 24 00 00 11 20 12 0B 10 02 30 00 00 00 00 00
+# write 00, 00, 00... to offset 0xD5
+WRITE, 00, 0C, D5, D5 00 00 00 00 00 00 00 00 00 00 00
+# calibrate
+# write 00, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 00 7A
+# write 00, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 00 7A
+# write 00, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 00 7A
+# write 00, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 00 7A
+# write 80, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 80 7A
+# write 00, 7A to offset 0x62
+WRITE, 00, 03, 62, 62 00 7A
+# write 00, 00, 00... to offset 0xFC
+WRITE, 00, 05, FC, FC 00 00 00 00
+# write 30 to offset 0x0A
+WRITE, 00, 02, 0A, 0A 30
+# write 32 to offset 0x0A
+WRITE, 00, 02, 0A, 0A 32
+# write 30 to offset 0x0A
+WRITE, 00, 02, 0A, 0A 30
+# write to SSI_GLOBAL_CNFG (NOTE: serial connection settings may change)
+# write 00, 01, 00... to offset 0xFC
+WRITE, 00, 05, FC, FC 00 01 00 00
+# write 01 to offset 0x44
+WRITE, 00, 02, 44, 44 01
+# write 00, 00, 00... to offset 0xFC
+WRITE, 00, 05, FC, FC 00 00 00 00

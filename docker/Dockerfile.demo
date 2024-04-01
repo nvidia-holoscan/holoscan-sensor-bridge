@@ -1,0 +1,47 @@
+# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+#
+# See README.md for detailed information.
+
+ARG CONTAINER_VERSION
+FROM ${CONTAINER_VERSION} as base
+
+# build container
+FROM base as builder
+
+RUN apt-get update \
+    && apt-get install -y python3-setuptools \
+    && rm -rf /var/lib/apt/lists/*
+
+ADD . /opt/hololink/
+
+RUN cd /opt/hololink/python && pip3 wheel .
+
+# demo container
+FROM base as demo
+
+RUN python3 -m pip install --upgrade pip
+RUN pip3 install pytest pytest-forked
+
+# net-tools gives us the "arp" command
+# iputils-ping gives us the "ping" command
+RUN apt-get update \
+    && apt-get install -y net-tools iputils-ping iproute2 \
+    && rm -rf /var/lib/apt/lists/*
+
+# install the wheel we build before
+COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
+RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \
+    && pip3 install ${WHEEL}

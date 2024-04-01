@@ -1,0 +1,8 @@
+build.sh export-ignore
+ci.sh export-ignore
+coverage.sh export-ignore
+Dockerfile.ci export-ignore
+instrument_imx274_player.py export-ignore
+performance.sh export-ignore
+record_coverage.sh export-ignore
+unit_test.sh export-ignore

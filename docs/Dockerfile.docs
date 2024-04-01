@@ -1,0 +1,36 @@
+# The base image should be the development container
+# to provide all the runtime dependencies needed by
+# the python api doc generator
+ARG CONTAINER_VERSION
+FROM $CONTAINER_VERSION
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    curl \
+    latexmk \
+    texlive-base \
+    texlive-latex-extra \
+    # For pdfcrop
+    texlive-extra-utils \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install up to date doxygen for better C++ parsing with a few cases like
+#previous configiuration fails build - removed per wendell's instructions
+RUN apt-get update && apt-get -y install doxygen
+
+# Install Python dependencies
+RUN python3 -m pip install \
+    exhale==0.3.5 \
+    Sphinx==4.5.0 \
+    sphinxcontrib-applehelp==1.0.2 \
+    sphinxcontrib-devhelp==1.0.2 \
+    sphinxcontrib-htmlhelp==2.0.0 \
+    sphinxcontrib-serializinghtml==1.1.5 \
+    sphinxcontrib-qthelp==1.0.3 \
+    sphinx_rtd_theme==1.0.0 \
+    sphinx-autobuild==2021.3.14 \
+    myst-parser==0.17.2 \
+    numpydoc==1.5.0 \
+    sphinxcontrib-mermaid==0.7.1 \
+    sphinx_design==0.3.0
