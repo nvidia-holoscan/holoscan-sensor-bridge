@@ -370,7 +370,7 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
             fmt::format("Unsupported storage type {}", (int)input_tensor->storage_type()));
     }
 
-    if (input_tensor->rank() != 2) {
+    if (input_tensor->rank() != 3) {
         throw std::runtime_error("Tensor must be an image");
     }
     if (input_tensor->element_type() != nvidia::gxf::PrimitiveType::kUnsigned16) {
@@ -379,6 +379,10 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
 
     const uint32_t height = input_tensor->shape().dimension(0);
     const uint32_t width = input_tensor->shape().dimension(1);
+    const uint32_t components = input_tensor->shape().dimension(2);
+    if (components != 1) {
+        throw std::runtime_error(fmt::format("Unexpected component count {}, expected '1'", components));
+    }
 
     hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
     const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());

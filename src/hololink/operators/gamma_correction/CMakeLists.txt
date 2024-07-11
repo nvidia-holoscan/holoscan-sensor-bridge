@@ -33,5 +33,4 @@ target_link_libraries(gamma_correction
   PRIVATE
     hololink::native
     holoscan::core
-    CUDA::nvrtc
   )

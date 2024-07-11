@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import holoscan.core
+@MODULE_IMPORT@
 
 from ._@MODULE_NAME@ import @MODULE_CLASS_NAME@
 

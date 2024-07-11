@@ -13,25 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Find pybind11
-find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-
-# We fetch pybind11 since we need the same version as the Holoscan SDK
-# and it's not necessarily available on all the platforms
-include(FetchContent)
-FetchContent_Declare(pybind11
-  GIT_REPOSITORY https://github.com/pybind/pybind11
-  GIT_TAG v2.10.1
-  GIT_SHALLOW TRUE
-)
-FetchContent_MakeAvailable(pybind11)
-
 # Helper function to generate pybind11 operator modules
 function(pybind11_add_hololink_module)
-    cmake_parse_arguments(MODULE        # PREFIX
-        ""                              # OPTIONS
-        "CPP_CMAKE_TARGET;CLASS_NAME"   # ONEVAL
-        "SOURCES"                       # MULTIVAL
+    cmake_parse_arguments(MODULE                # PREFIX
+        ""                                      # OPTIONS
+        "CPP_CMAKE_TARGET;CLASS_NAME;IMPORT"    # ONEVAL
+        "SOURCES"                               # MULTIVAL
         ${ARGN}
     )
 
@@ -64,19 +51,26 @@ function(pybind11_add_hololink_module)
     )
     unset(_rpath)
 
-    # make submodule folder
-    file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${MODULE_NAME})
-
-    # custom target to ensure the module's __init__.py file is copied
-    set(CMAKE_SUBMODULE_OUT_DIR ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${MODULE_NAME})
-    configure_file(
-        ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pybind11/__init__.py
-        ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${MODULE_NAME}/__init__.py
+    # Define and create a directory to store python bindings the hololink python module
+    file(RELATIVE_PATH module_relative_path
+        ${CMAKE_SOURCE_DIR}/python/hololink
+        ${CMAKE_CURRENT_LIST_DIR}
     )
+    set(module_out_dir ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${module_relative_path})
+    file(MAKE_DIRECTORY ${module_out_dir})
+
+    # if there is no __init__.py, generate one
+    if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/__init__.py")
+        # custom target to ensure the module's __init__.py file is copied
+        configure_file(
+            ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pybind11/__init__.py
+            ${module_out_dir}/__init__.py
+        )
+    endif()
 
     # Note: OUTPUT_NAME filename (_${MODULE_NAME}) must match the module name in the PYBIND11_MODULE macro
     set_target_properties(${target_name} PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_SUBMODULE_OUT_DIR}
+        LIBRARY_OUTPUT_DIRECTORY ${module_out_dir}
         OUTPUT_NAME _${MODULE_NAME}
     )
 

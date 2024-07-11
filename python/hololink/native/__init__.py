@@ -15,6 +15,6 @@
 
 # See README.md for detailed information.
 
-from .native import ArpWrapper, Deserializer, Serializer
+from ._native import ArpWrapper, Deserializer, Serializer, local_mac
 
-__all__ = ["Deserializer", "Serializer", "ArpWrapper"]
+__all__ = ["Deserializer", "local_mac", "Serializer", "ArpWrapper"]

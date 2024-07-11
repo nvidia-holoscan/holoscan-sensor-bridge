@@ -5,7 +5,7 @@ IGX and Jetson AGX Orin devkits.
 
 ## The Holoscan Sensor Bridge board
 
-<img src="sensor_bridge_board.jpg" alt="Holoscan sensor bridge board" width="100%"/>
+<img src="sensor_bridge_board_gpios.png" alt="Holoscan sensor bridge board" width="100%"/>
 
 Holoscan sensor bridge has the following connectors:
 
@@ -14,6 +14,8 @@ Holoscan sensor bridge has the following connectors:
    IMX274).
 1. **Power port** - the sensor bridge device is powered by using a USB-C power supply
    connected to this port.
+1. **GPIO pins** - the sensor bridge device supports 16 GPIO pins (0...15) and 4 ground
+   pins (marked 'G' in the image above).
 
 Note that the sensor bridge device does not provide a USB host interface: the USB-C
 interface is used only for power. All host interaction is through the Ethernet ports.

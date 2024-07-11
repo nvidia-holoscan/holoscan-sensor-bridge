@@ -108,7 +108,7 @@ RoceReceiver::~RoceReceiver()
     ::close(rx_write_requests_fd_); // we ignore an error here if fd==-1
 }
 
-void RoceReceiver::start()
+bool RoceReceiver::start()
 {
     DEBUG("Starting.\n");
 
@@ -117,11 +117,11 @@ void RoceReceiver::start()
     struct ibv_device** ib_devices = ibv_get_device_list(&num_devices);
     if (!ib_devices) {
         ERROR("ibv_get_device_list failed; errno=%d.\n", (int)errno);
-        return;
+        return false;
     }
     if (num_devices < 0) {
         ERROR("ibv_get_device_list set unexpected value for num_devices=%d.\n", num_devices);
-        return;
+        return false;
     }
     struct ibv_device* ib_device = NULL;
     for (unsigned i = 0; i < (unsigned)num_devices; i++) {
@@ -136,14 +136,14 @@ void RoceReceiver::start()
     if (ib_device == NULL) {
         ERROR("ibv_get_device_list didnt find a device named \"%s\".\n", ibv_name_);
         ibv_free_device_list(ib_devices);
-        return;
+        return false;
     }
 
     // Open the IB device
     ib_context_ = ibv_open_device(ib_device);
     if (!ib_context_) {
         ERROR("ibv_open_device failed, errno=%d.\n", (int)errno);
-        return;
+        return false;
     }
     ibv_free_device_list(ib_devices); // Note that "ib_device" is invalid after this.
     ib_device = NULL;
@@ -155,7 +155,7 @@ void RoceReceiver::start()
     int r = fcntl(ib_context_->async_fd, F_SETFL, flags | O_NONBLOCK);
     if (r < 0) {
         ERROR("Can't configure async_fd=%d with O_NONBLOCK, errno=%d.\n", (int)ib_context_->async_fd, (int)errno);
-        return;
+        return false;
     }
 
     //
@@ -163,14 +163,14 @@ void RoceReceiver::start()
     if (ibv_query_device(ib_context_, &ib_device_attr)) {
         ERROR("ibv_query_device failed, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     struct ibv_port_attr ib_port_attr = { .flags = 0 }; // C fills the rest with 0s
     if (ibv_query_port(ib_context_, ibv_port_, &ib_port_attr)) {
         ERROR("ibv_query_port failed, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     // Fetch the GID
@@ -202,7 +202,7 @@ void RoceReceiver::start()
     if (!ok) {
         ERROR("Cannot find GID for IBV_GID_TYPE_ROCE_V2.\n");
         free_ib_resources();
-        return;
+        return false;
     }
 
     // Create a protection domain
@@ -210,7 +210,7 @@ void RoceReceiver::start()
     if (ib_pd_ == NULL) {
         ERROR("Cannot allocate a protection domain, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     // Create a completion channel.
@@ -218,7 +218,7 @@ void RoceReceiver::start()
     if (ib_completion_channel_ == NULL) {
         ERROR("Cannot create a completion channel.\n");
         free_ib_resources();
-        return;
+        return false;
     }
     // Configure for nonblocking reads, this way we can poll
     // for events
@@ -226,7 +226,7 @@ void RoceReceiver::start()
     r = fcntl(ib_completion_channel_->fd, F_SETFL, flags | O_NONBLOCK);
     if (r < 0) {
         ERROR("Can't configure fd=%d with O_NONBLOCK, errno=%d.\n", (int)ib_completion_channel_->fd, (int)errno);
-        return;
+        return false;
     }
 
     // Create a completion queue
@@ -235,7 +235,7 @@ void RoceReceiver::start()
     if (ib_cq_ == NULL) {
         ERROR("Cannot create a completion queue, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     // Provide access to the frame buffer
@@ -244,7 +244,7 @@ void RoceReceiver::start()
     if (ib_mr_ == NULL) {
         ERROR("Cannot register memory region p=0x%llX size=%u, errno=%d.\n", (unsigned long long)cu_buffer_, (unsigned)cu_buffer_size_, (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     rkey_ = ib_mr_->rkey;
@@ -266,7 +266,7 @@ void RoceReceiver::start()
     if (ib_qp_ == NULL) {
         ERROR("Cannot create queue pair, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     qp_number_ = ib_qp_->qp_num;
@@ -282,7 +282,7 @@ void RoceReceiver::start()
     if (ibv_modify_qp(ib_qp_, &ib_qp_attr, flags)) {
         ERROR("Cannot modify queue pair to IBV_QPS_INIT, errno=%d.\n", (int)errno);
         free_ib_resources();
-        return;
+        return false;
     }
 
     // Set up the list of work requests
@@ -295,7 +295,7 @@ void RoceReceiver::start()
         if (ibv_post_recv(ib_qp_, &ib_wr, &bad_wr)) {
             ERROR("Cannot post the receiver work list, errno=%d.\n", (int)errno);
             free_ib_resources();
-            return;
+            return false;
         }
     }
 
@@ -304,7 +304,7 @@ void RoceReceiver::start()
     if (inet_pton(AF_INET, peer_ip_, &client_ip) != 1) {
         ERROR("Unable to convert \"%s\" to an IP address.\n", peer_ip_);
         free_ib_resources();
-        return;
+        return false;
     }
     // client_ip is in network-byte-order
     uint64_t client_interface_id = client_ip;
@@ -339,9 +339,10 @@ void RoceReceiver::start()
     if (r) {
         ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno=%d.\n", r);
         free_ib_resources();
-        return;
+        return false;
     }
     // All ready to go.
+    return true;
 }
 
 static inline struct timespec add_ms(struct timespec& ts, unsigned long ms)
@@ -470,6 +471,7 @@ void RoceReceiver::blocking_monitor()
                     // otherwise we'll continue to use the 0 from the constructor
                 }
                 frame_number_++;
+                imm_data_ = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
                 clock_gettime(CLOCK_MONOTONIC, &frame_end_);
                 // Send it
                 signal();
@@ -577,10 +579,12 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         metadata.rx_write_requests = rx_write_requests_;
         metadata.frame_end_s = frame_end_.tv_sec;
         metadata.frame_end_ns = frame_end_.tv_nsec;
+        metadata.imm_data = imm_data_;
     } else {
         metadata.rx_write_requests = 0;
         metadata.frame_end_s = 0;
         metadata.frame_end_ns = 0;
+        metadata.imm_data = 0;
     }
     return r;
 }

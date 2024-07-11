@@ -39,6 +39,7 @@ public:
     uint64_t frame_number;
     uint64_t frame_end_s;
     uint64_t frame_end_ns;
+    uint32_t imm_data;
 };
 
 /**
@@ -47,7 +48,7 @@ public:
 class RoceReceiver {
 public:
     /**
-     * @param ibv_name Name of infiniband verbs device name, e.g. "mlx5_0"
+     * @param ibv_name Name of infiniband verbs device name, e.g. "roceP5p3s0f0"
      */
     RoceReceiver(
         const char* ibv_name,
@@ -60,7 +61,7 @@ public:
 
     void blocking_monitor();
 
-    void start();
+    bool start();
 
     void close(); // causes the run method to terminate
 
@@ -109,6 +110,7 @@ protected:
     int rx_write_requests_fd_;
     uint64_t volatile rx_write_requests_; // over all of time
     struct timespec frame_end_;
+    uint32_t volatile imm_data_;
 };
 
 } // namespace hololink::operators

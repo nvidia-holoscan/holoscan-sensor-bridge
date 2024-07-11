@@ -3,7 +3,7 @@
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
 follow the directions on the appropriate page below to configure your host system.
 
-- [IGX running IGX OS 1.0 DP, with CX7 SmartNIC](igx_baseos_roce_deployment.md)
+- [IGX running IGX OS 1.0 PR, with CX7 SmartNIC](igx_baseos_roce_deployment.md)
 - [Jetson AGX Orin, L4T JP6.0, with Linux Sockets](concord_l4t_linux_sock_deployment.md)
 
 ## Holoscan sensor bridge software prerequisites
@@ -71,7 +71,8 @@ container. This container is used to run all holoscan tests and examples.
 
    - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
      OS installed with appropriate dGPU support (e.g.
-     [IGX OS 1.0 DP](https://developer.nvidia.com/igx-downloads) with dGPU).
+     [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with
+     dGPU).
    - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX or IGX
      without a dGPU). This requires an OS installed with iGPU support (e.g. for AGX:
      JetPack 6.0; for IGX: IGX OS with iGPU configuration).

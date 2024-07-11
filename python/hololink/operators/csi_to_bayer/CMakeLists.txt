@@ -18,5 +18,6 @@ include(pybind11_add_hololink_module)
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET csi_to_bayer
     CLASS_NAME "CsiToBayerOp"
+    IMPORT "import holoscan.core"
     SOURCES csi_to_bayer.cpp
 )

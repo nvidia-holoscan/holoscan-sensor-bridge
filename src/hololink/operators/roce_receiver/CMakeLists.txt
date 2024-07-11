@@ -16,6 +16,7 @@
 find_package(ibverbs REQUIRED)
 
 add_library(roce_receiver STATIC
+  roce_receiver_op.cpp
   roce_receiver.cpp
   )
 
@@ -33,6 +34,7 @@ target_include_directories(roce_receiver
 target_link_libraries(roce_receiver
   PRIVATE
     hololink::native
+    hololink::operators::base_receiver_op
     CUDA::cuda_driver
     ${ibverbs_LIBRARIES}
   )

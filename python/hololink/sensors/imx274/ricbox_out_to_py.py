@@ -21,6 +21,7 @@ import sys
 
 def parse_txt(output_file, input_file):
     print("def device_configuration():", file=output_file)
+    print("    return [", file=output_file)
     for input_line in input_file:
         s = input_line.strip()
         if s.startswith("#"):
@@ -29,11 +30,12 @@ def parse_txt(output_file, input_file):
             o = s.split(", ")
             data = [int(x, 16) for x in o[-1].split(" ")]
             print(
-                "    yield (%s,)" % (", ".join(["0x%02X" % x for x in data]),),
+                "        bytes([%s,])," % (", ".join(["0x%02X" % x for x in data]),),
                 file=output_file,
             )
             continue
         raise Exception('Unexpected input "%s".' % (s,))
+    print("    ]", file=output_file)
 
 
 def main():

@@ -83,6 +83,26 @@ connected to eth0, which is the RJ45 connector on the AGX Orin.
    Setting `HOLOLINK_AFFINITY` to blank will skip any core affinity settings in the
    sensor bridge code.
 
+1. Run the "jetson_clocks" tool on startup, to set the core clocks to their maximum.
+
+   ```none
+   JETSON_CLOCKS_SERVICE=/etc/systemd/system/jetson_clocks.service
+   cat <<EOF | sudo tee $JETSON_CLOCKS_SERVICE >/dev/null
+   [Unit]
+   Description=Jetson Clocks Startup
+   After=nvpmodel.service
+
+   [Service]
+   Type=oneshot
+   ExecStart=/usr/bin/jetson_clocks
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+   sudo chmod u+x $JETSON_CLOCKS_SERVICE
+   sudo systemctl enable jetson_clocks.service
+   ```
+
 1. Set the AGX Orin power mode to 'MAXN' for optimal performance. The setting can be
    changed via L4T power drop down setting found on the upper left corner of the screen:
 

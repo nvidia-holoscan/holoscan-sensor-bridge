@@ -15,6 +15,7 @@
 
 add_library(native STATIC
   cuda_helper.cpp
+  networking.cpp
   )
 
 set_property(TARGET native PROPERTY POSITION_INDEPENDENT_CODE ON)
@@ -33,4 +34,5 @@ target_link_libraries(native
   PUBLIC
     CUDA::cuda_driver
     CUDA::nvToolsExt
+    CUDA::nvrtc
   )

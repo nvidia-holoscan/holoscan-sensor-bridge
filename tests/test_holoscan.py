@@ -245,7 +245,7 @@ def test_holoscan(
 
         # Get the data plane controller.
         channel_metadata = server.channel_metadata()
-        hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+        hololink_channel = hololink_module.DataChannel(channel_metadata)
 
         # Camera
         camera = hololink_module.sensors.udp_cam.UdpCam(hololink_channel)

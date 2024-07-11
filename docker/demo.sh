@@ -48,6 +48,8 @@ esac
 shift
 done
 
+# enableRawReprocess needs to be set 1 if the frame capture is not \
+# done by Argus API and only ISP being used.
 
 docker run \
     -it \
@@ -64,8 +66,13 @@ docker run \
     -v /sys/kernel/mm/hugepages:/sys/kernel/mm/hugepages \
     -v /dev:/dev \
     -v /tmp/.X11-unix:/tmp/.X11-unix \
+    -v /tmp/argus_socket:/tmp/argus_socket \
+    -v /sys/devices:/sys/devices \
+    -v /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings \
     -w $PWD \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
+    -e NVIDIA_VISIBLE_DEVICES=all \
     -e DISPLAY=$DISPLAY \
+    -e enableRawReprocess=1 \
     hololink-demo:$VERSION \
     $*

@@ -177,10 +177,8 @@ def main():
         logging.basicConfig(level=logging.INFO)
 
     #
-    channel_metadata = hololink_module.HololinkEnumerator.find_channel(
-        channel_ip=args.hololink
-    )
-    hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
     camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
         hololink_channel, expander_configuration=args.expander_configuration
     )

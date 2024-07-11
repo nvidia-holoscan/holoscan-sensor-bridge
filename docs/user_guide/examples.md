@@ -1,6 +1,16 @@
 # Running Holoscan Sensor Bridge examples
 
-Holoscan sensor bridge example applications are located under the `examples` directory.
+Holoscan sensor bridge Python example applications are located under the `examples`
+directory.
+
+The C++ examples need to be build first using these commands
+
+```sh
+$ export BUILD_DIR=/tmp/build
+$ cmake -S . -B $BUILD_DIR -G Ninja -DHOLOLINK_BUILD_PYTHON=OFF
+$ cmake --build $BUILD_DIR -j $(nproc)
+```
+
 Below are instructions for running the applications on the IGX and the Jetson AGX
 platforms.
 
@@ -16,18 +26,27 @@ platforms.
 
 Most examples have both the accelerated and an unaccelerated Linux Sockets API version.
 
-### IMX274 player example
+## IMX274 player example
 
 To run the high-speed video player with IMX274, in the demo container with a ConnectX
 accelerated network controller,
 
-```none
+`````{tab-set}
+````{tab-item} Python
+```sh
 $ python3 examples/imx274_player.py
 ```
+````
+````{tab-item} C++
+```sh
+$ $BUILD_DIR/examples/imx274_player
+```
+````
+`````
 
 or, for unaccelerated configurations (e.g. AGX),
 
-```none
+```sh
 $ python3 examples/linux_imx274_player.py
 ```
 
@@ -36,7 +55,7 @@ Documentation breaking down the source code for the IMX274 player application is
 sensor bridge workflow which is described in the
 [architecture documentation](architecture.md). Press Control/C to stop the video player.
 
-### Running the TAO PeopleNet example
+## Running the TAO PeopleNet example
 
 The tao-peoplenet example demonstrates running inference on a live video feed.
 [Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
@@ -52,14 +71,14 @@ wget --content-disposition 'https://api.ngc.nvidia.com/v2/models/org/nvidia/team
 
 For systems with accelerated network interfaces,
 
-```none
-python3 examples/tao_peoplenet.py 
+```sh
+$ python3 examples/tao_peoplenet.py
 ```
 
 or unaccelerated configurations,
 
-```none
-python3 examples/linux_tao_peoplenet.py
+```sh
+$ python3 examples/linux_tao_peoplenet.py
 ```
 
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
@@ -67,7 +86,7 @@ the IMX274 device as well as red/green box overlays when a person image is captu
 Press Ctrl/C to exit. More information about this application can be found
 [here](applications.md#tao_peoplenet).
 
-### Running the body pose example
+## Running the body pose example
 
 **Prerequisite**: Download the YOLOv8 ONNX model from the YOLOv8 website and generate
 the body pose ONNX model. Within the Holoscan sensor bridge demo container:
@@ -90,15 +109,15 @@ to be present in future runs of the demo.
 For systems with accelerated network interfaces, within the sensor bridge demo
 container, launch the Body Pose estimation:
 
-```none
-python3 examples/body_pose_estimation.py 
+```sh
+$ python3 examples/body_pose_estimation.py
 ```
 
 For unaccelerated configurations (e.g. AGX), launch the Body Pose estimation example
 within the demo container this way:
 
-```none
-python3 examples/linux_body_pose_estimation.py
+```sh
+$ python3 examples/linux_body_pose_estimation.py
 ```
 
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
@@ -110,16 +129,71 @@ about this application, look [here](applications.md#body_pose_estimation).
 
 Press Ctrl/C to exit.
 
-### Running the Stereo IMX274 example
+## Running the Stereo IMX274 example
 
 `examples/stereo_imx274_player.py` shows an example with two independent pipelines, one
 for each camera on the dual-camera module. Only an accelerated version is included, and
 [both network ports must be connected](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host)
 between the IGX and the Holoscan sensor bridge unit.
 
-```none
-python3 examples/stereo_imx274_player.py
+```sh
+$ python3 examples/stereo_imx274_player.py
 ```
 
 This brings up a visualizer display with two frames, one for the left channel and the
 other for the right.
+
+## Running the GPIO example
+
+`examples/gpio_example_app.py` is a simple example of using the GPIO interface of the
+sensor bridge to set GPIO directions, read input values from GPIO pins and write output
+values to GPIO pins. To run the appliction:
+
+```sh
+$ python3 examples/gpio_example_app.py
+```
+
+This brings up a textual display which cycles over different pre-set pin configurations
+and alows time between different settings of the pins to measure or readback pins
+values. Please refer to the application structure section to read more about the
+[GPIO example application](applications.md#gpio-example-application).
+
+## Running the NVIDIA ISP with live capture example
+
+`examples/linux_hwisp_player.py` shows an example of NVIDIA ISP unit processing the
+Bayer frame captured live using IMX274. The ISP unit currently is available on Jetson
+Orin AGX and IGX Orin in iGPU configuration.
+
+Before starting the docker run, setup the `nvargus-daemon` with the flag
+`enableRawReprocessing=1`. This enables us to run the ISP with the Bayer frame capture
+using Holoscan sensor bridge unit and this change persists through even restart.
+
+```sh
+sudo su
+pkill nvargus-daemon
+export enableRawReprocessing=1
+nvargus-daemon
+exit
+```
+
+Now use following commands to run the example.
+
+```sh
+$ export DISPLAY=:1
+$ xhost +
+$ sh ./docker/demo.sh
+$ python3 examples/linux_hwisp_player.py
+```
+
+This will run the application with visualizer display showing the live capture.
+
+Note if user wishes to undo running the `nvargus-daemon` with
+flag`enableRawReprocessing=1`, then please execute following command.
+
+```sh
+sudo su
+pkill nvargus-daemon
+unset enableRawReprocessing
+nvargus-daemon
+exit
+```

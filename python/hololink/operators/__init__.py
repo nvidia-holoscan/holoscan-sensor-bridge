@@ -19,15 +19,15 @@ import importlib
 import sys
 
 _MODULES = {
-    "BaseReceiverOperator": "base_receiver_operator",
+    "BaseReceiverOp": "base_receiver_op",
     "CsiToBayerOp": "csi_to_bayer",
     "GammaCorrectionOp": "gamma_correction",
+    "ArgusIspOp": "argus_isp",
     "ImageProcessorOp": "image_processor",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
     "LinuxReceiver": "linux_receiver",
     "LinuxReceiverOperator": "linux_receiver_operator",
-    "RoceReceiver": "roce_receiver",
-    "RoceReceiverOperator": "roce_receiver_operator",
+    "RoceReceiverOp": "roce_receiver",
 }
 
 __all__ = []

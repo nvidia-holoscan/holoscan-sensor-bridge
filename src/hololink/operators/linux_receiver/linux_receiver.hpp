@@ -38,6 +38,7 @@ public:
     uint64_t frame_start_ns;
     uint64_t frame_end_s;
     uint64_t frame_end_ns;
+    uint32_t imm_data;
     // Data accumulated over the life of the application
     //  uint64_t packets_received;
     //  uint64_t frames_received;

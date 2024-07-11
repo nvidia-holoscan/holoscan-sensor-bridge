@@ -18,5 +18,6 @@ include(pybind11_add_hololink_module)
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET image_processor
     CLASS_NAME "ImageProcessorOp"
+    IMPORT "import holoscan.core"
     SOURCES image_processor.cpp
 )

@@ -35,5 +35,4 @@ target_link_libraries(image_processor
     hololink::operators::csi_to_bayer
   PRIVATE
     holoscan::core
-    CUDA::nvrtc
   )

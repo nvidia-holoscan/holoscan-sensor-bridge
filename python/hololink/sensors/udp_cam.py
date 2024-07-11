@@ -111,7 +111,7 @@ class UdpCam:
         frames_per_minute = int(60.0 / frame_rate_s)
         self.set_register(FRAMES_PER_MINUTE, frames_per_minute)
         self.set_register(
-            INITIALIZE, 1, timeout=hololink_module.retry(timeout_s=30, retry_s=2)
+            INITIALIZE, 1, hololink_module.Timeout(timeout_s=30, retry_s=2)
         )
 
     def tap_watchdog(self, watchdog_timeout_s=20):

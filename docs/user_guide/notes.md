@@ -1,9 +1,9 @@
 # Important notes
 
-## RoceReceiverOperator
+## RoceReceiverOp
 
-Receiver operators, including RoceReceiverOperator and LinuxReceiverOperator
-specifications include:
+Receiver operators, including RoceReceiverOp and LinuxReceiverOperator specifications
+include:
 
 - Always return the most recently received video frame. This operator will never return
   a video frame older than 1 frame time. If the pipeline is busy and is unavailable to
@@ -13,7 +13,7 @@ specifications include:
 - Never return the same video frame twice. If the pipeline is faster than a video
   reception time, the pipeline will block until the next incoming frame is complete.
 
-RoceReceiverOperator uses RDMA with special caveats that are likely to change in future
+RoceReceiverOp uses RDMA with special caveats that are likely to change in future
 versions:
 
 - There is no protection against rewriting the video buffer while the pipeline is using
@@ -22,9 +22,9 @@ versions:
   data from the receiver buffer into another region of memory (via CsiToBayerOp)--this
   minimizes the time during which this hazard can occur--but scheduling these operations
   is dependent on CPU availability.
-- In RoceReceiverOperator's current implementation, the compute method always blocks
-  until the next end-of-frame interrupt is received; future versions are likely to
-  return a previously completed frame if one is ready.
+- In RoceReceiverOp's current implementation, the compute method always blocks until the
+  next end-of-frame interrupt is received; future versions are likely to return a
+  previously completed frame if one is ready.
 
 ## Holoscan sensor bridge IP address configuration
 
@@ -128,7 +128,7 @@ PING 192.168.200.3 (192.168.200.3) 56(84) bytes of data.
 
 Note that the routing must be set up correctly for the ping commands to work as
 expected.
-[Here is more specific information on sensor bridge IP address reconfiguration](architecture.md#hololinkdatachannel-enumeration-and-ip-address-configuration).
+[Here is more specific information on sensor bridge IP address reconfiguration](architecture.md#DataChannel-enumeration-and-ip-address-configuration).
 
 ## Network cables and adapters
 

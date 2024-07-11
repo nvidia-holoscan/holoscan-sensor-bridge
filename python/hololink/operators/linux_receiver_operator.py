@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,6 +15,7 @@
 
 # See README.md for detailed information.
 
+import datetime
 import logging
 import os
 import socket
@@ -24,13 +25,12 @@ from cuda import cuda
 
 import hololink as hololink_module
 
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
+MS_PER_SEC = 1000
+US_PER_SEC = 1000 * MS_PER_SEC
+NS_PER_SEC = 1000 * US_PER_SEC
 
 
-class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOperator):
+class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
 
@@ -71,19 +71,26 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOperator):
         self._data_socket.close()
 
     def _get_next_frame(self, timeout_ms):
-        ok, metadata = self._receiver.get_next_frame(timeout_ms)
+        ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms)
         if not ok:
             return None
-        frame_start = metadata.frame_start_s + (metadata.frame_start_ns * SEC_PER_NS)
-        frame_end = metadata.frame_end_s + (metadata.frame_end_ns * SEC_PER_NS)
-        metadata = {
-            "frame_number": metadata.frame_number,
-            "frame_packets_received": metadata.frame_packets_received,
-            "frame_bytes_received": metadata.frame_bytes_received,
-            "frame_start": frame_start,
-            "frame_end": frame_end,
+        now_ns = datetime.datetime.now(datetime.timezone.utc).timestamp() * NS_PER_SEC
+        # Extend the timestamp we got from the data,
+        # (which is ns plus 2 bits of seconds).  Note that
+        # we don't look at the 2 bits of seconds here.
+        ns = receiver_metadata.imm_data % NS_PER_SEC
+        timestamp_ns = (now_ns - (now_ns % NS_PER_SEC)) + ns
+        # always round down
+        if timestamp_ns > now_ns:
+            timestamp_ns -= NS_PER_SEC
+        application_metadata = {
+            "frame_number": receiver_metadata.frame_number,
+            "frame_packets_received": receiver_metadata.frame_packets_received,
+            "frame_bytes_received": receiver_metadata.frame_bytes_received,
+            "received_ns": now_ns,
+            "timestamp_ns": timestamp_ns,
         }
-        return metadata
+        return application_metadata
 
     def _check_buffer_size(self, data_memory_size):
         receiver_buffer_size = self._data_socket.getsockopt(

@@ -27,7 +27,7 @@ class AckTimerHololink(hololink_module.Hololink):
         super().__init__(*args, **kwargs)
         self._acks = []
 
-    def _executed(self, request_time, request, reply_time, reply):
+    def executed(self, request_time, request, reply_time, reply):
         self._acks.append((request_time, reply_time))
 
 
@@ -40,7 +40,7 @@ class AckTimerHololink(hololink_module.Hololink):
 def test_hololink_acks(hololink_address):
     logging.info("Initializing.")
     #
-    metadata = hololink_module.HololinkEnumerator.find_channel(hololink_address)
+    metadata = hololink_module.Enumerator.find_channel(hololink_address)
     hololink = AckTimerHololink(
         peer_ip=metadata["peer_ip"],
         control_port=metadata["control_port"],
@@ -52,9 +52,12 @@ def test_hololink_acks(hololink_address):
         hololink.get_fpga_date()
     hololink.stop()
 
-    for request_time, reply_time in hololink._acks:
+    max_dt = None
+    for n, (request_time, reply_time) in enumerate(hololink._acks):
         dt_s = reply_time - request_time
         dt_ms = dt_s * 1000.0
         dt_us = dt_ms * 1000.0
-        print("request_time=%s dt_us=%.3f" % (request_time, dt_us))
-        assert dt_us < 500
+        print(f"{n=} {request_time=} {dt_us=:0.3f}")
+        if (max_dt is None) or (dt_us > max_dt):
+            max_dt = dt_us
+    assert max_dt < 500

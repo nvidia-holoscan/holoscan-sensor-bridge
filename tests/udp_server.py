@@ -31,7 +31,6 @@ import nvtx
 import utils
 
 import hololink as hololink_module
-import hololink.hololink as hm
 
 bayer_width = None
 bayer_height = None
@@ -75,22 +74,24 @@ def generate_image(memory, port):
         image_memory_metadata[2] = image.shape[1]
         image_memory_metadata[3] = image.shape[2]
     # Build up the CSI stream
-    frame_start_size = 8
-    frame_end_size = 8
-    line_start_size = 8
-    line_end_size = 8
+    frame_start_size = 4
+    frame_end_size = 4
+    line_start_size = 4
+    line_end_size = 2
     frame_start = np.array([255] * frame_start_size, dtype=np.uint8)
     line_start = np.array([255] * line_start_size, dtype=np.uint8)
     line_end = np.array([255] * line_end_size, dtype=np.uint8)
     frame_end = np.array([255] * frame_end_size, dtype=np.uint8)
-    line_size = line_start_size + bayer_image.strides[0] + line_end_size
-    align_64 = hololink_module.sensors.csi.align_64
-    align = np.array([255] * (align_64(line_size) - line_size), dtype=np.uint8)
     global csi_image_data, csi_image_length
     csi_image_data = np.concatenate([frame_start])
     for line in bayer_image:
         csi_image_data = np.concatenate(
-            [csi_image_data, line_start, line, line_end, align]
+            [
+                csi_image_data,
+                line_start,
+                line,
+                line_end,
+            ]
         )
     csi_image_data = np.concatenate([csi_image_data, frame_end])
     csi_image_length = len(csi_image_data)
@@ -222,20 +223,21 @@ def main(lock=None):
     }
     for port in uc.VIRTUAL_PORTS:
         u = {
-            hm.DP_PACKET_SIZE + port: 0,
-            hm.DP_HOST_MAC_LOW + port: 0,
-            hm.DP_HOST_MAC_HIGH + port: 0,
-            hm.DP_HOST_IP + port: 0,
-            hm.DP_HOST_UDP_PORT + port: 0,
-            hm.DP_VIP_MASK + port: 0,  # which sensor port connects to which ethernet?
+            hololink_module.DP_PACKET_SIZE + port: 0,
+            hololink_module.DP_HOST_MAC_LOW + port: 0,
+            hololink_module.DP_HOST_MAC_HIGH + port: 0,
+            hololink_module.DP_HOST_IP + port: 0,
+            hololink_module.DP_HOST_UDP_PORT + port: 0,
+            hololink_module.DP_VIP_MASK
+            + port: 0,  # which sensor port connects to which ethernet?
             #
-            hm.DP_ROCE_CFG + port: 0,
+            hololink_module.DP_ROCE_CFG + port: 0,
             #
-            hm.DP_ROCE_VADDR_MSB_0 + port: 0,
-            hm.DP_ROCE_VADDR_LSB_0 + port: 0,
-            hm.DP_ROCE_BUF_END_MSB_0 + port: 0,
-            hm.DP_ROCE_BUF_END_LSB_0 + port: 0,
-            hm.DP_ROCE_RKEY_0 + port: 0,
+            hololink_module.DP_ROCE_VADDR_MSB_0 + port: 0,
+            hololink_module.DP_ROCE_VADDR_LSB_0 + port: 0,
+            hololink_module.DP_ROCE_BUF_END_MSB_0 + port: 0,
+            hololink_module.DP_ROCE_BUF_END_LSB_0 + port: 0,
+            hololink_module.DP_ROCE_RKEY_0 + port: 0,
         }
         memory.update(u)
 
@@ -362,7 +364,7 @@ def main(lock=None):
                         logging.debug("image_count=%s" % (image_count,))
                         #
                         port = uc.VIRTUAL_PORTS[0]
-                        ip_address = memory[hm.DP_HOST_IP + port]
+                        ip_address = memory[hololink_module.DP_HOST_IP + port]
                         ip = [
                             (ip_address >> 24) & 0xFF,
                             (ip_address >> 16) & 0xFF,
@@ -370,14 +372,16 @@ def main(lock=None):
                             (ip_address >> 0) & 0xFF,
                         ]
                         ip = "%d.%d.%d.%d" % (ip[0], ip[1], ip[2], ip[3])
-                        udp_port = memory[hm.DP_HOST_UDP_PORT + port]
+                        udp_port = memory[hololink_module.DP_HOST_UDP_PORT + port]
                         global csi_image_data, csi_image_length
-                        payload_size = memory[hm.DP_PACKET_SIZE + port] - 78
-                        address = memory[hm.DP_ROCE_VADDR_MSB_0 + port]
+                        payload_size = (
+                            memory[hololink_module.DP_PACKET_SIZE + port] - 78
+                        )
+                        address = memory[hololink_module.DP_ROCE_VADDR_MSB_0 + port]
                         address <<= 32
-                        address |= memory[hm.DP_ROCE_VADDR_LSB_0 + port]
-                        qp = memory[hm.DP_ROCE_CFG + port] & 0xFF_FFFF
-                        rkey = memory[hm.DP_ROCE_RKEY_0 + port]
+                        address |= memory[hololink_module.DP_ROCE_VADDR_LSB_0 + port]
+                        qp = memory[hololink_module.DP_ROCE_CFG + port] & 0xFF_FFFF
+                        rkey = memory[hololink_module.DP_ROCE_RKEY_0 + port]
                         with nvtx.annotate("write-frame"):
                             # the last packet is a bit different; don't include that here
                             s, e = 0, payload_size
@@ -526,11 +530,10 @@ class TestServer:
             "control_port": self._control_port,
             "configuration_address": 0x1A00,
             "serial_number": "AA55",
-            "hololink_class": hololink_module.Hololink,
             "cpnx_version": 0x2402,
             "vip_mask": 1,
         }
-        return metadata
+        return hololink_module.Metadata(metadata)
 
 
 if __name__ == "__main__":

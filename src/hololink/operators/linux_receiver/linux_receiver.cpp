@@ -151,7 +151,7 @@ void LinuxReceiver::run()
         ssize_t received_bytes = recv(socket_, received, sizeof(received), recv_flags);
         if (received_bytes <= 0) {
             // check if there is a timeout
-            if ((errno == EAGAIN) || (errno == EWOULDBLOCK)) {
+            if ((errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR)) {
                 // should we exit?
                 if (exit_) {
                     break;
@@ -192,7 +192,7 @@ void LinuxReceiver::run()
             uint64_t address = 0;
             uint32_t rkey = 0;
             uint32_t size = 0;
-            uint8_t* content = NULL;
+            const uint8_t* content = NULL;
             if ((opcode == IBV_OPCODE_UC_RDMA_WRITE_ONLY)
                 && deserializer.next_uint64_be(address)
                 && deserializer.next_uint32_be(rkey)
@@ -207,12 +207,12 @@ void LinuxReceiver::run()
                 break;
             }
 
-            uint32_t imm = 0;
+            uint32_t imm_data = 0;
             if ((opcode == IBV_OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE)
                 && deserializer.next_uint64_be(address)
                 && deserializer.next_uint32_be(rkey)
                 && deserializer.next_uint32_be(size)
-                && deserializer.next_uint32_be(imm)
+                && deserializer.next_uint32_be(imm_data)
                 && deserializer.pointer(content, size)) {
                 frame_count++;
                 TRACE("opcode=2B address=0x%llX size=0x%X\n", (unsigned long long)address, (unsigned)size);
@@ -242,6 +242,7 @@ void LinuxReceiver::run()
                 metadata.frame_start_ns = frame_start.tv_nsec;
                 metadata.frame_end_s = frame_end.tv_sec;
                 metadata.frame_end_ns = frame_end.tv_nsec;
+                metadata.imm_data = imm_data;
 
                 receiving = available_.exchange(receiving);
                 signal();

@@ -183,7 +183,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
         fragment()->executor().context(), allocator_->gxf_cid());
 
     // create the output
-    nvidia::gxf::Shape shape { int(height_), int(width_) };
+    nvidia::gxf::Shape shape { int(height_), int(width_), 1 };
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
         = CreateTensorMap(context.context(), allocator.value(),
             { { out_tensor_name_.get(), nvidia::gxf::MemoryStorageType::kDevice, shape,
@@ -204,7 +204,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
     const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
 
-    const uint32_t per_line_size = align_8(line_start_size_ + bytes_per_line_ + line_end_size_);
+    const uint32_t per_line_size = line_start_size_ + bytes_per_line_ + line_end_size_;
     switch (pixel_format_) {
     case hololink::operators::CsiToBayerOp::PixelFormat::RAW_8:
         cuda_function_launcher_->launch("frameReconstruction8", { width_, height_, 1 }, cuda_stream,
@@ -276,10 +276,14 @@ void CsiToBayerOp::configure(uint32_t width, uint32_t height, PixelFormat pixel_
         throw std::runtime_error(fmt::format("Unsupported pixel format {}", int(pixel_format_)));
     }
 
-    const uint32_t line_size = align_8(line_start_size + bytes_per_line_ + line_end_size);
+    const uint32_t line_size = line_start_size + bytes_per_line_ + line_end_size;
     frame_start_size_ += margin_top * line_size;
     frame_end_size_ += margin_bottom * line_size;
-    csi_length_ = frame_start_size_ + line_size * height_ + frame_end_size_;
+    // NOTE that this align_8 is not a CSI specification; instead it comes
+    // from the Sensor Bridge FPGA implementation.  When we convert Hololink
+    // to C++, let's change this to a callback to that object, per
+    // https://jirasw.nvidia.com/browse/BAJQ0XTT-137.
+    csi_length_ = align_8(frame_start_size_ + line_size * height_ + frame_end_size_);
 }
 
 size_t CsiToBayerOp::get_csi_length()

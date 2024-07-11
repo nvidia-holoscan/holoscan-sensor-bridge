@@ -88,8 +88,9 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera.configure_converter(csi_to_bayer_operator)
 
         frame_size = csi_to_bayer_operator.get_csi_length()
+        logging.info(f"{frame_size=}")
         frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOperator(
+        receiver_operator = hololink_module.operators.RoceReceiverOp(
             self,
             condition,
             name="receiver",
@@ -193,7 +194,7 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    default_infiniband_interface = "mlx5_0"
+    default_infiniband_interface = "roceP5p3s0f0"
     try:
         default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
     except FileNotFoundError:
@@ -216,6 +217,12 @@ def main():
         choices=(0, 1),
         help="I2C Expander configuration",
     )
+    parser.add_argument(
+        "--pattern",
+        type=int,
+        choices=range(12),
+        help="Configure to display a test pattern.",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -225,14 +232,12 @@ def main():
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
+    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     # Get a handle to the data source
-    channel_metadata = hololink_module.HololinkEnumerator.find_channel(
-        channel_ip=args.hololink
-    )
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     logging.info(f"{channel_metadata=}")
-    hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
     camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
         hololink_channel, expander_configuration=args.expander_configuration
@@ -261,9 +266,14 @@ def main():
     camera.setup_clock()
     camera.configure(camera_mode)
     camera.set_digital_gain_reg(0x4)
+    if args.pattern is not None:
+        camera.test_pattern(args.pattern)
     logging.info("Calling run")
     application.run()
     hololink.stop()
+
+    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":

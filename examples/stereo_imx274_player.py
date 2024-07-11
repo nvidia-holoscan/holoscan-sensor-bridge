@@ -123,7 +123,7 @@ class HoloscanApplication(holoscan.core.Application):
         assert frame_size == csi_to_bayer_operator_right.get_csi_length()
 
         frame_context = self._cuda_context
-        receiver_operator_left = hololink_module.operators.RoceReceiverOperator(
+        receiver_operator_left = hololink_module.operators.RoceReceiverOp(
             self,
             condition_left,
             name="receiver_left",
@@ -136,7 +136,7 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         #
-        receiver_operator_right = hololink_module.operators.RoceReceiverOperator(
+        receiver_operator_right = hololink_module.operators.RoceReceiverOp(
             self,
             condition_right,
             frame_size=frame_size,
@@ -305,7 +305,7 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    default_infiniband_interfaces = ["mlx5_0", "mlx5_1"]
+    default_infiniband_interfaces = ["roceP5p3s0f0", "roceP5p3s0f1"]
     try:
         default_infiniband_interfaces = sorted(os.listdir("/sys/class/infiniband"))
     except FileNotFoundError:
@@ -357,17 +357,17 @@ def main():
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
+    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     # Get a handle to data sources
-    channel_metadata_left = hololink_module.HololinkEnumerator.find_channel(
+    channel_metadata_left = hololink_module.Enumerator.find_channel(
         channel_ip=args.hololink_left
     )
-    hololink_channel_left = hololink_module.HololinkDataChannel(channel_metadata_left)
-    channel_metadata_right = hololink_module.HololinkEnumerator.find_channel(
+    hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
+    channel_metadata_right = hololink_module.Enumerator.find_channel(
         channel_ip=args.hololink_right
     )
-    hololink_channel_right = hololink_module.HololinkDataChannel(channel_metadata_right)
+    hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     # Get a handle to the camera
     camera_left = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
         hololink_channel_left, expander_configuration=0
@@ -414,6 +414,9 @@ def main():
     camera_right.set_digital_gain_reg(0x4)
     application.run()
     hololink.stop()
+
+    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":

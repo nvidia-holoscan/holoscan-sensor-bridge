@@ -1,10 +1,11 @@
 ## Installation: IGX system running IGX OS 1.0 DP with CX7 SmartNIC
 
 Here are instructions to set up an IGX system running
-[IGX OS 1.0 DP](https://developer.nvidia.com/igx-downloads) with CX7 SmartNIC. While
-sensor bridge applications normally run in a container, these settings are all to be
-configured in the IGX system directly--not within the container. These instructions are
-remembered across power cycles and therefore only need to be set up once.
+[IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with CX7
+SmartNIC. While sensor bridge applications normally run in a container, these settings
+are all to be configured in the IGX system directly--not within the container. These
+instructions are remembered across power cycles and therefore only need to be set up
+once.
 
 1. Determine the name of the network device associated with the first CX7 port. This is
    the rightmost QSFP port when looking at the back of the IGX unit.
@@ -13,20 +14,20 @@ remembered across power cycles and therefore only need to be set up once.
 
    ```none
    $ ls /sys/class/infiniband
-   mlx5_0 mlx5_1
+   roceP5p3s0f0 roceP5p3s0f1
    ```
 
    This will produce a list of CX7 ports; your device names may vary. The lowest
-   numbered one, in this case `mlx5_0`, is the first CX7 port. Next, determine which
-   host ethernet port is associated with that device.
+   numbered one, in this case `roceP5p3s0f0`, is the first CX7 port. Next, determine
+   which host ethernet port is associated with that device.
 
    ```none
-   $ ls /sys/class/infiniband/mlx5_0/device/net
+   $ ls /sys/class/infiniband/roceP5p3s0f0/device/net
    eth0
    ```
 
-   This indicates that the host network interface associated with mlx5_0 is `eth0`; as
-   before, your system may produce a different name.
+   This indicates that the host network interface associated with roceP5p3s0f0 is
+   `eth0`; as before, your system may produce a different name.
 
 1. IGX OS uses NetworkManager to configure network interfaces. By default, the sensor
    bridge device uses the address 192.168.0.2 for the first port. Set up your first
@@ -64,7 +65,8 @@ remembered across power cycles and therefore only need to be set up once.
    default, the sensor bridge device uses the address 192.168.0.3 for that second port.
    Connect the second IGX QSFP port (indicated with the red arrow below) to the second
    SFP+ port on the sensor bridge device. Use the process above to determine the host
-   Ethernet device on the second port (e.g. `mlx5_1` might be associated with `eth1`).
+   Ethernet device on the second port (e.g. `roceP5p3s0f1` might be associated with
+   `eth1`).
 
    <img src="igx-rear-qsfp1.png" alt="IGX QSFP1" width="75%"/>
 
@@ -98,9 +100,9 @@ remembered across power cycles and therefore only need to be set up once.
 
 1. Install [git-lfs](https://git-lfs.com)
 
-   [IGX OS 1.0 DP](https://developer.nvidia.com/igx-downloads) does not come with
-   `git-lfs` installed; but some data files in the Holoscan sensor bridge source
-   repository use LFS. If you plan on using git to fetch the sensor bridge host
+   [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) does not
+   come with `git-lfs` installed; but some data files in the Holoscan sensor bridge
+   source repository use LFS. If you plan on using git to fetch the sensor bridge host
    software, you'll need to install git-lfs:
 
    ```none

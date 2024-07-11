@@ -17,9 +17,11 @@
 
 #include <hololink/native/arp_wrapper.hpp>
 #include <hololink/native/deserializer.hpp>
+#include <hololink/native/networking.hpp>
 #include <hololink/native/serializer.hpp>
 
 #include <pybind11/pybind11.h>
+#include <pybind11/stl.h>
 
 using pybind11::literals::operator""_a;
 
@@ -31,18 +33,14 @@ namespace py = pybind11;
 namespace hololink::native {
 
 // Provide access to the buffer passed in
-class WrappedSerializer
-    : public Serializer {
+class WrappedSerializer : public Serializer {
 public:
     WrappedSerializer(uint8_t* buffer, unsigned size)
         : Serializer(buffer, size)
     {
     }
 
-    uint8_t* buffer()
-    {
-        return buffer_;
-    }
+    uint8_t* buffer() { return buffer_; }
 };
 
 PYBIND11_MODULE(_native, m)
@@ -55,7 +53,8 @@ PYBIND11_MODULE(_native, m)
 
     py::class_<ArpWrapper>(m, "ArpWrapper")
         .def(py::init<>())
-        .def_static("arp_set", &ArpWrapper::arp_set, "socket_fd"_a, "eth_device"_a, "ip"_a, "mac_id"_a);
+        .def_static(
+            "arp_set", &ArpWrapper::arp_set, "socket_fd"_a, "eth_device"_a, "ip"_a, "mac_id"_a);
 
     py::class_<Deserializer>(m, "Deserializer")
         .def(py::init([](py::buffer buffer) {
@@ -77,63 +76,73 @@ PYBIND11_MODULE(_native, m)
             return Deserializer((uint8_t*)info.ptr, length);
         }),
             "buffer"_a, "length"_a = 0, py::keep_alive<1, 2>())
-        .def("next_uint8", [](Deserializer& me) {
-            uint8_t value = 0;
-            bool r = me.next_uint8(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_uint16_be", [](Deserializer& me) {
-            uint16_t value = 0;
-            bool r = me.next_uint16_be(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_uint16_le", [](Deserializer& me) {
-            uint16_t value = 0;
-            bool r = me.next_uint16_le(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_uint32_be", [](Deserializer& me) {
-            uint32_t value = 0;
-            bool r = me.next_uint32_be(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_uint32_le", [](Deserializer& me) {
-            uint32_t value = 0;
-            bool r = me.next_uint32_le(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_uint64_be", [](Deserializer& me) {
-            uint64_t value = 0;
-            bool r = me.next_uint64_be(value);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            return value;
-        })
-        .def("next_buffer", [](Deserializer& me, unsigned n) {
-            uint8_t* p = nullptr;
-            bool r = me.pointer(p, n);
-            if (!r) {
-                throw std::runtime_error("Buffer underflow");
-            }
-            std::string s((const char*)p, n);
-            return py::bytes(s);
-        })
+        .def("next_uint8",
+            [](Deserializer& me) {
+                uint8_t value = 0;
+                bool r = me.next_uint8(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        .def("next_uint16_be",
+            [](Deserializer& me) {
+                uint16_t value = 0;
+                bool r = me.next_uint16_be(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        .def("next_uint16_le",
+            [](Deserializer& me) {
+                uint16_t value = 0;
+                bool r = me.next_uint16_le(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        .def("next_uint32_be",
+            [](Deserializer& me) {
+                uint32_t value = 0;
+                bool r = me.next_uint32_be(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        .def("next_uint32_le",
+            [](Deserializer& me) {
+                uint32_t value = 0;
+                bool r = me.next_uint32_le(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        .def("next_uint64_be",
+            [](Deserializer& me) {
+                uint64_t value = 0;
+                bool r = me.next_uint64_be(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
+        // next_buffer returns a pointer to an internal buffer, Python should not take ownership but
+        // couple the lifetime of the pointer to the Deserializer instance
+        .def(
+            "next_buffer",
+            [](Deserializer& me, unsigned n) {
+                const uint8_t* pointer = nullptr;
+                bool r = me.pointer(pointer, n);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return py::memoryview::from_memory(pointer, sizeof(uint8_t) * n);
+            },
+            "n"_a)
         .def("position", &Deserializer::position);
 
     py::class_<WrappedSerializer>(m, "Serializer")
@@ -156,72 +165,90 @@ PYBIND11_MODULE(_native, m)
             return WrappedSerializer((uint8_t*)info.ptr, length);
         }),
             "buffer"_a, "length"_a = 0, py::keep_alive<1, 2>())
-        .def("append_uint32_be", [](WrappedSerializer& me, uint32_t value) {
-            bool r = me.append_uint32_be(value);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_uint32_le", [](WrappedSerializer& me, uint32_t value) {
-            bool r = me.append_uint32_le(value);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_uint16_be", [](WrappedSerializer& me, uint16_t value) {
-            bool r = me.append_uint16_be(value);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_uint16_le", [](WrappedSerializer& me, uint16_t value) {
-            bool r = me.append_uint16_le(value);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_uint8", [](WrappedSerializer& me, uint8_t value) {
-            bool r = me.append_uint8(value);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_buffer", [](WrappedSerializer& me, py::buffer buffer) {
-            py::buffer_info info = buffer.request();
-            if (info.ndim != 1) {
-                throw std::runtime_error("Only 1-dimensional buffers are acceptable.");
-            }
-            unsigned length = info.shape[0];
-            bool r = me.append_buffer((uint8_t*)info.ptr, length);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("append_buffer", [](WrappedSerializer& me, py::buffer buffer, unsigned length = 0) {
-            py::buffer_info info = buffer.request();
-            if (info.ndim != 1) {
-                throw std::runtime_error("Only 1-dimensional buffers are acceptable.");
-            }
-            if (length > info.shape[0]) {
-                throw std::runtime_error("Excessive \"length\" value");
-            }
-            bool r = me.append_buffer((uint8_t*)info.ptr, length);
-            if (!r) {
-                throw std::runtime_error("Buffer overflow");
-            }
-            return r;
-        })
-        .def("data", [](WrappedSerializer& me) {
-            std::string s((const char*)me.buffer(), me.length());
-            return py::bytes(s);
-        })
+        .def("append_uint32_be",
+            [](WrappedSerializer& me, uint32_t value) {
+                bool r = me.append_uint32_be(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_uint32_le",
+            [](WrappedSerializer& me, uint32_t value) {
+                bool r = me.append_uint32_le(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_uint16_be",
+            [](WrappedSerializer& me, uint16_t value) {
+                bool r = me.append_uint16_be(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_uint16_le",
+            [](WrappedSerializer& me, uint16_t value) {
+                bool r = me.append_uint16_le(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_uint8",
+            [](WrappedSerializer& me, uint8_t value) {
+                bool r = me.append_uint8(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_buffer",
+            [](WrappedSerializer& me, py::buffer buffer) {
+                py::buffer_info info = buffer.request();
+                if (info.ndim != 1) {
+                    throw std::runtime_error("Only 1-dimensional buffers are acceptable.");
+                }
+                unsigned length = info.shape[0];
+                bool r = me.append_buffer((uint8_t*)info.ptr, length);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_buffer",
+            [](WrappedSerializer& me, py::buffer buffer, unsigned length = 0) {
+                py::buffer_info info = buffer.request();
+                if (info.ndim != 1) {
+                    throw std::runtime_error("Only 1-dimensional buffers are acceptable.");
+                }
+                if (length > info.shape[0]) {
+                    throw std::runtime_error("Excessive \"length\" value");
+                }
+                bool r = me.append_buffer((uint8_t*)info.ptr, length);
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("append_buffer",
+            [](WrappedSerializer& me, const std::string& buffer) {
+                bool r = me.append_buffer((uint8_t*)buffer.data(), buffer.size());
+                if (!r) {
+                    throw std::runtime_error("Buffer overflow");
+                }
+                return r;
+            })
+        .def("data",
+            [](WrappedSerializer& me) {
+                std::string s((const char*)me.buffer(), me.length());
+                return py::bytes(s);
+            })
         .def("length", &WrappedSerializer::length);
+
+    m.def("local_mac", &local_mac);
 
 } // PYBIND11_MODULE
 

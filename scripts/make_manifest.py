@@ -51,6 +51,11 @@ def main():
         default="manifest.yaml",
         help="Manifest file to write with programming data.",
     )
+    parser.add_argument(
+        "--strategy",
+        default="sensor_bridge_10",
+        help="Specify the strategy to use with this manifest.",
+    )
     args = parser.parse_args()
     # ...
     org = args.org
@@ -79,6 +84,7 @@ def main():
             "md5": md5.hexdigest(),
             "enrollment_date": now.isoformat(),
         },
+        "strategy": args.strategy,
     }
     hololink_images = { }
     others = [ ]

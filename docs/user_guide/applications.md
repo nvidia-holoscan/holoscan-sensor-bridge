@@ -24,18 +24,18 @@ acquired and processed.
 %%{init: {"theme": "base", "themeVariables": { }} }%%
 
 graph
-    r[RoceReceiverOperator] --> c[CsiToBayerOp]
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
     d --> g[GammaCorrectionOp]
     g --> v[HolovizOp]
 ```
 
-- `RoceReceiverOperator` blocks until an end-of-frame UDP message is received. On
-  return, the received frame data is available in GPU memory, along with metadata which
-  is published to the application layer. Holoscan sensor bridge uses
+- `RoceReceiverOp` blocks until an end-of-frame UDP message is received. On return, the
+  received frame data is available in GPU memory, along with metadata which is published
+  to the application layer. Holoscan sensor bridge uses
   [RoCE v2](https://en.wikipedia.org/wiki/RDMA_over_Converged_Ethernet) to transmit data
-  plane traffic over UDP; this is why the receiver is called `RoceReceiverOperator`.
+  plane traffic over UDP; this is why the receiver is called `RoceReceiverOp`.
 - `CsiToBayerOp` is aware that the received data is a CSI-2 RAW10 image, which it
   translates into a [bayer video frame](https://en.wikipedia.org/wiki/Bayer_filter).
   Each pixel color component in this image is decoded and stored as a uint16 value. For
@@ -54,54 +54,104 @@ Pointers to that data are passed between each element in the pipeline, avoiding
 expensive memory copies between host and GPU memory. GPU acceleration is used to perform
 each operator's function, resulting in very low latency operation.
 
-imx274_player.py initializes the sensor bridge device, camera, and pipeline in this way.
-To enhance readability, some details are skipped--be sure and check the actual example
-code for more details.
+The Python `imx274_player.py` and C++ `imx274_player.cpp` files initialize the sensor
+bridge device, camera, and pipeline in this way. To enhance readability, some details
+are skipped--be sure and check the actual example code for more details.
 
+`````{tab-set}
+````{tab-item} Python
 ```python
+import hololink as hololink_module
 
-  import hololink as hololink_module
+def main():
+    # Get handles to GPU
+    cuda.cuInit(0)
+    cu_device_ordinal = 0
+    cu_device = cuda.cuDeviceGet(cu_device_ordinal)
+    cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
 
-  def main():
-      # Get handles to GPU
-      cuda.cuInit(0)
-      cu_device_ordinal = 0
-      cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-      cu_context = cuda.cuCtxCreate(0, cu_device)
+    # Look for sensor bridge enumeration messages; return only the one we're looking for
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip="192.168.0.2")
+    # Use that enumeration data to instantiate a data receiver object
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
 
-      # Look for sensor bridge enumeration messages; return only the one we're looking for
-      channel_metadata = hololink_module.HololinkEnumerator.find_channel(channel_ip="192.168.0.2")
-      # Use that enumeration data to instantiate a data receiver object
-      hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+    # Now that we can communicate, create the camera controller
+    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(hololink_channel, ...)
 
-      # Now that we can communicate, create the camera controller
-      camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(hololink_channel, ...)
+    # Set up our Holoscan pipeline
+    application = HoloscanApplication(cu_context, cu_device_ordinal, camera, hololink_channel, ...)
+    application.config(...)
 
-      # Set up our Holoscan pipeline
-      application = HoloscanApplication(cu_context, cu_device_ordinal, camera, hololink_channel, ...)
-      application.config(...)
+    # Connect and initialize the sensor bridge device
+    hololink = hololink_channel.hololink()
+    hololink.start()  # Establish a connection to the sensor bridge device
+    hololink.reset()  # Drive the sensor bridge to a known state
 
-      # Connect and initialize the sensor bridge device
-      hololink = hololink_channel.hololink()
-      hololink.start()  # Establish a connection to the sensor bridge device
-      hololink.reset()  # Drive the sensor bridge to a known state
+    # Configure the camera for 4k at 60 frames per second
+    camera_mode = imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS
+    camera.setup_clock()
+    camera.configure(camera_mode)
 
-      # Configure the camera for 4k at 60 frames per second
-      camera_mode = imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS
-      camera.setup_clock()
-      camera.configure(camera_mode)
-
-      # Run our Holoscan pipeline
-      application.run()  # we don't usually return from this call.
-      hololink.stop()
+    # Run our Holoscan pipeline
+    application.run()  # we don't usually return from this call.
+    hololink.stop()
 ```
+````
+````{tab-item} C++
+```cpp
+#include <hololink/data_channel.hpp>
+#include <hololink/enumerator.hpp>
+#include <hololink/hololink.hpp>
+
+int main(int argc, char** argv)
+{
+  // Get handles to GPU
+  cuInit(0);
+  int cu_device_ordinal = 0;
+  CUdevice cu_device;
+  cuDeviceGet(&cu_device, cu_device_ordinal);
+  CUcontext cu_context;
+  cuCtxCreate(&cu_context, 0, cu_device);
+
+  // Look for sensor bridge enumeration messages; return only the one we're looking for
+  hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+  // Use that enumeration data to instantiate a data receiver object
+  hololink::DataChannel hololink_channel(channel_metadata);
+
+  // Import the IMX274 sensor module and the IMX274 mode
+  py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
+  py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
+
+  // Now that we can communicate, create the camera controller
+  py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel, ...);
+
+  // Set up our Holoscan pipeline
+  auto application = holoscan::make_application<HoloscanApplication>(...)
+  application->config(...)
+
+  // Connect and initialize the sensor bridge device
+  std::shared_ptr<hololink::Hololink> hololink = hololink_channel.hololink();
+  hololink->start(); // Establish a connection to the sensor bridge device
+  hololink->reset(); // Drive the sensor bridge to a known state
+
+  // Configure the camera for 4k at 60 frames per second
+  camera.attr("setup_clock")();
+  camera.attr("configure")(Imx274_Mode(0));
+
+  // Run our Holoscan pipeline
+  application->run(); // we don't usually return from this call.
+  hololink->stop();
+}
+```
+````
+`````
 
 Important details:
 
-- `HololinkEnumerator.find_channel` blocks the caller until an enumeration message that
-  matches the given criteria is found. If no matching device is found, this method will
-  time out (default 20 seconds) and raise an exception. Holoscan sensor bridge
-  enumeration messages are sent once per second.
+- `Enumerator.find_channel` blocks the caller until an enumeration message that matches
+  the given criteria is found. If no matching device is found, this method will time out
+  (default 20 seconds) and raise an exception. Holoscan sensor bridge enumeration
+  messages are sent once per second.
 - Holoscan sensor bridge devices transmit enumeration messages for each data plane
   controller, which currently correspond directly with each sensor bridge Ethernet
   interface. If both interfaces on a device are connected to a host, the host will
@@ -111,33 +161,34 @@ Important details:
   allowed to forward these local broadcast messages to other networks. You must have a
   local connection between the host and the sensor bridge device in order to enumerate
   it.
-- `HololinkEnumerator.find_channel` returns a dictionary of name/value pairs containing
+- `Enumerator.find_channel` returns a dictionary of name/value pairs containing
   identifying information about the data port being discovered, including MAC ID, IP
   address, versions of all the programmable components within the device, device serial
   number, and which specific instance this data port controller is within the device.
   While the IP address may change, the MAC ID, serial number, and data plane controller
   instance are constant. The host does not need to request any of the data included in
   this dictionary; its all broadcast by the sensor bridge device.
-- `HololinkDataChannel` is the local controller for a data plane on the sensor bridge
-  device. It contains the APIs for configuring the target addresses for packets
-  transmitted on that data plane-- this is used by the receiver operator, described
-  below.
+- `DataChannel` is the local controller for a data plane on the sensor bridge device. It
+  contains the APIs for configuring the target addresses for packets transmitted on that
+  data plane-- this is used by the receiver operator, described below.
 - In this example, the `camera` object provides most of the APIs that the application
   layer would access. When the application configures the camera, the camera object
   knows how to work with the various sensor bridge controller objects to properly
-  configure `HololinkDataChannel`.
-- Usually there are multiple `HololinkDataChannel` instances on a single `Hololink`
-  sensor bridge device, and many APIs on the `Hololink` device will affect all the
-  `HololinkDataChannel` objects on that same device. In this example, calling
-  `hololink.reset` will reset all the data channels on this device; and in the stereo
-  IMX274 configuration, calling `camera.setup_clock` sets the clock that is shared
-  between both cameras. For this reason, it's important that the application is careful
-  about calling `camera.setup_clock`--resetting the clock while a camera is running can
-  lead to undefined states.
+  configure `DataChannel`.
+- Usually there are multiple `DataChannel` instances on a single `Hololink` sensor
+  bridge device, and many APIs on the `Hololink` device will affect all the
+  `DataChannel` objects on that same device. In this example, calling `hololink.reset`
+  will reset all the data channels on this device; and in the stereo IMX274
+  configuration, calling `camera.setup_clock` sets the clock that is shared between both
+  cameras. For this reason, it's important that the application is careful about calling
+  `camera.setup_clock`--resetting the clock while a camera is running can lead to
+  undefined states.
 
 Holoscan, on the call to `application.run`, invokes the application's `compose` method,
 which includes this:
 
+`````{tab-set}
+````{tab-item} Python
 ```python
 class HoloscanApplication(holoscan.core.Application):
     def __init__(self, ..., camera, hololink_channel, ...):
@@ -151,7 +202,7 @@ class HoloscanApplication(holoscan.core.Application):
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(...)
 
         # The call to camera.configure(...) earlier set our image dimensions
-        # and bytes per pixel.  This call asks the camera to configure the 
+        # and bytes per pixel.  This call asks the camera to configure the
         # converter accordingly.
         self._camera.configure_converter(csi_to_bayer_operator)
 
@@ -162,7 +213,7 @@ class HoloscanApplication(holoscan.core.Application):
         # Create a receiver object that fills out our frame buffer.  The receiver
         # operator knows how to configure hololink_channel to send its data
         # to us and to provide an end-of-frame indication at the right time.
-        receiver_operator = hololink_module.operators.RoceReceiverOperator(
+        receiver_operator = hololink_module.operators.RoceReceiverOp(
             hololink_channel,
             frame_size, ...)
         ...
@@ -172,6 +223,55 @@ class HoloscanApplication(holoscan.core.Application):
         self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
         ...
 ```
+````
+````{tab-item} C++
+```cpp
+class HoloscanApplication : public holoscan::Application {
+public:
+    explicit HoloscanApplication(..., py::object camera, hololink::DataChannel& hololink_channel, ...)
+        : ...
+        , camera_(camera)
+        , hololink_channel_(hololink_channel)
+        ...
+    {
+    }
+
+    void compose() override
+    {
+        ...
+        // Create the CSI to bayer converter.
+        auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(...);
+
+        // The call to camera.attr("configure")(...) earlier set our image dimensions
+        // and bytes per pixel.  This call asks the camera to configure the
+        // converter accordingly.
+        camera_.attr("configure_converter")(csi_to_bayer_operator);
+
+        // csi_to_bayer_operator now knows the image dimensions and bytes per pixel,
+        // and can compute the overall size of the received image data.
+        const size_t frame_size = csi_to_bayer_operator->get_csi_length();
+
+        // Create a receiver object that fills out our frame buffer.  The receiver
+        // operator knows how to configure hololink_channel to send its data
+        // to us and to provide an end-of-frame indication at the right time.
+        auto receiver_operator = make_operator<hololink::operators::RoceReceiverOp>(
+            holoscan::Arg("hololink_channel", &hololink_channel_),
+            holoscan::Arg("frame_size", frame_size), ...);
+        ...
+        // Use add_flow to connect the operators together:
+        ...
+        //   receiver_operator.compute() will be followed by csi_to_bayer_operator.compute()
+        add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
+        ...
+    }
+
+private:
+    const py::object camera_;
+    hololink::DataChannel& hololink_channel_;
+};
+```
+````
+`````
 
 Some key points:
 
@@ -206,14 +306,14 @@ Some key points:
   our camera. When `receiver_operator.start` is called, it will call `device.start,`
   which in our IMX274 implementation, will instruct the camera to begin streaming data.
 
-In this example, `receiver_operator` is a `RoceReceiverOperator` instance, which takes
+In this example, `receiver_operator` is a `RoceReceiverOp` instance, which takes
 advantage of the RDMA acceleration features present in the ConnectX firmware. With
-`RoceReceiverOperator`, the CPU only sees an interrupt when the last packet for the
-frame is received--all frame data sent before that is written to GPU memory in the
-background. In systems without ConnectX devices, `LinuxReceiverOperator` provides the
-same functionality but uses the host CPU and Linux kernel to receive the ingress UDP
+`RoceReceiverOp`, the CPU only sees an interrupt when the last packet for the frame is
+received--all frame data sent before that is written to GPU memory in the background. In
+systems without ConnectX devices, `LinuxReceiverOperator` provides the same
+functionality but uses the host CPU and Linux kernel to receive the ingress UDP
 requests; and the CPU writes that payload data to GPU memory. This provides the same
-functionality as `RoceReceiverOperator` but at considerably lower performance.
+functionality as `RoceReceiverOp` but at considerably lower performance.
 
 ## tao_peoplenet
 
@@ -233,7 +333,7 @@ Pipeline structure:
 %%{init: {"theme": "base", "themeVariables": { }} }%%
 
 graph
-    r[RoceReceiverOperator] --> c[CsiToBayerOp]
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
     d --> g[GammaCorrectionOp]
@@ -248,9 +348,9 @@ graph
 
 Adding inference to the video pipeline is easy: just add the appropriate operators and
 data flows. In our case, we use the video mixer built in to `HolovizOp` to display the
-overlay generated by inference. `RoceReceiverOperator` is specified to always provide
-the most recently received video frame, so if a pipeline takes more than one frame time
-to complete, the next iteration through the loop will always work on the most recently
+overlay generated by inference. `RoceReceiverOp` is specified to always provide the most
+recently received video frame, so if a pipeline takes more than one frame time to
+complete, the next iteration through the loop will always work on the most recently
 received video frame.
 
 ## body_pose_estimation
@@ -272,7 +372,7 @@ This application's pipeline is the same as the People Detection application:
 %%{init: {"theme": "base", "themeVariables": { }} }%%
 
 graph
-    r[RoceReceiverOperator] --> c[CsiToBayerOp]
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
     d --> g[GammaCorrectionOp]
@@ -299,3 +399,133 @@ presented, except that it is instantiated twice, once for each camera on the IMX
 stereo camera board. In this case, Holoscan cycles between each pipeline, providing two
 separate windows (one for each visualizer) on the display. Each `receiver_operator`
 instance is independent and runs simultaneously.
+
+## GPIO Example application
+
+This application demonstrates how to utilize the hololink GPIO interface and can be
+found under the `hololink/examples` folder.
+
+The hololink GPIO interface supports 16 GPIOs numbered 0..15. These GPIOs can be set as
+either **input** or **output** and have 2 logical values:
+
+- **High** - 3.3V can be measured on the GPIO pin
+- **Low** - 0V can b measured on the GPIO pin
+
+The following image maps the GPIO and ground pins on the hololink board:
+
+<img src="sensor_bridge_board_gpios.png" alt="GPIO Interface" width="100%"/>
+
+As can be observed from the image:
+
+- The 4 pins in the corners of the connector are ground pins (marked 'G' in the image
+  above)
+- The lower set of pins between the 2 lower ground pins are GPIO pins numbered 0 to 7
+- The upper set of pins between the 2 upper ground pins are GPIO pins numbered 8 to 15
+
+### GPIO Example application flow
+
+The GPIO Example is a simple application made up of 2 operators as can be seen in the
+following diagram:
+
+```{mermaid}
+:align: center
+:caption: GPIO Example Flow
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+    w[GpioSetOp] --> r[GpioReadOp]
+```
+
+- **GPIO Set Operator** - this operator sweeps through the 16 GPIO pins setting them one
+  by one to values and directions defined per 5 different pin configurations:
+
+1. **ALL_OUT_L**- All pins output low
+1. **ALL_OUT_H**- All pins output high
+1. **ALL_IN** - All pins input
+1. **ODD_OUT_H**- Odd pins output high, even pins input
+1. **EVEN_OUT_H** -Even pins output high, odd pins input
+
+Each cycle of this operator configures one pin to a direction and value and sends the
+last changed pin number and the current running configuration to the GPIO read
+operator.\
+Once all 16 pins are set per the currently running configuration,the operator
+will move on the next cycle to the next configuration.
+
+- **GPIO Read Operator** - This operator reads and displays the current value of the
+  last configured pin. It delays 10 seconds to allow the user to validate the pin level
+  and direction with an external measurement device like a multimeter or scope.
+
+### GPIO Software  interface
+
+The GPIO interface is a class defined within the hololink module. It exports the
+following GPIO interface:
+
+1. **get_gpio()** - gets a GPIO interface instance from the hololink module
+1. **set_direction( pin, direction )** - sets the pin direction as input or output
+1. **get_direction( pin )** - gets the direction set for the pin
+1. **set_value( pin, value )** - for pins set as direction **output**, set the value of
+   the pin to high or low.
+1. **get_value( pin )** - for pins set as direction **input**, reads the value of the
+   pin (high or low).
+
+- **pin numbers** - range between 0 to 15.
+- **pin direction** - enumerated values: IN-1,OUT-0
+- **pin values** - enumerated values: HIGH-1,LOW-0
+
+## NVIDIA ISP for live capture
+
+Jetson boards have built in support for ISP (Image Signal Processing) unit for
+processing Bayer images and outputting images in standard color space(s). The ISP is
+operational in Jetson Orin AGX and Orin IGX in iGPU configuration.
+
+A sample ISP application presented in `examples/linux_hwisp_player.py` configures the
+following pipeline. When a loop through the pipeline finishes, execution restarts at the
+top, where new data is acquired and processed.
+
+```{mermaid}
+:align: center
+:caption: Linux ISP Player
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+
+    r[LinuxReceiverOperator] --> c[CsiToBayerOp]
+    c --> i[ArgusIspOp]
+    i --> v[HolovizOp]
+```
+
+`ArgusIspOp` allows the users to access the ISP via Argus API. This operator takes in
+Bayer uncompressd image of uint16 per pixel (MSB aligned) and outputs RGB888 image. It
+is available as C++ operator with Python bindings.
+
+The `ArgusIspOp` can be configured using following required parameters at the
+application level. Below is a snippet from an existing python based example.
+
+`````{tab-set}
+````{tab-item} Python
+```python
+    argus_isp = hololink_module.operators.ArgusIspOp(
+        self,
+        name="argus_isp",
+        bayer_format=bayer_format.value, # RGGB or other Bayer format
+        exposure_time_ms=16.67,          # Exposure time in milliseconds. 60fps is 16.67ms
+        analog_gain=10.0,                # Minimum Analog Gain
+        pixel_bit_depth=10,              # Effective bit depth of input per pixel
+        pool=isp_pool,
+    )
+
+```
+````
+`````
+
+The input to the `ArgusIspOp` is a Bayer Image uncompressed to uint16 per pixel. The
+values in uint16 should be MSB aligned. For example, if the camera sensor produces
+Raw10, the 10bits should be MSB aligned in 16bits. Currently supported output from
+`ArgusIspOp` is RGB888 in Rec 709 standard color space and gamma corrected.
+
+The glass to display latency of the pipeline mentioned above on Jetson Orin AGX is 37ms
+for a resolution of 1920x1080 at 60 fps.
+
+Please reach out to NVIDIA for further questions on ISP capabilities and usage.

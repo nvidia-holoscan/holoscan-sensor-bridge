@@ -50,7 +50,7 @@ def forward_exception():
 
 
 def _hololink_session_finalizer():
-    hololink_module.Hololink._reset_framework()
+    hololink_module.Hololink.reset_framework()
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -86,7 +86,19 @@ def pytest_addoption(parser):
         default="192.168.0.2",
         help="IP address of Hololink controller to use.",
     )
-    default_infiniband_interface = "mlx5_0"
+    parser.addoption(
+        "--igpu",
+        action="store_true",
+        default=False,
+        help="Don't skip igpu based test.",
+    )
+    parser.addoption(
+        "--dgpu",
+        action="store_true",
+        default=False,
+        help="Don't skip dgpu based test.",
+    )
+    default_infiniband_interface = "roceP5p3s0f0"
     try:
         default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
     except (FileNotFoundError, IndexError):
@@ -108,6 +120,12 @@ def pytest_addoption(parser):
         default=False,
         help="Don't run tests requiring accelerated networking",
     )
+    parser.addoption(
+        "--ptp",
+        action="store_true",
+        default=False,
+        help="Don't skip tests requiring PTP support",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -125,6 +143,21 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "accelerated_networking" in item.keywords:
                 item.add_marker(skip_accelerated_networking)
+    if not config.getoption("--igpu"):
+        skip_igpu = pytest.mark.skip(reason="Tests only run in --igpu mode.")
+        for item in items:
+            if "skip_unless_igpu" in item.keywords:
+                item.add_marker(skip_igpu)
+    if not config.getoption("--dgpu"):
+        skip_dgpu = pytest.mark.skip(reason="Tests only run in --dgpu mode.")
+        for item in items:
+            if "skip_unless_dgpu" in item.keywords:
+                item.add_marker(skip_dgpu)
+    if not config.getoption("--ptp"):
+        skip_ptp = pytest.mark.skip(reason="Tests only run in --ptp mode.")
+        for item in items:
+            if "skip_unless_ptp" in item.keywords:
+                item.add_marker(skip_ptp)
 
 
 @pytest.fixture

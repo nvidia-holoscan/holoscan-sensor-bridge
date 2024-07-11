@@ -31,82 +31,150 @@ stereo camera unit provides a live video feed for 4k or 1080p video running at 6
 Applications typically instantiate and use sensor objects which provide device specific
 APIs. For example, a camera object can provide an API for setting its exposure:
 
+`````{tab-set}
+````{tab-item} Python
 ```python
 camera.set_exposure(1000)
 ```
+````
+````{tab-item} C++
+```cpp
+camera->set_exposure(1000);
+```
+````
+`````
 
 To instantiate a camera object, application code will typically
 
-- Use `HololinkEnumerator.find_channel` to enumerate the sensor bridge devices visible
-  to the local system. `find_channel` accepts arguments that filter received messages;
-  when an enumeration message that matches the given critera is found, a dict is
-  returned with metadata about the enumerated device.
+- Use `Enumerator.find_channel` to enumerate the sensor bridge devices visible to the
+  local system. `find_channel` accepts arguments that filter received messages; when an
+  enumeration message that matches the given critera is found, a dict is returned with
+  metadata about the enumerated device.
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
-  channel_metadata = hololink_module.HololinkEnumerator.find_channel(channel_ip=args.hololink)
+  channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
   ```
+  ````
+  ````{tab-item} C++
+  ```cpp
+  hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+  ```
+  ````
+  `````
 
   When enumeration data is observed from the given IP address, information about the
   found device is returned into the `channel_metadata` variable.
 
-- Construct a `HololinkDataChannel` object using `channel_metadata`. This object
-  connects received data with a GPU memory buffer.
+- Construct a `DataChannel` object using `channel_metadata`. This object connects
+  received data with a GPU memory buffer.
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
-  hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+  hololink_channel = hololink_module.DataChannel(channel_metadata)
   ```
+  ````
+  ````{tab-item} C++
+  ```cpp
+  hololink::DataChannel hololink_channel(channel_metadata);
+  ```
+  ````
+  `````
 
 - Construct our camera sensor object using `hololink_channel`:
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
   camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(hololink_channel, ...)
   ```
+  ````
+  ````{tab-item} C++
+  Note that in this case the IMX274 sensor is implemented using Python, the code below shows how to create the Python object in C++.
+  ```cpp
+  py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
+  py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
+  py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel, ...);
+  ```
+  ````
+  `````
 
   Constructing the camera instance does not actually interact with the sensor bridge
   device-- we just store device communication information for later use. The camera
   instance is necessary for our HoloscanApplication's constructor to run; so we're
   motivated to create this object relatively early.
 
-- A single sensor bridge device usually has multiple `HololinkDataChannel` instances;
-  many APIs affect all data channel instances associated with a specific sensor bridge
-  device. In order to reset the sensor bridge device--the only way to guarantee that the
-  device is in a known state--we'll get a handle to the underlying `Hololink` instance.
-  All `HololinkDataChannel` instances on this board will return the same `Hololink`
-  instance here. The call to `hololink.reset` will reset all attached data channel
-  instances.
+- A single sensor bridge device usually has multiple `DataChannel` instances; many APIs
+  affect all data channel instances associated with a specific sensor bridge device. In
+  order to reset the sensor bridge device--the only way to guarantee that the device is
+  in a known state--we'll get a handle to the underlying `Hololink` instance. All
+  `DataChannel` instances on this board will return the same `Hololink` instance here.
+  The call to `hololink.reset` will reset all attached data channel instances.
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
   hololink = hololink_channel.hololink()
   hololink.reset()
   ```
+  ````
+  ````{tab-item} C++
+  ```cpp
+  std::shared_ptr<hololink::Hololink> hololink = hololink_channel.hololink();
+  hololink->reset();
+  ```
+  ````
+  `````
 
 - In our sample application, we need initialize the camera clock and configure the image
   format the camera will transmit. Note that in the IMX274 stereo camera, the same clock
   is used to drive both camera devices, so care must be taken to ensure you don't
   initialize the camera while the other is in use.
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
   camera.setup_clock()
   camera_mode = imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS
   camera.configure(camera_mode)
   ```
+  ````
+  ````{tab-item} C++
+  ```cpp
+  camera.attr("setup_clock")();
+  py::object camera_mode = Imx274_Mode(0);
+  camera.attr("configure")(camera_mode);
+  ```
+  ````
+  `````
 
   In our IMX274 demo, `camera.setup_clock` and `camera.configure` call the sensor bridge
   device's I2C controller objects to write the proper set of device registers.
 
 - Now we're ready to start our application pipeline.
 
+  `````{tab-set}
+  ````{tab-item} Python
   ```python
   application.run()
   ```
+  ````
+  ````{tab-item} C++
+  ```cpp
+  application->run();
+  ```
+  ````
+  `````
 
   Unless the pipeline is explicitly stopped, this call to `application.run` will never
   return.
 
 - `application.run` starts with a call to each operator's `start` method.
 
-  The `start` method of both `RoceReceiverOperator` and `LinuxReceiverOperator` will
-  call `camera.start` (where camera is the device object passed into the constructor's
+  The `start` method of both `RoceReceiverOp` and `LinuxReceiverOperator` will call
+  `camera.start` (where camera is the device object passed into the constructor's
   `device` parameter). The camera, on a call to `start`, will be configured to start
   sending video data.
 
@@ -149,13 +217,13 @@ Sensor objects of all types can be supported this way: interfaces for I2C, SPI, 
 sensor bridge local bus can all be controlled by APIs present on the `Hololink`
 instance.
 
-### HololinkDataChannel enumeration and IP address configuration
+### DataChannel enumeration and IP address configuration
 
 Once per second, each _data plane_ instance in a sensor bridge device sends out two UDP
 packets; the host uses these to enumerate visible devices. One packet is called the
 _enumeration_ packet, the other is the _bootp request_ packet. The
-`HololinkEnumerator.find_channel` method gathers and decodes both of these messages and
-uses that to generate the dictionary passed back as `channel_metadata`. Holoscan sensor
+`Enumerator.find_channel` method gathers and decodes both of these messages and uses
+that to generate the dictionary passed back as `channel_metadata`. Holoscan sensor
 bridge sends these packets using the local broadcast MAC ID (FF:FF:FF:FF:FF:FF). Routers
 are not allowed to forward these messages to other networks, so only locally connected
 hosts will receive these. Your host must be connected to the same network as the sensor
@@ -203,17 +271,17 @@ ConnectX SmartNIC firmware has support for handling authenticated
 [RoCE v2](https://en.wikipedia.org/wiki/RDMA_over_Converged_Ethernet) requests without
 CPU intervention. Sensor bridge devices leverage this by generating
 [RDMA write and RDMA write with immediate requests](https://docs.nvidia.com/networking/display/rdmaawareprogrammingv17/available+communication+operations)
-to send data plane content to the host. HololinkDataChannel configures the sensor bridge
-device with target network addressing, authentication keys, and individual-packet and
-overall data-frame sizes. Once configured, the sensor bridge device will send received
-sensor data in RDMA write requests with a payload size given by the individual-packet
-size value. These requests, on receipt by ConnectX, are written directly into GPU or
-system memory--these writes are completely offloaded from the CPU. When the total number
-of received bytes reaches the data-frame size, that packet is sent using an RDMA
+to send data plane content to the host. DataChannel configures the sensor bridge device
+with target network addressing, authentication keys, and individual-packet and overall
+data-frame sizes. Once configured, the sensor bridge device will send received sensor
+data in RDMA write requests with a payload size given by the individual-packet size
+value. These requests, on receipt by ConnectX, are written directly into GPU or system
+memory--these writes are completely offloaded from the CPU. When the total number of
+received bytes reaches the data-frame size, that packet is sent using an RDMA
 write-immediate request. Sending the last packet once the data-frame size is reached,
 and not waiting to reach the individual-packet size, accounts for aggergate data
 payloads that are not an even multiple of the individual packet size. The RDMA
 write-immediate request has the same functionality as an RDMA write request with an
 extra flag that is passed to the CPU with an interrupt. This interrupt is used to
-indicate the end-of-frame and is what `RoceReceiverOperator.compute` waits for on a call
-to `get_next_frame.`
+indicate the end-of-frame and is what `RoceReceiverOp.compute` waits for on a call to
+`get_next_frame.`

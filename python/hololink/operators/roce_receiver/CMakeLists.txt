@@ -17,7 +17,8 @@ include(pybind11_add_hololink_module)
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET roce_receiver
-    CLASS_NAME "RoceReceiver"
+    CLASS_NAME "RoceReceiverOp"
+    IMPORT "import holoscan.core"
     SOURCES roce_receiver.cpp
 )
 

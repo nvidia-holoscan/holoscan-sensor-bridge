@@ -56,7 +56,9 @@ class Imx274Cam:
 
     def setup_clock(self):
         # set the clock driver.
-        self._hololink.setup_clock(hololink_module.renesas_bajoran_lite_ts1)
+        self._hololink.setup_clock(
+            hololink_module.renesas_bajoran_lite_ts1.device_configuration()
+        )
 
     def configure(self, imx274_mode_set):
         # Make sure this is a version we know about.
@@ -225,7 +227,6 @@ class Imx274Cam:
             self._mode = -1
 
     def configure_converter(self, converter):
-        align_64 = hololink_module.sensors.csi.align_64
         (
             frame_start_size,
             frame_end_size,
@@ -234,7 +235,7 @@ class Imx274Cam:
         ) = self._hololink.csi_size()
         assert self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10
         # We get 175 bytes of metadata in RAW10 mode
-        metadata_size = align_64(line_start_size + 175 + line_end_size)
+        metadata_size = line_start_size + 175 + line_end_size
         converter.configure(
             self._width,
             self._height,
@@ -251,3 +252,18 @@ class Imx274Cam:
 
     def bayer_format(self):
         return hololink_module.sensors.csi.BayerFormat.RGGB
+
+    def test_pattern(self, pattern=None):
+        """If pattern==None then we disable test mode."""
+        if pattern is None:
+            self.set_register(0x303C, 0)
+            self.set_register(0x377F, 0)
+            self.set_register(0x3781, 0)
+            self.set_register(0x370B, 0)
+        else:
+            self.set_register(0x303C, 0x11)
+            self.set_register(0x370E, 0x01)
+            self.set_register(0x377F, 0x01)
+            self.set_register(0x3781, 0x01)
+            self.set_register(0x370B, 0x11)
+            self.set_register(0x303D, pattern)

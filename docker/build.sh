@@ -99,11 +99,23 @@ HERE=`dirname "$SCRIPT"`
 ROOT=`realpath "$HERE/.."`
 VERSION=`cat $ROOT/VERSION`
 
+if [ ! -d "$ROOT/nvidia" ]; then
+mkdir $ROOT/nvidia
+fi
+
 CONTAINER_TYPE=dgpu
 if [ $igpu -ne 0 ]
 then
 CONTAINER_TYPE=igpu
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus.so $ROOT/nvidia
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketclient.so $ROOT/nvidia
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketserver.so $ROOT/nvidia
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvfusacap.so $ROOT/nvidia
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvodm_imager.so $ROOT/nvidia
+cp /usr/lib/aarch64-linux-gnu/nvidia/libnvscf.so $ROOT/nvidia
 fi
+
+chmod 755 $ROOT/nvidia
 
 # Build the development container
 docker build \
@@ -121,3 +133,4 @@ docker build \
     -f $HERE/Dockerfile.demo \
     $ROOT
 
+rm -rf nvidia

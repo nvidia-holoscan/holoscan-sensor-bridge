@@ -33,8 +33,9 @@ from examples import distributed_imx274_player
     ],
 )
 def test_distributed_imx274_player(
-    camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, capfd
+    camera_mode, headless, hololink_address, ibv_name, ibv_port, capfd
 ):
+    frame_limit = 10
     arguments = [
         sys.argv[0],
         "--camera-mode",

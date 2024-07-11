@@ -33,5 +33,4 @@ target_link_libraries(csi_to_bayer
   PRIVATE
     hololink::native
     holoscan::core
-    CUDA::nvrtc
   )

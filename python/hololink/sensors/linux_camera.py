@@ -53,7 +53,9 @@ class LinuxCamera:
 
     def setup_clock(self):
         # set the clock driver.
-        self._hololink.setup_clock(hololink_module.renesas_bajoran_lite_ts1)
+        self._hololink.setup_clock(
+            hololink_module.renesas_bajoran_lite_ts1.device_configuration()
+        )
 
     def configure(self, height, width, bayer_format, pixel_format, frame_rate_s):
         # Set up a kernel-mode I2C bus for this guy.

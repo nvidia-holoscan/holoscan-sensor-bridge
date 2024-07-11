@@ -25,19 +25,19 @@ ConnectX NIC hides the data plane traffic from the CPU, so `tcpdump` will not re
 Instead, you can check the packet receiver counter this way:
 
 ```none
-cat /sys/class/infiniband/mlx5_0/ports/1/hw_counters/rx_write_requests
+cat /sys/class/infiniband/roceP5p3s0f0/ports/1/hw_counters/rx_write_requests
 ```
 
 or, to see all counters published by the ConnectX driver,
 
 ```none
-for i in /sys/class/infiniband/mlx5_0/ports/1/counters/*; do
+for i in /sys/class/infiniband/roceP5p3s0f0/ports/1/counters/*; do
 echo -n $i
 echo -n ": "
 cat $i
 done
 ```
 
-Use the appropriate value where `mlx5_0` is shown here. When no data plane requests are
-received, be sure and check that the sensor is properly connected to the sensor bridge
-board.
+Use the appropriate value where `roceP5p3s0f0` is shown here. When no data plane
+requests are received, be sure and check that the sensor is properly connected to the
+sensor bridge board.

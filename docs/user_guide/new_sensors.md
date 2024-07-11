@@ -39,7 +39,7 @@ class MyCamera:
             serializer.data(),  # same as write_buffer[:serializer.length()]
             read_byte_count
         )
-        # deserializer fetches data from reply; this 
+        # deserializer fetches data from reply; this
         # raises an exception if reply is None
         deserializer = hololink_module.abstract_os.Deserializer(reply)
         # Fetch an unsigned 32-bit value stored in big-endian format
@@ -52,8 +52,8 @@ With this, we can create a simple program that reads this version register:
 ```python
 def main():
     # Get a handle to the Hololink port we're connected to.
-    channel_metadata = hololink_module.HololinkEnumerator.find_channel(channel_ip="192.168.0.2")
-    hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip="192.168.0.2")
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Instantiate the camera itself; CAM_I2C_CTRL is the base address of the I2C
     # controller our camera is attached to
     camera = MyCamera(hololink_channel, hololink_module.CAM_I2C_CTRL)
@@ -116,7 +116,7 @@ the converter for help in allocating GPU memory. This memory is then passed to t
 network receiver operator.
 
 With the camera now configured to send traffic over the data plane, the application can
-instantiate a `RoceReceiverOperator` (or `LinuxReceiverOperator`) to receive data plane
+instantiate a `RoceReceiverOp` (or `LinuxReceiverOperator`) to receive data plane
 traffic to the specific region of GPU memory. Finally, when `application.run` finishes
 configuration, and calls our receiver operator's `start` method, it will call
 `camera.start`, which updates the camera to start sending video data.

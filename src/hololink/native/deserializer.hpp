@@ -23,11 +23,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include <vector>
+
 namespace hololink::native {
 
 class Deserializer {
 public:
-    Deserializer(uint8_t* buffer, size_t size)
+    Deserializer(const uint8_t* buffer, size_t size)
         : buffer_(buffer)
         , limit_(size)
         , position_(0)
@@ -42,7 +44,8 @@ public:
             return false;
         }
 
-        result = (buffer_[position_ + 0] << 0) | (buffer_[position_ + 1] << 8) | (buffer_[position_ + 2] << 16) | (buffer_[position_ + 3] << 24);
+        result = (buffer_[position_ + 0] << 0) | (buffer_[position_ + 1] << 8)
+            | (buffer_[position_ + 2] << 16) | (buffer_[position_ + 3] << 24);
 
         position_ += 4;
         return true;
@@ -137,7 +140,7 @@ public:
 
     // Fetch a pointer to the current offset in the buffer; returns
     // false on buffer overflow.
-    bool pointer(uint8_t*& pointer, unsigned n)
+    bool pointer(const uint8_t*& pointer, unsigned n)
     {
         if ((position_ + n) > limit_) {
             return false;
@@ -147,13 +150,23 @@ public:
         return true;
     }
 
-    size_t position()
+    // Returns true if all the elements in the buffer
+    // are updated; or false on underflow.
+    bool next_buffer(std::vector<uint8_t>& buffer)
     {
-        return position_;
+        const uint8_t* p = nullptr;
+        unsigned n = buffer.size();
+        if (pointer(p, n)) {
+            buffer = std::vector<uint8_t>(p, &p[n]);
+            return true;
+        }
+        return false;
     }
 
+    size_t position() { return position_; }
+
 protected:
-    uint8_t* buffer_;
+    const uint8_t* buffer_;
     size_t limit_;
     size_t position_;
 };

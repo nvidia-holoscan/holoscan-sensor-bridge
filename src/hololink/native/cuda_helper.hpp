@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,8 +15,8 @@
  * limitations under the License.
  */
 
-#ifndef SRC_NATIVE_CUDA_HELPER
-#define SRC_NATIVE_CUDA_HELPER
+#ifndef SRC_HOLOLINK_NATIVE_CUDA_HELPER
+#define SRC_HOLOLINK_NATIVE_CUDA_HELPER
 
 #include <cuda.h>
 #include <vector_types.h>
@@ -26,6 +26,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#include "nullable_pointer.hpp"
 
 namespace hololink::native {
 
@@ -112,47 +114,13 @@ private:
 };
 
 /**
- * Helper class for using handles with std::unique_ptr which requires that a custom
- * handle type satisfies NullablePointer https://en.cppreference.com/w/cpp/named_req/NullablePointer.
- *
- * @tparam T type to hold
- */
-template <typename T>
-class Nullable {
-public:
-    Nullable(T value = 0)
-        : value_(value)
-    {
-    }
-    Nullable(nullptr_t)
-        : value_(0)
-    {
-    }
-    operator T() const { return value_; };
-    explicit operator bool() { return value_ != 0; }
-
-    friend bool operator==(Nullable l, Nullable r) { return l.value_ == r.value_; }
-    friend bool operator!=(Nullable l, Nullable r) { return !(l == r); }
-
-    /**
-     * Deleter, call the function when the object is deleted.
-     *
-     * @tparam func(T) function to call
-     */
-    template <CUresult func(T)>
-    struct Deleter {
-        typedef Nullable<T> pointer;
-        void operator()(T pointer) const { CudaCheck(func(pointer)); }
-    };
-
-private:
-    T value_;
-};
-
-/**
  * RAII type classes for CUDA allocations and objects, use like std::unique_ptr.
  */
-using UniqueCUdeviceptr = std::unique_ptr<Nullable<CUdeviceptr>, Nullable<CUdeviceptr>::Deleter<&cuMemFree>>;
+using UniqueCUdeviceptr = std::unique_ptr<Nullable<CUdeviceptr>, Nullable<CUdeviceptr>::Deleter<CUresult, &cuMemFree>>;
+struct CuHostPtrDeleter {
+    void operator()(void* p) const { cuMemFreeHost(p); }
+};
+using UniqueCUhostptr = std::unique_ptr<void, CuHostPtrDeleter>;
 
 /**
  * RAII type class to push a CUDA context.
@@ -178,4 +146,4 @@ private:
 
 } // namespace hololink::native
 
-#endif /* SRC_NATIVE_CUDA_HELPER */
+#endif /* SRC_HOLOLINK_NATIVE_CUDA_HELPER */

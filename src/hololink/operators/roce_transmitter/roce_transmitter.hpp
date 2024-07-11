@@ -31,7 +31,7 @@ namespace hololink::operators {
 class RoceTransmitter {
 public:
     /**
-     * @param ibv_name Name of infiniband verbs device name, e.g. "mlx5_0"
+     * @param ibv_name Name of infiniband verbs device name, e.g. "roceP5p3s0f0"
      */
     RoceTransmitter(
         const char* ibv_name,

@@ -13,24 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Define and create a directory to store python operators under the hololink python module
-set(HOLOLINK_PYTHON_MODULE_OUT_DIR ${CMAKE_BINARY_DIR}/python/${CMAKE_INSTALL_LIBDIR}/hololink/native)
-file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR})
-
 include(pybind11_add_hololink_module)
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET native
     CLASS_NAME "ArpWrapper,Deserializer,Serializer"
     SOURCES native.cpp
-)
-
-# install
-install(
-    DIRECTORY "${HOLOLINK_PYTHON_MODULE_OUT_DIR}"
-    DESTINATION "."
-    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
-    COMPONENT "hololink-python_libs"
-    PATTERN "__pycache__" EXCLUDE
 )

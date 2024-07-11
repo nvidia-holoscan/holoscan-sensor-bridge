@@ -27,7 +27,7 @@ def test_udpcam_version(udpcam):
 
     with udp_server.TestServer(udpcam) as server:
         channel_metadata = server.channel_metadata()
-        hololink_channel = hololink_module.HololinkDataChannel(channel_metadata)
+        hololink_channel = hololink_module.DataChannel(channel_metadata)
         hololink = hololink_channel.hololink()
         hololink.start()
 

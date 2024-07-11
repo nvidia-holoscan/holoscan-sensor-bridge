@@ -23,7 +23,7 @@ import holoscan
 from cuda import cuda
 
 
-class BaseReceiverOperator(holoscan.core.Operator):
+class BaseReceiverOp(holoscan.core.Operator):
     def __init__(
         self,
         *args,

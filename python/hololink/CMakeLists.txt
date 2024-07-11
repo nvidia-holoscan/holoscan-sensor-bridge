@@ -13,5 +13,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Define and create a directory to store python operators under the hololink python module
+set(HOLOLINK_PYTHON_MODULE_OUT_DIR ${CMAKE_BINARY_DIR}/python/${CMAKE_INSTALL_LIBDIR})
+file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR})
+
 add_subdirectory(native)
 add_subdirectory(operators)
+
+include(pybind11_add_hololink_module)
+
+pybind11_add_hololink_module(
+    CPP_CMAKE_TARGET hololink
+    CLASS_NAME "Timeout"
+    SOURCES hololink.cpp
+)
+
+# install compiled modules
+install(
+    DIRECTORY "${HOLOLINK_PYTHON_MODULE_OUT_DIR}/"
+    DESTINATION "."
+    FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+    DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+    COMPONENT "hololink-python_libs"
+    PATTERN "__pycache__" EXCLUDE
+)

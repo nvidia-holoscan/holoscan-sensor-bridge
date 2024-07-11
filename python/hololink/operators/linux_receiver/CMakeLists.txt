@@ -18,6 +18,7 @@ include(pybind11_add_hololink_module)
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET linux_receiver
     CLASS_NAME "LinuxReceiver"
+    IMPORT "import holoscan.core"
     SOURCES linux_receiver.cpp
 )
 

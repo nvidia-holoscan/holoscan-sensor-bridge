@@ -15,10 +15,24 @@
  * limitations under the License.
  */
 
-#include <hololink/operators/roce_receiver/roce_receiver.hpp>
+#include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
+
+#include "../operator_util.hpp"
 
 #include <pybind11/pybind11.h>
 
+#include <cstdint>
+#include <memory>
+#include <string>
+
+#include <holoscan/core/fragment.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/resources/gxf/allocator.hpp>
+
+#include <hololink/data_channel.hpp>
+
+using std::string_literals::operator""s;
 using pybind11::literals::operator""_a;
 
 #define STRINGIFY(x) #x
@@ -28,6 +42,76 @@ namespace py = pybind11;
 
 namespace hololink::operators {
 
+/* Trampoline classes for handling Python kwargs
+ *
+ * These add a constructor that takes a Fragment for which to initialize the operator.
+ * The explicit parameter list and default arguments take care of providing a Pythonic
+ * kwarg-based interface with appropriate default values matching the operator's
+ * default parameters in the C++ API `setup` method.
+ *
+ * The sequence of events in this constructor is based on Fragment::make_operator<OperatorT>
+ */
+class PyRoceReceiverOp : public RoceReceiverOp {
+public:
+    /* Inherit the constructors */
+    using RoceReceiverOp::RoceReceiverOp;
+
+    // Define a constructor that fully initializes the object.
+    PyRoceReceiverOp(holoscan::Fragment* fragment, const py::args& args,
+        py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
+        CUdeviceptr frame_memory, const std::string& ibv_name, uint32_t ibv_port,
+        const std::string& name)
+        : RoceReceiverOp(holoscan::ArgList {
+            holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
+            holoscan::Arg { "device_start", std::function<void()>([device]() {
+                               py::gil_scoped_acquire guard;
+                               device.attr("start")();
+                           }) },
+            holoscan::Arg { "device_stop", std::function<void()>([device]() {
+                               py::gil_scoped_acquire guard;
+                               device.attr("stop")();
+                           }) },
+            holoscan::Arg {
+                "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
+            holoscan::Arg { "frame_size", frame_size },
+            holoscan::Arg { "frame_memory", frame_memory },
+            holoscan::Arg { "ibv_name", ibv_name }, holoscan::Arg { "ibv_port", ibv_port } })
+    {
+        add_positional_condition_and_resource_args(this, args);
+        name_ = name;
+        fragment_ = fragment;
+        spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
+        setup(*spec_.get());
+    }
+
+    // the `'start`, 'stop` and `get_next_frame` funcions are overwritten by the
+    // `InstrumentedReceiverOperator` to measure performance
+
+    void start() override
+    {
+        PYBIND11_OVERRIDE(void, /* Return type */
+            RoceReceiverOp, /* Parent class */
+            start, /* Name of function in C++ (must match Python name) */
+        );
+    }
+
+    void stop() override
+    {
+        PYBIND11_OVERRIDE(void, /* Return type */
+            RoceReceiverOp, /* Parent class */
+            stop, /* Name of function in C++ (must match Python name) */
+        );
+    }
+
+    std::shared_ptr<Metadata> get_next_frame(double timeout_ms) override
+    {
+        PYBIND11_OVERRIDE(std::shared_ptr<Metadata>, /* Return type */
+            RoceReceiverOp, /* Parent class */
+            get_next_frame, /* Name of function in C++ (must match Python name) */
+            timeout_ms);
+    }
+};
+
 PYBIND11_MODULE(_roce_receiver, m)
 {
 #ifdef VERSION_INFO
@@ -36,28 +120,18 @@ PYBIND11_MODULE(_roce_receiver, m)
     m.attr("__version__") = "dev";
 #endif
 
-    // NOTE: pybind11 never implicitly release the GIL (see https://pybind11.readthedocs.io/en/stable/advanced/misc.html#global-interpreter-lock-gil),
-    //       therefore for blocking function explicitly release the GIL using `py::call_guard<py::gil_scoped_release>()`.
-    py::class_<RoceReceiver>(m, "RoceReceiver")
-        .def(py::init<const char*, unsigned, CUdeviceptr, size_t, const char*>(), "ibv_name"_a, "ibv_port"_a, "cu_buffer"_a, "cu_buffer_size"_a, "peer_ip"_a)
-        .def("blocking_monitor", &RoceReceiver::blocking_monitor, py::call_guard<py::gil_scoped_release>())
-        .def("start", &RoceReceiver::start)
-        .def("close", &RoceReceiver::close)
-        .def(
-            "get_next_frame", [](RoceReceiver& self, unsigned timeout_ms) {
-                RoceReceiverMetadata metadata;
-                bool success = self.get_next_frame(timeout_ms, metadata);
-                return std::make_tuple(success, metadata);
-            },
-            py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a)
-        .def("get_qp_number", &RoceReceiver::get_qp_number)
-        .def("get_rkey", &RoceReceiver::get_rkey);
-
-    py::class_<RoceReceiverMetadata>(m, "RoceReceiverMetadata")
-        .def_readonly("rx_write_requests", &RoceReceiverMetadata::rx_write_requests)
-        .def_readonly("frame_number", &RoceReceiverMetadata::frame_number)
-        .def_readonly("frame_end_s", &RoceReceiverMetadata::frame_end_s)
-        .def_readonly("frame_end_ns", &RoceReceiverMetadata::frame_end_ns);
+    py::class_<RoceReceiverOp, PyRoceReceiverOp, holoscan::Operator,
+        std::shared_ptr<RoceReceiverOp>>(m, "RoceReceiverOp")
+        .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
+                 size_t, CUdeviceptr, const std::string&, uint32_t, const std::string&>(),
+            "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
+            "frame_memory"_a = 0, "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1,
+            "name"_a = "roce_receiver"s)
+        .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a)
+        .def("metadata", &RoceReceiverOp::metadata)
+        .def("setup", &RoceReceiverOp::setup, "spec"_a)
+        .def("start", &RoceReceiverOp::start)
+        .def("stop", &RoceReceiverOp::stop);
 
 } // PYBIND11_MODULE
 
