@@ -18,11 +18,15 @@
 #include "hololink.hpp"
 
 #include <arpa/inet.h>
+#include <fcntl.h>
 #include <netinet/in.h>
+#include <semaphore.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 
 #include <cassert>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 
 #include <hololink/native/deserializer.hpp>
@@ -589,6 +593,9 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
         throw std::runtime_error(fmt::format(
             "Invalid read_byte_count \"{:#x}\", has to be less than 0x80", read_byte_count));
     }
+    // FPGA only has a single I2C controller, FOR ALL INSTANCES in the
+    // device, we need to serialize access between all of them.
+    std::lock_guard lock(i2c_lock());
     std::shared_ptr<Timeout> timeout = Timeout::i2c_timeout(in_timeout);
     // Hololink FPGA doesn't support resetting the I2C interface;
     // so the best we can do is make sure it's not busy.
@@ -710,6 +717,9 @@ std::vector<uint8_t> Hololink::Spi::spi_transaction(const std::vector<uint8_t>& 
                                              "\"{:#x}\", has to be less than {:#x}",
             buffer_count, buffer_size));
     }
+    // FPGA only has a single SPI controller, FOR ALL INSTANCES in the
+    // device, we need to serialize access between all of them.
+    std::lock_guard lock(spi_lock());
     std::shared_ptr<Timeout> timeout = Timeout::spi_timeout(in_timeout);
     // Hololink FPGA doesn't support resetting the SPI interface;
     // so the best we can do is see that it's not busy.
@@ -879,6 +889,83 @@ uint32_t Hololink::GPIO::get_value(uint32_t pin)
 /*static*/ uint32_t Hololink::GPIO::read_bit(uint32_t value, uint32_t bit)
 {
     return (value >> bit) & 0x1;
+}
+
+/**
+ * Used to guarantee serialized access to I2C or SPI controllers.  The FPGA
+ * only has a single I2C controller-- what looks like independent instances
+ * are really just pin-muxed outputs from a single I2C controller block within
+ * the device-- the same is true for SPI.
+ */
+class Hololink::NamedLock {
+public:
+    /** Constructs a lock using the shm_open() call to access a named
+     * semaphore with the given name.
+     */
+    NamedLock(std::string name)
+        : sem_(0)
+    {
+        // Allow one thread to lock this guy.  sem_open requires
+        // an initial "/" -- don't burden our callers with knowing this.
+        std::string formatted_name = fmt::format("/{}", name);
+        int permissions = 0666; // make sure other processes can write
+        sem_ = sem_open(formatted_name.c_str(), O_CREAT, permissions, 1);
+        if (sem_ == SEM_FAILED) {
+            throw std::runtime_error(
+                fmt::format("sem_open failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    }
+
+    ~NamedLock() noexcept(false)
+    {
+        int r = sem_close(sem_);
+        if (r != 0) {
+            throw std::runtime_error(
+                fmt::format("sem_close failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    }
+
+    /**
+     * Blocks until no other process owns this lock; then takes it.
+     */
+    void lock()
+    {
+        // Block until we're the owner.
+        int r = sem_wait(sem_);
+        if (r != 0) {
+            throw std::runtime_error(
+                fmt::format("sem_wait failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    }
+
+    /**
+     * Unlocks this lock, allowing another process blocked in
+     * a call to lock() to proceed.
+     */
+    void unlock()
+    {
+        // Let another process take ownership.
+        int r = sem_post(sem_);
+        if (r != 0) {
+            throw std::runtime_error(
+                fmt::format("sem_post failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    }
+
+protected:
+    sem_t* sem_;
+};
+
+Hololink::NamedLock& Hololink::i2c_lock()
+{
+    static NamedLock lock("hololink-i2c-lock");
+    return lock;
+}
+
+Hololink::NamedLock& Hololink::spi_lock()
+{
+    static NamedLock lock("hololink-spi-lock");
+    return lock;
 }
 
 } // namespace hololink

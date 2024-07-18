@@ -191,6 +191,14 @@ public:
      */
     void setup_clock(const std::vector<std::vector<uint8_t>>& clock_profile);
 
+    /**
+     * Used to guarantee serialized access to I2C or SPI controllers.  The FPGA
+     * only has a single I2C controller-- what looks like independent instances
+     * are really just pin-muxed outputs from a single I2C controller block within
+     * the device-- the same is true for SPI.
+     */
+    class NamedLock;
+
     class I2c {
     public:
         /**
@@ -223,6 +231,14 @@ public:
             const std::vector<uint8_t>& write_bytes, uint32_t read_byte_count,
             const std::shared_ptr<Timeout>& in_timeout = std::shared_ptr<Timeout>());
 
+        /**
+         *
+         */
+        NamedLock& i2c_lock()
+        {
+            return hololink_.i2c_lock();
+        }
+
     private:
         Hololink& hololink_;
         const uint32_t reg_control_;
@@ -238,6 +254,12 @@ public:
      * @return std::shared_ptr<I2c>
      */
     std::shared_ptr<I2c> get_i2c(uint32_t i2c_address);
+
+    /**
+     * Return a named semaphore that guarantees singleton access
+     * to the I2C controller.
+     */
+    NamedLock& i2c_lock();
 
     /**
      * @brief This class supports transactions over the SPI (Serial Periperal Interface).
@@ -267,6 +289,11 @@ public:
             const std::vector<uint8_t>& write_data_bytes, uint32_t read_byte_count,
             const std::shared_ptr<Timeout>& in_timeout = std::shared_ptr<Timeout>());
 
+        NamedLock& spi_lock()
+        {
+            return hololink_.spi_lock();
+        }
+
     private:
         Hololink& hololink_;
         const uint32_t reg_control_;
@@ -291,6 +318,12 @@ public:
      */
     std::shared_ptr<Spi> get_spi(uint32_t spi_address, uint32_t chip_select,
         uint32_t clock_divisor = 0x0F, uint32_t cpol = 1, uint32_t cpha = 1, uint32_t width = 1);
+
+    /**
+     * Return a named semaphore that guarantees singleton access
+     * to the SPI controller.
+     */
+    NamedLock& spi_lock();
 
     /**
      * @brief GPIO class

@@ -1049,6 +1049,20 @@ class Programmer:
         return r
 
 
+def manual_enumeration(args):
+    m = {
+        "configuration_address": 0,
+        "control_port": 8192,
+        "cpnx_version": 0x2402,
+        "peer_ip": args.hololink,
+        "serial_number": "100",
+        "vip_mask": 0,
+        "board_id": 2,
+    }
+    metadata = hololink_module.Metadata(m)
+    return metadata
+
+
 def _program(args):
     logging.info("manifest=%s" % (args.manifest,))
     programmer = Programmer(args, args.manifest)
@@ -1056,7 +1070,12 @@ def _program(args):
     programmer.fetch_archive(args)
     programmer.check_eula(args)
     programmer.check_images()
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    if args.manual_enumeration:
+        channel_metadata = manual_enumeration(args)
+    else:
+        channel_metadata = hololink_module.Enumerator.find_channel(
+            channel_ip=args.hololink
+        )
     hololink = programmer.hololink(channel_metadata)
     programmer.program_and_verify_images(hololink)
     programmer.power_cycle(args, hololink)
@@ -1068,6 +1087,11 @@ def main():
         "--hololink",
         default="192.168.0.2",
         help="IP address of Hololink board",
+    )
+    parser.add_argument(
+        "--manual-enumeration",
+        action="store_true",
+        help="Don't use reported enumeration data from the board",
     )
     parser.add_argument(
         "--log-level",
@@ -1234,9 +1258,12 @@ def main():
 
     if args.needs_hololink:
         #
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip=args.hololink
-        )
+        if args.manual_enumeration:
+            channel_metadata = manual_enumeration(args)
+        else:
+            channel_metadata = hololink_module.Enumerator.find_channel(
+                channel_ip=args.hololink
+            )
         hololink_channel = hololink_module.DataChannel(channel_metadata)
         hololink = hololink_channel.hololink()
         hololink.start()

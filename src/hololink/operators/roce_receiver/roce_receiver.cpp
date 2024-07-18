@@ -335,7 +335,21 @@ bool RoceReceiver::start()
         },
     }; // C sets the rest to 0s
     flags = IBV_QP_STATE | IBV_QP_AV | IBV_QP_PATH_MTU | IBV_QP_DEST_QPN | IBV_QP_RQ_PSN;
-    r = ibv_modify_qp(ib_qp_, &ib_qp_attr, flags);
+    // We see occasional errno=110 (ETIMEDOUT); no idea
+    // what causes this but it works on retry.
+    for (int retry = 5; retry--;) {
+        r = ibv_modify_qp(ib_qp_, &ib_qp_attr, flags);
+        if (!r) {
+            break;
+        }
+        if (!retry) {
+            break;
+        }
+        ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno=%d: \"%s\"; retrying.\n", r, strerror(r));
+        useconds_t ms = 200;
+        useconds_t us = ms * 1000;
+        usleep(us);
+    }
     if (r) {
         ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno=%d.\n", r);
         free_ib_resources();

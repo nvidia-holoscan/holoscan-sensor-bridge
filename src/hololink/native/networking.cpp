@@ -102,8 +102,10 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
             fmt::format("ioctl failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
     MacAddress mac;
-    std::copy(std::begin(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data),
-        std::end(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data), mac.begin());
+    static_assert(mac.max_size() <= sizeof(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data));
+    std::copy(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data,
+        ifhwaddr_request.ifr_ifru.ifru_addr.sa_data + mac.max_size(),
+        mac.begin());
     HOLOSCAN_LOG_DEBUG("destination_ip={} local_ip={} mac_id={:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
         destination_ip, inet_ntoa(ip.sin_addr), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return { inet_ntoa(ip.sin_addr), binterface, mac };
@@ -130,8 +132,10 @@ MacAddress local_mac(const std::string& interface)
             fmt::format("ioctl failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
     MacAddress mac;
-    std::copy(std::begin(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data),
-        std::end(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data), mac.begin());
+    static_assert(mac.max_size() <= sizeof(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data));
+    std::copy(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data,
+        ifhwaddr_request.ifr_ifru.ifru_addr.sa_data + mac.max_size(),
+        mac.begin());
 
     return mac;
 }

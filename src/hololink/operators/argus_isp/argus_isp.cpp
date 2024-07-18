@@ -111,6 +111,8 @@ void ArgusIspOp::stop()
     argus_impl_->stop();
     argus_impl_.reset();
 
+    camera_provider_.reset();
+
     for (int i = 0; i < MaxNumberOfFrames; i++) {
         tensor_pointers_[i].reset();
     }
