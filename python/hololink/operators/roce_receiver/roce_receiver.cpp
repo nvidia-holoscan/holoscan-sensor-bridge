@@ -61,21 +61,22 @@ public:
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
         CUdeviceptr frame_memory, const std::string& ibv_name, uint32_t ibv_port,
         const std::string& name)
-        : RoceReceiverOp(holoscan::ArgList {
-            holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
-            holoscan::Arg { "device_start", std::function<void()>([device]() {
-                               py::gil_scoped_acquire guard;
-                               device.attr("start")();
-                           }) },
-            holoscan::Arg { "device_stop", std::function<void()>([device]() {
-                               py::gil_scoped_acquire guard;
-                               device.attr("stop")();
-                           }) },
-            holoscan::Arg {
-                "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
-            holoscan::Arg { "frame_size", frame_size },
-            holoscan::Arg { "frame_memory", frame_memory },
-            holoscan::Arg { "ibv_name", ibv_name }, holoscan::Arg { "ibv_port", ibv_port } })
+        : device_(device)
+        , RoceReceiverOp(holoscan::ArgList {
+              holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
+              holoscan::Arg { "device_start", std::function<void()>([this]() {
+                                 py::gil_scoped_acquire guard;
+                                 device_.attr("start")();
+                             }) },
+              holoscan::Arg { "device_stop", std::function<void()>([this]() {
+                                 py::gil_scoped_acquire guard;
+                                 device_.attr("stop")();
+                             }) },
+              holoscan::Arg {
+                  "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
+              holoscan::Arg { "frame_size", frame_size },
+              holoscan::Arg { "frame_memory", frame_memory },
+              holoscan::Arg { "ibv_name", ibv_name }, holoscan::Arg { "ibv_port", ibv_port } })
     {
         add_positional_condition_and_resource_args(this, args);
         name_ = name;
@@ -110,6 +111,9 @@ public:
             get_next_frame, /* Name of function in C++ (must match Python name) */
             timeout_ms);
     }
+
+private:
+    py::object device_;
 };
 
 PYBIND11_MODULE(_roce_receiver, m)

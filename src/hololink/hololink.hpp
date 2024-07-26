@@ -403,6 +403,17 @@ public:
      */
     virtual void send_control(const std::vector<uint8_t>& request);
 
+    class ResetController {
+    public:
+        virtual ~ResetController();
+        virtual void reset() = 0;
+    };
+
+    /**
+     * Add a callback devices can use to command reset.
+     */
+    void on_reset(std::shared_ptr<ResetController> reset_controller);
+
 protected:
     /**
      * @brief Override this guy to record timing around ACKs etc
@@ -424,6 +435,7 @@ private:
     native::UniqueFileDescriptor control_socket_;
     uint32_t version_;
     uint32_t datecode_;
+    std::vector<std::shared_ptr<ResetController>> reset_controllers_;
 
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
         bool response_expected = true);

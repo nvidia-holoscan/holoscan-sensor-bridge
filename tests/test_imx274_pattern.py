@@ -66,6 +66,17 @@ actual_left = None
 actual_right = None
 
 
+class CameraWrapper(hololink_module.sensors.imx274.dual_imx274.Imx274Cam):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._reset_callbacks = 0
+        self._hololink.on_reset(self._reset)
+
+    def _reset(self):
+        self._reset_callbacks += 1
+        logging.info(f"{self._reset_callbacks=}")
+
+
 def reset_globals():
     global actual_left, actual_right
     actual_left, actual_right = None, None
@@ -414,12 +425,8 @@ def test_imx274_pattern(
     )
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     # Get a handle to the camera
-    camera_left = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel_left, expander_configuration=0
-    )
-    camera_right = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel_right, expander_configuration=1
-    )
+    camera_left = CameraWrapper(hololink_channel_left, expander_configuration=0)
+    camera_right = CameraWrapper(hololink_channel_right, expander_configuration=1)
     #
     ibv_name_left, ibv_name_right = sorted(os.listdir("/sys/class/infiniband"))
     ibv_port_left, ibv_port_right = 1, 1
@@ -447,7 +454,11 @@ def test_imx274_pattern(
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
     hololink.start()
+    assert camera_left._reset_callbacks == 0
+    assert camera_right._reset_callbacks == 0
     hololink.reset()
+    assert camera_left._reset_callbacks == 1
+    assert camera_right._reset_callbacks == 1
     camera_left.setup_clock()  # this also sets camera_right's clock
     camera_left.configure(camera_mode_left)
     camera_left.test_pattern(pattern_left)

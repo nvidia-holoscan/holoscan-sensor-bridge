@@ -183,6 +183,11 @@ void Hololink::reset()
     auto get_fpga_version_timeout = std::make_shared<Timeout>(30.f, 0.2f);
     uint32_t version = get_fpga_version(get_fpga_version_timeout);
     HOLOSCAN_LOG_INFO("version={:#x}", version);
+
+    // Now go through and reset all registered clients.
+    for (std::shared_ptr<ResetController> reset_controller : reset_controllers_) {
+        reset_controller->reset();
+    }
 }
 
 uint32_t Hololink::get_fpga_version(const std::shared_ptr<Timeout>& timeout)
@@ -966,6 +971,15 @@ Hololink::NamedLock& Hololink::spi_lock()
 {
     static NamedLock lock("hololink-spi-lock");
     return lock;
+}
+
+void Hololink::on_reset(std::shared_ptr<Hololink::ResetController> reset_controller)
+{
+    reset_controllers_.push_back(reset_controller);
+}
+
+Hololink::ResetController::~ResetController()
+{
 }
 
 } // namespace hololink

@@ -16,10 +16,10 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_VERSION
-FROM ${CONTAINER_VERSION} as base
+FROM ${CONTAINER_VERSION} AS base
 
 # build container
-FROM base as builder
+FROM base AS builder
 
 RUN apt-get update \
     && apt-get install -y python3-setuptools \
@@ -30,10 +30,10 @@ ADD . /opt/hololink/
 RUN cd /opt/hololink/python && pip3 wheel .
 
 # demo container
-FROM base as demo
+FROM base AS demo
 
 RUN python3 -m pip install --upgrade pip
-RUN pip3 install pytest pytest-forked
+RUN pip3 install pytest
 
 # net-tools gives us the "arp" command
 # iputils-ping gives us the "ping" command

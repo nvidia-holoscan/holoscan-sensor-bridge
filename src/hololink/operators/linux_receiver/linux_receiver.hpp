@@ -110,6 +110,7 @@ protected:
     uint8_t* local_;
     std::atomic<LinuxReceiverDescriptor*> available_;
     LinuxReceiverDescriptor* busy_;
+    CUstream cu_stream_; // Used to control cuMemcpyHtoDAsync.
 };
 
 } // namespace hololink::operators

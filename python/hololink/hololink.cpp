@@ -267,7 +267,90 @@ PYBIND11_MODULE(_hololink, m)
         .def("get_spi", &Hololink::get_spi, "spi_address"_a, "chip_select"_a,
             "clock_divisor"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1)
         .def("get_gpio", &Hololink::get_gpio)
-        .def("send_control", &Hololink::send_control);
+        .def("send_control", &Hololink::send_control)
+        .def(
+            "on_reset",
+            [](Hololink& me, py::object py_reset_callback) {
+                // Handling unbound py_reset_callback instances
+                // is deferred to a later time.
+                if (!py::hasattr(py_reset_callback, "__self__")) {
+                    throw std::runtime_error("on_reset only works with bound methods.\n");
+                }
+                // Given
+                //  - py_reset_callback is a bound method
+                //  - Hololink::ResetController is an object that
+                //      will be owned by the Hololink instance--
+                //      this object's lifetime is tied to the lifetime of
+                //      the hololink that holds it
+                //  - we don't want to leak the python object that our
+                //      method is bound to--we want python to collect
+                //      that object when it goes out of scope.
+                //
+                // BoundResetController adapts these two interfaces,
+                //  providing a C++ ResetController instance whose lifetime
+                //  goes with the Hololink instance, and does the right thing
+                //  if the object to which the bound method has been collected.
+                //
+                // Note that python's bound methods are a bit tricky:
+                //  if we just inc_ref py_reset_callback, then we'll leak the
+                //  object to which the method is bound (breaking the third
+                //  requirement).  We can't just create a weak reference
+                //  to the bound method instance, as python always immediately
+                //  collects these things (when there's no outstanding references).
+                //
+                // We work around this by taking the bound method apart, fetching
+                //   the "__self__" field (which is the object to which we're
+                //   bound) and the "__func__" field (which is an unbound function).
+                //   We'll then get a weak reference to __self__, and whenever
+                //   our reset() call occurs, and the weak __self__ reference still
+                //   finds a legit __self__ instance, we'll call __func__(__self__).
+                //
+                // At this time, we don't remove ResetController instances from the
+                //  hololink instance; so calls to hololink.reset() will poll all
+                //  known sensors even after they're known to be gone.  (It knows
+                //  not to call reset on those dead references.)  Changing this
+                //  doesn't seem worthwhile: reset() is a very rare call (typically
+                //  only once at app startup) and it's not expected that sensor
+                //  instances are collected either (typically they live the
+                //  entire lifetime of the application).
+                class BoundResetController : public Hololink::ResetController {
+                public:
+                    BoundResetController(py::object py_reset_callback)
+                    {
+                        // Get a weak reference to the object to which
+                        // the callback is bound.
+                        PyObject* self = py_reset_callback.attr("__self__").ptr();
+                        weak_self_ = PyWeakref_NewRef(self, nullptr);
+                        // At reset time, call this guy with the self object from above.
+                        func_ = py_reset_callback.attr("__func__").ptr();
+                        Py_XINCREF(func_);
+                    }
+                    ~BoundResetController()
+                    {
+                        py::gil_scoped_acquire gil;
+                        Py_XDECREF(func_);
+                        Py_XDECREF(weak_self_);
+                    }
+                    void reset() override
+                    {
+                        py::gil_scoped_acquire gil;
+                        PyObject* self = PyWeakref_GetObject(weak_self_);
+                        if (self == Py_None) {
+                            // "self" was gc'd, so don't call it.
+                            return;
+                        }
+                        PyObject* r = PyObject_CallOneArg(func_, self);
+                        Py_DECREF(r);
+                    }
+
+                public:
+                    PyObject* weak_self_;
+                    PyObject* func_;
+                };
+                std::shared_ptr reset_controller = std::make_shared<BoundResetController>(py_reset_callback);
+                me.on_reset(reset_controller);
+            },
+            "reset_controller"_a);
 
     py::class_<Hololink::I2c, std::shared_ptr<Hololink::I2c>>(m, "I2c").def("i2c_transaction",
         &Hololink::I2c::i2c_transaction, "peripheral_i2c_address"_a, "write_bytes"_a,

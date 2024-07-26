@@ -21,20 +21,20 @@ import logging
 import hololink as hololink_module
 
 
-def _get_register(args, camera):
+def _get_register(args, camera, hololink):
     address = args.address
     value = camera.get_register(address)
     logging.info(f"{address=:#x} {value=:#x}")
     print(hex(value))
 
 
-def _set_register(args, camera):
+def _set_register(args, camera, hololink):
     address = args.address
     value = args.value
     camera.set_register(address, value)
 
 
-def _configure(args, camera):
+def _configure(args, camera, hololink):
     mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(args.mode)
     camera.setup_clock()
     camera.configure(mode)
@@ -42,11 +42,15 @@ def _configure(args, camera):
         camera.start()
 
 
-def _start(args, camera):
+def _start(args, camera, hololink):
     camera.start()
 
 
-def _pattern(args, camera):
+def _reset(args, camera, hololink):
+    hololink.reset()
+
+
+def _pattern(args, camera, hololink):
     if args.disable:
         camera.set_register(0x303C, 0)
         camera.set_register(0x377F, 0)
@@ -141,6 +145,13 @@ def main():
     )
     sp.set_defaults(go=_start)
 
+    # "reset": Call hololink.reset() with a camera instantiated.
+    sp = subparsers.add_parser(
+        "reset",
+        help="Call hololink reset to reset the camera device.",
+    )
+    sp.set_defaults(go=_reset)
+
     # "pattern" -- Enable test pattern; add "--disable" to disable test pattern
     # Useful values to use with "--value":
     #   - black: 1
@@ -186,7 +197,7 @@ def main():
     hololink.start()
 
     #
-    args.go(args, camera)
+    args.go(args, camera, hololink)
 
     hololink.stop()
 

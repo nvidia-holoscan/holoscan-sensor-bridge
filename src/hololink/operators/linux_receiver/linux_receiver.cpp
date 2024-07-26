@@ -85,6 +85,7 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     , local_(NULL)
     , available_(NULL)
     , busy_(NULL)
+    , cu_stream_(0)
 {
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
@@ -105,6 +106,12 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     timeout.tv_usec = 100000;
     if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         ERROR("setsockopt failed errno=%d.\n", (int)errno);
+    }
+
+    // See get_next_frame.
+    CUresult cu_result = cuStreamCreate(&cu_stream_, CU_STREAM_NON_BLOCKING);
+    if (cu_result != CUDA_SUCCESS) {
+        ERROR("cuSteramCreate failed, cu_result=%d.\n", (int)cu_result);
     }
 }
 
@@ -293,16 +300,26 @@ bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& m
     if (r) {
         busy_ = available_.exchange(busy_);
         if (busy_) {
-            CUstream stream = CU_STREAM_PER_THREAD;
-            CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, stream);
+            // Because we're setting up the next frame of data for
+            // pipeline processing, we can allow this memcpy to overlap
+            // with other GPU work-- we just make sure that this copy is done
+            // (with the cuStreamSynchronize below) to ensure that this memcpy
+            // finishes before the pipeline uses the destination buffer.
+            CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, cu_stream_);
             if (cu_result != CUDA_SUCCESS) {
                 ERROR("cuMemcpyHtoD failed, cu_result=%d.\n", (int)cu_result);
                 r = false;
+            } else {
+                cu_result = cuStreamSynchronize(cu_stream_);
+                if (cu_result != CUDA_SUCCESS) {
+                    ERROR("cuStreamSynchronize failed, cu_result=%d.\n", (int)cu_result);
+                    r = false;
+                }
             }
             metadata = busy_->metadata_;
         } else {
             // run() exited.
-            ERROR("get_next_frame failed, recevier has terminated.\n");
+            ERROR("get_next_frame failed, receiver has terminated.\n");
             r = false;
         }
     }

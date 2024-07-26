@@ -107,6 +107,12 @@ CONTAINER_TYPE=dgpu
 if [ $igpu -ne 0 ]
 then
 CONTAINER_TYPE=igpu
+if [ ! -d "/usr/lib/aarch64-linux-gnu/nvidia" ]
+then
+echo "Error: Required path and libs are missing. \
+      Upgrade the development kit with Jetpack 6 or newer."
+exit 1
+fi
 cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus.so $ROOT/nvidia
 cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketclient.so $ROOT/nvidia
 cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketserver.so $ROOT/nvidia

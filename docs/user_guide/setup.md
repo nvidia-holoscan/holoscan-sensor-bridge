@@ -1,134 +1,284 @@
 # Host Setup
 
+Holoscan sensor bridge is supported on the following configurations:
+
+- IGX systems configured with
+  [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with CX7
+  SmartNIC devices.
+- AGX Orin systems running
+  [JP6.0 release 2](https://developer.nvidia.com/embedded/jetpack). In this
+  configuration, the on-board Ethernet controller is used with the Linux kernel network
+  stack for data I/O; all network I/O is performed by the CPU without network
+  acceleration.
+
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
-follow the directions on the appropriate page below to configure your host system.
+configure a few prerequisites in your host system. While holoscan sensor bridge
+applications run in a container, these commands are all to be executed outside the
+container, on the host system directly. These configurations are remembered across power
+cycles and therefore only need to be set up once.
 
-- [IGX running IGX OS 1.0 PR, with CX7 SmartNIC](igx_baseos_roce_deployment.md)
-- [Jetson AGX Orin, L4T JP6.0, with Linux Sockets](concord_l4t_linux_sock_deployment.md)
+- Install [git-lfs](https://git-lfs.com)
 
-## Holoscan sensor bridge software prerequisites
+  Some data files in the Holoscan sensor bridge source repository use GIT LFS.
 
-Configure a few prerequisites in order to access and run the sensor bridge container:
+  ```none
+  sudo apt-get update
+  sudo apt-get install -y git-lfs
+  ```
 
-1. Grant your user permission to the docker subsystem:
+- Grant your user permission to the docker subsystem:
 
-   ```none
-   $ sudo usermod -aG docker $USER
-   ```
+  ```none
+  $ sudo usermod -aG docker $USER
+  ```
 
-   Reboot the computer to activate this setting.
+  Reboot the computer to activate this setting.
 
-1. Log in to Nvidia GPU Cloud (NGC) with your developer account:
+Next, follow the directions on the appropriate tab below to configure your host system.
 
-   - If you don't have a developer account for NGC please register at
-     [https://catalog.ngc.nvidia.com/](https://catalog.ngc.nvidia.com/)
+`````{tab-set}
+````{tab-item} IGX
 
-   - Create an API key for your account:
-     [https://ngc.nvidia.com/setup/api-key](https://ngc.nvidia.com/setup/api-key)
+- Determine the name of the network device associated with the first CX7 port. This is
+  the rightmost QSFP port when looking at the back of the IGX unit.
 
-   - Use your API key to log in to nvcr.io:
+  <img src="igx-rear-qsfp0.png" alt="IGX QSFP0" width="75%"/>
 
-     ```none
-     $ docker login nvcr.io
-     Username: $oauthtoken
-     Password: <Your token key to NGC>
-     WARNING! Your password will be stored unencrypted in /home/<user>/.docker/config.json.
-     Configure a credential helper to remove this warning. See
-     https://docs.docker.com/engine/reference/commandline/login/#credentials-store
+  ```none
+  $ ls /sys/class/infiniband
+  roceP5p3s0f0 roceP5p3s0f1
+  ```
 
-     Login Succeeded
-     ```
+  This will produce a list of CX7 ports; your device names may vary. The lowest
+  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port. Next, determine
+  which host ethernet port is associated with that device.  To simplify entering
+  commands later, let's assign `$IN0` and `$EN0` with the names of these devices-- make sure
+  you use the actual names presented on your device.
 
-## Running Holoscan Sensor Bridge demos from source
+  ```none
+  $ IN0=roceP5p3s0f0
+  $ ls /sys/class/infiniband/$IN0/device/net
+  eth0
+  $ EN0=eth0
+  ```
 
-Holoscan sensor bridge host software includes instructions for building a demo
-container. This container is used to run all holoscan tests and examples.
+  This indicates that the host network interface associated with `$IN0` (`roceP5p3s0f0`) is
+  `$EN0` (`eth0`).
 
-### Build the demo container
+- IGX OS uses NetworkManager to configure network interfaces. By default, the sensor
+  bridge device uses the address 192.168.0.2 for the first port. Set up your first
+  ethernet device (`$EN0`) to use the address 192.168.0.101 with a permanent route
+  to 192.168.0.2: ([Here](notes.md#holoscan-sensor-bridge-ip-address-configuration) is more information
+  about configuring your system if you cannot use the 192.168.0.0/24 network in this
+  way.)
 
-1. Fetch the sensor bridge source code from
-   [https://github.com/nvidia-holoscan/holoscan-sensor-bridge](https://github.com/nvidia-holoscan/holoscan-sensor-bridge)
+  ```none
+  $ sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
+  $ sudo nmcli connection modify hololink-$EN0 +ipv4.routes "192.168.0.2/32 192.168.0.101"
+  $ sudo nmcli connection up hololink-$EN0
+  ```
 
-   ```none
-   $ git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge
-   ```
+  Apply power to the sensor bridge device, ensure that it's properly connected, then
+  `ping 192.168.0.2` to check connectivity:
 
-1. Build the sensor bridge demonstration container. For systems with dGPU,
+  ```none
+  $ ping 192.168.0.2
+  PING 192.168.0.2 (192.168.0.2) 56(84) bytes of data.
+  64 bytes from 192.168.0.2: icmp_seq=1 ttl=64 time=0.225 ms
+  64 bytes from 192.168.0.2: icmp_seq=2 ttl=64 time=0.081 ms
+  64 bytes from 192.168.0.2: icmp_seq=3 ttl=64 time=0.088 ms
+  64 bytes from 192.168.0.2: icmp_seq=4 ttl=64 time=0.132 ms
+  ^C
+  --- 192.168.0.2 ping statistics ---
+  4 packets transmitted, 4 received, 0% packet loss, time 3057ms
+  rtt min/avg/max/mdev = 0.081/0.131/0.225/0.057 ms
+  ```
 
-   ```none
-   $ cd holoscan-sensor-bridge
-   $ sh docker/build.sh --dgpu
-   ```
+- The second SFP+ connector on the sensor bridge device is used to transmit data
+  acquired from the second camera on a stereo camera module (like the IMX274). By
+  default, the sensor bridge device uses the address 192.168.0.3 for that second port.
+  Connect the second IGX QSFP port (indicated with the red arrow below) to the second
+  SFP+ port on the sensor bridge device.
 
-   For systems with iGPU,
+  <img src="igx-rear-qsfp1.png" alt="IGX QSFP1" width="75%"/>
 
-   ```none
-   $ cd holoscan-sensor-bridge
-   $ sh docker/build.sh --igpu
-   ```
+  Let's refer to these as `$IN1` and `$EN1`:
 
-   Notes:
+  ```none
+  $ ls /sys/class/infiniband
+  roceP5p3s0f0 roceP5p3s0f1
+  $ IN1=roceP5p3s0f1
+  $ ls /sys/class/infiniband/$IN1/device/net
+  eth1
+  $ EN1=eth1
+  ```
 
-   - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
-     OS installed with appropriate dGPU support (e.g.
-     [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with
-     dGPU).
-   - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX or IGX
-     without a dGPU). This requires an OS installed with iGPU support (e.g. for AGX:
-     JetPack 6.0; for IGX: IGX OS with iGPU configuration).
+  As above, configure the second QSFP network port with an appropriate address and
+  permanent route:
 
-### Run the demo container
+  ```none
+  $ sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
+  $ sudo nmcli connection modify hololink-$EN1 +ipv4.routes "192.168.0.3/32 192.168.0.102"
+  $ sudo nmcli connection up hololink-$EN1
+  ```
 
-To run the sensor bridge demonstration container, from a terminal in the GUI,
+  Now test the second connection with `ping 192.168.0.3`:
 
-```none
-xhost +
-sh docker/demo.sh
-```
+  ```none
+  $ ping 192.168.0.3
+  PING 192.168.0.3 (192.168.0.3) 56(84) bytes of data.
+  64 bytes from 192.168.0.3: icmp_seq=1 ttl=64 time=0.210 ms
+  64 bytes from 192.168.0.3: icmp_seq=2 ttl=64 time=0.271 ms
+  64 bytes from 192.168.0.3: icmp_seq=3 ttl=64 time=0.181 ms
+  64 bytes from 192.168.0.3: icmp_seq=4 ttl=64 time=0.310 ms
+  64 bytes from 192.168.0.3: icmp_seq=5 ttl=64 time=0.258 ms
+  ^C
+  --- 192.168.0.3 ping statistics ---
+  5 packets transmitted, 5 received, 0% packet loss, time 4102ms
+  rtt min/avg/max/mdev = 0.181/0.246/0.310/0.045 ms
+  ```
 
-This brings you to a shell prompt inside the Holoscan sensor bridge demo container.
-(Note that iGPU configurations, when starting the demo container, will display the
-message "Failed to detect NVIDIA driver version": this can be ignored.) Now you're ready
-to run sensor bridge applcations.
+  When the second port is configured, the first port should continue to respond to
+  pings as appropriate.
 
-## Holoscan sensor bridge software loopback tests
+- For IGX with iGPU only: Install
+  [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.
+  Applications using inference need this at initialization time; the IGX OS image for
+  iGPU doesn't include it.
 
-Sensor bridge host software includes a test fixture that runs in loopback mode, where no
-sensor bridge equipment is necessary. This test works by generating UDP messages and
-sending them over the Linux loopback interface.
+  ```none
+  sudo apt update && sudo apt install -y nvidia-l4t-dla-compiler
+  ```
 
-In the shell in the demo container:
+````
+````{tab-item} AGX
 
-```none
-pytest
-```
+Demos and examples in this package assume a sensor bridge device is connected to eth0,
+which is the RJ45 connector on the AGX Orin.
 
-Note that the test fixture intentionally introduces errors into the software stack. As
-long as pytest indicates that all test have passed, any error messages published by
-individual tests can be ignored.
+- Linux sockets require a larger network receiver buffer.
 
-For systems with a sensor bridge device and IMX274, the test fixture can execute
-additional tests that prove that the device and network connections are working as
-expected.
+  Most sensor bridge self-tests use Linux's loopback interface; if the kernel starts
+  dropping packets due to out-of-buffer space then these tests will fail.
 
-First, ensure that the
-[sensor bridge firmware is up to date](sensor_bridge_firmware_setup.md).
+  ```none
+  echo 'net.core.rmem_max = 31326208' | sudo tee /etc/sysctl.d/52-hololink-rmem_max.conf
+  sudo sysctl -p /etc/sysctl.d/52-hololink-rmem_max.conf
+  ```
 
-For IGX configurations,
-[connect both SFP+ connections on the sensor bridge device to the QSFP connectors](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host),
-then
+- Configure eth0 for a static IP address of 192.168.0.101.
 
-```none
-pytest --udp-server
-```
+  L4T uses NetworkManager to configure interfaces; by default interfaces are configured
+  as DHCP clients. Use the following command to update the IP address to 192.168.0.101.
+  ([Here](notes.md#holoscan-sensor-bridge-ip-address-configuration) is more information
+  about configuring your system if you cannot use the 192.168.0.0/24 network in this
+  way.)
 
-For AGX configurations, only one camera is supported, so only
-[SFP+ 0](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host)
-is to be connected. Run the device test on AGX this way:
+  ```none
+  sudo nmcli con add con-name hololink-eth0 ifname eth0 type ethernet ip4 192.168.0.101/24
+  sudo nmcli connection up hololink-eth0
+  ```
 
-```none
-pytest --udp-server --unaccelerated-only
-```
+  Apply power to the sensor bridge device, ensure that it's properly connected, then
+  `ping 192.168.0.2` to check connectivity.
 
-If things are not working as expected, check the
-[troubleshooting page](troubleshooting.md).
+- For the Linux socket based examples, isolating a processor core from Linux kernel is
+  recommended. For high bandwidth applications, like 4k video acquisition, isolation of
+  the network receiver core is required. When an example program runs with processor
+  affinity set to that isolated core, performance is improved and latency is reduced.
+  By default, sensor bridge software runs the time-critical background network receiver
+  process on the third processor core. If that core is isolated from Linux scheduling,
+  no processes will be scheduled on that core without an explicit request from the
+  user, and reliability and performance is greatly improved.
+
+  Isolating that core from Linux can be achieved by editing
+  `/boot/extlinux/extlinux.conf`. Add the setting `isolcpus=2` to the end of the line
+  that starts with `APPEND`. Your file should look like something like this:
+
+  ```none
+  TIMEOUT 30
+  DEFAULT primary
+
+  MENU TITLE L4T boot options
+
+  LABEL primary
+        MENU LABEL primary kernel
+        LINUX /boot/Image
+        FDT /boot/dtb/kernel_tegra234-p3701-0000-p3737-0000.dtb
+        INITRD /boot/initrd
+        APPEND ${cbootargs} root=/dev/mmcblk0p1 rw rootwait ...<other-settings>... isolcpus=2
+
+  ```
+
+  Sensor bridge applications can run the network receiver process on another core by
+  setting the environment variable `HOLOLINK_AFFINITY` to the core it should run on.
+  For example, to run on the first processor core,
+
+  ```none
+  HOLOLINK_AFFINITY=0 python3 examples/linux_imx274_player.py
+  ```
+
+  Setting `HOLOLINK_AFFINITY` to blank will skip any core affinity settings in the
+  sensor bridge code.
+
+- Run the "jetson_clocks" tool on startup, to set the core clocks to their maximum.
+
+  ```none
+  JETSON_CLOCKS_SERVICE=/etc/systemd/system/jetson_clocks.service
+  cat <<EOF | sudo tee $JETSON_CLOCKS_SERVICE >/dev/null
+  [Unit]
+  Description=Jetson Clocks Startup
+  After=nvpmodel.service
+
+  [Service]
+  Type=oneshot
+  ExecStart=/usr/bin/jetson_clocks
+
+  [Install]
+  WantedBy=multi-user.target
+  EOF
+  sudo chmod u+x $JETSON_CLOCKS_SERVICE
+  sudo systemctl enable jetson_clocks.service
+  ```
+
+- Set the AGX Orin power mode to 'MAXN' for optimal performance. The setting can be
+  changed via L4T power drop down setting found on the upper left corner of the screen:
+
+  <img src="concord_maxn.png" alt="AGX Orin MAXN" width="50%"/>
+
+- Restart the AGX Orin. This allows core isolation and performance settings to take
+  effect. If configuring for 'MAXN' performance doesn't request that you reset the
+  unit, then execute the reboot command manually:
+
+  ```none
+  reboot
+  ```
+
+
+````
+`````
+
+Now, for all configurations,
+
+- Log in to Nvidia GPU Cloud (NGC) with your developer account:
+
+  - If you don't have a developer account for NGC please register at
+    [https://catalog.ngc.nvidia.com/](https://catalog.ngc.nvidia.com/)
+
+  - Create an API key for your account:
+    [https://ngc.nvidia.com/setup/api-key](https://ngc.nvidia.com/setup/api-key)
+
+  - Use your API key to log in to nvcr.io:
+
+    ```none
+    $ docker login nvcr.io
+    Username: $oauthtoken
+    Password: <Your token key to NGC>
+    WARNING! Your password will be stored unencrypted in /home/<user>/.docker/config.json.
+    Configure a credential helper to remove this warning. See
+    https://docs.docker.com/engine/reference/commandline/login/#credentials-store
+
+    Login Succeeded
+    ```
+
+Now proceed to [build and test the Holoscan Sensor Bridge container](build.md).

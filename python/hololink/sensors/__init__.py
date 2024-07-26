@@ -16,12 +16,11 @@
 import importlib
 import sys
 
-from . import csi
-
 # Define operator modules and classes for lazy loading
 _MODULES = [
     "imx274",
     "udp_cam",
+    "csi",
 ]
 
 _OBJECTS = {

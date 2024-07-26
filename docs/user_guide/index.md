@@ -7,6 +7,7 @@
 introduction
 sensor_bridge_hardware_setup
 setup
+build
 examples
 applications
 architecture

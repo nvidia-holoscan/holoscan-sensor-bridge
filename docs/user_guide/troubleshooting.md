@@ -3,9 +3,10 @@
 ## Segmentation fault from Holoscan Visualizer
 
 If the Holoscan visualizer is not able to access the host display, the program will
-usually crash with a segmentation fault. Make sure that `xhost +` is executed on the
-host system before running the Holoscan application and make sure the `DISPLAY`
-environment variable is set properly in the container where the application is run.
+usually crash with a segmentation fault. Make sure that `xhost +local:docker` is
+executed on the host system before running the Holoscan application and make sure the
+`DISPLAY` environment variable is set properly in the container where the application is
+run.
 
 ## Unable to connect to the sensor bridge device
 
