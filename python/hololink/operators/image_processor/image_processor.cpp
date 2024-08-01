@@ -89,6 +89,8 @@ PYBIND11_MODULE(_image_processor, m)
     py::enum_<ImageProcessorOp::BayerFormat>(op, "BayerFormat")
         .value("RGGB", ImageProcessorOp::BayerFormat::RGGB,
             R"pbdoc(RGGB)pbdoc")
+        .value("BGGR", ImageProcessorOp::BayerFormat::BGGR,
+            R"pbdoc(BGGR)pbdoc")
         .value("GBRG", ImageProcessorOp::BayerFormat::GBRG,
             R"pbdoc(GBRG)pbdoc")
         .export_values();

@@ -294,6 +294,12 @@ void ImageProcessorOp::start()
         x0y1_offset = 1; // G
         x1y1_offset = 2; // B
         break;
+    case BayerFormat::BGGR:
+        x0y0_offset = 2; // B
+        x1y0_offset = 1; // G
+        x0y1_offset = 1; // G
+        x1y1_offset = 0; // R
+        break;
     case BayerFormat::GBRG:
         x0y0_offset = 1; // G
         x1y0_offset = 2; // B
