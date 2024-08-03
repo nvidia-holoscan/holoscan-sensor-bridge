@@ -60,7 +60,9 @@ PYBIND11_MODULE(_linux_receiver, m)
         .def_readonly("frame_start_ns", &LinuxReceiverMetadata::frame_start_ns)
         .def_readonly("frame_end_s", &LinuxReceiverMetadata::frame_end_s)
         .def_readonly("frame_end_ns", &LinuxReceiverMetadata::frame_end_ns)
-        .def_readonly("imm_data", &LinuxReceiverMetadata::imm_data);
+        .def_readonly("imm_data", &LinuxReceiverMetadata::imm_data)
+        .def_readonly("packets_dropped", &LinuxReceiverMetadata::packets_dropped)
+        .def_readonly("received_ns", &LinuxReceiverMetadata::received_ns);
 
 } // PYBIND11_MODULE
 

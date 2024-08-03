@@ -223,6 +223,11 @@ def main():
         choices=range(12),
         help="Configure to display a test pattern.",
     )
+    parser.add_argument(
+        "--ptp-sync",
+        action="store_true",
+        help="After reset, wait for PTP time to synchronize.",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -263,6 +268,16 @@ def main():
     hololink = hololink_channel.hololink()
     hololink.start()
     hololink.reset()
+    if args.ptp_sync:
+        ptp_sync_timeout_s = 10
+        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
+        logging.debug("Waiting for PTP sync.")
+        if not hololink.ptp_synchronize(ptp_sync_timeout):
+            logging.error(
+                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
+            )
+        else:
+            logging.debug("PTP synchronized.")
     camera.setup_clock()
     camera.configure(camera_mode)
     camera.set_digital_gain_reg(0x4)

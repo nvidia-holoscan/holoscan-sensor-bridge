@@ -136,6 +136,10 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
     if (!out_message) {
         throw std::runtime_error("Failed to add GXF tensor");
     }
+    // frame_size_ is size_t; protect the following static_cast<int>.
+    if (frame_size_.get() > INT_MAX) {
+        throw std::runtime_error(fmt::format("frame_size={} is above the maximum value of {}.", frame_size_.get(), INT_MAX));
+    }
     const nvidia::gxf::Shape shape { static_cast<int>(frame_size_.get()) };
     const nvidia::gxf::PrimitiveType element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
     const uint64_t element_size = nvidia::gxf::PrimitiveTypeSize(element_type);

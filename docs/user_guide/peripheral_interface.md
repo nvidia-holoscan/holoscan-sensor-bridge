@@ -68,6 +68,10 @@ assign SPI_SDIO = o_spi_oen [i] ? o_spi_sdio[i] : 4'bz;
 assign i_spi_sdio [i] = SPI_SDIO;
 ```
 
+The base address for SPI CTRL FSM begins at 0x0300_0000. And for each SPI controller,
+the register offset is 0x0000_0200. So the starting address for SPI controller 0 is
+0x0300_0000 and the starting address for SPI controller 1 is 0x0300_0200 and so on.
+
 ## I2C
 
 The I2C CTRL FSM controls the I2C core by a series of registers. All I2C transactions
@@ -81,7 +85,8 @@ behavior is consistent with the I2C protocol.
 
 The I2C core is clocked using the i_apb_clk and reset with i_apb_rst. All logic is based
 off of this clock. For setting the I2C interface’s frequency, a prescaler register is
-included to divide this clock to slower frequencies.
+included to divide this clock to slower frequencies. I2C clock stretching is supported
+by the I2C core.
 
 The top-level input should be synchronized to this clock domain, and glitch filtering
 should also be added according to the I2C protocol.
@@ -103,22 +108,29 @@ assign I2C_SCL = o_i2c_scl_en[i] ? 1'bz : 1'b0;
 assign I2C_SDA = o_i2c_sda_en[i] ? 1'bz : 1'b0;
 ```
 
+The base address for I2C CTRL FSM begins at 0x0400_0000. And for each I2C controller,
+the register offset is 0x0000_0200. So the starting address for I2C controller 0 is
+0x0400_0000 and the starting address for I2C controller 1 is 0x0400_0200 and so on.
+
 **\*Note: I2C is only verified and tested at 400kHz speed mode.**
 
 ## GPIO
 
 The Holoscan Sensor Bridge IP supports General Purpose I/O (GPIO) signals for status and
-control functionality. The GPIO control and status signals can be set or read using ECB
-write or read.
+control functionality. The GPIO signals can be set to be an input or an output signals.
+GPIO signals are set as inputs by default.
 
 The GPIO signals can connect to internal user logic or to the top level onto the board.
 Examples for GPIO control are toggling on-board pins, internal straps to IP
 configuration, LED control, and more.
 
+The reset value of the GPIO control signals can be defined using the "GPIO_RESET_VALUE"
+parameter.
+
 Examples for GPIO status are sensor status signals, on-board and internal calibration
 done signal, software reset count, and more.
 
-GPIO input signals will cross domain clock (CDC) into "i_apb_clk" clock domain.
+GPIO input signals will cross domain clock (CDC) into "i_apb_clk" cloGck domain.
 
 GPIO output signals will cross domain clock (CDC) into "i_hif_clk" clock domain.
 

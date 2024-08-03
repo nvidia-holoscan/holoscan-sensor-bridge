@@ -20,6 +20,7 @@
 #include "roce_receiver.hpp"
 
 #include <arpa/inet.h>
+#include <chrono>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -61,6 +62,10 @@ RoceReceiver::RoceReceiver(
     , frame_number_(0)
     , rx_write_requests_fd_(-1)
     , rx_write_requests_(0)
+    , frame_end_ {}
+    , imm_data_(0)
+    , event_time_ {}
+    , received_ns_(0)
 {
     DEBUG("cu_buffer=0x%llX cu_buffer_size=%u\n",
         (unsigned long long)cu_buffer, (unsigned)cu_buffer_size);
@@ -435,6 +440,9 @@ void RoceReceiver::blocking_monitor()
             break;
         }
 
+        // Keep this as close to the actual message receipt as possible.
+        clock_gettime(CLOCK_MONOTONIC, &event_time_);
+
         // control_r_
         if (poll_fds[0].revents) {
             // Currently, the only activity that we see on control_r_ is a flag
@@ -486,7 +494,12 @@ void RoceReceiver::blocking_monitor()
                 }
                 frame_number_++;
                 imm_data_ = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
-                clock_gettime(CLOCK_MONOTONIC, &frame_end_);
+                frame_end_ = event_time_;
+                // frame_end_ uses the monotonic clock, which doesn't define it's epoch;
+                // received_ns_ is the same but matches the epoch used by PTP.
+                received_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                                   .count();
                 // Send it
                 signal();
                 // Add back the work request
@@ -594,11 +607,13 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         metadata.frame_end_s = frame_end_.tv_sec;
         metadata.frame_end_ns = frame_end_.tv_nsec;
         metadata.imm_data = imm_data_;
+        metadata.received_ns = received_ns_;
     } else {
         metadata.rx_write_requests = 0;
         metadata.frame_end_s = 0;
         metadata.frame_end_ns = 0;
         metadata.imm_data = 0;
+        metadata.received_ns = 0;
     }
     return r;
 }

@@ -39,6 +39,7 @@ public:
     uint64_t frame_end_s;
     uint64_t frame_end_ns;
     uint32_t imm_data;
+    int64_t received_ns; // ns from the PTP epoch.
     // Data accumulated over the life of the application
     //  uint64_t packets_received;
     //  uint64_t frames_received;
@@ -49,7 +50,7 @@ public:
     //  uint64_t unexpected_byte_counters;
     //  uint64_t unexpected_packet_counts;
     //  uint64_t data_overflow;
-    //  uint64_t packets_dropped;
+    uint64_t packets_dropped;
     //  uint64_t rejected;
 };
 

@@ -1,7 +1,7 @@
 hololink:
   archive:
-    enrollment_date: '2024-07-18T22:18:10.481425+00:00'
-    md5: 2b095fd05d0c17e05f15df9c79c28bea
+    enrollment_date: '2024-08-03T18:57:03.617479+00:00'
+    md5: c8679363c98c10cf6368743ab04221b6
     type: zip
     url: https://api.ngc.nvidia.com/v2/resources/nvidia/clara-holoscan/holoscan_sensor_bridge_fpga_ip/versions/2407/zip
     version: '2407'
@@ -12,12 +12,12 @@ hololink:
       size: 383843
     cpnx:
       content: fpga_cpnx_v2407.bit
-      md5: 52d655d6e5ccc57fbaf6b50992831516
+      md5: 6ad1a7d71b12ff26bcf7541c80ddd16e
       size: 1960836
   licenses:
   - name: NVIDIA_RTL_License_Agreement.txt
   other_content:
   - content: hololink-hdl.zip
-    md5: 0581bf0445d061b44dc7df24c9ceafd6
-    size: 1223246
+    md5: 21de471e09dce015946bd11f02bcd2b6
+    size: 1294292
   strategy: sensor_bridge_10

@@ -982,4 +982,26 @@ Hololink::ResetController::~ResetController()
 {
 }
 
+bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
+{
+    // Wait for a non-zero time value
+    while (true) {
+        std::shared_ptr<Timeout> read_timeout = Timeout::default_timeout();
+        auto [status, value] = read_uint32_(FPGA_PTP_SYNC_TS_0, read_timeout);
+        if (status) {
+            uint32_t ptp_count = value.value();
+            if (ptp_count != 0) {
+                break;
+            }
+        }
+        if (timeout->expired()) {
+            return false;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+
+    // Time is sync'd now.
+    return true;
+}
+
 } // namespace hololink

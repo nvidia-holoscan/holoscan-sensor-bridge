@@ -11,7 +11,7 @@ There are two distributed examples available:
 
 ```bash
 
-  git clone ssh://git@gitlab-master.nvidia.com:12051/clara-holoscan/hololink.git
+  git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
 
 ```
 
@@ -103,7 +103,7 @@ On a node having inferencing capabilities, run:
 
 ```bash
 
-  python3 ./examples/distributed_tao_peoplene.py --worker --address `(Node 1 IP: Node 1 driver port (example: 5555))` --fragments visualizer_fragment
+  python3 ./examples/distributed_tao_peoplenet.py --worker --address `(Node 1 IP: Node 1 driver port (example: 5555))` --fragments visualizer_fragment
 
 ```
 

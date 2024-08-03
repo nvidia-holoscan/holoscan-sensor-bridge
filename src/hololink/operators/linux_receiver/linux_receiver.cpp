@@ -20,6 +20,7 @@
 #include "linux_receiver.hpp"
 
 #include <alloca.h>
+#include <chrono>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -151,11 +152,21 @@ void LinuxReceiver::run()
 
     unsigned frame_count = 0, packet_count = 0;
     unsigned frame_packets_received = 0, frame_bytes_received = 0;
-    struct timespec frame_start = { 0 }, frame_end = { 0 };
+    struct timespec now = { 0 }, frame_start = { 0 };
+    uint64_t packets_dropped = 0;
+    uint32_t last_psn = 0;
+    bool first = true;
 
     while (true) {
         int recv_flags = 0;
         ssize_t received_bytes = recv(socket_, received, sizeof(received), recv_flags);
+
+        // Get the clock as close to the packet receipt as possible.
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
+            break;
+        }
+
         if (received_bytes <= 0) {
             // check if there is a timeout
             if ((errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR)) {
@@ -173,10 +184,7 @@ void LinuxReceiver::run()
         packet_count++;
         frame_packets_received++;
         if (!frame_bytes_received) {
-            if (clock_gettime(CLOCK_MONOTONIC, &frame_start) != 0) {
-                ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
-                break;
-            }
+            frame_start = now;
         }
 
         do {
@@ -195,6 +203,19 @@ void LinuxReceiver::run()
                 ERROR("Unable to decode runt IB request, received_bytes=%d.\n", (int)received_bytes);
                 break;
             }
+
+            // Note that 'psn' is only 24 bits.  Use that to determine
+            // how many packets were dropped.  Note that this doesn't
+            // account for out-of-order delivery.
+            native::NvtxTrace::event_u64("psn", psn);
+            native::NvtxTrace::event_u64("frame_packets_received", frame_packets_received);
+            if (!first) {
+                uint32_t next_psn = (last_psn + 1) & 0xFFFFFF;
+                uint32_t diff = (psn - next_psn) & 0xFFFFFF;
+                packets_dropped += diff;
+            }
+            last_psn = psn;
+            first = false;
 
             uint64_t address = 0;
             uint32_t rkey = 0;
@@ -222,16 +243,13 @@ void LinuxReceiver::run()
                 && deserializer.next_uint32_be(imm_data)
                 && deserializer.pointer(content, size)) {
                 frame_count++;
+                native::NvtxTrace::event_u64("frame_count", frame_count);
+
                 TRACE("opcode=2B address=0x%llX size=0x%X\n", (unsigned long long)address, (unsigned)size);
                 if ((address >= cu_buffer_) && (address + size <= (cu_buffer_ + cu_buffer_size_))) {
                     uint64_t offset = address - cu_buffer_;
                     memcpy(&receiving->memory_[offset], content, size);
                     frame_bytes_received += size;
-                }
-                struct timespec frame_end;
-                if (clock_gettime(CLOCK_MONOTONIC, &frame_end) != 0) {
-                    ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
-                    break;
                 }
                 // Send it
                 // - receiving now has legit data;
@@ -247,9 +265,13 @@ void LinuxReceiver::run()
                 metadata.frame_number = frame_count;
                 metadata.frame_start_s = frame_start.tv_sec;
                 metadata.frame_start_ns = frame_start.tv_nsec;
-                metadata.frame_end_s = frame_end.tv_sec;
-                metadata.frame_end_ns = frame_end.tv_nsec;
+                metadata.frame_end_s = now.tv_sec;
+                metadata.frame_end_ns = now.tv_nsec;
                 metadata.imm_data = imm_data;
+                metadata.packets_dropped = packets_dropped;
+                metadata.received_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::system_clock::now().time_since_epoch())
+                                           .count();
 
                 receiving = available_.exchange(receiving);
                 signal();

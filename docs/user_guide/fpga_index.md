@@ -10,6 +10,8 @@ clocking_and_reset
 dataplane
 peripheral_interface
 register_interface
+ptp
 ip_integration
+simulation
 known_limitations
 ```

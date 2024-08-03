@@ -350,7 +350,8 @@ PYBIND11_MODULE(_hololink, m)
                 std::shared_ptr reset_controller = std::make_shared<BoundResetController>(py_reset_callback);
                 me.on_reset(reset_controller);
             },
-            "reset_controller"_a);
+            "reset_controller"_a)
+        .def("ptp_synchronize", &Hololink::ptp_synchronize, "timeout_s"_a);
 
     py::class_<Hololink::I2c, std::shared_ptr<Hololink::I2c>>(m, "I2c").def("i2c_transaction",
         &Hololink::I2c::i2c_transaction, "peripheral_i2c_address"_a, "write_bytes"_a,

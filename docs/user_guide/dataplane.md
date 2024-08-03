@@ -11,20 +11,22 @@ Holoscan Sensor Bridge IP.
 ## Sensor RX (Sensor to FPGA)
 
 In the current version of the Holoscan Sensor Bridge IP, Sensor RX AXI-Stream signals
-are constrained to: TKEEP and TLAST signals are ignored.
+are constrained to:
 
-The full TDATA bus will be sent to the host for every TVALID cycle. TUSER signal is not
-used.
+The full TDATA bus will be sent to the host for every TVALID cycle.
+
+TLAST high will terminate and transmit UDP packet with the amount of data currently in
+the buffer and including the data during the TLAST cycle. TLAST high is an optional
+function that can be used to synchronize the start of packet sensor AXI-S to the sensor
+window. More information about sensor window is described later in this page.
+
+TKEEP and TUSER signals are ignored.
 
 In the future version of the Holoscan Sensor Bridge IP, the expected functionality of
 the Sensor RX AXI-Stream signals are:
 
 TKEEP signal will indicate valid bytes on TDATA to be transmitted. TKEEP is only valid
 when TLAST is high.
-
-TLAST high will optionally terminate and transmit UDP packet with the amount of data
-currently in the buffer and including the data during the TLAST cycle as indicated by
-TKEEP. TUSER signal is not used.
 
 An example timing diagram of the Sensor RX AXI-Stream is depicted below. This example
 uses sensor data size of 39 bytes, DATAPATH_WIDTH of 64bits. D0, D1, and so on in the

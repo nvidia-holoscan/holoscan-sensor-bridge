@@ -49,6 +49,7 @@ class Profiler(holoscan.core.Operator):
         self._metadata_callback = metadata_callback
         self._timestamps = []
         self._hololink = hololink_channel.hololink()
+        self._packets_dropped = None
 
     def setup(self, spec):
         logging.info("setup")
@@ -62,13 +63,23 @@ class Profiler(holoscan.core.Operator):
         op_output.emit({"": cp_frame}, "output")
         #
         metadata = self.metadata()
+        frame_number = metadata["frame_number"]
+        packets_dropped = metadata["packets_dropped"]
+        if packets_dropped != self._packets_dropped:
+            logging.info(f"{packets_dropped=} ({packets_dropped:#X}) {frame_number=}")
+            self._packets_dropped = packets_dropped
         image_timestamp_ns = metadata["timestamp_ns"]
         received_timestamp_ns = metadata["received_ns"]
         pipeline_timestamp_ns = (
             datetime.datetime.now(datetime.timezone.utc).timestamp() * NS_PER_SEC
         )
         self._timestamps.append(
-            (image_timestamp_ns, received_timestamp_ns, pipeline_timestamp_ns)
+            (
+                image_timestamp_ns,
+                received_timestamp_ns,
+                pipeline_timestamp_ns,
+                frame_number,
+            )
         )
         if self._count < 200:
             return
@@ -84,7 +95,7 @@ roce_network_mode = "ROCE"
 linux_network_mode = "Linux"
 
 
-class PatternTestApplication(holoscan.core.Application):
+class TimestampTestApplication(holoscan.core.Application):
     def __init__(
         self,
         headless,
@@ -231,33 +242,49 @@ def diff_s(later_timestamp_ns, earlier_timestamp_ns):
     return to_s(diff_ns)
 
 
+# frame_time represents the constant time difference between when the
+#   frame-start and frame-end messages arrive at the FPGA; for IMX274
+#   it takes about 8ms for a 1080p or almost 16ms for a 4k image.
+# time_limit, the acceptable amount of time between when the frame was sent and
+#   when we got around to looking at it, is much smaller in the RDMA
+#   configuration.
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_udp_server
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
-    "camera_mode, roce_mode",  # noqa: E501
+    "camera_mode, roce_mode, frame_time, time_limit",  # noqa: E501
     [
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
             True,
+            0.015,
+            0.004,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             True,
+            0.008,
+            0.004,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
             False,
+            0.015,
+            0.010,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             False,
+            0.008,
+            0.010,
         ),
     ],
 )
 def test_imx274_timestamps(
     camera_mode,
     roce_mode,
+    frame_time,
+    time_limit,
     headless,
     hololink_address,
     ibv_name,
@@ -275,6 +302,7 @@ def test_imx274_timestamps(
         "--ibv-port",
         str(ibv_port),
         f"--pattern={pattern}",
+        "--ptp-sync",
     ]
     if headless:
         arguments.extend(["--headless"])
@@ -287,7 +315,7 @@ def test_imx274_timestamps(
 
     with mock.patch("sys.argv", arguments):
         with mock.patch(
-            "examples.imx274_player.HoloscanApplication", PatternTestApplication
+            "examples.imx274_player.HoloscanApplication", TimestampTestApplication
         ):
             imx274_player.main()
 
@@ -301,6 +329,7 @@ def test_imx274_timestamps(
         image_timestamp_ns,
         received_timestamp_ns,
         pipeline_timestamp_ns,
+        frame_number,
     ) in settled_timestamps:
         image_timestamp_s = datetime.datetime.fromtimestamp(
             to_s(image_timestamp_ns)
@@ -313,12 +342,12 @@ def test_imx274_timestamps(
         ).isoformat()  # strftime("%H:%M:%S.%f")
         pipeline_dt = diff_s(pipeline_timestamp_ns, image_timestamp_ns)
         logging.debug(
-            f"{image_timestamp_s=} {pipeline_timestamp_s=} {pipeline_dt=:0.6f}"
+            f"{image_timestamp_s=} {pipeline_timestamp_s=} {pipeline_dt=:0.6f} {frame_number=}"
         )
         pipeline_dts.append(round(pipeline_dt, 4))
         receiver_dt = diff_s(received_timestamp_ns, image_timestamp_ns)
         logging.debug(
-            f"{image_timestamp_s=} {received_timestamp_s=} {receiver_dt=:0.6f}"
+            f"{image_timestamp_s=} {received_timestamp_s=} {receiver_dt=:0.6f} {frame_number=}"
         )
         receiver_dts.append(round(receiver_dt, 4))
     smallest_time_difference = min(pipeline_dts)
@@ -328,8 +357,14 @@ def test_imx274_timestamps(
     smallest_time_difference = min(receiver_dts)
     largest_time_difference = max(receiver_dts)
     logging.info(f"receiver {smallest_time_difference=} {largest_time_difference=}")
-    # The pipeline processing time should never exceed 50ms.
-    assert 0 < smallest_time_difference < largest_time_difference < 0.05
-    # The difference between the timestamp on the board and the local host
-    # should never be more than 15ms.
-    assert 0 < smallest_time_difference < largest_time_difference < 0.015
+    # frame_time is passed in from above and represents the constant time
+    # difference between when the frame-start and frame-end messages arrive at
+    # the FPGA.  The time we get with the frame data is captured at frame-start
+    # time but isn't delivered to us until the frame-end is sent.  For us to
+    # check the validity of the timestamp, we check that the timestamp received
+    # with the frame, plus this constant offset, is within (time_limit) of the
+    # reception time recorded by the host.  Reception time is recorded when the
+    # last frame data is transmitted to us.
+    assert (frame_time + 0) <= smallest_time_difference
+    assert smallest_time_difference < largest_time_difference
+    assert largest_time_difference < (frame_time + time_limit)

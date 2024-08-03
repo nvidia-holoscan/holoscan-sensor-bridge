@@ -40,6 +40,7 @@ public:
     uint64_t frame_end_s;
     uint64_t frame_end_ns;
     uint32_t imm_data;
+    int64_t received_ns;
 };
 
 /**
@@ -111,6 +112,8 @@ protected:
     uint64_t volatile rx_write_requests_; // over all of time
     struct timespec frame_end_;
     uint32_t volatile imm_data_;
+    struct timespec event_time_;
+    int64_t volatile received_ns_;
 };
 
 } // namespace hololink::operators

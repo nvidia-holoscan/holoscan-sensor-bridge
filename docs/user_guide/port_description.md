@@ -57,12 +57,27 @@ Table 5 Sensor RX Interface Ports
 | \[W-1:0\] i_sif_axis_tdata\[0:N-1\]<sup>1<sup> | Input          | AXI-Stream Data.                                                               |
 | \[X-1:0\] i_sif_axis_tkeep\[0:N-1\]<sup>1<sup> | Input          | AXI-Stream Keep. Currently not supported. See Sensor RX section for more info. |
 | \[Y-1:0\] i_sif_axis_tuser\[0:N-1\]<sup>1<sup> | Input          | AXI-Stream User.                                                               |
-| o_sif_axis_tready                              | Output         | AXI-Stream Ready                                                               |
+| o_sif_axis_tready\[N-1:0\]<sup>1<sup>          | Output         | AXI-Stream Ready                                                               |
 
 1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
    Definitions section for details.Table 6 Sensor Event Ports
 
-Table 6 Sensor Event Ports
+Table 6 Sensor TX Interface Ports Sensor TX interface is unsupported but TBD for future
+revisions. Sensor TX interface ports should still be instantiated.
+
+| **Signal Name**                                | **Directi on** | **Description** |
+| ---------------------------------------------- | -------------- | --------------- |
+| o_sif_axis_tvalid\[N-1:0\]<sup>1<sup>          | Output         | TBD             |
+| o_sif_axis_tlast\[N-1:0\]<sup>1<sup>           | Output         | TBD             |
+| \[W-1:0\] o_sif_axis_tdata\[0:N-1\]<sup>1<sup> | Output         | TBD             |
+| \[X-1:0\] o_sif_axis_tkeep\[0:N-1\]<sup>1<sup> | Output         | TBD             |
+| \[Y-1:0\] o_sif_axis_tuser\[0:N-1\]<sup>1<sup> | Output         | TBD             |
+| i_sif_axis_tready\[N-1:0\]<sup>1<sup>          | Input          | TBD             |
+
+1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
+   Definitions section for details.
+
+Table 7 Sensor Event Ports
 
 | **Signal Name**                  | **Direction** | **Description**                                                      |
 | -------------------------------- | ------------- | -------------------------------------------------------------------- |
@@ -72,14 +87,14 @@ Table 6 Sensor Event Ports
 
 ## Host Interface Ports
 
-Table 7 Host Interface Clock and Reset Ports
+Table 8 Host Interface Clock and Reset Ports
 
 | **Signal Name** | **Direction** | **Description**                                                   |
 | --------------- | ------------- | ----------------------------------------------------------------- |
 | i_hif_clk       | Input         | 156.25MHz Host Interface Clock. See clocking section for details. |
 | o_hif_rst       | Output        | Host Interface Synchronous, Active-High Reset.                    |
 
-Table 8 Host RX Interface Ports
+Table 9 Host RX Interface Ports
 
 Connect the Host RX AXI-Streaming ports directly to Ethernet MAC TX AXI-Streaming ports.
 
@@ -90,12 +105,12 @@ Connect the Host RX AXI-Streaming ports directly to Ethernet MAC TX AXI-Streamin
 | \[W-1:0\]i_hif_axis_tdata\[0:N-1\]<sup>1<sup> | Input         | AXI-Stream Data  |
 | \[X-1:0\]i_hif_axis_tkeep\[0:N-1\]<sup>1<sup> | Input         | AXI-Stream Keep  |
 | \[Y-1:0\]i_hif_axis_tuser\[0:N-1\]<sup>1<sup> | Input         | AXI-Stream User  |
-| o_hif_axis_tready                             | Output        | AXI-Stream Ready |
+| o_hif_axis_tready\[N-1:0\]<sup>1<sup>         | Output        | AXI-Stream Ready |
 
 1. N=HOST_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
    Definitions section for details.
 
-Table 9 Host TX Interface Ports
+Table 10 Host TX Interface Ports
 
 Connect the Host TX AXI-Streaming ports directly to Ethernet MAC RX AXI-Streaming ports.
 
@@ -106,14 +121,14 @@ Connect the Host TX AXI-Streaming ports directly to Ethernet MAC RX AXI-Streamin
 | \[W-1:0\]o_hif_axis_tdata\[0:N-1\]<sup>1<sup> | Output        | AXI-Stream Data  |
 | \[X-1:0\]o_hif_axis_tkeep\[0:N-1\]<sup>1<sup> | Output        | AXI-Stream Keep  |
 | \[Y-1:0\]o_hif_axis_tuser\[0:N-1\]<sup>1<sup> | Output        | AXI-Stream User  |
-| i_hif_axis_tready                             | Input         | AXI-Stream Read  |
+| i_hif_axis_tready\[N-1:0\]<sup>1<sup>         | Input         | AXI-Stream Read  |
 
 1. N=HOST_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
    Definitions section for details.
 
 ## Peripheral Interface Ports
 
-Table 10 SPI Ports
+Table 11 SPI Ports
 
 | **Signal Name**                       | **Direction** | **Description**          |
 | ------------------------------------- | ------------- | ------------------------ |
@@ -125,7 +140,7 @@ Table 10 SPI Ports
 
 1. N=SPI_INST. See Macro Definitions section for details.
 
-Table 11 I2C Ports
+Table 12 I2C Ports
 
 | **Signal Name**                  | **Direction** | **Description**         |
 | -------------------------------- | ------------- | ----------------------- |
@@ -136,16 +151,32 @@ Table 11 I2C Ports
 
 1. N=I2C_INST. See Macro Definitions section for details.
 
-Table 12 GPIO Ports
+Table 13 GPIO Ports
 
 | **Signal Name**            | **Direction** | **Description**                      |
 | -------------------------- | ------------- | ------------------------------------ |
 | i_gpio\[N-1:0\]<sup>1<sup> | Input         | GPIO In. Synchronized to “i_apb_clk” |
-| o_gpio\[M-1:0\]<sup>1<sup> | Output        | GPIO Out. Synchronous to “i_apb_clk” |
+| o_gpio\[N-1:0\]<sup>1<sup> | Output        | GPIO Out. Synchronous to “i_apb_clk” |
 
-1. N=GPIO_IN, M=GPIO_OUT. See Macro Definitions section for details.
+1. N=GPIO_INST. See Macro Definitions section for details.
 
-Table 13 Sensor Reset Port
+Table 14 JESD Ports
+
+JESD Sensor Ports are unsupported and do not need to be instantiated. TBD in future
+revisions.
+
+| **Signal Name**      | **Direction** | **Description** |
+| -------------------- | ------------- | --------------- |
+| i_jesd_rxdp\[7-1:0\] | Input         | TBD             |
+| i_jesd_rxdn\[7-1:0\] | Input         | TBD             |
+| o_jesd_txdp\[7-1:0\] | Output        | TBD             |
+| o_jesd_txdn\[7-1:0\] | Output        | TBD             |
+| i_jesd_tx_sysref     | Input         | TBD             |
+| i_jesd_rx_sysref     | Input         | TBD             |
+| i_jesd_xcvr_refclk   | Input         | TBD             |
+| i_jesd_pll_refclk    | Input         | TBD             |
+
+Table 15 Sensor Reset Port
 
 | **Signal Name**                   | **Direction** | **Description**                                                                          |
 | --------------------------------- | ------------- | ---------------------------------------------------------------------------------------- |
@@ -153,3 +184,11 @@ Table 13 Sensor Reset Port
 | o_sw_sys_rst                      | Output        | Register controlled self-clearing reset. Can be used to reset blocks, such as PCS block. |
 
 1. N=SENSOR_IF_INST. See Macro Definitions section for details.
+
+Table 16 PTP Port
+
+| **Signal Name**        | **Direction** | **Description**                                                          |
+| ---------------------- | ------------- | ------------------------------------------------------------------------ |
+| o_ptp_sec \[47:0\]     | Output        | PTP Seconds Field per PTP1588-2019 v2 spec. Synchronous to i_hif_clk     |
+| o_ptp_nanosec \[31:0\] | Output        | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_hif_clk |
+| o_pps                  | Output        | Pulse Per Second. Synchronous to i_hif_clk                               |

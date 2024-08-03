@@ -50,20 +50,27 @@ Next, follow the directions on the appropriate tab below to configure your host 
   ```
 
   This will produce a list of CX7 ports; your device names may vary. The lowest
-  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port. Next, determine
-  which host ethernet port is associated with that device.  To simplify entering
-  commands later, let's assign `$IN0` and `$EN0` with the names of these devices-- make sure
-  you use the actual names presented on your device.
+  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port.  Let's assign
+  that name to the variable `$IN0`.
 
   ```none
-  $ IN0=roceP5p3s0f0
-  $ ls /sys/class/infiniband/$IN0/device/net
-  eth0
-  $ EN0=eth0
+  $ IN=(/sys/class/infiniband/*)
+  $ IN0=`basename ${IN[0]}`
+  $ echo $IN0
+  roceP5p3s0f0
   ```
 
-  This indicates that the host network interface associated with `$IN0` (`roceP5p3s0f0`) is
-  `$EN0` (`eth0`).
+  Next, determine which host ethernet port is associated with that device, and assign
+  that to the variable `$EN0`, which we'll use later during network configuration.
+
+  ```none
+  $ EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
+  $ echo $EN0
+  enP5p3s0f0np0
+  ```
+
+  In summary, the host network interface associated with `$IN0` (`roceP5p3s0f0`) is
+  `$EN0` (`enP5p3s0f0np0`); your specific device names may vary.
 
 - IGX OS uses NetworkManager to configure network interfaces. By default, the sensor
   bridge device uses the address 192.168.0.2 for the first port. Set up your first
@@ -102,19 +109,20 @@ Next, follow the directions on the appropriate tab below to configure your host 
 
   <img src="igx-rear-qsfp1.png" alt="IGX QSFP1" width="75%"/>
 
-  Let's refer to these as `$IN1` and `$EN1`:
+  Let's refer to these as `$IN1` and `$EN1`.  Given the commands to assign `$IN0` and
+  `$EN0` above,
 
   ```none
-  $ ls /sys/class/infiniband
-  roceP5p3s0f0 roceP5p3s0f1
-  $ IN1=roceP5p3s0f1
-  $ ls /sys/class/infiniband/$IN1/device/net
-  eth1
-  $ EN1=eth1
+  $ IN1=`basename ${IN[1]}`
+  $ echo $IN1
+  roceP5p3s0f1
+  $ EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
+  $ echo $EN1
+  enP5p3s0f1np1
   ```
 
-  As above, configure the second QSFP network port with an appropriate address and
-  permanent route:
+  As above, your device names may be different.  Configure the second QSFP network port
+  with an appropriate address and permanent route:
 
   ```none
   $ sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
@@ -140,6 +148,81 @@ Next, follow the directions on the appropriate tab below to configure your host 
 
   When the second port is configured, the first port should continue to respond to
   pings as appropriate.
+
+- Enable PTP on $EN0.  This synchronizes the timestamps reported with received data with the IGX
+  time.
+
+  Run the `phc2sys` tool at boot time.  This synchronizes the clock in $EN0 with the
+  system clock.  First, install the `linuxptp` tool.
+
+  ```none
+  sudo apt update && sudo apt install -y linuxptp
+  ```
+
+  Next, set up a systemd service file that will run `phc2sys`.
+
+  ```none
+  PHC2SYS_SERVICE=/etc/systemd/system/phc2sys-$EN0.service
+  cat <<EOF | sudo tee $PHC2SYS_SERVICE >/dev/null
+  [Unit]
+  Description=Copy system time to $EN0
+  After=time-sync.target
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/sbin/phc2sys -c $EN0 -s CLOCK_REALTIME -O 0
+
+  [Install]
+  WantedBy=multi-user.target
+  EOF
+  ```
+
+  Configure it for execution at startup, and start it now.
+
+  ```none
+  sudo chmod u+x $PHC2SYS_SERVICE
+  sudo systemctl enable phc2sys-$EN0.service
+  sudo systemctl start phc2sys-$EN0.service
+  ```
+
+  Next, run `ptp4l` to send PTP SYNC messages to $EN0.
+
+  ```none
+  cat <<EOF | sudo tee /etc/linuxptp/hsb-ptp.conf >/dev/null
+  # This configuration is appropriate for NVIDIA Holoscan sensor bridge
+  # applications, where PTP messages are sent over L2 and a 1/2 second interval.
+  [global]
+  logSyncInterval -1
+  logMinDelayReqInterval -1
+  network_transport L2
+  EOF
+  ```
+
+  Set up a systemd service file for this.
+
+  ```none
+  PTP4L_SERVICE=/etc/systemd/system/ptp4l-$EN0.service
+  cat <<EOF | sudo tee $PTP4L_SERVICE >/dev/null
+  [Unit]
+  Description=Send PTP SYNC messages to $EN0
+  After=phc2sys-$EN0.service
+
+  [Service]
+  Type=simple
+  ExecStart=/usr/sbin/ptp4l -i $EN0 -f /etc/linuxptp/hsb-ptp.conf
+
+  [Install]
+  WantedBy=multi-user.target
+  EOF
+  ```
+
+  Finally, run it.
+
+  ```none
+  sudo chmod u+x $PTP4L_SERVICE
+  sudo systemctl enable ptp4l-$EN0.service
+  sudo systemctl start ptp4l-$EN0.service
+  ```
 
 - For IGX with iGPU only: Install
   [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.

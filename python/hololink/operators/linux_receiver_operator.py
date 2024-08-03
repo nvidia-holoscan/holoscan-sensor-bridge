@@ -87,8 +87,9 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
             "frame_number": receiver_metadata.frame_number,
             "frame_packets_received": receiver_metadata.frame_packets_received,
             "frame_bytes_received": receiver_metadata.frame_bytes_received,
-            "received_ns": now_ns,
+            "received_ns": receiver_metadata.received_ns,
             "timestamp_ns": timestamp_ns,
+            "packets_dropped": receiver_metadata.packets_dropped,
         }
         return application_metadata
 

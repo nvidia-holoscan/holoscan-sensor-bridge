@@ -64,6 +64,11 @@ constexpr uint32_t I2C_DONE = 0b0001'0000'0000'0000;
 //
 constexpr uint32_t FPGA_VERSION = 0x80;
 constexpr uint32_t FPGA_DATE = 0x84;
+constexpr uint32_t FPGA_PTP_CTRL = 0x104;
+constexpr uint32_t FPGA_PTP_CTRL_DPLL_CFG1 = 0x110;
+constexpr uint32_t FPGA_PTP_CTRL_DPLL_CFG2 = 0x114;
+constexpr uint32_t FPGA_PTP_SYNC_TS_0 = 0x180;
+constexpr uint32_t FPGA_PTP_OFM = 0x18C;
 
 // board IDs
 constexpr uint32_t HOLOLINK_LITE_BOARD_ID = 1u;
@@ -413,6 +418,13 @@ public:
      * Add a callback devices can use to command reset.
      */
     void on_reset(std::shared_ptr<ResetController> reset_controller);
+
+    /**
+     * Wait up to the given timeout for PTP to synchronize.
+     * @returns false if no PTP sync messages are received
+     * within the allowed time.
+     */
+    bool ptp_synchronize(const std::shared_ptr<Timeout>& timeout);
 
 protected:
     /**

@@ -105,7 +105,7 @@ std::shared_ptr<hololink::Metadata> RoceReceiverOp::get_next_frame(double timeou
     auto metadata = std::make_shared<Metadata>();
     (*metadata)["frame_number"] = int64_t(roce_receiver_metadata.frame_number);
     (*metadata)["rx_write_requests"] = int64_t(roce_receiver_metadata.rx_write_requests);
-    (*metadata)["received_ns"] = now_ns;
+    (*metadata)["received_ns"] = roce_receiver_metadata.received_ns;
     (*metadata)["timestamp_ns"] = timestamp_ns;
     (*metadata)["imm_data"] = int64_t(roce_receiver_metadata.imm_data);
 
