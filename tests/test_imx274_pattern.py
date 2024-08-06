@@ -132,7 +132,7 @@ class PatternTestApplication(holoscan.core.Application):
             block_size=self._camera_left._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
             self,
@@ -151,7 +151,7 @@ class PatternTestApplication(holoscan.core.Application):
             block_size=self._camera_right._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator_right = hololink_module.operators.CsiToBayerOp(
             self,
@@ -204,7 +204,7 @@ class PatternTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         bayer_format = self._camera_left.bayer_format()
         demosaic_left = holoscan.operators.BayerDemosaicOp(
@@ -225,7 +225,7 @@ class PatternTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         bayer_format = self._camera_right.bayer_format()
         demosaic_right = holoscan.operators.BayerDemosaicOp(
@@ -325,7 +325,7 @@ class PatternTestApplication(holoscan.core.Application):
         self._check_done()
 
 
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
@@ -388,6 +388,10 @@ class PatternTestApplication(holoscan.core.Application):
         ),
     ],
 )
+@pytest.mark.parametrize(
+    "scheduler",
+    ["default", "greedy", "multithread", "event"],
+)
 def test_imx274_pattern(
     camera_mode_left,
     pattern_left,
@@ -398,6 +402,7 @@ def test_imx274_pattern(
     headless,
     hololink_address,
     capsys,
+    scheduler,
 ):
     #
     logging.info("Initializing.")
@@ -464,6 +469,34 @@ def test_imx274_pattern(
     camera_left.test_pattern(pattern_left)
     camera_right.configure(camera_mode_right)
     camera_right.test_pattern(pattern_right)
+
+    # values for scheduler parameters.
+    if scheduler == "event":
+        app_scheduler = holoscan.schedulers.EventBasedScheduler(
+            application,
+            worker_thread_number=4,
+            name="event_scheduler",
+        )
+        application.scheduler(app_scheduler)
+    elif scheduler == "multithread":
+        app_scheduler = holoscan.schedulers.MultiThreadScheduler(
+            application,
+            worker_thread_number=4,
+            name="multithread_scheduler",
+        )
+        application.scheduler(app_scheduler)
+    elif scheduler == "greedy":
+        app_scheduler = holoscan.schedulers.GreedyScheduler(
+            application,
+            name="greedy_scheduler",
+        )
+        application.scheduler(app_scheduler)
+    elif scheduler == "default":
+        # Use the default one.
+        pass
+    else:
+        raise Exception(f"Unexpected {scheduler=}")
+
     application.run()
     hololink.stop()
 

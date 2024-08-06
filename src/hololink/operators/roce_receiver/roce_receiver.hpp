@@ -21,6 +21,7 @@
 #define SRC_HOLOLINK_OPERATORS_ROCE_RECEIVER_ROCE_RECEIVER
 
 #include <atomic>
+#include <mutex>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -114,6 +115,8 @@ protected:
     uint32_t volatile imm_data_;
     struct timespec event_time_;
     int64_t volatile received_ns_;
+
+    std::mutex& get_lock(); // Ensures reentrency protection for ibv calls.
 };
 
 } // namespace hololink::operators

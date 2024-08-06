@@ -60,7 +60,7 @@ def hololink_session(request):
 
 def pytest_addoption(parser):
     parser.addoption(
-        "--udp-server",
+        "--imx274",
         action="store_true",
         default=False,
         help="Don't skip test_udp.",
@@ -129,13 +129,11 @@ def pytest_addoption(parser):
 
 
 def pytest_collection_modifyitems(config, items):
-    if not config.getoption("--udp-server"):
-        skip_udp_server = pytest.mark.skip(
-            reason="Tests only run in --udp-server mode."
-        )
+    if not config.getoption("--imx274"):
+        skip_imx274 = pytest.mark.skip(reason="Tests only run in --imx274 mode.")
         for item in items:
-            if "skip_unless_udp_server" in item.keywords:
-                item.add_marker(skip_udp_server)
+            if "skip_unless_imx274" in item.keywords:
+                item.add_marker(skip_imx274)
     if config.getoption("--unaccelerated-only"):
         skip_accelerated_networking = pytest.mark.skip(
             reason="Don't run network accelerated tests when --unaccelerated-only is specified."

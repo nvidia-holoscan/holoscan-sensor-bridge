@@ -21,6 +21,7 @@
 #define SRC_HOLOLINK_HOLOLINK
 
 #include <memory>
+#include <mutex>
 #include <stdint.h>
 #include <string>
 #include <tuple>
@@ -448,6 +449,7 @@ private:
     uint32_t version_;
     uint32_t datecode_;
     std::vector<std::shared_ptr<ResetController>> reset_controllers_;
+    std::mutex execute_mutex_; // protects command/response transactions with the device.
 
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
         bool response_expected = true);

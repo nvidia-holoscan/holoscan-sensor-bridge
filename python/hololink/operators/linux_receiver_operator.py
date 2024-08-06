@@ -31,8 +31,19 @@ NS_PER_SEC = 1000 * US_PER_SEC
 
 
 class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, receiver_affinity=None, **kwargs):
         super().__init__(*args, **kwargs)
+        self._receiver_affinity = receiver_affinity
+        if self._receiver_affinity is None:
+            # By default, run us on the third core in the system;
+            # run with HOLOLINK_AFFINITY=<n> to use a different core or
+            # set HOLOLINK_AFFINITY="" to avoid affinity configuration.
+            affinity = os.getenv("HOLOLINK_AFFINITY", "2")
+            # The len(affinity) supports this command
+            #   HOLOLINK_AFFINITY= python3 ...
+            # to avoid affinity settings.
+            if (affinity is not None) and (len(affinity) > 0):
+                self._receiver_affinity = {int(affinity)}
 
     def _start_receiver(self):
         self._check_buffer_size(self._frame_size)
@@ -52,16 +63,8 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
 
     def _run(self):
         cuda.cuCtxSetCurrent(self._frame_context)
-        # By default, run us on the third core in the system;
-        # run with HOLOLINK_AFFINITY=<n> to use a different core or
-        # set HOLOLINK_AFFINITY="" to avoid affinity configuration.
-        affinity = os.getenv("HOLOLINK_AFFINITY", "2")
-        # The len(affinity) supports this command
-        #   HOLOLINK_AFFINITY= python3 ...
-        # to avoid affinity settings.
-        if (affinity is not None) and (len(affinity) > 0):
-            u = {int(affinity)}
-            os.sched_setaffinity(0, u)
+        if self._receiver_affinity:
+            os.sched_setaffinity(0, self._receiver_affinity)
         self._receiver.run()
 
     def _stop(self):

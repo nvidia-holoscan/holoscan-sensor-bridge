@@ -27,7 +27,7 @@ from examples import distributed_tao_peoplenet
 
 
 @pytest.mark.skip(reason="Disabled, see https://nvbugspro.nvidia.com/bug/4472408")
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501

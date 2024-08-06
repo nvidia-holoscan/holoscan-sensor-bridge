@@ -22,7 +22,7 @@ import pytest
 import hololink as hololink_module
 
 
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 def test_hololink_enumeration_native(timeout_s=60):
     enumerator = hololink_module.Enumerator()
     devices_found = {}

@@ -249,7 +249,7 @@ def diff_s(later_timestamp_ns, earlier_timestamp_ns):
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
 @pytest.mark.skip_unless_ptp
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode, roce_mode, frame_time, time_limit",  # noqa: E501

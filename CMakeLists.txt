@@ -29,7 +29,7 @@ find_package(holoscan 0.6 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 
 set(HOLOSCAN_SDK_VERSION "$ENV{HOLOSCAN_SDK_VERSION}")
-set(HOLOSCAN_SDK_VERSION_EXPECTED "2.1.0")
+set(HOLOSCAN_SDK_VERSION_EXPECTED "2.3.0")
 
 if(NOT HOLOSCAN_SDK_VERSION VERSION_EQUAL HOLOSCAN_SDK_VERSION_EXPECTED)
   message(FATAL_ERROR "Expected Holoscan version ${HOLOSCAN_SDK_VERSION_EXPECTED} but found ${HOLOSCAN_SDK_VERSION}, please check pybind11 version of the Holoscan SDK and update here if needed")

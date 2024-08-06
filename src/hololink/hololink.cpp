@@ -26,7 +26,6 @@
 
 #include <cassert>
 #include <cstdint>
-#include <mutex>
 #include <thread>
 
 #include <hololink/native/deserializer.hpp>
@@ -64,6 +63,7 @@ Hololink::Hololink(
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
+    , execute_mutex_()
 {
 }
 
@@ -371,6 +371,12 @@ std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<native::Deserializer>>
 {
     HOLOSCAN_LOG_TRACE("Sending request={}", request);
     double request_time = Timeout::now_s();
+
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+
     send_control(request);
     while (true) {
         reply = receive_control(timeout);

@@ -301,7 +301,7 @@ class PatternTestApplication(holoscan.core.Application):
 
 
 @pytest.mark.skip_unless_igpu
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
     "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
     [

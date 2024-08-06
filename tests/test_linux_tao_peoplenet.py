@@ -26,7 +26,7 @@ import hololink as hololink_module
 from examples import linux_tao_peoplenet
 
 
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501
     [

@@ -78,7 +78,7 @@ For IGX configurations,
 then
 
 ```none
-pytest --udp-server
+pytest --imx274
 ```
 
 For AGX configurations, only one camera is supported, so only
@@ -86,7 +86,7 @@ For AGX configurations, only one camera is supported, so only
 is to be connected. Run the device test on AGX this way:
 
 ```none
-pytest --udp-server --unaccelerated-only
+pytest --imx274 --unaccelerated-only
 ```
 
 If things are not working as expected, check the

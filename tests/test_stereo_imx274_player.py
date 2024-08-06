@@ -24,7 +24,7 @@ import hololink as hololink_module
 from examples import stereo_imx274_player
 
 
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501

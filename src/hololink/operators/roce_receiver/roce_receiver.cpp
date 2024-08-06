@@ -117,6 +117,13 @@ bool RoceReceiver::start()
 {
     DEBUG("Starting.\n");
 
+    // ibv calls seem to have trouble with
+    // reentrancy.  No problem; since we're only
+    // at startup, run just one at a time.  This
+    // only affects multithreaded schedulers like
+    // EventBasedScheduler.
+    std::lock_guard lock(get_lock());
+
     // Find the IB controller
     int num_devices = 0;
     struct ibv_device** ib_devices = ibv_get_device_list(&num_devices);
@@ -672,6 +679,14 @@ bool RoceReceiver::check_async_events()
         ibv_ack_async_event(&ib_async_event);
     }
     return true;
+}
+
+std::mutex& RoceReceiver::get_lock()
+{
+    // We want all RoceReceiver instances in this process
+    // to share the same lock.
+    static std::mutex lock;
+    return lock;
 }
 
 } // namespace hololink::operators

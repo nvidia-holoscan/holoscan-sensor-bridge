@@ -100,7 +100,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera_left._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=4,
+            num_blocks=6,
         )
         csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
             self,
@@ -178,7 +178,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=4,
+            num_blocks=6,
         )
         demosaic_left = holoscan.operators.BayerDemosaicOp(
             self,
@@ -412,6 +412,18 @@ def main():
     camera_left.set_digital_gain_reg(0x4)
     camera_right.configure(camera_mode)
     camera_right.set_digital_gain_reg(0x4)
+
+    # For demonstration purposes, use the Event based
+    # scheduler.  Any HSDK scheduler works fine here,
+    # including the default greedy scheduler, which
+    # you get if you don't explicitly configure one.
+    scheduler = holoscan.schedulers.EventBasedScheduler(
+        application,
+        worker_thread_number=4,
+        name="event_scheduler",
+    )
+    application.scheduler(scheduler)
+
     application.run()
     hololink.stop()
 

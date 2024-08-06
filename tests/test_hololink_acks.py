@@ -35,7 +35,7 @@ class AckTimerHololink(hololink_module.Hololink):
 # but because it tests device functionality and not host
 # functionality, we'll skip this for hosts with slower network
 # ports.
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 def test_hololink_acks(hololink_address):
     logging.info("Initializing.")

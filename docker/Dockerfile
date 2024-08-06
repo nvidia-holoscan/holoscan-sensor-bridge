@@ -16,7 +16,7 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_TYPE=dgpu
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.1.0-${CONTAINER_TYPE}
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.3.0-${CONTAINER_TYPE}
 
 ARG CONTAINER_TYPE
 

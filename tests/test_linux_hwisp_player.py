@@ -25,7 +25,7 @@ from examples import linux_hwisp_player
 
 
 @pytest.mark.skip_unless_igpu
-@pytest.mark.skip_unless_udp_server
+@pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501
     [
