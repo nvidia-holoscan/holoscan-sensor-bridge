@@ -69,3 +69,14 @@ look at `docs/user_guide/_build/html/index.html`.
   check for the dGPU driver version; in the iGPU configuration, this driver isn't
   loaded, resulting in this message. iGPU operation is unaffected by this and will
   operate as expected.
+
+- AGX running examples/linux_body_pose_estimation.py --camera-mode=0, the first time,
+  may cause the video to hang.
+
+  The first time the body-post-estimation app is run, the .onnx file is converted to a
+  TRT engine file, which is a step than can take several minutes. Subsequent runs of the
+  body pose estimation app will skip the conversion and just load this engine file
+  directly. During the converstion, when high bandwidth is in use on the network (via
+  "--camera-mode=0"), the kernel stops delivering received UDP messages to the
+  application, resulting in no video being displayed. Later runs the same program, after
+  the conversion is complete, run as expected.

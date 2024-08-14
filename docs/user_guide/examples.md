@@ -91,7 +91,7 @@ Press Ctrl/C to exit. More information about this application can be found
 **Prerequisite**: Download the YOLOv8 ONNX model from the YOLOv8 website and generate
 the body pose ONNX model. Within the Holoscan sensor bridge demo container:
 
-From the repo base directory `hololink`:
+From the repo base directory `holoscan-sensor-bridge`:
 
 ```sh
 apt-get update && apt-get install -y ffmpeg

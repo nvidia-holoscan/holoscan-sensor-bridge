@@ -42,3 +42,16 @@ done
 Use the appropriate value where `roceP5p3s0f0` is shown here. When no data plane
 requests are received, be sure and check that the sensor is properly connected to the
 sensor bridge board.
+
+## Sensor Bridge LED indications
+
+The Holsocan Sensor Bridge board has two leds that depending on their state have the
+following indications:
+
+1. **Both leds are off** - The Holoscan Sensor Bridge Board is not powered.
+1. **Both leds are on with green color** - The Holoscan Sensor Bridge Board is powered
+   and ready.
+1. **One green led or green led blinking** - The Holoscan Sensor Bridge Board is powered
+   with incorrect power supply that does not meet the minimum 12V/2A requirements.
+1. **One green led and one red led** - FPGA flashing failed, FPGA might need to be
+   flashed with a FTDI cable.

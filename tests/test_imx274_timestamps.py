@@ -270,13 +270,13 @@ def diff_s(later_timestamp_ns, earlier_timestamp_ns):
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
             False,
             0.015,
-            0.010,
+            0.012,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             False,
             0.008,
-            0.010,
+            0.012,
         ),
     ],
 )

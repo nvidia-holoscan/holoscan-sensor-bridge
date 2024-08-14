@@ -160,6 +160,7 @@ void LinuxReceiver::run()
     while (true) {
         int recv_flags = 0;
         ssize_t received_bytes = recv(socket_, received, sizeof(received), recv_flags);
+        int recv_errno = errno;
 
         // Get the clock as close to the packet receipt as possible.
         if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
@@ -169,7 +170,7 @@ void LinuxReceiver::run()
 
         if (received_bytes <= 0) {
             // check if there is a timeout
-            if ((errno == EAGAIN) || (errno == EWOULDBLOCK) || (errno == EINTR)) {
+            if ((recv_errno == EAGAIN) || (recv_errno == EWOULDBLOCK) || (recv_errno == EINTR)) {
                 // should we exit?
                 if (exit_) {
                     break;
@@ -177,7 +178,7 @@ void LinuxReceiver::run()
                 // if not, continue
                 continue;
             }
-            ERROR("recv returned received_bytes=%d, errno=%d.\n", (int)received_bytes, (int)errno);
+            ERROR("recv returned received_bytes=%d, recv_errno=%d.\n", (int)received_bytes, (int)recv_errno);
             break;
         }
 

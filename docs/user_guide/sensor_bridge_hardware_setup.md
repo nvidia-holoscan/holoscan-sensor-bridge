@@ -13,7 +13,7 @@ Holoscan sensor bridge has the following connectors:
 1. **Camera connector** - This connector is used to interface with a camera (e.g.
    IMX274).
 1. **Power port** - the sensor bridge device is powered by using a USB-C power supply
-   connected to this port.
+   with a minimum of 12V/2A connected to this port.
 1. **GPIO pins** - the sensor bridge device supports 16 GPIO pins (0...15) and 4 ground
    pins (marked 'G' in the image above).
 
@@ -54,7 +54,8 @@ width="100%"/>
 
    <img src="jetson_agx_ports.png" alt="Jetson AGX Orin Ports" width="90%"/>
 
-1. Connect a USB-C cable to power connector of the sensor bridge device and wait for the
-   green leds on the sensor bridge board to light up.
+1. Connect a USB-C power supply with a minimum of 12V/2A to the USB-C power connector of
+   the sensor bridge device and wait for the green leds on the sensor bridge board to
+   light up.
 
 1. Follow the instructions in the [setup page](setup.md) to configure your host system.
