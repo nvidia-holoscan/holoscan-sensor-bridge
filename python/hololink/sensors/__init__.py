@@ -21,6 +21,7 @@ _MODULES = [
     "imx274",
     "udp_cam",
     "csi",
+    "imx477",
 ]
 
 _OBJECTS = {

@@ -20,6 +20,7 @@ import sys
 _MODULES = [
     "hololink",
     "imx274",
+    "polarfire_esb",
 ]
 
 __all__ = []

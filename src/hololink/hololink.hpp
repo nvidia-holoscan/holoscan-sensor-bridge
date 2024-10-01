@@ -75,6 +75,7 @@ constexpr uint32_t FPGA_PTP_OFM = 0x18C;
 constexpr uint32_t HOLOLINK_LITE_BOARD_ID = 1u;
 constexpr uint32_t HOLOLINK_BOARD_ID = 2u;
 constexpr uint32_t HOLOLINK_100G_BOARD_ID = 3u;
+constexpr uint32_t MICROCHIP_POLARFIRE_BOARD_ID = 4u;
 
 class TimeoutError : public std::runtime_error {
 public:
