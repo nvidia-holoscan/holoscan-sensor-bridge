@@ -177,13 +177,16 @@ namespace {
             metadata["board_description"] = "hololink";
         } else if (board_id == HOLOLINK_100G_BOARD_ID) {
             metadata["board_description"] = "hololink 100G";
+        } else if (board_id == MICROCHIP_POLARFIRE_BOARD_ID) {
+            metadata["board_description"] = "Microchip Polarfire";
         } else {
             metadata["board_description"] = "N/A";
         }
 
         if ((board_id == HOLOLINK_LITE_BOARD_ID)
             || (board_id == HOLOLINK_BOARD_ID)
-            || (board_id == HOLOLINK_100G_BOARD_ID)) {
+            || (board_id == HOLOLINK_100G_BOARD_ID)
+            || (board_id == MICROCHIP_POLARFIRE_BOARD_ID)) {
             std::string board_version;
             std::string serial_number;
             uint16_t cpnx_version = 0;

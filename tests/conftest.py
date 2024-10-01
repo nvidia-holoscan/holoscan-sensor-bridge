@@ -126,6 +126,12 @@ def pytest_addoption(parser):
         default=False,
         help="Don't skip tests requiring PTP support",
     )
+    parser.addoption(
+        "--imx477",
+        action="store_true",
+        default=False,
+        help="Include tests for IMX477.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -156,6 +162,11 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_ptp" in item.keywords:
                 item.add_marker(skip_ptp)
+    if not config.getoption("--imx477"):
+        skip_imx477 = pytest.mark.skip(reason="Tests only run in --imx477 mode.")
+        for item in items:
+            if "skip_unless_imx477" in item.keywords:
+                item.add_marker(skip_imx477)
 
 
 @pytest.fixture

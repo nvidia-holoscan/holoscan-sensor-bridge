@@ -80,6 +80,7 @@ setuptools.setup(
         "console_scripts": [
             "hololink=tools.hololink:main",
             "imx274=tools.imx274:main",
+            "polarfire_esb=tools.polarfire_esb:main",
         ],
     },
 )

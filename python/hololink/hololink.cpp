@@ -228,6 +228,7 @@ PYBIND11_MODULE(_hololink, m)
     m.attr("HOLOLINK_LITE_BOARD_ID") = HOLOLINK_LITE_BOARD_ID;
     m.attr("HOLOLINK_BOARD_ID") = HOLOLINK_BOARD_ID;
     m.attr("HOLOLINK_100G_BOARD_ID") = HOLOLINK_100G_BOARD_ID;
+    m.attr("MICROCHIP_POLARFIRE_BOARD_ID") = MICROCHIP_POLARFIRE_BOARD_ID;
 
     py::class_<DataChannel, std::shared_ptr<DataChannel>>(m, "DataChannel")
         .def(py::init<const Metadata&>(), "metadata"_a)
