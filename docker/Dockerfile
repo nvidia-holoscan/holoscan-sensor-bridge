@@ -18,7 +18,7 @@
 ARG CONTAINER_TYPE=dgpu
 FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.3.0-${CONTAINER_TYPE}
 
-ARG CONTAINER_TYPE
+ARG CONTAINER_TYPE=invalid
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \

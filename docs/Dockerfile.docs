@@ -1,7 +1,7 @@
 # The base image should be the development container
 # to provide all the runtime dependencies needed by
 # the python api doc generator
-ARG CONTAINER_VERSION
+ARG CONTAINER_VERSION=invalid
 FROM $CONTAINER_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive

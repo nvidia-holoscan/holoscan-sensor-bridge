@@ -15,7 +15,7 @@
 #
 # See README.md for detailed information.
 
-ARG CONTAINER_VERSION
+ARG CONTAINER_VERSION=invalid
 FROM ${CONTAINER_VERSION} AS base
 
 # build container
