@@ -166,7 +166,7 @@ Next, follow the directions on the appropriate tab below to configure your host 
   cat <<EOF | sudo tee $PHC2SYS_SERVICE >/dev/null
   [Unit]
   Description=Copy system time to $EN0
-  After=time-sync.target
+  After=timemaster.service
 
   [Service]
   Type=simple
