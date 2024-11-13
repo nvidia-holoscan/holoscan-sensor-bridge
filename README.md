@@ -6,9 +6,11 @@ Holoscan Sensor Bridge provides a FPGA based interface for low-latency sensor da
 processing using GPUs. Peripheral device data is acquired by the FPGA and sent via UDP
 to the host system where ConnectX devices can write that UDP data directly into GPU
 memory. This software package supports integrating that equipment into Holoscan
-pipelines and provides several examples showing video processing and inference based on
-an IMX274 camera and a
-[Holoscan Sensor Bridge device](https://www.latticesemi.com/products/developmentboardsandkits/certuspro-nx-sensor-to-ethernet-bridge-board).
+pipelines and provides several examples showing video processing and inference using an
+IMX274 camera with
+[Lattice Holoscan Sensor Bridge device](https://www.latticesemi.com/products/developmentboardsandkits/certuspro-nx-sensor-to-ethernet-bridge-board)
+or an IMX477 camera with
+[Microchip Holoscan Sensor Bridge](https://www.microchip.com/en-us/products/fpgas-and-plds/boards-and-kits/ethernet-sensor-bridge).
 
 ## Setup
 
