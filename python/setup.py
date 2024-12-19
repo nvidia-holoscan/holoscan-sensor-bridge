@@ -49,6 +49,8 @@ setuptools.setup(
         "hololink/operators",
         "hololink/sensors",
         "hololink/sensors/imx274",
+        "hololink/sensors/imx715",
+        "hololink/sensors/ar0234",
         "tools",
     ],
     ext_modules=[
