@@ -38,8 +38,10 @@ public:
         INVALID = -1,
         // NOTE THAT THESE GUYS LINE UP WITH THE VALUES USED BY NPP; see
         // https://docs.nvidia.com/cuda/npp/nppdefs.html#c.NppiBayerGridPosition
+        BGGR = 0,
         RGGB = 1,
         GBRG = 2,
+        GRBG = 3,
     };
 
     void setup(holoscan::OperatorSpec& spec) override;
