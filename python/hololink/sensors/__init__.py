@@ -19,6 +19,8 @@ import sys
 # Define operator modules and classes for lazy loading
 _MODULES = [
     "imx274",
+    "imx715",
+    "ar0234",
     "udp_cam",
     "csi",
     "imx477",
