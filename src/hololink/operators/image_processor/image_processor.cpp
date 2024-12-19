@@ -288,6 +288,12 @@ void ImageProcessorOp::start()
 
     uint32_t x0y0_offset, x1y0_offset, x0y1_offset, x1y1_offset;
     switch (BayerFormat(bayer_format_.get())) {
+    case BayerFormat::BGGR:
+        x0y0_offset = 2; // B
+        x1y0_offset = 1; // G
+        x0y1_offset = 1; // G
+        x1y1_offset = 0; // R
+        break;
     case BayerFormat::RGGB:
         x0y0_offset = 0; // R
         x1y0_offset = 1; // G
@@ -298,6 +304,12 @@ void ImageProcessorOp::start()
         x0y0_offset = 1; // G
         x1y0_offset = 2; // B
         x0y1_offset = 0; // R
+        x1y1_offset = 1; // G
+        break;
+    case BayerFormat::GRBG:
+        x0y0_offset = 1; // G
+        x1y0_offset = 0; // R
+        x0y1_offset = 2; // B
         x1y1_offset = 1; // G
         break;
     default:

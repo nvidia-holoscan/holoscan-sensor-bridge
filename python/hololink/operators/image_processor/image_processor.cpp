@@ -87,10 +87,14 @@ PYBIND11_MODULE(_image_processor, m)
                   .def("setup", &ImageProcessorOp::setup, "spec"_a);
 
     py::enum_<ImageProcessorOp::BayerFormat>(op, "BayerFormat")
+        .value("BGGR", ImageProcessorOp::BayerFormat::BGGR,
+            R"pbdoc(BGGR)pbdoc")
         .value("RGGB", ImageProcessorOp::BayerFormat::RGGB,
             R"pbdoc(RGGB)pbdoc")
         .value("GBRG", ImageProcessorOp::BayerFormat::GBRG,
             R"pbdoc(GBRG)pbdoc")
+        .value("GRBG", ImageProcessorOp::BayerFormat::GRBG,
+            R"pbdoc(GRBG)pbdoc")
         .export_values();
 
 } // PYBIND11_MODULE
