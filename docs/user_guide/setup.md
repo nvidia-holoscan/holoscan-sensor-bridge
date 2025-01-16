@@ -3,13 +3,13 @@
 Holoscan sensor bridge is supported on the following configurations:
 
 - IGX systems configured with
-  [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with CX7
+  [IGX OS 1.1 Production Release](https://developer.nvidia.com/igx-downloads) with CX7
   SmartNIC devices.
 - AGX Orin systems running
-  [JP6.0 release 2](https://developer.nvidia.com/embedded/jetpack). In this
-  configuration, the on-board Ethernet controller is used with the Linux kernel network
-  stack for data I/O; all network I/O is performed by the CPU without network
-  acceleration.
+  [JP6.0 release 2](https://developer.nvidia.com/embedded/jetpack). **NOTE THAT JETPACK
+  6.1 AND NEWER ARE NOT YET SUPPORTED.** In this configuration, the on-board Ethernet
+  controller is used with the Linux kernel network stack for data I/O; all network I/O
+  is performed by the CPU without network acceleration.
 
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
 configure a few prerequisites in your host system. While holoscan sensor bridge
@@ -82,6 +82,7 @@ Next, follow the directions on the appropriate tab below to configure your host 
   ```none
   $ sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   $ sudo nmcli connection modify hololink-$EN0 +ipv4.routes "192.168.0.2/32 192.168.0.101"
+  $ sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
   $ sudo nmcli connection up hololink-$EN0
   ```
 
@@ -127,6 +128,7 @@ Next, follow the directions on the appropriate tab below to configure your host 
   ```none
   $ sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
   $ sudo nmcli connection modify hololink-$EN1 +ipv4.routes "192.168.0.3/32 192.168.0.102"
+  $ sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
   $ sudo nmcli connection up hololink-$EN1
   ```
 
@@ -170,7 +172,7 @@ Next, follow the directions on the appropriate tab below to configure your host 
 
   [Service]
   Type=simple
-  ExecStart=/usr/sbin/phc2sys -c $EN0 -s CLOCK_REALTIME -O 0
+  ExecStart=/usr/sbin/phc2sys -c $EN0 -s CLOCK_REALTIME -O 0 -S 0.001
 
   [Install]
   WantedBy=multi-user.target

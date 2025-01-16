@@ -62,6 +62,7 @@ docker run \
     --name "$NAME" \
     -v $PWD:$PWD \
     -v $ROOT:$ROOT \
+    -v $HOME:$HOME \
     -v /sys/bus/pci/devices:/sys/bus/pci/devices \
     -v /sys/kernel/mm/hugepages:/sys/kernel/mm/hugepages \
     -v /dev:/dev \

@@ -26,12 +26,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <hololink/native/deserializer.hpp>
+#include <hololink/logging.hpp>
 #include <hololink/native/nvtx_trace.hpp>
-
-#define TRACE(fmt, ...) /* ignored */
-#define DEBUG(fmt...) fprintf(stderr, "DEBUG -- " fmt)
-#define ERROR(fmt...) fprintf(stderr, "ERROR -- " fmt)
 
 #undef PERIODIC_STATUS
 
@@ -44,17 +40,28 @@ RoceReceiver::RoceReceiver(
     unsigned ibv_port,
     CUdeviceptr cu_buffer,
     size_t cu_buffer_size,
+    size_t cu_frame_size,
+    size_t cu_page_size,
+    unsigned pages,
+    size_t metadata_offset,
     const char* peer_ip)
     : ibv_name_(strdup(ibv_name))
     , ibv_port_(ibv_port)
     , cu_buffer_(cu_buffer)
     , cu_buffer_size_(cu_buffer_size)
+    , cu_frame_size_(cu_frame_size)
+    , cu_page_size_(cu_page_size)
+    , pages_(pages)
+    , metadata_offset_(metadata_offset)
     , peer_ip_(strdup(peer_ip))
     , ib_qp_(NULL)
     , ib_mr_(NULL)
     , ib_cq_(NULL)
     , ib_pd_(NULL)
     , ib_context_(NULL)
+    , ib_completion_channel_(NULL)
+    , qp_number_(0)
+    , rkey_(0)
     , ready_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
     , ready_condition_(PTHREAD_COND_INITIALIZER)
@@ -62,30 +69,35 @@ RoceReceiver::RoceReceiver(
     , frame_number_(0)
     , rx_write_requests_fd_(-1)
     , rx_write_requests_(0)
-    , frame_end_ {}
+    , received_ {}
     , imm_data_(0)
     , event_time_ {}
-    , received_ns_(0)
+    , current_buffer_(0)
+    , metadata_stream_(0)
+    , dropped_(0)
+    , received_psn_(0)
+    , received_page_(0)
+    , frame_ready_([](const RoceReceiver&) {})
 {
-    DEBUG("cu_buffer=0x%llX cu_buffer_size=%u\n",
-        (unsigned long long)cu_buffer, (unsigned)cu_buffer_size);
+    HSB_LOG_DEBUG("cu_buffer={:#x} cu_frame_size={:#x} cu_page_size={} pages={}",
+        cu_buffer, cu_frame_size, cu_page_size, pages);
 
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
-        ERROR("pthread_mutex_init failed, r=%d.\n", r);
+        throw std::runtime_error("pthread_mutex_init failed.");
     }
     pthread_condattr_t pthread_condattr;
     pthread_condattr_init(&pthread_condattr);
     pthread_condattr_setclock(&pthread_condattr, CLOCK_MONOTONIC);
     r = pthread_cond_init(&ready_condition_, &pthread_condattr);
     if (r != 0) {
-        ERROR("pthread_cond_init failed, r=%d.\n", r);
+        throw std::runtime_error("pthread_cond_init failed.");
     }
     int pipe_fds[2] = { -1, -1 };
     // If these aren't updated, we'll get an error when we try to read, which is good.
     r = pipe(pipe_fds);
     if (r != 0) {
-        ERROR("Pipe failed.\n");
+        throw std::runtime_error("pipe call failed.");
     }
     control_r_ = pipe_fds[0];
     control_w_ = pipe_fds[1];
@@ -95,15 +107,29 @@ RoceReceiver::RoceReceiver(
         "/sys/class/infiniband/%s/ports/%d/hw_counters/rx_write_requests",
         ibv_name_, ibv_port_);
     if (written < 0) {
-        ERROR("Error writing to rx_write_requests_filename.\n");
+        throw std::runtime_error("Error writing to rx_write_requests_filename.");
     } else if (((size_t)written) >= sizeof(rx_write_requests_filename)) {
-        ERROR("Buffer isn't large enough to compute rx_write_requests filename.\n");
+        throw std::runtime_error("Buffer isn't large enough to compute rx_write_requests filename.");
     } else {
         rx_write_requests_fd_ = open(rx_write_requests_filename, O_RDONLY);
     }
     if (rx_write_requests_fd_ < 0) {
-        ERROR("Unable to fetch rx_write_requests.\n");
+        // Note that the rest of the code is OK if this occurs.
+        HSB_LOG_ERROR("Unable to fetch rx_write_requests; ignoring.");
     }
+
+    // We use this to synchronize metadata readout.
+    CUresult cu_result = cuStreamCreate(&metadata_stream_, CU_STREAM_NON_BLOCKING);
+    if (cu_result != CUDA_SUCCESS) {
+        throw std::runtime_error(fmt::format("cuStreamCreate failed, cu_result={}.", cu_result));
+    }
+
+    // Set metadata_buffer_ content to some value that's easily distinguished.
+    cu_result = cuMemHostAlloc((void**)&metadata_buffer_, hololink::METADATA_SIZE, 0);
+    if (cu_result != CUDA_SUCCESS) {
+        throw std::runtime_error(fmt::format("cuMemHostAlloc failed, cu_result={}.", cu_result));
+    }
+    memset(metadata_buffer_, 0xEE, hololink::METADATA_SIZE);
 }
 
 RoceReceiver::~RoceReceiver()
@@ -111,11 +137,15 @@ RoceReceiver::~RoceReceiver()
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
     ::close(rx_write_requests_fd_); // we ignore an error here if fd==-1
+    cuMemFreeHost(metadata_buffer_);
+
+    free(ibv_name_);
+    free(peer_ip_);
 }
 
 bool RoceReceiver::start()
 {
-    DEBUG("Starting.\n");
+    HSB_LOG_DEBUG("Starting.");
 
     // ibv calls seem to have trouble with
     // reentrancy.  No problem; since we're only
@@ -128,17 +158,17 @@ bool RoceReceiver::start()
     int num_devices = 0;
     struct ibv_device** ib_devices = ibv_get_device_list(&num_devices);
     if (!ib_devices) {
-        ERROR("ibv_get_device_list failed; errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("ibv_get_device_list failed; errno={}.", errno);
         return false;
     }
     if (num_devices < 0) {
-        ERROR("ibv_get_device_list set unexpected value for num_devices=%d.\n", num_devices);
+        HSB_LOG_ERROR("ibv_get_device_list set unexpected value for num_devices={}.", num_devices);
         return false;
     }
     struct ibv_device* ib_device = NULL;
     for (unsigned i = 0; i < (unsigned)num_devices; i++) {
         const char* device_name = ibv_get_device_name(ib_devices[i]);
-        DEBUG("ibv_get_device_list[%d]=%s.\n", i, device_name);
+        HSB_LOG_DEBUG("ibv_get_device_list[{}]={}.", i, device_name);
         if (strcmp(device_name, ibv_name_) != 0) {
             continue;
         }
@@ -146,7 +176,7 @@ bool RoceReceiver::start()
         break;
     }
     if (ib_device == NULL) {
-        ERROR("ibv_get_device_list didnt find a device named \"%s\".\n", ibv_name_);
+        HSB_LOG_ERROR("ibv_get_device_list didnt find a device named \"{}\".", ibv_name_);
         ibv_free_device_list(ib_devices);
         return false;
     }
@@ -154,7 +184,7 @@ bool RoceReceiver::start()
     // Open the IB device
     ib_context_ = ibv_open_device(ib_device);
     if (!ib_context_) {
-        ERROR("ibv_open_device failed, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("ibv_open_device failed, errno={}.", errno);
         return false;
     }
     ibv_free_device_list(ib_devices); // Note that "ib_device" is invalid after this.
@@ -166,21 +196,21 @@ bool RoceReceiver::start()
     int flags = fcntl(ib_context_->async_fd, F_GETFL);
     int r = fcntl(ib_context_->async_fd, F_SETFL, flags | O_NONBLOCK);
     if (r < 0) {
-        ERROR("Can't configure async_fd=%d with O_NONBLOCK, errno=%d.\n", (int)ib_context_->async_fd, (int)errno);
+        HSB_LOG_ERROR("Can't configure async_fd={} with O_NONBLOCK, errno={}.", ib_context_->async_fd, errno);
         return false;
     }
 
     //
     struct ibv_device_attr ib_device_attr = { 0 }; // C fills the rest with 0s
     if (ibv_query_device(ib_context_, &ib_device_attr)) {
-        ERROR("ibv_query_device failed, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("ibv_query_device failed, errno={}.", errno);
         free_ib_resources();
         return false;
     }
 
     struct ibv_port_attr ib_port_attr = { .flags = 0 }; // C fills the rest with 0s
     if (ibv_query_port(ib_context_, ibv_port_, &ib_port_attr)) {
-        ERROR("ibv_query_port failed, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("ibv_query_port failed, errno={}.", errno);
         free_ib_resources();
         return false;
     }
@@ -197,7 +227,7 @@ bool RoceReceiver::start()
         }
 
         struct ibv_gid_entry* u = &(ib_gid_entry);
-        DEBUG("gid_index=%u gid_entry(gid_index=%u port_num=%u gid_type=%u ndev_ifindex=%d subnet_prefix=%d interface_id=0x%X)\n", (unsigned)gid_index, (unsigned)u->gid_index, (unsigned)u->port_num, (unsigned)u->gid_type, (unsigned)u->ndev_ifindex, (unsigned)u->gid.global.subnet_prefix, (unsigned)u->gid.global.interface_id);
+        HSB_LOG_DEBUG("gid_index={} gid_entry(gid_index={} port_num={} gid_type={} ndev_ifindex={} subnet_prefix={} interface_id={:#x})", gid_index, u->gid_index, u->port_num, u->gid_type, u->ndev_ifindex, u->gid.global.subnet_prefix, u->gid.global.interface_id);
 
         if (ib_gid_entry.gid_type != IBV_GID_TYPE_ROCE_V2) {
             continue;
@@ -212,7 +242,7 @@ bool RoceReceiver::start()
         break;
     }
     if (!ok) {
-        ERROR("Cannot find GID for IBV_GID_TYPE_ROCE_V2.\n");
+        HSB_LOG_ERROR("Cannot find GID for IBV_GID_TYPE_ROCE_V2.");
         free_ib_resources();
         return false;
     }
@@ -220,7 +250,7 @@ bool RoceReceiver::start()
     // Create a protection domain
     ib_pd_ = ibv_alloc_pd(ib_context_);
     if (ib_pd_ == NULL) {
-        ERROR("Cannot allocate a protection domain, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("Cannot allocate a protection domain, errno={}.", errno);
         free_ib_resources();
         return false;
     }
@@ -228,7 +258,7 @@ bool RoceReceiver::start()
     // Create a completion channel.
     ib_completion_channel_ = ibv_create_comp_channel(ib_context_);
     if (ib_completion_channel_ == NULL) {
-        ERROR("Cannot create a completion channel.\n");
+        HSB_LOG_ERROR("Cannot create a completion channel.");
         free_ib_resources();
         return false;
     }
@@ -237,24 +267,24 @@ bool RoceReceiver::start()
     flags = fcntl(ib_completion_channel_->fd, F_GETFL);
     r = fcntl(ib_completion_channel_->fd, F_SETFL, flags | O_NONBLOCK);
     if (r < 0) {
-        ERROR("Can't configure fd=%d with O_NONBLOCK, errno=%d.\n", (int)ib_completion_channel_->fd, (int)errno);
+        HSB_LOG_ERROR("Can't configure fd={} with O_NONBLOCK, errno={}.", ib_completion_channel_->fd, errno);
         return false;
     }
 
     // Create a completion queue
-    unsigned completion_queue_size = 10;
+    unsigned completion_queue_size = 100;
     ib_cq_ = ibv_create_cq(ib_context_, completion_queue_size, NULL, ib_completion_channel_, 0);
     if (ib_cq_ == NULL) {
-        ERROR("Cannot create a completion queue, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("Cannot create a completion queue, errno={}.", errno);
         free_ib_resources();
         return false;
     }
 
     // Provide access to the frame buffer
     int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-    ib_mr_ = ibv_reg_mr(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, access);
+    ib_mr_ = ibv_reg_mr_iova(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, 0, access);
     if (ib_mr_ == NULL) {
-        ERROR("Cannot register memory region p=0x%llX size=%u, errno=%d.\n", (unsigned long long)cu_buffer_, (unsigned)cu_buffer_size_, (int)errno);
+        HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
         free_ib_resources();
         return false;
     }
@@ -276,7 +306,7 @@ bool RoceReceiver::start()
     }; // C++ sets the rest of the values to 0
     ib_qp_ = ibv_create_qp(ib_pd_, &ib_qp_init_attr);
     if (ib_qp_ == NULL) {
-        ERROR("Cannot create queue pair, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("Cannot create queue pair, errno={}.", errno);
         free_ib_resources();
         return false;
     }
@@ -292,7 +322,7 @@ bool RoceReceiver::start()
     }; // C sets the rest to 0s
     flags = IBV_QP_STATE | IBV_QP_PKEY_INDEX | IBV_QP_PORT | IBV_QP_ACCESS_FLAGS;
     if (ibv_modify_qp(ib_qp_, &ib_qp_attr, flags)) {
-        ERROR("Cannot modify queue pair to IBV_QPS_INIT, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("Cannot modify queue pair to IBV_QPS_INIT, errno={}.", errno);
         free_ib_resources();
         return false;
     }
@@ -305,7 +335,7 @@ bool RoceReceiver::start()
         }; // C fills the rest with 0s
         struct ibv_recv_wr* bad_wr = NULL;
         if (ibv_post_recv(ib_qp_, &ib_wr, &bad_wr)) {
-            ERROR("Cannot post the receiver work list, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("Cannot post the receiver work list, errno={}.", errno);
             free_ib_resources();
             return false;
         }
@@ -314,7 +344,7 @@ bool RoceReceiver::start()
     // qp is currently INIT; go to RTR
     unsigned long client_ip = 0;
     if (inet_pton(AF_INET, peer_ip_, &client_ip) != 1) {
-        ERROR("Unable to convert \"%s\" to an IP address.\n", peer_ip_);
+        HSB_LOG_ERROR("Unable to convert \"{}\" to an IP address.", peer_ip_);
         free_ib_resources();
         return false;
     }
@@ -357,13 +387,13 @@ bool RoceReceiver::start()
         if (!retry) {
             break;
         }
-        ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno=%d: \"%s\"; retrying.\n", r, strerror(r));
+        HSB_LOG_ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno={}: \"{}\"; retrying.", r, strerror(r));
         useconds_t ms = 200;
         useconds_t us = ms * 1000;
         usleep(us);
     }
     if (r) {
-        ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno=%d.\n", r);
+        HSB_LOG_ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno={}.", r);
         free_ib_resources();
         return false;
     }
@@ -408,7 +438,7 @@ static inline bool before(struct timespec& a, struct timespec& b)
 void RoceReceiver::blocking_monitor()
 {
     native::NvtxTrace::setThreadName("RoceReceiver::run");
-    DEBUG("Running.\n");
+    HSB_LOG_DEBUG("Running.");
 
     struct ibv_wc ib_wc = { 0 };
 
@@ -422,8 +452,7 @@ void RoceReceiver::blocking_monitor()
 
     int r = ibv_req_notify_cq(ib_cq_, 0);
     if (r != 0) {
-        ERROR("ibv_req_notify_cq failed, errno=%d.\n", r);
-        return;
+        throw std::runtime_error(fmt::format("ibv_req_notify_cq failed, errno={}.", r));
     }
 
     struct pollfd poll_fds[2] = {
@@ -443,12 +472,11 @@ void RoceReceiver::blocking_monitor()
         int timeout = -1; // stay here forever.
         int r = poll(poll_fds, NUM_OF(poll_fds), timeout);
         if (r == -1) {
-            ERROR("poll returned r=%d, errno=%d.\n", r, (int)errno);
-            break;
+            throw std::runtime_error(fmt::format("poll returned r={}, errno={}.", r, errno));
         }
 
         // Keep this as close to the actual message receipt as possible.
-        clock_gettime(CLOCK_MONOTONIC, &event_time_);
+        clock_gettime(CLOCK_REALTIME, const_cast<struct timespec*>(&event_time_));
 
         // control_r_
         if (poll_fds[0].revents) {
@@ -456,7 +484,7 @@ void RoceReceiver::blocking_monitor()
             // telling us that someone closed the control_w_ side (which we do
             // in LinuxReceiver::close).  That specific event is an indication
             // that this loop is instructed to terminate.
-            DEBUG("Closing.\n");
+            HSB_LOG_DEBUG("Closing.");
             break;
         }
 
@@ -468,47 +496,88 @@ void RoceReceiver::blocking_monitor()
             void* ev_ctx = NULL;
             r = ibv_get_cq_event(ib_completion_channel_, &ev_cq, &ev_ctx);
             if (r != 0) {
-                ERROR("ibv_get_cq_event returned r=%d.\n", r);
-                break;
+                throw std::runtime_error(fmt::format("ibv_get_cq_event returned r={}.", r));
             }
             // Ack it and queue up another
             ibv_ack_cq_events(ev_cq, 1);
             r = ibv_req_notify_cq(ev_cq, 0);
             if (r != 0) {
-                ERROR("ibv_req_notify_cq returned r=%d.\n", r);
-                break;
+                throw std::runtime_error(fmt::format("ibv_req_notify_cq returned r={}.", r));
             }
 
             // Now deal with active events.
             while (!done_) {
                 r = ibv_poll_cq(ib_cq_, 1, &ib_wc);
                 if (r < 0) {
-                    ERROR("ibv_poll_cq failed, errno=%d.\n", (int)errno);
-                    break;
+                    throw std::runtime_error(fmt::format("ibv_poll_cq failed, errno={}.", errno));
                 }
                 // Is there a message for us?
                 if (r == 0) {
                     break;
                 }
+                uint64_t q = (uint64_t)this;
+                HSB_LOG_TRACE("this={:#x} r={} qp_number_={:#x} imm_data={:#x}", q, r, qp_number_, ntohl(ib_wc.imm_data));
                 // Note some metadata
                 char buffer[1024];
                 lseek(rx_write_requests_fd_, 0, SEEK_SET); // may fail if fd==-1, we don't care
-                ssize_t buffer_size = read(rx_write_requests_fd_, buffer, sizeof(buffer));
                 // if rx_write_requests_fd_ is -1, then buffer_size_ will be less than 0
+                ssize_t buffer_size = read(rx_write_requests_fd_, buffer, sizeof(buffer));
+                // Do an atomic update
+                r = pthread_mutex_lock(&ready_mutex_);
+                if (r != 0) {
+                    throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
+                }
+                // If the application didn't set ready_ to false,
+                // then we're overwriting a valid frame.
+                if (ready_) {
+                    dropped_++;
+                }
                 if ((buffer_size > 0) && (buffer_size < 1000)) {
                     rx_write_requests_ = strtoull(buffer, NULL, 10);
                     // otherwise we'll continue to use the 0 from the constructor
                 }
-                frame_number_++;
                 imm_data_ = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
-                frame_end_ = event_time_;
-                // frame_end_ uses the monotonic clock, which doesn't define it's epoch;
-                // received_ns_ is the same but matches the epoch used by PTP.
-                received_ns_ = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                                   .count();
+                received_psn_ = (imm_data_ >> 8) & 0xFFFFFF;
+                unsigned page = imm_data_ & 0xFF;
+                if (page >= pages_) {
+                    throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
+                }
+                received_page_ = page;
+                // Start copying out the metadata chunk.  get_next_frame will synchronize on metadata_stream_.
+                // NOTE that we start this request while we hold ready_mutex_ -- this guarantees that we don't
+                // start another copy while the foreground is copying data out of this buffer.
+                CUdeviceptr page_start = page * cu_page_size_;
+                CUdeviceptr metadata_start = page_start + metadata_offset_;
+                if ((metadata_start + hololink::METADATA_SIZE) > cu_buffer_size_) {
+                    throw std::runtime_error(fmt::format("metadata_start={:#x}+metadata_size={:#x}(which is {:#x}) exceeds cu_buffer_size={:#x}.",
+                        metadata_start, hololink::METADATA_SIZE, metadata_start + hololink::METADATA_SIZE, cu_buffer_size_));
+                }
+                CUresult cu_result = cuMemcpyDtoHAsync(metadata_buffer_, cu_buffer_ + metadata_start, hololink::METADATA_SIZE, metadata_stream_);
+                if (cu_result != CUDA_SUCCESS) {
+                    throw std::runtime_error(fmt::format("cmMemcpyDtoHAsync failed, cu_result={}.", cu_result));
+                }
+                current_buffer_ = cu_buffer_ + cu_page_size_ * page;
+                frame_number_++;
+                native::NvtxTrace::event_u64("frame_number", frame_number_);
+                HSB_LOG_TRACE("frame_number={}", frame_number_);
+                received_.tv_sec = event_time_.tv_sec;
+                received_.tv_nsec = event_time_.tv_nsec;
+                HSB_LOG_TRACE("frame_number={} imm_data={:#x} received.tv_sec={:#x} received.tv_nsec={:#x}",
+                    frame_number_, imm_data_, received_.tv_sec, received_.tv_nsec);
                 // Send it
-                signal();
+                ready_ = true;
+                native::NvtxTrace::event_u64("signal", 1);
+                r = pthread_cond_signal(&ready_condition_);
+                if (r != 0) {
+                    throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
+                }
+                r = pthread_mutex_unlock(&ready_mutex_);
+                if (r != 0) {
+                    throw std::runtime_error(fmt::format("pthread_mutex_unlock returned r={}.", r));
+                }
+                // Provide the local callback, letting the application know
+                // that get_next_frame won't block.
+                frame_ready_(this[0]);
                 // Add back the work request
                 struct ibv_recv_wr ib_wr = {
                     .wr_id = 1,
@@ -516,8 +585,7 @@ void RoceReceiver::blocking_monitor()
                 }; // C fills the rest with 0s
                 struct ibv_recv_wr* bad_wr = NULL;
                 if (ibv_post_recv(ib_qp_, &ib_wr, &bad_wr)) {
-                    ERROR("Cannot post a receiver work list, errno=%d.\n", (int)errno);
-                    break;
+                    throw std::runtime_error(fmt::format("Cannot post a receiver work list, errno={}.", errno));
                 }
             }
         }
@@ -526,30 +594,13 @@ void RoceReceiver::blocking_monitor()
         count++;
         clock_gettime(CLOCK_MONOTONIC, &now);
         if (!before(now, report_time)) {
-            ERROR("count=%u.\n", count);
+            HSB_LOG_ERROR("count={}.", count);
             report_time = add_ms(report_time, report_ms);
         }
 #endif /* PERIODIC_STATUS */
     }
     free_ib_resources();
-    DEBUG("Closed.\n");
-}
-
-void RoceReceiver::signal()
-{
-    int r = pthread_mutex_lock(&ready_mutex_);
-    if (r != 0) {
-        ERROR("pthread_mutex_lock returned r=%d.\n", r);
-    }
-    ready_ = true;
-    r = pthread_cond_signal(&ready_condition_);
-    if (r != 0) {
-        ERROR("pthread_cond_signal returned r=%d.\n", r);
-    }
-    r = pthread_mutex_unlock(&ready_mutex_);
-    if (r != 0) {
-        ERROR("pthread_mutex_unlock returned r=%d.\n", r);
-    }
+    HSB_LOG_DEBUG("Closed.");
 }
 
 void RoceReceiver::close()
@@ -562,79 +613,59 @@ void RoceReceiver::free_ib_resources()
 {
     if (ib_qp_ != NULL) {
         if (ibv_destroy_qp(ib_qp_)) {
-            ERROR("ibv_destroy_qp failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_destroy_qp failed, errno={}.", errno);
         }
         ib_qp_ = NULL;
     }
 
     if (ib_mr_ != NULL) {
         if (ibv_dereg_mr(ib_mr_)) {
-            ERROR("ibv_dereg_mr failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_dereg_mr failed, errno={}.", errno);
         }
         ib_mr_ = NULL;
     }
 
     if (ib_cq_ != NULL) {
         if (ibv_destroy_cq(ib_cq_)) {
-            ERROR("ibv_destroy_cq failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_destroy_cq failed, errno={}.", errno);
         }
         ib_cq_ = NULL;
     }
 
     if (ib_completion_channel_ != NULL) {
         if (ibv_destroy_comp_channel(ib_completion_channel_)) {
-            ERROR("ibv_destroy_comp_channel failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_destroy_comp_channel failed, errno={}.", errno);
         }
         ib_completion_channel_ = NULL;
     }
 
     if (ib_pd_ != NULL) {
         if (ibv_dealloc_pd(ib_pd_)) {
-            ERROR("ibv_dealloc_pd failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_dealloc_pd failed, errno={}.", errno);
         }
         ib_pd_ = NULL;
     }
 
     if (ib_context_ != NULL) {
         if (ibv_close_device(ib_context_)) {
-            ERROR("ibv_close_device failed, errno=%d.\n", (int)errno);
+            HSB_LOG_ERROR("ibv_close_device failed, errno={}.", errno);
         }
         ib_context_ = NULL;
     }
 
-    TRACE("Done.\n");
+    HSB_LOG_TRACE("Done.");
 }
 
 bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& metadata)
 {
-    bool r = wait(timeout_ms);
-    metadata.frame_number = frame_number_;
-    if (r) {
-        metadata.rx_write_requests = rx_write_requests_;
-        metadata.frame_end_s = frame_end_.tv_sec;
-        metadata.frame_end_ns = frame_end_.tv_nsec;
-        metadata.imm_data = imm_data_;
-        metadata.received_ns = received_ns_;
-    } else {
-        metadata.rx_write_requests = 0;
-        metadata.frame_end_s = 0;
-        metadata.frame_end_ns = 0;
-        metadata.imm_data = 0;
-        metadata.received_ns = 0;
-    }
-    return r;
-}
-
-bool RoceReceiver::wait(unsigned timeout_ms)
-{
     int status = pthread_mutex_lock(&ready_mutex_);
     if (status != 0) {
-        ERROR("pthread_mutex_lock returned status=%d.\n", status);
+        HSB_LOG_ERROR("pthread_mutex_lock returned status={}.", status);
         return false;
     }
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("clock_gettime failed, errno={}.", errno);
     }
     struct timespec timeout = add_ms(now, timeout_ms);
 
@@ -644,15 +675,43 @@ bool RoceReceiver::wait(unsigned timeout_ms)
             break;
         }
         if (status != 0) {
-            ERROR("pthread_cond_wait returned status=%d.\n", status);
+            HSB_LOG_ERROR("pthread_cond_wait returned status={}.", status);
             break;
         }
     }
     bool r = ready_;
     ready_ = false;
+    metadata.frame_number = frame_number_;
+    metadata.dropped = dropped_;
+    if (r) {
+        CUresult cu_result = cuStreamSynchronize(metadata_stream_);
+        if (cu_result != CUDA_SUCCESS) {
+            throw std::runtime_error(fmt::format("cuStreamSynchronize failed, cu_result={}.", cu_result));
+        }
+        Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(metadata_buffer_, hololink::METADATA_SIZE);
+        if (frame_metadata.psn != received_psn_) {
+            // This indicates that the distal end rewrote the receiver buffer.
+            HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, received_psn_);
+        }
+        metadata.rx_write_requests = rx_write_requests_;
+        metadata.imm_data = imm_data_;
+        metadata.received_s = received_.tv_sec;
+        metadata.received_ns = received_.tv_nsec;
+        metadata.frame_memory = current_buffer_;
+        metadata.metadata_memory = current_buffer_ + metadata_offset_;
+        metadata.frame_metadata = frame_metadata;
+    } else {
+        metadata.rx_write_requests = 0;
+        metadata.imm_data = 0;
+        metadata.received_s = 0;
+        metadata.received_ns = 0;
+        metadata.frame_memory = 0;
+        metadata.metadata_memory = 0;
+        metadata.frame_metadata = {}; // All 0s
+    }
     status = pthread_mutex_unlock(&ready_mutex_);
     if (status != 0) {
-        ERROR("pthread_mutex_unlock returned status=%d.\n", status);
+        HSB_LOG_ERROR("pthread_mutex_unlock returned status={}.", status);
     }
     return r;
 }
@@ -667,12 +726,13 @@ bool RoceReceiver::check_async_events()
             break;
         }
 
-        switch (ib_async_event.event_type) {
+        auto event_type = ib_async_event.event_type;
+        switch (event_type) {
         case IBV_EVENT_COMM_EST:
             // Communication established isn't an error; don't complain about it
             break;
         default:
-            ERROR("ib_async_event.event_type=%d.\n", (int)ib_async_event.event_type);
+            HSB_LOG_ERROR("ib_async_event.event_type={} ({}).", static_cast<int>(event_type), ibv_event_type_str(event_type));
             break;
         }
 
@@ -687,6 +747,19 @@ std::mutex& RoceReceiver::get_lock()
     // to share the same lock.
     static std::mutex lock;
     return lock;
+}
+
+uint64_t RoceReceiver::external_frame_memory()
+{
+    // If we didn't use ibv_reg_mr_iova above, we'd return
+    // cu_buffer_ here; but ibv_reg_mr_iova always adds it's
+    // address to the address received from the peripheral.
+    return 0;
+}
+
+void RoceReceiver::set_frame_ready(std::function<void(const RoceReceiver&)> frame_ready)
+{
+    frame_ready_ = frame_ready;
 }
 
 } // namespace hololink::operators

@@ -104,9 +104,10 @@ public:
         );
     }
 
-    std::shared_ptr<Metadata> get_next_frame(double timeout_ms) override
+    std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms) override
     {
-        PYBIND11_OVERRIDE(std::shared_ptr<Metadata>, /* Return type */
+        typedef std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> FrameData;
+        PYBIND11_OVERRIDE(FrameData, /* Return type */
             RoceReceiverOp, /* Parent class */
             get_next_frame, /* Name of function in C++ (must match Python name) */
             timeout_ms);
@@ -132,7 +133,6 @@ PYBIND11_MODULE(_roce_receiver, m)
             "frame_memory"_a = 0, "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1,
             "name"_a = "roce_receiver"s)
         .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a)
-        .def("metadata", &RoceReceiverOp::metadata)
         .def("setup", &RoceReceiverOp::setup, "spec"_a)
         .def("start", &RoceReceiverOp::start)
         .def("stop", &RoceReceiverOp::stop);

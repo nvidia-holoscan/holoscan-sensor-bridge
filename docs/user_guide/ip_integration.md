@@ -21,36 +21,39 @@ default macro value is the configuration that has been tested and verified.
 
 Table 13
 
-| \*\*Macro                         | **Tested Values**                                                                  | **Description**                                                                                                                                |
-| --------------------------------- | ---------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| FPGA_VENDOR                       | LATTICE, PSG, MICROCHIP                                                            | Defines the FPGA Vendor used.                                                                                                                  |
-| HIF_CLK_FREQ                      | 156250000 (for DATAPATH_WIDTH=64)<br />201416016 (for DATAPATH_WIDTH=512)          | Clock frequency of the Host Interface. Unit is in Hz                                                                                           |
-| APB_CLK_FREQ                      | 19531250 (for DATAPATH_WIDTH=64)<br />100000000 (for DATAPATH_WIDTH=512)           | Clock frequency of the APB  Interface. Unit is in Hz                                                                                           |
-| BOARD_ID\[7:0\]                   | 8'h02 for Lattice LF-SNSR-ETH-EV<br />8'h04 for Microchip MPF200-ETH-SENSOR-BRIDGE | Used in Enumeration packet                                                                                                                     |
-| ENUM_EEPROM                       | Defined or undefined                                                               | When defined, read the contents of the Enumeration packet from from external non-volatile memory. If undefined, use the macros defined below.. |
-| MAC_ADDR\[47:0\]                  | Any value                                                                          | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
-| BOARD_VER\[159:0\]                | Any value                                                                          | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
-| BOARD_SN\[55:0\]                  | Any value                                                                          | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
-| FPGA_CRC\[15:0\]                  | Any value                                                                          | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
-| MISC\[31:0\]                      | Any value                                                                          | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
-| DATAPATH_WIDTH                    | 64, 512                                                                            | Width of the AXI Stream TDATA in bits. This number must be byte-aligned. Meaning, it must be a number divisible by 8.                          |
-| DATAKEEP_WIDTH                    | DATAPATH_WIDTH/8                                                                   | Width of the AXI Stream TKEEP.This should not be changed.                                                                                      |
-| DATAUSER_WIDTH                    | 1                                                                                  | Width of the AXI Stream TUSER signal.                                                                                                          |
-| SENSOR_IF_INST                    | 1-2                                                                                | Number of Sensor interfaces.                                                                                                                   |
-| HOST_IF_INST                      | 1-2                                                                                | Number of Host interfaces.                                                                                                                     |
-| HOST_MTU                          | 1500 (DO NOT CHANGE FOR 10G SYSTEM)                                                | Size of Ethernet packet in bytes.                                                                                                              |
-| SPI_INST                          | 1-8                                                                                | Number of SPI interfaces.                                                                                                                      |
-| I2C_INST                          | 1-8                                                                                | Number of I2C interfaces.                                                                                                                      |
-| GPIO_INST                         | 0-255                                                                              | Number of GPIO Input & Output bits.                                                                                                            |
-| GPIO_RESET_VALUE\[GPIO_INST-1:0\] | 0                                                                                  | Reset value of GPIO bits.                                                                                                                      |
-| REG_INST                          | 1-8                                                                                | Number of user register.                                                                                                                       |
-| SIF_SORT_RESOLUTION               | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| SIF_VP_COUNT                      | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| SIF_VP_SIZE                       | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| SIF_NUM_CYCLES                    | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| SIF_DYN_VP                        | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| SIF_MIXED_VP_SIZE                 | DO NOT TOUCH                                                                       | TBD. Do not change.                                                                                                                            |
-| N_INIT_REG                        | Integer value                                                                      | Number of initialization registers.                                                                                                            |
+| \*\*Macro                       | **Tested Values**                                                                    | **Description**                                                                                                                                |
+| ------------------------------- | ------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| FPGA_VENDOR                     | LATTICE, PSG, MICROCHIP                                                              | Defines the FPGA Vendor used.                                                                                                                  |
+| HIF_CLK_FREQ                    | 156250000 (for DATAPATH_WIDTH=64)<br />201416016 (for DATAPATH_WIDTH=512)            | Clock frequency of the Host Interface. Unit is in Hz                                                                                           |
+| APB_CLK_FREQ                    | 19531250 (for DATAPATH_WIDTH=64)<br />100000000 (for DATAPATH_WIDTH=512)             | Clock frequency of the APB Interface. Unit is in Hz                                                                                            |
+| BOARD_ID[15:0]                  | 16'h02 for Lattice LF-SNSR-ETH-EV<br />16'h04 for Microchip MPF200-ETH-SENSOR-BRIDGE | Used in Enumeration packet                                                                                                                     |
+| ENUM_EEPROM                     | Defined or undefined                                                                 | When defined, read the contents of the Enumeration packet from from external non-volatile memory. If undefined, use the macros defined below.. |
+| MAC_ADDR[47:0]                  | Any value                                                                            | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
+| BOARD_VER[159:0]                | Any value                                                                            | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
+| BOARD_SN[55:0]                  | Any value                                                                            | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
+| FPGA_CRC[15:0]                  | Any value                                                                            | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
+| MISC[31:0]                      | Any value                                                                            | Used in Enumeration packet if ENUM_EEPROM is undefined.                                                                                        |
+| DATAPATH_WIDTH                  | 64, 512                                                                              | Width of the Sensor AXI Stream TDATA in bits. This number must be byte-aligned. Meaning, it must be a number divisible by 8.                   |
+| DATAKEEP_WIDTH                  | DATAPATH_WIDTH/8                                                                     | Width of the Sensor AXI Stream TKEEP.This should not be changed.                                                                               |
+| DATAUSER_WIDTH                  | 1                                                                                    | Width of the Sensor AXI Stream TUSER signal.                                                                                                   |
+| SENSOR_IF_INST                  | 1-2                                                                                  | Number of Sensor Interface.                                                                                                                    |
+| HOST_WIDTH                      | 64, 512                                                                              | Width of the Host AXI Stream TDATA in bits. This number must be byte-aligned. Meaning, it must be a number divisible by 8.                     |
+| HOSTKEEP_WIDTH                  | DATAPATH_WIDTH/8                                                                     | Width of the Host AXI Stream TKEEP.This should not be changed.                                                                                 |
+| HOSTUSER_WIDTH                  | 1                                                                                    | Width of the Host AXI Stream TUSER signal.                                                                                                     |
+| HOST_IF_INST                    | 1-2                                                                                  | Number of Host interfaces.                                                                                                                     |
+| HOST_MTU                        | 1500 (DO NOT CHANGE FOR 10G SYSTEM)                                                  | Size of Ethernet packet in bytes.                                                                                                              |
+| SPI_INST                        | 1-8                                                                                  | Number of SPI interfaces.                                                                                                                      |
+| I2C_INST                        | 1-8                                                                                  | Number of I2C interfaces.                                                                                                                      |
+| GPIO_INST                       | 0-255                                                                                | Number of GPIO Input & Output bits.                                                                                                            |
+| GPIO_RESET_VALUE[GPIO_INST-1:0] | 0                                                                                    | Reset value of GPIO bits.                                                                                                                      |
+| REG_INST                        | 1-8                                                                                  | Number of user register.                                                                                                                       |
+| SIF_SORT_RESOLUTION             | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| SIF_VP_COUNT                    | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| SIF_VP_SIZE                     | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| SIF_NUM_CYCLES                  | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| SIF_DYN_VP                      | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| SIF_MIXED_VP_SIZE               | DO NOT TOUCH                                                                         | TBD. Do not change.                                                                                                                            |
+| N_INIT_REG                      | Integer value                                                                        | Number of initialization registers.                                                                                                            |
 
 ### Build Revision
 
@@ -59,7 +62,7 @@ is used to identify the revision of the FPGA and the HOLOLINK and is sent to the
 part of the Enumeration Packet.
 
 From the module where "HOLOLINK_top" module is instantiated, the instantiated parameter,
-HOLOLINK_REV\[15:0\] must be set to *16'h2407* for *Holoscan SDK v1.1.0* release.
+HOLOLINK_REV[15:0] must be set to *16'h2412* for *Holoscan SDK v2.0.0* release.
 
 ### Enumeration Packet
 
@@ -108,14 +111,14 @@ establish ethernet connection between the FPGA and the host, and can be used for
 other user function in the top level design.
 
 The list of registers to be initialized is defined in “Hololink_def.svh” as “init_reg”
-array. The “init_reg” is an unpacked array, sized \[N_INIT_REG\] \[63:0\], where the
+array. The “init_reg” is an unpacked array, sized [N_INIT_REG] [63:0], where the
 N_INIT_REG macro defines the number of registers to be initialized and the 64-bit vector
-is used to define the 32- bit address of register at \[63:32\] and the 32-bit write data
-at \[31:0\].
+is used to define the 32- bit address of register at [63:32] and the 32-bit write data
+at [31:0].
 
 To give an example of one of the init_reg array entry:
 
-{32'h1000_0020, 32'h0000_00FF} //init_reg\[0\]
+{32'h1000_0020, 32'h0000_00FF} //init_reg[0]
 
 Will write to the User REG_INST_0 block address offset 0x0000_0020 the data 0x0000_00FF.
 

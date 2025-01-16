@@ -30,5 +30,6 @@ target_include_directories(linux_receiver
 target_link_libraries(linux_receiver
   PRIVATE
     hololink::native
+    hololink::operators::base_receiver_op
     CUDA::cuda_driver
   )

@@ -130,12 +130,6 @@ class HoloscanApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         image_shift = hololink_module.operators.ImageShiftToUint8Operator(
             self, name="image_shift", shift=8
         )
@@ -145,6 +139,7 @@ class HoloscanApplication(holoscan.core.Application):
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            framebuffer_srgb=True,
             **self.kwargs("holoviz"),
         )
 
@@ -187,8 +182,7 @@ class HoloscanApplication(holoscan.core.Application):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, image_shift)
+        self.add_flow(demosaic, image_shift, {("transmitter", "input")})
         self.add_flow(image_shift, visualizer, {("output", "receivers")})
         self.add_flow(image_shift, preprocessor, {("output", "")})
         self.add_flow(preprocessor, format_input)
@@ -226,7 +220,7 @@ def main():
         default="192.168.0.2",
         help="IP address of Hololink board",
     )
-    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.onnx")
+    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
     parser.add_argument(
         "--engine",
         default=default_engine,

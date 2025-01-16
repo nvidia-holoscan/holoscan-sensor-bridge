@@ -21,11 +21,11 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 
+#include <holoscan/holoscan.hpp>
 #include <yaml-cpp/parser.h>
 
-#include <holoscan/holoscan.hpp>
-
 #include <hololink/data_channel.hpp>
+#include <hololink/logging.hpp>
 
 /**
  * @brief This macro defining a YAML converter which throws for unsupported types.
@@ -69,61 +69,49 @@ void BaseReceiverOp::setup(holoscan::OperatorSpec& spec)
         device_stop_, "device_stop", "DeviceStop", "Function to be called to stop the device");
     spec.param(frame_context_, "frame_context", "FrameContext", "CUDA context");
     spec.param(frame_size_, "frame_size", "FrameSize", "Size of one frame in bytes");
-    spec.param(user_frame_memory_, "frame_memory", "FrameMemory", "Frame memory (optional)", 0ull,
-        holoscan::ParameterFlag::kOptional);
+
+    auto frag = fragment();
+    frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
+    add_arg(frame_ready_condition_);
+    frame_count_ = 0;
 }
 
 void BaseReceiverOp::start()
 {
-    // We'll allocate this for you if you like.
-    if (!user_frame_memory_.has_value() || (user_frame_memory_.get() == 0ull)) {
-        frame_memory_ = allocate(frame_size_);
-    } else {
-        frame_memory_ = user_frame_memory_.get();
-    }
-
-    HOLOSCAN_LOG_INFO("frame_size={} frame={}", frame_size_.get(), frame_memory_);
-
     //
     data_socket_.reset(socket(AF_INET, SOCK_DGRAM, 0));
     if (!data_socket_) {
         throw std::runtime_error("Failed to create socket");
     }
 
+    hololink_channel_->configure_socket(data_socket_.get());
     start_receiver();
-
-    auto [local_ip, local_port] = local_ip_and_port();
-    HOLOSCAN_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
-
-    hololink_channel_->configure(frame_memory_, frame_size_, local_port);
     device_start_.get()();
 }
 
 void BaseReceiverOp::stop()
 {
     device_stop_.get()();
-    stop_();
-
-    if (!user_frame_memory_.has_value()) {
-        // if we allocated the memory, free it
-        deviceptr_.release();
-        host_deviceptr_.release();
-    }
+    stop_receiver();
 }
 
 void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputContext& output,
     holoscan::ExecutionContext& context)
 {
     const double timeout_ms = 1000.f;
-    metadata_ = get_next_frame(timeout_ms);
-    if (!metadata_) {
-        if (ok_) {
-            ok_ = false;
-            HOLOSCAN_LOG_ERROR("Ingress frame timeout; ignoring.");
-        }
-    } else {
-        ok_ = true;
+    auto [frame_memory, frame_metadata] = get_next_frame(timeout_ms);
+    if (!frame_metadata) {
+        timeout(input, output, context);
+        // In this case, we have no frame data to write to the application,
+        // so we'll not produce any output.  The rest of the objects in the pipeline
+        // will be skipped (due to no input) and execution will come back to us.
+        return;
     }
+
+    ok_ = true;
+    frame_count_ += 1;
+    // Clear our asynchronous event
+    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
 
     // Create an Entity and use GXF tensor to wrap the CUDA memory.
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
@@ -145,18 +133,54 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
     const uint64_t element_size = nvidia::gxf::PrimitiveTypeSize(element_type);
     if (!gxf_tensor.value()->wrapMemory(shape, element_type, element_size,
             nvidia::gxf::ComputeTrivialStrides(shape, element_size),
-            nvidia::gxf::MemoryStorageType::kDevice, reinterpret_cast<void*>(frame_memory_),
+            nvidia::gxf::MemoryStorageType::kDevice, reinterpret_cast<void*>(frame_memory),
             [](void*) {
                 // release function, nothing to do
                 return nvidia::gxf::Success;
             })) {
         throw std::runtime_error("Failed to add wrap memory");
     }
+    // Publish the received metadata to the pipeline.
+    auto const& meta = metadata();
+    for (auto const& x : *frame_metadata) {
+        // x.second is hololink::Metadata's map content type,
+        // e.g. std::variant<int64_t, std::string, std::vector<uint8_t>>.
+        // Poll though our various types in order to figure out what to
+        // add to meta.
+        if (std::holds_alternative<int64_t>(x.second)) {
+            auto value = std::get<int64_t>(x.second);
+            meta->set(x.first, value);
+            continue;
+        }
+        if (std::holds_alternative<std::string>(x.second)) {
+            auto value = std::get<std::string>(x.second);
+            meta->set(x.first, value);
+            continue;
+        }
+        if (std::holds_alternative<std::vector<uint8_t>>(x.second)) {
+            auto value = std::get<std::vector<uint8_t>>(x.second);
+            meta->set(x.first, value);
+            continue;
+        }
+        throw std::runtime_error(fmt::format("Unable to copy metadata \"{}\".", x.first));
+    }
     // Emit the tensor.
     output.emit(out_message.value(), "output");
 }
 
-std::shared_ptr<hololink::Metadata> BaseReceiverOp::metadata() const { return metadata_; }
+void BaseReceiverOp::timeout(holoscan::InputContext& input, holoscan::OutputContext& output,
+    holoscan::ExecutionContext& context)
+{
+    if (ok_) {
+        ok_ = false;
+        HSB_LOG_ERROR("Ingress frame timeout; ignoring.");
+    }
+}
+
+void BaseReceiverOp::frame_ready()
+{
+    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+}
 
 std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
 {
@@ -174,16 +198,16 @@ std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
     return { local_ip, local_port };
 }
 
-CUdeviceptr BaseReceiverOp::allocate(size_t size, uint32_t flags)
+ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size, uint32_t flags)
 {
     CudaCheck(cuInit(0));
-    CudaCheck(cuCtxSetCurrent(frame_context_));
+    CudaCheck(cuCtxSetCurrent(cu_context));
     CUdevice device;
     CudaCheck(cuCtxGetDevice(&device));
     int integrated = 0;
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
 
-    HOLOSCAN_LOG_TRACE("integrated={}", integrated);
+    HSB_LOG_TRACE("integrated={}", integrated);
     if (integrated == 0) {
         // We're a discrete GPU device; so allocate using cuMemAlloc/cuMemFree
         deviceptr_.reset([size] {
@@ -191,20 +215,26 @@ CUdeviceptr BaseReceiverOp::allocate(size_t size, uint32_t flags)
             CudaCheck(cuMemAlloc(&device_deviceptr, size));
             return device_deviceptr;
         }());
-        return deviceptr_.get();
+        mem_ = deviceptr_.get();
+    } else {
+        // We're an integrated device (e.g. Tegra) so we must allocate
+        // using cuMemHostAlloc/cuMemFreeHost
+        host_deviceptr_.reset([size, flags] {
+            void* host_deviceptr;
+            CudaCheck(cuMemHostAlloc(&host_deviceptr, size, flags));
+            return host_deviceptr;
+        }());
+
+        CUdeviceptr device_deviceptr;
+        CudaCheck(cuMemHostGetDevicePointer(&device_deviceptr, host_deviceptr_.get(), 0));
+        mem_ = device_deviceptr;
     }
+}
 
-    // We're an integrated device (e.g. Tegra) so we must allocate
-    // using cuMemHostAlloc/cuMemFreeHost
-    host_deviceptr_.reset([size, flags] {
-        void* host_deviceptr;
-        CudaCheck(cuMemHostAlloc(&host_deviceptr, size, flags));
-        return host_deviceptr;
-    }());
-
-    CUdeviceptr device_deviceptr;
-    CudaCheck(cuMemHostGetDevicePointer(&device_deviceptr, host_deviceptr_.get(), 0));
-    return device_deviceptr;
+ReceiverMemoryDescriptor::~ReceiverMemoryDescriptor()
+{
+    host_deviceptr_.release();
+    deviceptr_.release();
 }
 
 } // namespace hololink::operators

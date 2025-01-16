@@ -16,7 +16,9 @@
 # See README.md for detailed information.
 
 import logging
+import logging.handlers
 import os
+import socket
 import threading
 import traceback
 from unittest.mock import patch
@@ -24,6 +26,31 @@ from unittest.mock import patch
 import pytest
 
 import hololink as hololink_module
+
+# If desired, forward python logging to UDP port 514 in not exactly a SYSLOG
+# compatible way but a way that works great with wireshark.  This
+# is the same thing we're doing in C++.
+if False:
+
+    class UdpWriter:
+        def __init__(self, sender_ip, destination_ip="255.255.255.255"):
+            self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            self._socket.bind((sender_ip, 0))
+            self._socket.connect((destination_ip, 514))
+
+        def write(self, msg):
+            self._socket.send(msg.encode())
+
+    udp_writer = UdpWriter(sender_ip="127.0.0.1", destination_ip="127.0.0.1")
+    handler = logging.StreamHandler(stream=udp_writer)
+    formatter = logging.Formatter(
+        fmt="%(levelname)s %(relativeCreated)d %(funcName)s %(filename)s:%(lineno)d tid=%(threadName)s -- %(message)s"
+    )
+    handler.setFormatter(formatter)
+    handler.terminator = ""
+    logger = logging.getLogger()
+    logger.addHandler(handler)
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -98,14 +125,10 @@ def pytest_addoption(parser):
         default=False,
         help="Don't skip dgpu based test.",
     )
-    default_infiniband_interface = "roceP5p3s0f0"
-    try:
-        default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
-    except (FileNotFoundError, IndexError):
-        pass
+    infiniband_interfaces = hololink_module.infiniband_devices()
     parser.addoption(
         "--ibv-name",
-        default=default_infiniband_interface,
+        default=infiniband_interfaces[0] if infiniband_interfaces else None,
         help="IBV device to use",
     )
     parser.addoption(
@@ -131,6 +154,30 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Include tests for IMX477.",
+    )
+    parser.addoption(
+        "--hsb",
+        action="store_true",
+        default=False,
+        help="Don't skip tests using HSB.",
+    )
+    parser.addoption(
+        "--hsb-nano",
+        action="store_true",
+        default=False,
+        help="Don't skip tests using HSB Nano.",
+    )
+    parser.addoption(
+        "--channel-ips",
+        default=["192.168.0.2", "192.168.0.3"],
+        nargs="+",
+        help="Use these data plane addresses.",
+    )
+    parser.addoption(
+        "--schedulers",
+        default=["default", "greedy", "multithread", "event"],
+        nargs="+",
+        help="Use these schedulers.",
     )
 
 
@@ -167,6 +214,16 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_imx477" in item.keywords:
                 item.add_marker(skip_imx477)
+    if not config.getoption("--hsb") and not config.getoption("--imx274"):
+        skip_hsb = pytest.mark.skip(reason="Tests only run in --hsb mode.")
+        for item in items:
+            if "skip_unless_hsb" in item.keywords:
+                item.add_marker(skip_hsb)
+    if not config.getoption("--hsb-nano"):
+        skip_hsb_nano = pytest.mark.skip(reason="Tests only run in --hsb-nano mode.")
+        for item in items:
+            if "skip_unless_hsb_nano" in item.keywords:
+                item.add_marker(skip_hsb_nano)
 
 
 @pytest.fixture
@@ -197,3 +254,23 @@ def ibv_port(request):
 @pytest.fixture
 def ibv_name(request):
     return request.config.getoption("--ibv-name")
+
+
+# If a test has an "channel_ips" (plural) fixture, then pass
+# the list from the command line.
+@pytest.fixture
+def channel_ips(request):
+    return request.config.getoption("--channel-ips")
+
+
+def pytest_generate_tests(metafunc):
+    # If a test has an "channel_ip" (singular) fixture, then parameterize
+    # from the list given on the command line.
+    if "channel_ip" in metafunc.fixturenames:
+        channel_ips = metafunc.config.getoption("--channel-ips")
+        metafunc.parametrize("channel_ip", channel_ips)
+    # If a test has a "scheduler" (singular) fixture, then parameterize
+    # from the list given on the command line.
+    if "scheduler" in metafunc.fixturenames:
+        schedulers = metafunc.config.getoption("--schedulers")
+        metafunc.parametrize("scheduler", schedulers)

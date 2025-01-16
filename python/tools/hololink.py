@@ -22,9 +22,7 @@ import os
 import pydoc
 import socket
 import struct
-import tempfile
 import time
-import zipfile
 
 import requests
 import yaml
@@ -151,7 +149,7 @@ def _set_ips(ips_by_mac, timeout_s=None, one_time=False):
 
 def _make_bootp_reply(metadata, new_device_ip, local_ip):
     reply = bytearray(1000)
-    serializer = hololink_module.native.Serializer(reply)
+    serializer = hololink_module.Serializer(reply)
     BOOTREPLY = 2
     serializer.append_uint8(BOOTREPLY)  # opcode
     serializer.append_uint8(metadata["hardware_type"])
@@ -859,7 +857,7 @@ class SensorBridge10Strategy(SensorBridgeStrategy):
 
     def board_id_ok(self, board_id):
         board_ids = [
-            hololink_module.HOLOLINK_BOARD_ID,
+            hololink_module.HOLOLINK_NANO_BOARD_ID,
             hololink_module.HOLOLINK_LITE_BOARD_ID,
         ]
         return board_id in board_ids
@@ -924,59 +922,55 @@ class Programmer:
         if strategy_constructor is None:
             raise Exception('Unsupported strategy "{strategy_name}" specified.')
         self._strategy = strategy_constructor(self)
+        if "license" not in self._manifest:
+            # Note that removing the "license" section from the manifest file,
+            # in order to achieve this condition, constitutes agreement with it.
+            self._skip_eula = True
 
-    def fetch_zip_archive(self, args):
-        archive = self._manifest["archive"]
-        if args.archive:
-            f = open(args.archive, "rb")
-        else:
-            url = archive["url"]
+    def fetch_content(self, content_name):
+        content_metadata = self._manifest["content"].get(content_name)
+        if content_metadata is None:
+            raise Exception(f'No content "{content_name}" found.')
+        expected_md5 = content_metadata["md5"]
+        expected_size = content_metadata["size"]
+        if "url" in content_metadata:
+            url = content_metadata["url"]
             request = requests.get(
                 url,
                 headers={
-                    "Content-Type": "application/json",
+                    "Content-Type": "binary/octet-stream",
                 },
             )
             if request.status_code != requests.codes.ok:
                 raise Exception(
                     f'Unable to fetch "{url}"; status={request.status_code}'
                 )
-            f = tempfile.TemporaryFile()
-            # Save the content
-            f.write(request.content)
-            f.seek(0)
-        # Check the archive hash
-        md5 = hashlib.md5()
-        for chunk in iter(lambda: f.read(64 * 1024), b""):
-            md5.update(chunk)
-        computed_md5 = md5.hexdigest()
-        archive_md5 = archive["md5"]
-        if computed_md5 != archive_md5:
+            content = request.content
+        elif "filename" in content_metadata:
+            filename = content_metadata["filename"]
+            with open(filename, "rb") as f:
+                content = f.read()
+        else:
             raise Exception(
-                f"MD5 checksum is different, {archive_md5=} but {computed_md5=}"
+                f"No instructions for where to find {content_name} are provided."
             )
-        #
-        f.seek(0)
-        self._archive = zipfile.ZipFile(f)
-
-    def fetch_local_archive(self, args):
-        class LocalArchive:
-            def read(self, filename):
-                with open(filename, "rb") as f:
-                    s = f.read()
-                return s
-
-        self._skip_eula = True
-        self._archive = LocalArchive()
-
-    def fetch_archive(self, args):
-        archive = self._manifest["archive"]
-        archive_type = archive["type"]
-        if archive_type == "zip":
-            return self.fetch_zip_archive(args)
-        if archive_type == "local":
-            return self.fetch_local_archive(args)
-        assert False and f"Unexpected {archive_type=}"
+        actual_size = len(content)
+        logging.debug(f"{expected_size=} {actual_size=}")
+        if actual_size != expected_size:
+            raise Exception(
+                "Content name=%s expected-size=%s actual-size=%s; aborted."
+                % (content_name, expected_size, actual_size)
+            )
+        md5 = hashlib.md5(content)
+        actual_md5 = md5.hexdigest()
+        logging.debug(f"{expected_md5=} {actual_md5=}")
+        if actual_md5 != expected_md5:
+            raise Exception(
+                "Content name=%s expected-md5=%s actual-md5=%s; aborted."
+                % (content_name, expected_md5, actual_md5)
+            )
+        # We've passed initial checks.
+        return content
 
     def check_eula(self, args):
         if self._skip_eula:
@@ -992,7 +986,7 @@ class Programmer:
         print("At the end of the document, enter <Q> to continue.")
         input("To continue, press <Enter>: ")
         for license in licenses:
-            content = self._archive.read(license["name"]).decode()
+            content = self.fetch_content(license).decode()
             pydoc.pager(content)
             answer = input(
                 "Press 'y' or 'Y' to accept this end user license agreement: "
@@ -1007,29 +1001,11 @@ class Programmer:
     def check_images(self):
         images = self._manifest["images"]
         self._content = {}
-        for name, image in images.items():
-            logging.info(f"{name=} {image=}")
-            content_name = image["content"]
-            expected_md5 = image["md5"]
-            expected_size = image["size"]
-            content = self._archive.read(content_name)
-            actual_size = len(content)
-            logging.debug(f"{expected_size=} {actual_size=}")
-            if actual_size != expected_size:
-                raise Exception(
-                    "Content name=%s expected-size=%s actual-size=%s; aborted."
-                    % (content_name, expected_size, actual_size)
-                )
-            md5 = hashlib.md5(content)
-            actual_md5 = md5.hexdigest()
-            logging.debug(f"{expected_md5=} {actual_md5=}")
-            if actual_md5 != expected_md5:
-                raise Exception(
-                    "Content name=%s expected-md5=%s actual-md5=%s; aborted."
-                    % (content_name, expected_md5, actual_md5)
-                )
-            # We've passed initial checks.
-            self._content[name] = content
+        for image_metadata in images:
+            context, content_name = image_metadata["context"], image_metadata["content"]
+            logging.info(f"{context=} {content_name=}")
+            content = self.fetch_content(content_name)
+            self._content[context] = content
 
     def program_and_verify_images(self, hololink):
         self._strategy.program_and_verify_images(hololink)
@@ -1053,8 +1029,11 @@ def manual_enumeration(args):
     m = {
         "configuration_address": 0,
         "control_port": 8192,
-        "cpnx_version": 0x2402,
+        "cpnx_version": 0x2410,
+        "data_plane": 0,
         "peer_ip": args.hololink,
+        "sensor": 0,
+        "sequence_number_checking": 0,
         "serial_number": "100",
         "vip_mask": 0,
         "board_id": 2,
@@ -1067,10 +1046,9 @@ def _program(args):
     logging.info("manifest=%s" % (args.manifest,))
     programmer = Programmer(args, args.manifest)
     programmer.fetch_manifest("hololink")
-    programmer.fetch_archive(args)
     programmer.check_eula(args)
     programmer.check_images()
-    if args.manual_enumeration:
+    if args.force:
         channel_metadata = manual_enumeration(args)
     else:
         channel_metadata = hololink_module.Enumerator.find_channel(
@@ -1089,9 +1067,9 @@ def main():
         help="IP address of Hololink board",
     )
     parser.add_argument(
-        "--manual-enumeration",
+        "--force",
         action="store_true",
-        help="Don't use reported enumeration data from the board",
+        help="Don't rely on enumeration data for device connection.",
     )
     parser.add_argument(
         "--log-level",
@@ -1258,7 +1236,7 @@ def main():
 
     if args.needs_hololink:
         #
-        if args.manual_enumeration:
+        if args.force:
             channel_metadata = manual_enumeration(args)
         else:
             channel_metadata = hololink_module.Enumerator.find_channel(

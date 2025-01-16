@@ -27,13 +27,12 @@ graph
     r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
-    d --> g[GammaCorrectionOp]
-    g --> v[HolovizOp]
+    d --> v[HolovizOp]
 ```
 
-- `RoceReceiverOp` blocks until an end-of-frame UDP message is received. On return, the
-  received frame data is available in GPU memory, along with metadata which is published
-  to the application layer. Holoscan sensor bridge uses
+- `RoceReceiverOp` wakes up when an end-of-frame UDP message is received. When it
+  finishes, the received frame data is available in GPU memory, along with metadata
+  which is published to the application layer. Holoscan sensor bridge uses
   [RoCE v2](https://en.wikipedia.org/wiki/RDMA_over_Converged_Ethernet) to transmit data
   plane traffic over UDP; this is why the receiver is called `RoceReceiverOp`.
 - `CsiToBayerOp` is aware that the received data is a CSI-2 RAW10 image, which it
@@ -44,9 +43,6 @@ graph
 - `ImageProcessorOp` adjusts the received bayer image color and brightness to make it
   acceptable for display.
 - `BayerDemosaicOp` converts the bayer image data into RGBA.
-- `GammaCorrectionOp`
-  [adjusts the luminance](https://en.wikipedia.org/wiki/Gamma_correction) of the RGBA
-  image to improve human perception.
 - `HolovizOp` displays the RGBA image on the GUI.
 
 For each step in the pipeline, the image data is stored in a buffer in GPU memory.
@@ -181,8 +177,8 @@ Important details:
   will reset all the data channels on this device; and in the stereo IMX274
   configuration, calling `camera.setup_clock` sets the clock that is shared between both
   cameras. For this reason, it's important that the application is careful about calling
-  `camera.setup_clock`--resetting the clock while a camera is running can lead to
-  undefined states.
+  `camera.setup_clock`--resetting the clock (e.g. on the second image sensor) while the
+  first camera is running can lead to undefined states.
 
 Holoscan, on the call to `application.run`, invokes the application's `compose` method,
 which includes this:
@@ -278,10 +274,9 @@ Some key points:
 - `receiver_operator` has no idea it is dealing with video data. It's just informed of
   the memory region(s) to fill and the size of a block of data. When a complete block of
   data is received, the CPU will be notified so that pipeline processing can continue.
-- Applications can pass in a frame buffer device memory pointer to the constructor for
-  `receiver_opearator`, or the receiver will allocate one for you. When it allocates a
-  buffer, it can take into account special requirements for various configurations of
-  GPU and RDMA controller.
+- Given an expected frame size, the receiver buffer will allocate GPU memory large
+  enough for the received data plus additional metadata; that memory is allocated in a
+  way that meets hardware and subsequent operator requirements.
 - `csi_to_bayer_operator` is aware of memory layout for CSI-2 formatted image data. Our
   call to `camera.configure_converter` allows the camera to communicate the image
   dimensions and pixel depth; with that knowledge, the call to
@@ -294,10 +289,6 @@ Some key points:
   data plane. Configuration automatically handles setting the sensor bridge device with
   our host Ethernet and IP addresses, destination memory addresses, security keys, and
   frame size information.
-- To support RDMA, the receiver operator is given a single block of memory (instead of a
-  memory pool to allocate from). The peripheral component is granted access to this
-  region only, and that region does not change throughout the life of the sensor bridge
-  application.
 - the sensor bridge device, following configuration by the `holoscan_channel` object,
   will start forwarding all received sensor data to the configured receiver. We haven't
   instructed the camera to start streaming data yet, but at this point, we're ready to
@@ -336,8 +327,7 @@ graph
     r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
-    d --> g[GammaCorrectionOp]
-    g --> s[ImageShiftToUint8Operator]
+    d --> s[ImageShiftToUint8Operator]
     s --> p[FormatConverterOp]
     p --> fi[FormatInferenceInputOp]
     fi --> in[InferenceOp]
@@ -375,8 +365,7 @@ graph
     r[RoceReceiverOp] --> c[CsiToBayerOp]
     c --> i[ImageProcessorOp]
     i --> d[BayerDemosaicOp]
-    d --> g[GammaCorrectionOp]
-    g --> s[ImageShiftToUint8Operator]
+    d --> s[ImageShiftToUint8Operator]
     s --> p[FormatConverterOp]
     p --> fi[FormatInferenceInputOp]
     fi --> in[InferenceOp]
@@ -394,11 +383,19 @@ scores and applies non-max suppression (nms) before sending the output to `Holov
 ## IMX274 Stereo live video demonstration
 
 Multiple receiver operators can be instantiated to support data feeds from multiple
-cameras. In examples/stereo_imx274_player.py, the same pipeline for live video feed is
+cameras. In `examples/stereo_imx274_player.py`, the same pipeline for live video feed is
 presented, except that it is instantiated twice, once for each camera on the IMX274
 stereo camera board. In this case, Holoscan cycles between each pipeline, providing two
 separate windows (one for each visualizer) on the display. Each `receiver_operator`
 instance is independent and runs simultaneously.
+
+For systems with only a single network connection, Holoscan Sensor Bridge can be
+configured to transmit both cameras data over the same network connection. The 10Gbps
+network port on HSB doesn't have the bandwidth to support two 4K 60FPS video streams, so
+support is limited to cameras in 1080p mode. See
+`examples/single_network_stereo_imx274_player.py` for an example showing how to
+configure HSB to work in this way. As before, each `receiver_operator` is independent,
+even when using the same network interface.
 
 ## GPIO Example application
 
@@ -449,14 +446,14 @@ graph
 Each cycle of this operator configures one pin to a direction and value and sends the
 last changed pin number and the current running configuration to the GPIO read
 operator.\
-Once all 16 pins are set per the currently running configuration,the operator
-will move on the next cycle to the next configuration.
+Once all 16 pins are set per the currently running configuration,the operator will move
+on the next cycle to the next configuration.
 
 - **GPIO Read Operator** - This operator reads and displays the current value of the
   last configured pin. It delays 10 seconds to allow the user to validate the pin level
   and direction with an external measurement device like a multimeter or scope.
 
-### GPIO Software  interface
+### GPIO Software interface
 
 The GPIO interface is a class defined within the hololink module. It exports the
 following GPIO interface:
@@ -497,7 +494,7 @@ graph
 ```
 
 `ArgusIspOp` allows the users to access the ISP via Argus API. This operator takes in
-Bayer uncompressd image of uint16 per pixel (MSB aligned) and outputs RGB888 image. It
+Bayer uncompressed image of uint16 per pixel (MSB aligned) and outputs RGB888 image. It
 is available as C++ operator with Python bindings.
 
 The `ArgusIspOp` can be configured using following required parameters at the

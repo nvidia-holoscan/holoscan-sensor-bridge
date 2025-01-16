@@ -18,6 +18,7 @@
 import logging
 
 import pytest
+import utils
 
 import hololink as hololink_module
 
@@ -45,15 +46,30 @@ def test_hololink_acks(hololink_address):
         peer_ip=metadata["peer_ip"],
         control_port=metadata["control_port"],
         serial_number=metadata["serial_number"],
+        sequence_number_checking=(
+            False if metadata["sequence_number_checking"] == 0 else True
+        ),
     )
-    hololink.start()
-    for i in range(10):
-        hololink.get_fpga_version()
-        hololink.get_fpga_date()
-    hololink.stop()
+    with utils.PriorityScheduler():
+        hololink.start()
+        # Make sure we have PTP sync first.
+        ptp_sync_timeout_s = 10
+        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
+        logging.debug("Waiting for PTP sync.")
+        if not hololink.ptp_synchronize(ptp_sync_timeout):
+            raise ValueError(
+                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
+            )
+        #
+        for i in range(20):
+            hololink.get_fpga_version()
+            hololink.get_fpga_date()
+        hololink.stop()
 
     max_dt = None
-    for n, (request_time, reply_time) in enumerate(hololink._acks):
+    settled_acks = hololink._acks[5:]
+    assert len(settled_acks) > 10
+    for n, (request_time, reply_time) in enumerate(settled_acks):
         dt_s = reply_time - request_time
         dt_ms = dt_s * 1000.0
         dt_us = dt_ms * 1000.0

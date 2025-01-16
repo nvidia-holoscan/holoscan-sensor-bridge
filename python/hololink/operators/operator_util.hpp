@@ -22,6 +22,7 @@
 
 #include <memory>
 
+#include <hololink/logging.hpp>
 #include <holoscan/core/condition.hpp>
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/resource.hpp>
@@ -46,8 +47,8 @@ void add_positional_condition_and_resource_args(holoscan::Operator* op, const py
         } else if (py::isinstance<holoscan::Resource>(*it)) {
             op->add_arg(it->cast<std::shared_ptr<holoscan::Resource>>());
         } else {
-            HOLOSCAN_LOG_WARN("Unhandled positional argument detected (only Condition and Resource "
-                              "objects can be parsed positionally)");
+            HSB_LOG_WARN("Unhandled positional argument detected (only Condition and Resource "
+                         "objects can be parsed positionally)");
         }
     }
 }

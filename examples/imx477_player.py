@@ -18,7 +18,6 @@
 import argparse
 import ctypes
 import logging
-import os
 
 import holoscan
 from cuda import cuda
@@ -132,12 +131,6 @@ class HoloscanApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
@@ -151,8 +144,7 @@ class HoloscanApplication(holoscan.core.Application):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
 
 
 def main():
@@ -185,14 +177,10 @@ def main():
         choices=(0, 1),
         help="which camera to stream: 0 to stream camera connected to j14 or 1 to stream camera connected to j17 (default is 0)",
     )
-    default_infiniband_interface = "roceP5p3s0f0"
-    try:
-        default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
-    except FileNotFoundError:
-        pass
+    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=default_infiniband_interface,
+        default=infiniband_devices[0],
         help="IBV device to use",
     )
     parser.add_argument(
@@ -257,6 +245,7 @@ def main():
             )
         else:
             logging.debug("PTP synchronized.")
+    # Configures the camera for 3840x2160, 60fps
     camera.configure()
     if args.pattern:
         camera.set_pattern()

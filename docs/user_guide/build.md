@@ -30,7 +30,7 @@ container. This container is used to run all holoscan tests and examples.
 
    - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
      OS installed with appropriate dGPU support (e.g.
-     [IGX OS 1.0 Production Release](https://developer.nvidia.com/igx-downloads) with
+     [IGX OS 1.1 Production Release](https://developer.nvidia.com/igx-downloads) with
      dGPU).
    - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX or IGX
      without a dGPU). This requires an OS installed with iGPU support (e.g. for AGX:
@@ -48,7 +48,7 @@ sh docker/demo.sh
 This brings you to a shell prompt inside the Holoscan sensor bridge demo container.
 (Note that iGPU configurations, when starting the demo container, will display the
 message "Failed to detect NVIDIA driver version": this can be ignored.) Now you're ready
-to run sensor bridge applcations.
+to run sensor bridge applications.
 
 ## Holoscan sensor bridge software loopback tests
 
@@ -78,7 +78,7 @@ For IGX configurations,
 then
 
 ```none
-pytest --imx274
+sh ./test-igx-cpnx100.sh
 ```
 
 For AGX configurations, only one camera is supported, so only
@@ -86,7 +86,7 @@ For AGX configurations, only one camera is supported, so only
 is to be connected. Run the device test on AGX this way:
 
 ```none
-pytest --imx274 --unaccelerated-only
+sh ./test-agx-cpnx100.sh
 ```
 
 If things are not working as expected, check the

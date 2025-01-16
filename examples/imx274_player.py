@@ -135,17 +135,12 @@ class HoloscanApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            framebuffer_srgb=True,
         )
         #
         self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
@@ -153,17 +148,20 @@ class HoloscanApplication(holoscan.core.Application):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
 
 
 def main():
     parser = argparse.ArgumentParser()
+    modes = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode
+    mode_choices = [mode.value for mode in modes]
+    mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS.value,
-        help="IMX274 mode",
+        choices=mode_choices,
+        default=mode_choices[0],
+        help=mode_help,
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
@@ -194,14 +192,10 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    default_infiniband_interface = "roceP5p3s0f0"
-    try:
-        default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
-    except FileNotFoundError:
-        pass
+    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=default_infiniband_interface,
+        default=infiniband_devices[0],
         help="IBV device to use",
     )
     parser.add_argument(
@@ -227,6 +221,11 @@ def main():
         "--ptp-sync",
         action="store_true",
         help="After reset, wait for PTP time to synchronize.",
+    )
+    parser.add_argument(
+        "--skip-reset",
+        action="store_true",
+        help="Don't call reset on the hololink device.",
     )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
@@ -267,7 +266,8 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
+    if not args.skip_reset:
+        hololink.reset()
     if args.ptp_sync:
         ptp_sync_timeout_s = 10
         ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
@@ -278,7 +278,8 @@ def main():
             )
         else:
             logging.debug("PTP synchronized.")
-    camera.setup_clock()
+    if not args.skip_reset:
+        camera.setup_clock()
     camera.configure(camera_mode)
     camera.set_digital_gain_reg(0x4)
     if args.pattern is not None:

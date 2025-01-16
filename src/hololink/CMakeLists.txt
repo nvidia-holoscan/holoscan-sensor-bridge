@@ -20,6 +20,7 @@ add_library(hololink STATIC
   data_channel.cpp
   enumerator.cpp
   hololink.cpp
+  logging.cpp
   metadata.cpp
   timeout.cpp
   )

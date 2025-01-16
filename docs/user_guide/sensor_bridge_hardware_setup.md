@@ -17,7 +17,9 @@ Lattice CPNX100-ETH-SENSOR-BRIDGE has the following connectors:
 1. **Camera connector** - This connector is used to interface with a camera (e.g.
    IMX274).
 1. **Power port** - the sensor bridge device is powered by using a USB-C power supply
-   with a minimum of 12V/2A connected to this port.
+   with input voltage from 5V to 20V. Since the sensors are powered through the
+   sensor bridge board, it is recommended to use a dedicated power supply to power
+   both the board and the sensors.
 1. **GPIO pins** - the sensor bridge device supports 16 GPIO pins (0...15) and 4 ground
    pins (marked 'G' in the image above).
 

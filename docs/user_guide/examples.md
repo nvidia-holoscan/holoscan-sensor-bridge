@@ -3,14 +3,6 @@
 Holoscan sensor bridge Python example applications are located under the `examples`
 directory.
 
-The C++ examples need to be build first using these commands
-
-```sh
-$ export BUILD_DIR=/tmp/build
-$ cmake -S . -B $BUILD_DIR -G Ninja -DHOLOLINK_BUILD_PYTHON=OFF
-$ cmake --build $BUILD_DIR -j $(nproc)
-```
-
 Below are instructions for running the applications on the IGX and the Jetson AGX
 platforms.
 
@@ -36,19 +28,35 @@ accelerated network controller,
 ```sh
 $ python3 examples/imx274_player.py
 ```
-````
-````{tab-item} C++
-```sh
-$ $BUILD_DIR/examples/imx274_player
-```
-````
-`````
 
 or, for unaccelerated configurations (e.g. AGX),
 
 ```sh
 $ python3 examples/linux_imx274_player.py
 ```
+
+````
+````{tab-item} C++
+
+The C++ examples need to be built first using these commands; this leaves the resulting
+executables in /tmp/build/examples.
+
+```sh
+$ export BUILD_DIR=/tmp/build
+$ cmake -S . -B $BUILD_DIR -G Ninja -DHOLOLINK_BUILD_PYTHON=OFF
+$ cmake --build $BUILD_DIR -j $(nproc)
+```
+
+After examples are built, you can run the `imx274_player`:
+
+```sh
+$ $BUILD_DIR/examples/imx274_player
+```
+
+Note that only the C++ example is only supported with the accelerated network receiver.
+
+````
+`````
 
 Documentation breaking down the source code for the IMX274 player application is
 [available here](applications.md#imx274_player); this example illustrates the basic
@@ -98,13 +106,14 @@ apt-get update && apt-get install -y ffmpeg
 pip3 install ultralytics onnx
 cd examples
 yolo export model=yolov8n-pose.pt format=onnx
+trtexec --onnx=yolov8n-pose.onnx --saveEngine=yolov8n-pose.engine.fp32
 cd -
 ```
 
-Note that this conversion step only needs to be executed once; the `yolov8n-pose.onnx`
-file contains the converted model and is all that's needed for the demo to run. The
-installed components will be forgotten when the container is exited; those do not need
-to be present in future runs of the demo.
+Note that this conversion step only needs to be executed once; the
+`yolov8n-pose.engine.fp32` file contains the converted model and is all that's needed
+for the demo to run. The installed components will be forgotten when the container is
+exited; those do not need to be present in future runs of the demo.
 
 For systems with accelerated network interfaces, within the sensor bridge demo
 container, launch the Body Pose estimation:
@@ -122,18 +131,17 @@ $ python3 examples/linux_body_pose_estimation.py
 
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
 the IMX274 device, along with a green overlay showing keypoints found by the body pose
-net model. The first time the body pose example is run, the model is converted to an
-fp32 file, which can take several minutes. These conversion results are cached in a
-local file and reused on subsequent runs of the example program. For more information
-about this application, look [here](applications.md#body_pose_estimation).
+net model. For more information about this application, look
+[here](applications.md#body_pose_estimation).
 
 Press Ctrl/C to exit.
 
 ## Running the Stereo IMX274 example
 
-`examples/stereo_imx274_player.py` shows an example with two independent pipelines, one
-for each camera on the dual-camera module. Only an accelerated version is included, and
-[both network ports must be connected](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host)
+For IGX, `examples/stereo_imx274_player.py` shows an example with two independent
+pipelines, one for each camera on the dual-camera module. Accelerated networking is used
+to provide real time access to the pair of 4k image streams. Make sure that
+[both network ports are connected](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host)
 between the IGX and the Holoscan sensor bridge unit.
 
 ```sh
@@ -142,6 +150,16 @@ $ python3 examples/stereo_imx274_player.py
 
 This brings up a visualizer display with two frames, one for the left channel and the
 other for the right.
+
+For AGX configurations, you can observe both cameras using a single network port:
+
+```sh
+$ python3 examples/linux_single_network_stereo_imx274_player.py
+```
+
+Applications wishing to map sensors to specific data channels can do so using the
+`use_sensor` API, which is demonstrated in these examples. The AGX network interface is
+limited to 10Gbps so support is only provided for observing stereo video in 1080p mode.
 
 ## Running the GPIO example
 
@@ -154,7 +172,7 @@ $ python3 examples/gpio_example_app.py
 ```
 
 This brings up a textual display which cycles over different pre-set pin configurations
-and alows time between different settings of the pins to measure or readback pins
+and allows time between different settings of the pins to measure or readback pins
 values. Please refer to the application structure section to read more about the
 [GPIO example application](applications.md#gpio-example-application).
 
@@ -166,7 +184,8 @@ Orin AGX and IGX Orin in iGPU configuration.
 
 Before starting the docker run, setup the `nvargus-daemon` with the flag
 `enableRawReprocessing=1`. This enables us to run the ISP with the Bayer frame capture
-using Holoscan sensor bridge unit and this change persists through even restart.
+using Holoscan sensor bridge unit and this change persists through even restart. In the
+host system:
 
 ```sh
 sudo su
@@ -176,12 +195,9 @@ nvargus-daemon
 exit
 ```
 
-Now use following commands to run the example.
+To run the example, within the demo container:
 
 ```sh
-$ export DISPLAY=:1
-$ xhost +
-$ sh ./docker/demo.sh
 $ python3 examples/linux_hwisp_player.py
 ```
 
@@ -196,4 +212,20 @@ pkill nvargus-daemon
 unset enableRawReprocessing
 nvargus-daemon
 exit
+```
+
+## Running the Latency for IMX274 example
+
+For IGX systems, `examples/imx274_latency.py` shows an example of how to use timestamp
+to profile hardware and software pipeline. This example demonstrates recording
+timestamps received from the FPGA when data is acquired and timestamps measured in the
+host at various points in frame reception and pipeline execution. At the end of the run,
+the application will provide a duration and latency report with average, minimum, and
+maximum values.
+
+Before running the app, make sure the PTP sync has been enabled on the setup and then
+use the following commands to run the example.
+
+```sh
+$ python3 examples/imx274_latency.py
 ```
