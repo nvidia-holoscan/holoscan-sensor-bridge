@@ -18,9 +18,9 @@
 import argparse
 import datetime
 import hashlib
+import json
 import tempfile
 import yaml
-import zipfile
 
 import requests
 
@@ -65,57 +65,67 @@ def main():
     utc = datetime.timezone.utc
     now = datetime.datetime.now(utc)
     #
-    zip_url = f"https://api.ngc.nvidia.com/v2/resources/{org}/{team}/{project}/versions/{version}/zip"
-    zip_request = requests.get(
-        zip_url,
+    files_url = f"https://api.ngc.nvidia.com/v2/resources/org/{org}/team/{team}/{project}/{version}/files"
+    files_request = requests.get(
+        files_url,
         headers={
             "Content-Type": "application/json",
         },
     )
-    if zip_request.status_code != requests.codes.ok:
-        raise Exception(f"Unable to fetch \"{zip_url}\"; status={zip_request.status_code}")
+    if files_request.status_code != requests.codes.ok:
+        raise Exception(f"Unable to fetch \"{files_url}\"; status={files_request.status_code}")
+    files_response = json.loads(files_request.content)
     #
-    md5 = hashlib.md5(zip_request.content)
     hololink = {
         "archive": {
-            "type": "zip",
-            "url": zip_url,
             "version": version,
-            "md5": md5.hexdigest(),
             "enrollment_date": now.isoformat(),
         },
+        "content": {
+        },
+        "images": [
+        ],
         "strategy": args.strategy,
     }
-    hololink_images = { }
-    others = [ ]
-    with tempfile.TemporaryFile() as f:
-        # Save the zip file content
-        f.write(zip_request.content)
-        # Now go back and read it as a zip file
-        f.seek(0)
-        zip_file = zipfile.ZipFile(f)
-        for name in zip_file.namelist():
-            content = zip_file.read(name)
-            md5 = hashlib.md5(content)
-            print(f"{name=} {len(content)=} {md5.hexdigest()=}")
-            image = {
+    for name in files_response["filepath"]:
+        print(f"Fetching {name}.")
+        content_url = f"https://api.ngc.nvidia.com/v2/resources/org/{org}/team/{team}/{project}/{version}/files?redirect=true&path={name}"
+        content_request = requests.get(
+            content_url,
+            headers={
+                "Content-Type": "binary/octet-stream",
+            },
+        )
+        if content_request.status_code != requests.codes.ok:
+            raise Exception(f"Unable to fetch \"{content_url}\"; status={content_request.status_code}")
+        #
+        content = content_request.content
+        md5 = hashlib.md5(content)
+        image = {
+            "size": len(content),
+            "md5": md5.hexdigest(),
+            "url": content_url,
+        }
+        if name in hololink["content"]:
+            raise Exception(f"{name} is already in the content; all content names must be unique.")
+        hololink["content"][name] = image
+        if "cpnx" in name:
+            hololink["images"].append({
+                "context": "cpnx",
                 "content": name,
-                "size": len(content),
-                "md5": md5.hexdigest(),
-            }
-            if "cpnx" in name:
-                assert hololink_images.get("cpnx") is None
-                hololink_images["cpnx"] = image
-            elif "clnx" in name:
-                assert hololink_images.get("clnx") is None
-                hololink_images["clnx"] = image
-            elif "LICENSE" in name.upper():
-                licenses = hololink.setdefault("licenses", [])
-                licenses.append({"name": name})
-            else:
-                hololink.setdefault("other_content", []).append(image)
-    assert len(hololink_images) > 0
-    hololink["images"] = hololink_images
+            })
+            continue
+        if "clnx" in name:
+            hololink["images"].append({
+                "context": "clnx",
+                "content": name,
+            })
+            continue
+        if "LICENSE" in name.upper():
+            licenses = hololink.setdefault("licenses", [])
+            licenses.append(name)
+            continue
+    assert len(hololink["images"]) > 0
     # Write the metadata to the manifest file
     manifest = {
         "hololink": hololink,
