@@ -34,7 +34,7 @@ def measure(filename):
             md5.update(chunk)
         print(f"name={filename} size={stat.st_size} {md5.hexdigest()=}")
         image = {
-            "content": filename,
+            "filename": filename,
             "size": stat.st_size,
             "md5": md5.hexdigest(),
         }
@@ -45,7 +45,7 @@ def main():
     parser.add_argument(
         "--version",
         required=True,
-        help="Componoent version (e.g. \"2402\")",
+        help="Component version (e.g. \"2402\")",
     )
     parser.add_argument(
         "--manifest",
@@ -89,20 +89,34 @@ def main():
     #
     hololink = {
         "archive": {
-            "type": "local",
             "version": version,
             "enrollment_date": now.isoformat(),
         },
+        "content": {
+        },
         "strategy": strategy,
     }
-    hololink_images = { }
+    images = [ ]
     if cpnx_file is not None:
-        hololink_images["cpnx"] = measure(cpnx_file)
+        content = measure(cpnx_file)
+        hololink["content"][cpnx_file] = measure(cpnx_file)
+        images.append({
+            "content": cpnx_file,
+            "context": "cpnx",
+        })
     if clnx_file is not None:
-        hololink_images["clnx"] = measure(clnx_file)
+        hololink["content"][clnx_file] = measure(clnx_file)
+        images.append({
+            "content": clnx_file,
+            "context": "clnx",
+        })
     if stratix_file is not None:
-        hololink_images["stratix"] = measure(stratix_file)
-    hololink["images"] = hololink_images
+        hololink["content"][stratix_file] = measure(stratix_file)
+        images.append({
+            "content": stratix_file,
+            "context": "stratix",
+        })
+    hololink["images"] = images
     # Write the metadata to the manifest file
     manifest = {
         "hololink": hololink,
