@@ -119,7 +119,7 @@ class HoloscanApplication(holoscan.core.Application):
         )
         self._camera_right.configure_converter(csi_to_bayer_operator_right)
 
-        frame_size = csi_to_bayer_operator_right.get_csi_length()
+        frame_size = csi_to_bayer_operator_left.get_csi_length()
         assert frame_size == csi_to_bayer_operator_right.get_csi_length()
 
         frame_context = self._cuda_context
@@ -203,17 +203,6 @@ class HoloscanApplication(holoscan.core.Application):
             out_tensor_name="right",
         )
 
-        gamma_correction_left = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction_left",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        gamma_correction_right = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction_right",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         left_spec = holoscan.operators.HolovizOp.InputSpec(
             "left", holoscan.operators.HolovizOp.InputType.COLOR
         )
@@ -238,6 +227,7 @@ class HoloscanApplication(holoscan.core.Application):
             self,
             name="holoviz",
             headless=self._headless,
+            framebuffer_srgb=True,
             tensors=[left_spec, right_spec],
             height=self._window_height,
             width=self._window_width,
@@ -258,12 +248,8 @@ class HoloscanApplication(holoscan.core.Application):
         )
         self.add_flow(image_processor_left, demosaic_left, {("output", "receiver")})
         self.add_flow(image_processor_right, demosaic_right, {("output", "receiver")})
-        self.add_flow(demosaic_left, gamma_correction_left, {("transmitter", "input")})
-        self.add_flow(
-            demosaic_right, gamma_correction_right, {("transmitter", "input")}
-        )
-        self.add_flow(gamma_correction_left, visualizer, {("output", "receivers")})
-        self.add_flow(gamma_correction_right, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic_left, visualizer, {("transmitter", "receivers")})
+        self.add_flow(demosaic_right, visualizer, {("transmitter", "receivers")})
 
 
 def main():
@@ -305,14 +291,10 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    default_infiniband_interfaces = ["roceP5p3s0f0", "roceP5p3s0f1"]
-    try:
-        default_infiniband_interfaces = sorted(os.listdir("/sys/class/infiniband"))
-    except FileNotFoundError:
-        pass
+    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name-left",
-        default=default_infiniband_interfaces[0],
+        default=infiniband_devices[0],
         help="IBV device to use",
     )
     parser.add_argument(
@@ -323,7 +305,7 @@ def main():
     )
     parser.add_argument(
         "--ibv-name-right",
-        default=default_infiniband_interfaces[1],
+        default=infiniband_devices[1],
         help="IBV device to use",
     )
     parser.add_argument(

@@ -21,73 +21,13 @@ import logging
 import sys
 from unittest import mock
 
-import cupy as cp
 import holoscan
+import operators
 import pytest
+import utils
 
 import hololink as hololink_module
 from examples import imx477_player
-
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
-
-
-class Profiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        callback=None,
-        metadata_callback=None,
-        hololink_channel=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._metadata_callback = metadata_callback
-        self._timestamps = []
-        self._hololink = hololink_channel.hololink()
-        self._packets_dropped = None
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.from_dlpack(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({"": cp_frame}, "output")
-        #
-        metadata = self.metadata()
-        frame_number = metadata["frame_number"]
-        packets_dropped = metadata["packets_dropped"]
-        if packets_dropped != self._packets_dropped:
-            logging.info(f"{packets_dropped=} ({packets_dropped:#X}) {frame_number=}")
-            self._packets_dropped = packets_dropped
-        image_timestamp_ns = metadata["timestamp_ns"]
-        received_timestamp_ns = metadata["received_ns"]
-        pipeline_timestamp_ns = (
-            datetime.datetime.now(datetime.timezone.utc).timestamp() * NS_PER_SEC
-        )
-        self._timestamps.append(
-            (
-                image_timestamp_ns,
-                received_timestamp_ns,
-                pipeline_timestamp_ns,
-                frame_number,
-            )
-        )
-        if self._count < 200:
-            return
-        self._callback(self._timestamps)
-
-    def metadata(self):
-        return self._metadata_callback()
-
 
 timestamps = None
 network_mode = None
@@ -119,6 +59,7 @@ class TimestampTestApplication(holoscan.core.Application):
         self._ibv_port = ibv_port
         self._camera = camera
         self._frame_limit = frame_limit
+        self.is_metadata_enabled = True
 
     def compose(self):
         logging.info("compose")
@@ -205,12 +146,10 @@ class TimestampTestApplication(holoscan.core.Application):
             bayer_grid_pos=bayer_format.value,
             interpolation_mode=0,
         )
-        profiler = Profiler(
+        profiler = operators.TimeProfiler(
             self,
             name="profiler",
-            hololink_channel=self._hololink_channel,
             callback=lambda timestamps: self._terminate(timestamps),
-            metadata_callback=lambda: receiver_operator.metadata(),
         )
         visualizer = holoscan.operators.HolovizOp(
             self,
@@ -244,6 +183,7 @@ def diff_s(later_timestamp_ns, earlier_timestamp_ns):
 # time_limit, the acceptable amount of time between when the frame was sent and
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
+@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2410 FPGAs YET")
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx477
 @pytest.mark.accelerated_networking
@@ -295,7 +235,8 @@ def test_imx477_timestamps(
         with mock.patch(
             "examples.imx477_player.HoloscanApplication", TimestampTestApplication
         ):
-            imx477_player.main()
+            with utils.PriorityScheduler():
+                imx477_player.main()
 
     # check for errors
     global timestamps

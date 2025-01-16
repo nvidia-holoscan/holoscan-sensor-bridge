@@ -49,8 +49,8 @@ before making their first contribution.
 ### Workflow
 
 1. Developers must first [fork](https://help.github.com/en/articles/fork-a-repo) the
-   \[upstream\](https://github.com/nvidia-holoscan/holoscan-sensor-bridge) Holoscan
-   Sensor Bridge repository.
+   [upstream](https://github.com/nvidia-holoscan/holoscan-sensor-bridge) Holoscan Sensor
+   Bridge repository.
 
 1. Git clone the forked repository and push changes to the personal fork.
 

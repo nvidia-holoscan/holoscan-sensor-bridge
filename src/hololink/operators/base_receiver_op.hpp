@@ -26,8 +26,7 @@
 
 #include <cuda.h>
 
-#include <holoscan/core/operator.hpp>
-#include <holoscan/core/parameter.hpp>
+#include <holoscan/holoscan.hpp>
 
 #include <hololink/metadata.hpp>
 #include <hololink/native/cuda_helper.hpp>
@@ -38,6 +37,25 @@ class DataChannel;
 } // namespace hololink
 
 namespace hololink::operators {
+
+class ReceiverMemoryDescriptor {
+public:
+    /**
+     * Allocate a region of GPU memory which will be freed
+     * on destruction.
+     */
+    explicit ReceiverMemoryDescriptor(CUcontext context, size_t size, uint32_t flags = 0);
+    ReceiverMemoryDescriptor() = delete;
+    //~ReceiverMemoryDescriptor() = default;
+    ~ReceiverMemoryDescriptor();
+
+    CUdeviceptr get() { return mem_; };
+
+protected:
+    native::UniqueCUdeviceptr deviceptr_;
+    native::UniqueCUhostptr host_deviceptr_;
+    CUdeviceptr mem_;
+};
 
 class BaseReceiverOp : public holoscan::Operator {
 public:
@@ -51,32 +69,29 @@ public:
     void compute(holoscan::InputContext&, holoscan::OutputContext& op_output,
         holoscan::ExecutionContext&) override;
 
-    std::shared_ptr<Metadata> metadata() const;
-
 protected:
     holoscan::Parameter<DataChannel*> hololink_channel_;
     holoscan::Parameter<std::function<void()>> device_start_;
     holoscan::Parameter<std::function<void()>> device_stop_;
     holoscan::Parameter<CUcontext> frame_context_;
     holoscan::Parameter<size_t> frame_size_;
-    holoscan::Parameter<CUdeviceptr> user_frame_memory_;
+    std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
+    uint64_t frame_count_;
 
     native::UniqueFileDescriptor data_socket_;
-    CUdeviceptr frame_memory_;
 
     virtual void start_receiver() = 0;
-    virtual void stop_() = 0;
-    virtual std::shared_ptr<Metadata> get_next_frame(double timeout_ms) = 0;
+    virtual void stop_receiver() = 0;
+    virtual std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms) = 0;
     virtual std::tuple<std::string, uint32_t> local_ip_and_port();
+    virtual void timeout(holoscan::InputContext& input, holoscan::OutputContext& output,
+        holoscan::ExecutionContext& context);
+
+    // Subclasses call this in order to queue up a call to compute.
+    void frame_ready();
 
 private:
-    std::shared_ptr<Metadata> metadata_;
     bool ok_ = false;
-
-    native::UniqueCUdeviceptr deviceptr_;
-    native::UniqueCUhostptr host_deviceptr_;
-
-    CUdeviceptr allocate(size_t size, uint32_t flags = 0);
 };
 
 } // namespace hololink::operators

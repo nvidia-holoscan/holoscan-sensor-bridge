@@ -19,48 +19,12 @@ import ctypes
 import logging
 import os
 
-import cupy as cp
 import holoscan
+import operators
 import pytest
 from cuda import cuda
 
 import hololink as hololink_module
-
-
-class Profiler(holoscan.core.Operator):
-    def __init__(self, *args, callback=None, out_tensor_name=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._out_tensor_name = out_tensor_name
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.from_dlpack(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({self._out_tensor_name: cp_frame}, "output")
-        # Give it some time to settle
-        if self._count < 20:
-            return
-        # Compute the Y of YCrCb
-        r = cp_frame[:, :, 0]
-        g = cp_frame[:, :, 1]
-        b = cp_frame[:, :, 2]
-        y = r * 0.299 + g * 0.587 + b * 0.114
-        logging.debug(f"{y=}")
-        #
-        unique = cp.unique(y)
-        logging.info(f"{unique=}")
-        buckets, _ = cp.histogram(y, bins=16, range=(0, 65536))
-        s = ",".join([f"{x}" for x in buckets])
-        logging.info(f"buckets=[{s}]")
-        self._callback(buckets)
-
 
 actual = None
 
@@ -154,7 +118,7 @@ class PatternTestApplication(holoscan.core.Application):
         )
 
         #
-        profiler = Profiler(
+        profiler = operators.ColorProfiler(
             self,
             name="profiler",
             callback=lambda buckets: self.buckets(buckets),
@@ -188,6 +152,7 @@ class PatternTestApplication(holoscan.core.Application):
         self._check_done()
 
 
+@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2410 FPGAs YET")
 @pytest.mark.skip_unless_imx477
 @pytest.mark.parametrize(
     "camera_mode,expected",

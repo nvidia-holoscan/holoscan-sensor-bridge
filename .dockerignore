@@ -13,4 +13,11 @@ build*
 # NSight profiler files
 *.ncu-rep
 *.nsys-rep
+# FPGA files
 *.bit
+# cscope index files
+cscope.*
+tags
+# pcap files
+*.pcap
+*.deb

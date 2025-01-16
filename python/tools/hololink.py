@@ -149,7 +149,7 @@ def _set_ips(ips_by_mac, timeout_s=None, one_time=False):
 
 def _make_bootp_reply(metadata, new_device_ip, local_ip):
     reply = bytearray(1000)
-    serializer = hololink_module.native.Serializer(reply)
+    serializer = hololink_module.Serializer(reply)
     BOOTREPLY = 2
     serializer.append_uint8(BOOTREPLY)  # opcode
     serializer.append_uint8(metadata["hardware_type"])
@@ -857,7 +857,7 @@ class SensorBridge10Strategy(SensorBridgeStrategy):
 
     def board_id_ok(self, board_id):
         board_ids = [
-            hololink_module.HOLOLINK_BOARD_ID,
+            hololink_module.HOLOLINK_NANO_BOARD_ID,
             hololink_module.HOLOLINK_LITE_BOARD_ID,
         ]
         return board_id in board_ids
@@ -923,7 +923,7 @@ class Programmer:
             raise Exception('Unsupported strategy "{strategy_name}" specified.')
         self._strategy = strategy_constructor(self)
         if "licenses" not in self._manifest:
-            # Note that removing the "license" section from the manifest file,
+            # Note that removing the "licenses" section from the manifest file,
             # in order to achieve this condition, constitutes agreement with it.
             self._skip_eula = True
 
@@ -1029,8 +1029,11 @@ def manual_enumeration(args):
     m = {
         "configuration_address": 0,
         "control_port": 8192,
-        "cpnx_version": 0x2402,
+        "cpnx_version": 0x2410,
+        "data_plane": 0,
         "peer_ip": args.hololink,
+        "sensor": 0,
+        "sequence_number_checking": 0,
         "serial_number": "100",
         "vip_mask": 0,
         "board_id": 2,
@@ -1045,7 +1048,7 @@ def _program(args):
     programmer.fetch_manifest("hololink")
     programmer.check_eula(args)
     programmer.check_images()
-    if args.manual_enumeration:
+    if args.force:
         channel_metadata = manual_enumeration(args)
     else:
         channel_metadata = hololink_module.Enumerator.find_channel(
@@ -1064,9 +1067,9 @@ def main():
         help="IP address of Hololink board",
     )
     parser.add_argument(
-        "--manual-enumeration",
+        "--force",
         action="store_true",
-        help="Don't use reported enumeration data from the board",
+        help="Don't rely on enumeration data for device connection.",
     )
     parser.add_argument(
         "--log-level",
@@ -1233,7 +1236,7 @@ def main():
 
     if args.needs_hololink:
         #
-        if args.manual_enumeration:
+        if args.force:
             channel_metadata = manual_enumeration(args)
         else:
             channel_metadata = hololink_module.Enumerator.find_channel(

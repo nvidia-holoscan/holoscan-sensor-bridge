@@ -133,6 +133,3 @@ class UdpCam:
             line_start_size,
             line_end_size,
         )
-
-
-VIRTUAL_PORTS = [0x1A00, 0x1C00]

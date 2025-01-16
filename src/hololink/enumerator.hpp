@@ -39,12 +39,11 @@ public:
      * @brief Construct a new Enumerator object
      *
      * @param local_interface blank for all local interfaces
-     * @param enumeration_port
      * @param bootp_request_port
      * @param bootp_reply_port
      */
     explicit Enumerator(const std::string& local_interface = std::string(),
-        uint32_t enumeration_port = 10001u, uint32_t bootp_request_port = 12267u,
+        uint32_t bootp_request_port = 12267u,
         uint32_t bootp_reply_port = 12268u);
     Enumerator() = delete;
 
@@ -56,7 +55,7 @@ public:
      * @param call_back
      * @param timeout
      */
-    static void enumerated(const std::function<bool(const Metadata&)>& call_back,
+    static void enumerated(const std::function<bool(Metadata&)>& call_back,
         const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>());
 
     /**
@@ -64,7 +63,7 @@ public:
      *
      * @param channel_ip
      * @param timeout
-     * @return const Metadata&
+     * @return Metadata&
      */
     static Metadata find_channel(const std::string& channel_ip,
         const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(20.f));
@@ -78,7 +77,7 @@ public:
      * @param timeout
      */
     void enumeration_packets(
-        const std::function<bool(Enumerator&, const std::vector<uint8_t>&, const Metadata&)>& call_back,
+        const std::function<bool(Enumerator&, const std::vector<uint8_t>&, Metadata&)>& call_back,
         const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>());
 
     /**
@@ -91,7 +90,6 @@ public:
 
 private:
     const std::string local_interface_;
-    const uint32_t enumeration_port_;
     const uint32_t bootp_request_port_;
     const uint32_t bootp_reply_port_;
 };

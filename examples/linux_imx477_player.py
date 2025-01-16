@@ -125,12 +125,6 @@ class MicroApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
@@ -144,8 +138,7 @@ class MicroApplication(holoscan.core.Application):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
 
 
 def main():
@@ -222,6 +215,7 @@ def main():
     hololink = hololink_channel.hololink()
     hololink.start()
     hololink.reset()
+    # Configures the camera for 3840x2160, 60fps
     camera.configure()
     if args.pattern:
         camera.set_pattern()

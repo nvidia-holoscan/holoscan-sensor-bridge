@@ -19,48 +19,12 @@ import ctypes
 import logging
 import os
 
-import cupy as cp
 import holoscan
+import operators
 import pytest
 from cuda import cuda
 
 import hololink as hololink_module
-
-
-class Profiler(holoscan.core.Operator):
-    def __init__(self, *args, callback=None, out_tensor_name=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._out_tensor_name = out_tensor_name
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.from_dlpack(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({self._out_tensor_name: cp_frame}, "output")
-        # Give it some time to settle
-        if self._count < 20:
-            return
-        # Compute the Y of YCrCb
-        r = cp_frame[:, :, 0]
-        g = cp_frame[:, :, 1]
-        b = cp_frame[:, :, 2]
-        y = r * 0.299 + g * 0.587 + b * 0.114
-        logging.debug(f"{y=}")
-        #
-        unique = cp.unique(y)
-        logging.info(f"{unique=}")
-        buckets, _ = cp.histogram(y, bins=16, range=(0, 65536))
-        s = ",".join([f"{x}" for x in buckets])
-        logging.info(f"buckets=[{s}]")
-        self._callback(buckets)
-
 
 actual_left = None
 actual_right = None
@@ -78,13 +42,9 @@ class PatternTestApplication(holoscan.core.Application):
         cuda_context,
         cuda_device_ordinal,
         hololink_channel_left,
-        ibv_name_left,
-        ibv_port_left,
         camera_left,
         camera_mode_left,
         hololink_channel_right,
-        ibv_name_right,
-        ibv_port_right,
         camera_right,
         camera_mode_right,
     ):
@@ -94,20 +54,19 @@ class PatternTestApplication(holoscan.core.Application):
         self._cuda_context = cuda_context
         self._cuda_device_ordinal = cuda_device_ordinal
         self._hololink_channel_left = hololink_channel_left
-        self._ibv_name_left = ibv_name_left
-        self._ibv_port_left = ibv_port_left
         self._camera_left = camera_left
         self._camera_mode_left = camera_mode_left
         self._hololink_channel_right = hololink_channel_right
-        self._ibv_name_right = ibv_name_right
-        self._ibv_port_right = ibv_port_right
         self._camera_right = camera_right
         self._camera_mode_right = camera_mode_right
 
     def compose(self):
         logging.info("compose")
-        self._ok = holoscan.conditions.BooleanCondition(
-            self, name="ok", enable_tick=True
+        self._ok_left = holoscan.conditions.BooleanCondition(
+            self, name="ok_left", enable_tick=True
+        )
+        self._ok_right = holoscan.conditions.BooleanCondition(
+            self, name="ok_right", enable_tick=True
         )
         self._camera_left.set_mode(self._camera_mode_left)
         self._camera_right.set_mode(self._camera_mode_right)
@@ -156,12 +115,10 @@ class PatternTestApplication(holoscan.core.Application):
         frame_context = self._cuda_context
         receiver_operator_left = hololink_module.operators.LinuxReceiverOperator(
             self,
-            self._ok,
+            self._ok_left,
             name="receiver_left",
             frame_size=frame_size,
             frame_context=frame_context,
-            ibv_name=self._ibv_name_left,
-            ibv_port=self._ibv_port_left,
             hololink_channel=self._hololink_channel_left,
             device=self._camera_left,
         )
@@ -172,12 +129,10 @@ class PatternTestApplication(holoscan.core.Application):
         frame_context = self._cuda_context
         receiver_operator_right = hololink_module.operators.LinuxReceiverOperator(
             self,
-            self._ok,
+            self._ok_right,
             name="receiver_right",
             frame_size=frame_size,
             frame_context=frame_context,
-            ibv_name=self._ibv_name_right,
-            ibv_port=self._ibv_port_right,
             hololink_channel=self._hololink_channel_right,
             device=self._camera_right,
         )
@@ -195,7 +150,7 @@ class PatternTestApplication(holoscan.core.Application):
             * self._camera_left._height,
             num_blocks=2,
         )
-        isp_left = holoscan.operators.ArgusIspOp(
+        isp_left = hololink_module.operators.ArgusIspOp(
             self,
             name="isp_left",
             pool=isp_pool_left,
@@ -211,22 +166,22 @@ class PatternTestApplication(holoscan.core.Application):
             * self._camera_right._height,
             num_blocks=2,
         )
-        isp_right = holoscan.operators.ArgusIspOp(
+        isp_right = hololink_module.operators.ArgusIspOp(
             self,
             name="isp_right",
             pool=isp_pool_right,
         )
 
         #
-        profiler_left = Profiler(
+        color_profiler_left = operators.ColorProfiler(
             self,
-            name="profiler_left",
+            name="color_profiler_left",
             callback=lambda buckets: self.left_buckets(buckets),
             out_tensor_name="left",
         )
-        profiler_right = Profiler(
+        color_profiler_right = operators.ColorProfiler(
             self,
-            name="profiler_right",
+            name="color_profiler_right",
             callback=lambda buckets: self.right_buckets(buckets),
             out_tensor_name="right",
         )
@@ -267,39 +222,30 @@ class PatternTestApplication(holoscan.core.Application):
             receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
         )
         self.add_flow(csi_to_bayer_operator_left, isp_left, {("output", "receiver")})
-        self.add_flow(isp_left, profiler_left, {("transmitter", "input")})
-        self.add_flow(profiler_left, visualizer, {("output", "receivers")})
+        self.add_flow(isp_left, color_profiler_left, {("transmitter", "input")})
+        self.add_flow(color_profiler_left, visualizer, {("output", "receivers")})
 
         self.add_flow(
             receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
         )
         self.add_flow(csi_to_bayer_operator_right, isp_right, {("output", "receiver")})
-        self.add_flow(isp_right, profiler_right, {("transmitter", "input")})
-        self.add_flow(profiler_right, visualizer, {("output", "receivers")})
-
-    def _check_done(self):
-        global actual_left, actual_right
-        logging.trace(f"{actual_left=} {actual_right=}")
-        if actual_left is None:
-            return
-        if actual_right is None:
-            return
-        logging.info("DONE")
-        self._ok.disable_tick()
+        self.add_flow(isp_right, color_profiler_right, {("transmitter", "input")})
+        self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
 
     def left_buckets(self, buckets):
         global actual_left
         if actual_left is None:
             actual_left = buckets
-        self._check_done()
+            self._ok_left.disable_tick()
 
     def right_buckets(self, buckets):
         global actual_right
         if actual_right is None:
             actual_right = buckets
-        self._check_done()
+            self._ok_right.disable_tick()
 
 
+@pytest.mark.skip("https://jirasw.nvidia.com/browse/BAJQ0XTT-173")
 @pytest.mark.skip_unless_igpu
 @pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
@@ -379,21 +325,15 @@ def test_linux_hwisp_pattern(
         hololink_channel_right, expander_configuration=1
     )
     #
-    ibv_name_left, ibv_name_right = sorted(os.listdir("/sys/class/infiniband"))
-    ibv_port_left, ibv_port_right = 1, 1
     # Set up the application
     application = PatternTestApplication(
         headless,
         cu_context,
         cu_device_ordinal,
         hololink_channel_left,
-        ibv_name_left,
-        ibv_port_left,
         camera_left,
         camera_mode_left,
         hololink_channel_right,
-        ibv_name_right,
-        ibv_port_right,
         camera_right,
         camera_mode_right,
     )

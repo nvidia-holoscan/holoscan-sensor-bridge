@@ -107,6 +107,23 @@ public:
         return true;
     }
 
+    bool append_uint64_be(uint64_t value)
+    {
+        if ((position_ + 8) > limit_) {
+            return false;
+        }
+        buffer_[position_] = (value >> 56) & 0xFF;
+        buffer_[position_ + 1] = (value >> 48) & 0xFF;
+        buffer_[position_ + 2] = (value >> 40) & 0xFF;
+        buffer_[position_ + 3] = (value >> 32) & 0xFF;
+        buffer_[position_ + 4] = (value >> 24) & 0xFF;
+        buffer_[position_ + 5] = (value >> 16) & 0xFF;
+        buffer_[position_ + 6] = (value >> 8) & 0xFF;
+        buffer_[position_ + 7] = (value >> 0) & 0xFF;
+        position_ += 8;
+        return true;
+    }
+
 protected:
     uint8_t* buffer_;
     size_t limit_;

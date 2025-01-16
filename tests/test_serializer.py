@@ -158,3 +158,37 @@ def test_deserialize_uint16_be():
     b[1] = 0x30
     deserializer = hololink.Deserializer(b, length=2)
     assert deserializer.next_uint16_be() == 0x8930
+
+
+def test_deserialize_uint64_be():
+    b = bytes(
+        [
+            0x8A,
+            0x7C,
+            0x6B,
+            0x5A,
+            0x8C,
+            0x7B,
+            0x6A,
+            0x53,
+        ]
+    )
+    deserializer = hololink.Deserializer(b)
+    assert deserializer.next_uint64_be() == 0x8A7C6B5A8C7B6A53
+
+
+def test_deserialize_uint64_le():
+    b = bytes(
+        [
+            0x8A,
+            0x7C,
+            0x6B,
+            0x5A,
+            0x8C,
+            0x7B,
+            0x6A,
+            0x53,
+        ]
+    )
+    deserializer = hololink.Deserializer(b)
+    assert deserializer.next_uint64_le() == 0x536A7B8C5A6B7C8A

@@ -40,8 +40,8 @@ public:
 
     // BaseReceiverOp virtual functions
     void start_receiver() override;
-    void stop_() override;
-    std::shared_ptr<hololink::Metadata> get_next_frame(double timeout_ms) override;
+    void stop_receiver() override;
+    std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms) override;
     std::tuple<std::string, uint32_t> local_ip_and_port() override;
 
 private:
@@ -50,6 +50,8 @@ private:
 
     std::shared_ptr<RoceReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;
+    static constexpr unsigned PAGES = 2;
+    std::unique_ptr<ReceiverMemoryDescriptor> frame_memory_;
 
     void run();
 };

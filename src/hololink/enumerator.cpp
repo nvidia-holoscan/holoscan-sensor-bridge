@@ -34,29 +34,9 @@
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <hololink/logging.hpp>
 #include <hololink/native/deserializer.hpp>
 #include <hololink/native/networking.hpp>
-
-#include <holoscan/logger/logger.hpp>
-
-namespace {
-
-/** Hololink-lite data plane configuration is implied by the value
- * passed in the bootp transaction_id field, which is coopted
- * by FPGA to imply which port is publishing the request.  We use
- * that port ID to figure out what the address of the port's
- * configuration data is; which is the value listed here.
- */
-struct HololinkChannelConfiguration {
-    uint32_t configuration_address;
-    uint32_t vip_mask;
-};
-static const std::map<int, HololinkChannelConfiguration> BOOTP_TRANSACTION_ID_MAP {
-    { 0, HololinkChannelConfiguration { 0x02000000, 0x1 } },
-    { 1, HololinkChannelConfiguration { 0x02010000, 0x2 } },
-};
-
-} // anonynous namespace
 
 namespace hololink {
 
@@ -135,7 +115,7 @@ namespace {
     {
         for (struct cmsghdr* cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL;
              cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-            HOLOSCAN_LOG_TRACE(fmt::format("cmsg_level={} cmsg_type={} cmsg_data_len={}",
+            HSB_LOG_TRACE(fmt::format("cmsg_level={} cmsg_type={} cmsg_data_len={}",
                 cmsg->cmsg_level, cmsg->cmsg_type, cmsg->cmsg_len));
 
             if ((cmsg->cmsg_level == IPPROTO_IP) && (cmsg->cmsg_type == IP_PKTINFO)) {
@@ -152,66 +132,11 @@ namespace {
                 metadata["interface_address"] = std::string(inet_ntoa(pkt_info->ipi_spec_dst)),
                 metadata["destination_address"] = std::string(inet_ntoa(pkt_info->ipi_addr));
 
-                HOLOSCAN_LOG_TRACE(
+                HSB_LOG_TRACE(
                     fmt::format("ipi_ifindex={} interface={} ipi_spec_dst={} ipi_addr={}",
                         metadata["interface_index"], metadata["interface"],
                         metadata["interface_address"], metadata["destination_address"]));
             }
-        }
-    }
-
-    static void deserialize_enumeration(const std::vector<uint8_t>& packet, Metadata& metadata)
-    {
-        native::Deserializer deserializer(packet.data(), packet.size());
-
-        uint8_t board_id = 0;
-        if (!deserializer.next_uint8(board_id)) {
-            throw std::runtime_error("Unable to deserialize enumeration packet.");
-        }
-
-        metadata["type"] = "enumeration";
-        metadata["board_id"] = board_id;
-        if (board_id == HOLOLINK_LITE_BOARD_ID) {
-            metadata["board_description"] = "hololink-lite";
-        } else if (board_id == HOLOLINK_BOARD_ID) {
-            metadata["board_description"] = "hololink";
-        } else if (board_id == HOLOLINK_100G_BOARD_ID) {
-            metadata["board_description"] = "hololink 100G";
-        } else if (board_id == MICROCHIP_POLARFIRE_BOARD_ID) {
-            metadata["board_description"] = "Microchip Polarfire";
-        } else {
-            metadata["board_description"] = "N/A";
-        }
-
-        if ((board_id == HOLOLINK_LITE_BOARD_ID)
-            || (board_id == HOLOLINK_BOARD_ID)
-            || (board_id == HOLOLINK_100G_BOARD_ID)
-            || (board_id == MICROCHIP_POLARFIRE_BOARD_ID)) {
-            std::string board_version;
-            std::string serial_number;
-            uint16_t cpnx_version = 0;
-            uint16_t cpnx_crc = 0;
-            uint16_t clnx_version = 0;
-            uint16_t clnx_crc = 0;
-
-            if (!(next_buffer_as_string(deserializer, board_version, 20)
-                    && next_buffer_as_string(deserializer, serial_number, 7)
-                    && deserializer.next_uint16_le(cpnx_version)
-                    && deserializer.next_uint16_le(cpnx_crc)
-                    && deserializer.next_uint16_le(clnx_version)
-                    && deserializer.next_uint16_le(clnx_crc))) {
-                throw std::runtime_error("Unable to deserialize enumeration packet.");
-            }
-
-            constexpr int default_control_port = 8192;
-
-            metadata["board_version"] = board_version;
-            metadata["serial_number"] = serial_number;
-            metadata["cpnx_version"] = cpnx_version;
-            metadata["cpnx_crc"] = cpnx_crc;
-            metadata["clnx_version"] = clnx_version;
-            metadata["clnx_crc"] = clnx_crc;
-            metadata["control_port"] = default_control_port;
         }
     }
 
@@ -244,7 +169,13 @@ namespace {
                 deserializer.next_uint32_be(server_ip_address) && // expected to be 0s
                 deserializer.next_uint32_be(gateway_ip_address)
                 && deserializer.next_buffer(hardware_address))) {
-            throw std::runtime_error("Unable to deserialize bootp request packet.");
+            // Don't flood the log.
+            static unsigned reports = 0;
+            if (reports < 5) {
+                HSB_LOG_ERROR("Unable to deserialize bootp request packet.");
+                reports++;
+            }
+            return;
         }
 
         std::stringstream mac_id_stream;
@@ -259,7 +190,34 @@ namespace {
         const uint8_t* ignore = nullptr;
         deserializer.pointer(ignore, 64); // server_hostname
         deserializer.pointer(ignore, 128); // boot_filename
-        deserializer.pointer(ignore, 64); // vendor information
+
+        //  Vendor information has more for us.
+        constexpr uint8_t expected_vendor_tag = 0xE0;
+        uint8_t vendor_tag = 0;
+        uint8_t vendor_tag_length = 0;
+        constexpr uint32_t expected_vendor_id = 0x4E564441; // 'NVDA'
+        uint32_t vendor_id = 0;
+        uint8_t data_plane = 0;
+        constexpr uint8_t expected_enum_version = 0x01;
+        uint8_t enum_version = 0;
+        uint16_t board_id = 0;
+        if (!(deserializer.next_uint8(vendor_tag)
+                && (vendor_tag == expected_vendor_tag)
+                && deserializer.next_uint8(vendor_tag_length)
+                && deserializer.next_uint32_be(vendor_id)
+                && (vendor_id == expected_vendor_id)
+                && deserializer.next_uint8(data_plane)
+                && deserializer.next_uint8(enum_version)
+                && (enum_version == expected_enum_version)
+                && deserializer.next_uint16_le(board_id))) {
+            // Don't flood the log.
+            static unsigned reports = 0;
+            if (reports < 5) {
+                HSB_LOG_ERROR("Unable to deserialize bootp request vendor data.");
+                reports++;
+            }
+            return;
+        }
 
         metadata["type"] = "bootp_request";
         metadata["op"] = op;
@@ -275,51 +233,97 @@ namespace {
         metadata["gateway_ip_address"] = std::string(inet_ntoa({ ntohl(gateway_ip_address) }));
         metadata["hardware_address"] = hardware_address;
         metadata["mac_id"] = mac_id;
+        metadata["data_plane"] = static_cast<int64_t>(data_plane);
+        metadata["board_id"] = board_id;
+
+        if (board_id == HOLOLINK_LITE_BOARD_ID) {
+            metadata["board_description"] = "hololink-lite";
+        } else if (board_id == HOLOLINK_NANO_BOARD_ID) {
+            metadata["board_description"] = "hololink-nano";
+        } else if (board_id == HOLOLINK_100G_BOARD_ID) {
+            metadata["board_description"] = "hololink 100G";
+        } else if (board_id == MICROCHIP_POLARFIRE_BOARD_ID) {
+            metadata["board_description"] = "Microchip Polarfire";
+        } else {
+            metadata["board_description"] = "N/A";
+        }
+        if ((board_id == HOLOLINK_LITE_BOARD_ID)
+            || (board_id == HOLOLINK_NANO_BOARD_ID)
+            || (board_id == HOLOLINK_100G_BOARD_ID)
+            || (board_id == MICROCHIP_POLARFIRE_BOARD_ID)) {
+            std::string board_version;
+            std::string serial_number;
+            uint16_t cpnx_version = 0;
+            uint16_t cpnx_crc = 0;
+            uint16_t clnx_version = 0;
+            uint16_t clnx_crc = 0;
+
+            if (!(next_buffer_as_string(deserializer, board_version, 20)
+                    && next_buffer_as_string(deserializer, serial_number, 7)
+                    && deserializer.next_uint16_le(cpnx_version)
+                    && deserializer.next_uint16_le(cpnx_crc)
+                    && deserializer.next_uint16_le(clnx_version)
+                    && deserializer.next_uint16_le(clnx_crc))) {
+                // Don't flood the log.
+                static unsigned reports = 0;
+                if (reports < 5) {
+                    HSB_LOG_ERROR("Unable to deserialize bootp request board data.");
+                    reports++;
+                }
+                return;
+            }
+
+            constexpr int default_control_port = 8192;
+
+            metadata["board_version"] = board_version;
+            metadata["serial_number"] = serial_number;
+            metadata["cpnx_version"] = cpnx_version;
+            metadata["cpnx_crc"] = cpnx_crc;
+            metadata["clnx_version"] = clnx_version;
+            metadata["clnx_crc"] = clnx_crc;
+            metadata["control_port"] = default_control_port;
+            metadata["sequence_number_checking"] = 1;
+        }
     }
 
 } // anonymous namespace
 
-Enumerator::Enumerator(const std::string& local_interface, uint32_t enumeration_port,
+Enumerator::Enumerator(const std::string& local_interface,
     uint32_t bootp_request_port, uint32_t bootp_reply_port)
     : local_interface_(local_interface)
-    , enumeration_port_(enumeration_port)
     , bootp_request_port_(bootp_request_port)
     , bootp_reply_port_(bootp_reply_port)
 {
 }
 
 /*static*/ void Enumerator::enumerated(
-    const std::function<bool(const Metadata&)>& call_back, const std::shared_ptr<Timeout>& timeout)
+    const std::function<bool(Metadata&)>& call_back, const std::shared_ptr<Timeout>& timeout)
 {
     Enumerator enumerator("");
-    std::map<std::string, Metadata> data_plane_by_peer_ip;
 
     enumerator.enumeration_packets(
-        [call_back, &data_plane_by_peer_ip](
-            Enumerator&, const std::vector<uint8_t>& packet, const Metadata& metadata) -> bool {
-            HOLOSCAN_LOG_DEBUG(fmt::format("Enumeration metadata={}", metadata));
+        [call_back](
+            Enumerator&, const std::vector<uint8_t>& packet, Metadata& metadata) -> bool {
+            HSB_LOG_DEBUG(fmt::format("Enumeration metadata={}", metadata));
             auto peer_ip = metadata.get<std::string>("peer_ip");
             if (!peer_ip) {
                 return true;
             }
-            Metadata& channel_metadata = data_plane_by_peer_ip[*peer_ip];
-            channel_metadata.update(metadata);
-            // transaction_id actually indicates which data plane instance we're talking to
-            auto transaction_id = metadata.get<int64_t>("transaction_id"); // may not exist
-            if (transaction_id) {
-                HOLOSCAN_LOG_TRACE(fmt::format("transaction_id={}", transaction_id.value()));
-                auto channel_configuration = BOOTP_TRANSACTION_ID_MAP.find(transaction_id.value());
-                if (channel_configuration != BOOTP_TRANSACTION_ID_MAP.cend()) {
-                    channel_metadata["configuration_address"]
-                        = channel_configuration->second.configuration_address;
-                    channel_metadata["vip_mask"] = channel_configuration->second.vip_mask;
-                }
+            // Add some supplemental data.
+            auto opt_data_plane = metadata.get<int64_t>("data_plane");
+            if (!opt_data_plane.has_value()) {
+                // 2410 and later always provide this.
+                return true;
             }
-
+            int data_plane = opt_data_plane.value();
+            DataChannel::use_data_plane_configuration(metadata, data_plane);
+            // By default, use the data_plane ID to select the sensor.
+            int sensor_number = data_plane;
+            DataChannel::use_sensor(metadata, sensor_number);
             // Do we have the information we need?
-            HOLOSCAN_LOG_DEBUG(fmt::format("channel_metadata={}", channel_metadata));
-            if (DataChannel::enumerated(channel_metadata)) {
-                if (!call_back(channel_metadata)) {
+            HSB_LOG_DEBUG(fmt::format("metadata={}", metadata));
+            if (DataChannel::enumerated(metadata)) {
+                if (!call_back(metadata)) {
                     return false;
                 }
             }
@@ -335,7 +339,7 @@ Enumerator::Enumerator(const std::string& local_interface, uint32_t enumeration_
     bool found = false;
 
     enumerated(
-        [&channel_ip, &channel_metadata, &found](const Metadata& metadata) -> bool {
+        [&channel_ip, &channel_metadata, &found](Metadata& metadata) -> bool {
             auto peer_ip = metadata.get<std::string>("peer_ip");
             if (peer_ip && (peer_ip == channel_ip)) {
                 channel_metadata = metadata;
@@ -355,13 +359,12 @@ Enumerator::Enumerator(const std::string& local_interface, uint32_t enumeration_
 }
 
 void Enumerator::enumeration_packets(
-    const std::function<bool(Enumerator&, const std::vector<uint8_t>&, const Metadata&)>& call_back,
+    const std::function<bool(Enumerator&, const std::vector<uint8_t>&, Metadata&)>& call_back,
     const std::shared_ptr<Timeout>& timeout)
 {
-    Socket enumeration_socket(local_interface_, enumeration_port_);
     Socket bootp_socket(local_interface_, bootp_request_port_);
 
-    constexpr size_t receive_message_size = 8192;
+    constexpr size_t receive_message_size = hololink::native::UDP_PACKET_SIZE;
     std::vector<uint8_t> iobuf(receive_message_size);
     std::array<uint8_t, CMSG_ALIGN(receive_message_size)> controlbuf;
 
@@ -387,7 +390,7 @@ void Enumerator::enumeration_packets(
             select_timeout = nullptr;
         }
 
-        std::array<int, 2> fds { enumeration_socket.get(), bootp_socket.get() };
+        std::array<int, 1> fds { bootp_socket.get() };
         fd_set r;
         FD_ZERO(&r);
         for (auto&& fd : fds) {
@@ -401,15 +404,11 @@ void Enumerator::enumeration_packets(
         num_fds++;
         const int result = select(num_fds, &r, nullptr, &x, select_timeout);
         if (result == -1) {
-            if (errno == EINTR) {
-                // retry
-                continue;
-            }
             throw std::runtime_error(fmt::format("select failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
         for (auto&& fd : fds) {
             if (FD_ISSET(fd, &x)) {
-                HOLOSCAN_LOG_ERROR("Error reading enumeration sockets.");
+                HSB_LOG_ERROR("Error reading enumeration sockets.");
                 return;
             }
         }
@@ -442,13 +441,13 @@ void Enumerator::enumeration_packets(
             ssize_t received_bytes;
             do {
                 received_bytes = recvmsg(fd, &msg, 0);
-                if ((received_bytes == -1) && (errno != EINTR)) {
+                if (received_bytes == -1) {
                     throw std::runtime_error(fmt::format("recvmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
                 }
             } while (received_bytes <= 0);
 
             const std::string peer_address_string(inet_ntoa(peer_address.sin_addr));
-            HOLOSCAN_LOG_TRACE(fmt::format(
+            HSB_LOG_TRACE(fmt::format(
                 "enumeration peer_address \"{}:{}\", ancdata size {}, msg_flags {}, packet size {}",
                 peer_address_string, ntohs(peer_address.sin_port), msg.msg_controllen, msg.msg_flags, received_bytes));
 
@@ -458,9 +457,7 @@ void Enumerator::enumeration_packets(
             metadata["_socket_fd"] = fd;
             deserialize_ancdata(msg, metadata);
 
-            if (fd == enumeration_socket.get()) {
-                deserialize_enumeration(iobuf, metadata);
-            } else if (fd == bootp_socket.get()) {
+            if (fd == bootp_socket.get()) {
                 deserialize_bootp_request(iobuf, metadata);
             }
 
@@ -524,7 +521,7 @@ void Enumerator::send_bootp_reply(
         // Don't flood the console.
         static bool first = true;
         if (first) {
-            HOLOSCAN_LOG_DEBUG(fmt::format("sendmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
+            HSB_LOG_DEBUG(fmt::format("sendmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
             first = false;
         }
     }

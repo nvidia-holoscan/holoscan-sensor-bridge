@@ -68,35 +68,41 @@ ports.
 ### UDP Overhead
 
 UDP packets require overhead such as headers in the beginning of the packet and iCRC
-added to the end of the packet. UDP packet overhead is dependent whether the UDP packet
-is a normal UDP packet or an End of Window UDP packet. UDP packet structures for both
-are described in a table below.
+added to the end of the packet. Sensor encapsulated UDP packets are sent when it either
+reaches a configured ethernet packet length size or the end of a sensor window. After it
+reaches the end of a sensor window, a Metadata packet is sent with a different UDP
+packet. UDP packet structures for both are described in a table below.
 
-Normal UDP Packet
+Sensor UDP Packet
 
-| **Byte Count**        | **Description**               | **Byte Size** | **Endianess** |
-| --------------------- | ----------------------------- | ------------- | ------------- |
-| 0 to 13               | Ethernet Header               | 14            | Big Endian    |
-| 14 to 33              | IPv4 Header                   | 20            | Big Endian    |
-| 34 to 41              | UDP Header                    | 8             | Big Endian    |
-| 42 to 69              | Holoscan Sensor Bridge Header | 28            | Little Endian |
-| 70 to N-10<sup>1<sup> | Sensor Data                   | N - 82        | Little Endian |
-| N-9 to N-5<sup>1<sup> | iCRC                          | 4             | Little Endian |
+| **Byte Count**          | **Description**               | **Byte Size** | **Endianess** |
+| ----------------------- | ----------------------------- | ------------- | ------------- |
+| 0 to 13                 | Ethernet Header               | 14            | Big Endian    |
+| 14 to 33                | IPv4 Header                   | 20            | Big Endian    |
+| 34 to 41                | UDP Header                    | 8             | Big Endian    |
+| 42 to 69                | Holoscan Sensor Bridge Header | 28            | Little Endian |
+| 70 to N+69<sup>1<sup>   | Sensor Data                   | N             | Little Endian |
+| N+70 to N+73<sup>1<sup> | iCRC                          | 4             | Little Endian |
 
-1. N=Configured Ethernet Packet Length
+1. N=Configured Ethernet packet length or remaining end of sensor window size.
 
-End of Window UDP Packet - see section for more information on window
+Metadata UDP Packet
 
-| **Byte Count**        | **Description**               | **Byte Size** | **Endianess** |
-| --------------------- | ----------------------------- | ------------- | ------------- |
-| 0 to 13               | Ethernet Header               | 14            | Big Endian    |
-| 14 to 33              | IPv4 Header                   | 20            | Big Endian    |
-| 34 to 41              | UDP Header                    | 8             | Big Endian    |
-| 42 to 73              | Holoscan Sensor Bridge Header | 32            | Little Endian |
-| 74 to M-10<sup>1<sup> | Sensor Data                   | M - 74        | Little Endian |
-| M-9 to M-5<sup>1<sup> | iCRC                          | 4             | Little Endian |
-
-1. M=Remaining sensor bytes at the End of Window + 82 bytes of overhead
+| **Byte Count** | **Description**                    | **Byte Size** | **Endianess** |
+| -------------- | ---------------------------------- | ------------- | ------------- |
+| 0 to 13        | Ethernet Header                    | 14            | Big Endian    |
+| 14 to 33       | IPv4 Header                        | 20            | Big Endian    |
+| 34 to 41       | UDP Header                         | 8             | Big Endian    |
+| 42 to 73       | Holoscan Sensor Bridge Header      | 32            | Little Endian |
+| 74 to 77       | Flags                              | 4             | Little Endian |
+| 78 to 81       | Packet Sequence Number             | 4             | Little Endian |
+| 82 to 85       | CRC of Sensor Data in whole Window | 4             | Little Endian |
+| 86 to 97       | PTP of First Sensor Data of Window | 12            | Little Endian |
+| 98 to 105      | Valid # of Bytes within Buffer     | 8             | Little Endian |
+| 106 to 109     | Frame Number                       | 4             | Little Endian |
+| 110 to 121     | PTP of Metadata Packet Formation   | 12            | Little Endian |
+| 122 to 201     | Reserved                           | 80            | Little Endian |
+| 202 to 205     | iCRC                               | 4             | Little Endian |
 
 The Ethernet, IPv4, and UDP headers abide by the standard Ethernet header format.
 

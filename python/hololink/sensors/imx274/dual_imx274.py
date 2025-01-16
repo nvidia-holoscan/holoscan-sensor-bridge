@@ -75,10 +75,7 @@ class Imx274Cam:
         #
         # Setting these register is time-consuming.
         for reg, val in imx274_mode.imx274_start:
-            if (
-                reg == imx274_mode.IMX274_TABLE_WAIT_MS
-                or reg == imx274_mode.IMX274_TABLE_END
-            ):
+            if reg == imx274_mode.IMX274_TABLE_WAIT_MS:
                 time.sleep(val / 1000)  # the val is in ms
             else:
                 self.set_register(reg, val)
@@ -86,13 +83,12 @@ class Imx274Cam:
     def stop(self):
         """Stop Streaming"""
         for reg, val in imx274_mode.imx274_stop:
-            if (
-                reg == imx274_mode.IMX274_TABLE_WAIT_MS
-                or reg == imx274_mode.IMX274_TABLE_END
-            ):
+            if reg == imx274_mode.IMX274_TABLE_WAIT_MS:
                 time.sleep(val / 1000)  # the val is in ms
             else:
                 self.set_register(reg, val)
+        # Let the egress buffer drain.
+        time.sleep(0.1)
         self._running = False
 
     def get_version(self):
@@ -110,9 +106,7 @@ class Imx274Cam:
             CAM_I2C_ADDRESS, write_bytes[: serializer.length()], read_byte_count
         )
         deserializer = hololink_module.Deserializer(reply)
-        r = deserializer.next_uint32_be()
-        # since the register value is only 8b
-        r = r & 0xFF
+        r = deserializer.next_uint8()
         logging.debug(
             "get_register(register=%d(0x%X))=%d(0x%X)" % (register, register, r, r)
         )
@@ -151,14 +145,16 @@ class Imx274Cam:
             == imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS.value
         ):
             mode_list = imx274_mode.imx274_mode_1920x1080_60fps
+        elif (
+            imx274_mode_set.value
+            == imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value
+        ):
+            mode_list = imx274_mode.imx274_mode_3840X2160_60fps_12bits
         else:
             logging.error(f"{imx274_mode_set} mode is not present.")
 
         for reg, val in mode_list:
-            if (
-                reg == imx274_mode.IMX274_TABLE_WAIT_MS
-                or reg == imx274_mode.IMX274_TABLE_END
-            ):
+            if reg == imx274_mode.IMX274_TABLE_WAIT_MS:
                 time.sleep(val / 1000)  # the val is in ms
             else:
                 self.set_register(reg, val)
@@ -175,10 +171,9 @@ class Imx274Cam:
             logging.warn(f"Exposure value {value} is higher than the maximum.")
             value = 0xFFFF
 
-        reg_value = format(value, "04x")
-        self.set_register(int(imx274_mode.REG_EXP_LSB, 16), int(reg_value[2:4], 16))
-        self.set_register(int(imx274_mode.REG_EXP_MSB, 16), int(reg_value[0:2], 16))
-        time.sleep(int(imx274_mode.IMX274_WAIT_MS, 16) / 1000)
+        self.set_register(imx274_mode.REG_EXP_LSB, (value >> 8) & 0xFF)
+        self.set_register(imx274_mode.REG_EXP_MSB, value & 0xFF)
+        time.sleep(imx274_mode.IMX274_WAIT_MS / 1000)
 
     def set_digital_gain_reg(self, value=0x0000):
         """
@@ -198,8 +193,8 @@ class Imx274Cam:
         elif value >= 0x02:
             reg_value = 0x01
 
-        self.set_register(int(imx274_mode.REG_DG, 16), reg_value)
-        time.sleep(int(imx274_mode.IMX274_WAIT_MS, 16) / 1000)
+        self.set_register(imx274_mode.REG_DG, reg_value)
+        time.sleep(imx274_mode.IMX274_WAIT_MS / 1000)
 
     def set_analog_gain_reg(self, value=0x0C):
         if value < 0x00:
@@ -210,10 +205,9 @@ class Imx274Cam:
             logging.warn(f"AG value {value} is more than maximum.")
             value = 0xFFFF
 
-        reg_value = format(value, "04x")
-        self.set_register(int(imx274_mode.REG_AG_LSB, 16), int(reg_value[2:4], 16))
-        self.set_register(int(imx274_mode.REG_AG_MSB, 16), int(reg_value[0:2], 16))
-        time.sleep(int(imx274_mode.IMX274_WAIT_MS, 16) / 1000)
+        self.set_register(imx274_mode.REG_AG_LSB, (value >> 8) & 0xFF)
+        self.set_register(imx274_mode.REG_AG_MSB, value & 0xFF)
+        time.sleep(imx274_mode.IMX274_WAIT_MS / 1000)
 
     def set_mode(self, imx274_mode_set):
         if imx274_mode_set.value < len(imx274_mode.Imx274_Mode):
@@ -233,19 +227,33 @@ class Imx274Cam:
             line_start_size,
             line_end_size,
         ) = self._hololink.csi_size()
-        assert self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10
-        # We get 175 bytes of metadata in RAW10 mode
-        metadata_size = line_start_size + 175 + line_end_size
-        converter.configure(
-            self._width,
-            self._height,
-            self._pixel_format,
-            frame_start_size + metadata_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-            margin_top=8,  # sensor has 8 lines of optical black before the real image data starts
-        )
+        if self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
+            # We get 175 bytes of metadata in RAW10 mode
+            metadata_size = line_start_size + 175 + line_end_size
+            converter.configure(
+                self._width,
+                self._height,
+                self._pixel_format,
+                frame_start_size + metadata_size,
+                frame_end_size,
+                line_start_size,
+                line_end_size,
+                margin_top=8,  # sensor has 8 lines of optical black before the real image data starts
+            )
+        elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
+            metadata_size = line_start_size + 175 + line_end_size
+            converter.configure(
+                self._width,
+                self._height,
+                self._pixel_format,
+                frame_start_size + metadata_size,
+                frame_end_size,
+                line_start_size,
+                line_end_size,
+                margin_top=16,  # sensor has 16 lines of optical black before the real image data starts
+            )
+        else:
+            logging.error("Incorrect pixel format for IMX274")
 
     def pixel_format(self):
         return self._pixel_format

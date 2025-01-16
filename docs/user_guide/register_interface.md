@@ -24,12 +24,12 @@ The APB ports available on the Holoscan Sensor Bridge IP allow user to connect t
 specific blocks, for example, Ethernet MAC/PCS IP block or sensor interface registers,
 where the Holoscan Sensor Bridge IP is the APB Requester.
 
-The msb\[31:28\] of the register address is used to determine the REG_INST\_# block and
-the address \[27:0\] is the offset address.
+The msb[31:28] of the register address is used to determine the REG_INST\_# block and
+the address [27:0] is the offset address.
 
 For example, if the host accesses register in 0x1000_0000 – 0x1FFF_FFFF address mapping,
-this will trigger o_apb_psel\[0\] with the offset address o_apb_paddr mapping
-0x0000_0000 – 0x0FFF_FFFF and so on.
+this will trigger o_apb_psel[0] with the offset address o_apb_paddr mapping 0x0000_0000
+– 0x0FFF_FFFF and so on.
 
 ![reg_offset](reg_offset.png)
 

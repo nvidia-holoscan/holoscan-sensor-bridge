@@ -15,10 +15,41 @@
 #
 # See README.md for detailed information.
 
-ARG CONTAINER_TYPE=dgpu
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.3.0-${CONTAINER_TYPE}
-
 ARG CONTAINER_TYPE=invalid
+
+# dgpu specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.7.0-dgpu AS build_dgpu
+
+# igpu specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.7.0-igpu AS build_igpu
+RUN \
+    # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev && \
+    echo "deb https://repo.download.nvidia.com/jetson/common r36.3 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
+    echo "deb https://repo.download.nvidia.com/jetson/t234 r36.3 main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
+    wget -O - https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | apt-key add - && \
+    apt-get update && \
+    # we do not have the permission to ./mm-api/DEBIAN/postinst \
+    # to just install nvidia-l4t-jetson-multimedia-api via apt install \
+    apt-get download nvidia-l4t-jetson-multimedia-api && \
+    dpkg-deb -R ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api && \
+    cp -r ./mm-api/usr/src/jetson_multimedia_api /usr/src/jetson_multimedia_api && \
+    sed -i 's/sudo//' ./mm-api/DEBIAN/postinst && \
+    ./mm-api/DEBIAN/postinst && \
+    rm -rf ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api && \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=argus-libs libnvargus.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus.so
+COPY --from=argus-libs libnvargus_socketclient.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketclient.so
+COPY --from=argus-libs libnvargus_socketserver.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketserver.so
+COPY --from=argus-libs libnvfusacap.so /usr/lib/aarch64-linux-gnu/nvidia/libnvfusacap.so
+COPY --from=argus-libs libnvodm_imager.so /usr/lib/aarch64-linux-gnu/nvidia/libnvodm_imager.so
+COPY --from=argus-libs libnvscf.so /usr/lib/aarch64-linux-gnu/nvidia/libnvscf.so
+ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
+
+# configuration for all GPU configurations start here.
+FROM build_${CONTAINER_TYPE}
 
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
@@ -39,26 +70,6 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install meson ninja pyelftools
-
-RUN if [ "$CONTAINER_TYPE" = "igpu" ]; then \
-    # libgtk is needed by Argus api otherwise the library throughs error \
-    apt-get update && \
-    DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgtk-3-dev && \
-    echo "deb https://repo.download.nvidia.com/jetson/common r36.3 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
-    echo "deb https://repo.download.nvidia.com/jetson/t234 r36.3 main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
-    wget -O - https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | apt-key add - && \
-    apt-get update && \
-    # we do not have the permission to ./mm-api/DEBIAN/postinst \
-    # to just install nvidia-l4t-jetson-multimedia-api via apt install \
-    apt-get download nvidia-l4t-jetson-multimedia-api && \
-    dpkg-deb -R ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api && \
-    cp -r ./mm-api/usr/src/jetson_multimedia_api /usr/src/jetson_multimedia_api && \
-    sed -i 's/sudo//' ./mm-api/DEBIAN/postinst && \
-    ./mm-api/DEBIAN/postinst && \
-    rm -rf ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api; \
-  fi
-
-ADD nvidia /usr/lib/aarch64-linux-gnu/nvidia
-
-ENV CONTAINER_TYPE=$CONTAINER_TYPE
-ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
+# repeated ARG because it has to be inside the FROM above
+ARG CONTAINER_TYPE=invalid
+ENV CONTAINER_TYPE=${CONTAINER_TYPE}

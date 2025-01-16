@@ -19,10 +19,9 @@ import importlib
 import sys
 
 _MODULES = {
+    "ArgusIspOp": "argus_isp",
     "BaseReceiverOp": "base_receiver_op",
     "CsiToBayerOp": "csi_to_bayer",
-    "GammaCorrectionOp": "gamma_correction",
-    "ArgusIspOp": "argus_isp",
     "ImageProcessorOp": "image_processor",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
     "LinuxReceiver": "linux_receiver",

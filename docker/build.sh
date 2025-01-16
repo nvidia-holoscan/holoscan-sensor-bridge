@@ -99,44 +99,47 @@ HERE=`dirname "$SCRIPT"`
 ROOT=`realpath "$HERE/.."`
 VERSION=`cat $ROOT/VERSION`
 
-if [ ! -d "$ROOT/nvidia" ]; then
-mkdir $ROOT/nvidia
-fi
+PROTOTYPE_OPTIONS=""
 
 CONTAINER_TYPE=dgpu
 if [ $igpu -ne 0 ]
 then
 CONTAINER_TYPE=igpu
-if [ ! -d "/usr/lib/aarch64-linux-gnu/nvidia" ]
+ARGUS_LIBRARIES_DIRECTORY=/usr/lib/aarch64-linux-gnu/nvidia
+if [ ! -d $ARGUS_LIBRARIES_DIRECTORY ]
 then
 echo "Error: Required path and libs are missing. \
       Upgrade the development kit with Jetpack 6 or newer."
 exit 1
 fi
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus.so $ROOT/nvidia
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketclient.so $ROOT/nvidia
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketserver.so $ROOT/nvidia
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvfusacap.so $ROOT/nvidia
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvodm_imager.so $ROOT/nvidia
-cp /usr/lib/aarch64-linux-gnu/nvidia/libnvscf.so $ROOT/nvidia
+PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context argus-libs=$ARGUS_LIBRARIES_DIRECTORY"
 fi
 
-chmod 755 $ROOT/nvidia
+# For Jetson Nano devices, which have very limited memory,
+# limit the number of CPUs so we don't run out of RAM.
+INSTALL_ENVIRONMENT=""
+MEM_G=`awk '/MemTotal/ {print int($2 / 1024 / 1024)}' /proc/meminfo`
+if [ $MEM_G -lt 10 ]
+then
+INSTALL_ENVIRONMENT="taskset -c 0-2"
+fi
 
-# Build the development container
-docker build \
+# Build the development container.  We specifically rely on buildkit skipping
+# the dgpu or igpu stages that aren't included in the final image we're
+# creating.
+DOCKER_BUILDKIT=1 docker build \
     --network=host \
-    --build-arg CONTAINER_TYPE=$CONTAINER_TYPE \
+    --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     -t hololink-prototype:$VERSION \
     -f $HERE/Dockerfile \
+    $PROTOTYPE_OPTIONS \
     $ROOT
 
 # Build a container that has python extensions set up.
-docker build \
+DOCKER_BUILDKIT=1 docker build \
     --network=host \
     --build-arg CONTAINER_VERSION=hololink-prototype:$VERSION \
+    --build-arg "INSTALL_ENVIRONMENT=$INSTALL_ENVIRONMENT" \
     -t hololink-demo:$VERSION \
     -f $HERE/Dockerfile.demo \
     $ROOT
-
-rm -rf nvidia

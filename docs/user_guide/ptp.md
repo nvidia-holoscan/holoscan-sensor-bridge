@@ -3,14 +3,14 @@
 HOLOLINK IP supports Precision Time Protocol (PTP) per IEEE1588-2019 specification.
 
 PTP synchronizes the HOLOLINK IP's internal time to the host time. This allows the
-HOLOLINK IP to accurately timestamp the incoming sensor data for the host processing and
+HOLOLINK IP to accurately timestamp the incoming sensor data for host processing and
 synchronize multiple boards on the network.
 
 HOLOLINK IP timer operates in the following manner:
 
 1. When the HOLOLINK IP comes out of reset, the timer begins at 0 seconds and 0
    nanoseconds. At each rising clock edge, the timer increments by (1/HIF_CLK_FREQ)
-   nanoseconds and 16-bit fractional nanoseconds, where HIF_CLK_FREQ is a parameter
+   nanoseconds and 24-bit fractional nanoseconds, where HIF_CLK_FREQ is a parameter
    defined in "HOLOLINK_def.svh" For example, if HIF_CLK_FREQ is set to 156250000Hz in
    10G application, the incremental value per rising clock edge is 6.4ns.
 1. When the HOLOLINK IP receives a SYNC (and FOLLOW-UP for 2-step) message from the
@@ -40,8 +40,6 @@ HOLOLINK IP is listed below.
 The HOLOLINK IP PTP currently has these limitations that can be added in future
 revisions.
 
-1. Mean link delay is not part of the offset measurement calculation.
-1. Correction Field is not part of the offset measurement calculation.
 1. Announce messages are ignored.
 1. No Best Master Clock Algorithm. It assumes there is only 1 master in the network at a
    given time.
@@ -53,4 +51,4 @@ The performance of the HOLOLINK IP PTP was tested by comparing the Pulse Per Sec
 
 | **Offset** | **End to End Standard Deviation** |
 | ---------- | --------------------------------- |
-| \< 20 us   | \< 100 ns                         |
+| < 1 us     | < 100 ns                          |

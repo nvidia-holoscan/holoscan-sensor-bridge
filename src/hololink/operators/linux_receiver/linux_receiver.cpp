@@ -32,12 +32,11 @@
 
 #include <infiniband/opcode.h>
 
+#include <hololink/hololink.hpp>
+#include <hololink/logging.hpp>
 #include <hololink/native/deserializer.hpp>
+#include <hololink/native/networking.hpp>
 #include <hololink/native/nvtx_trace.hpp>
-
-#define TRACE(fmt, ...) /* ignored */
-#define DEBUG(fmt...) fprintf(stderr, "DEBUG -- " fmt)
-#define ERROR(fmt...) fprintf(stderr, "ERROR -- " fmt)
 
 #define NUM_OF(x) (sizeof(x) / sizeof(x[0]))
 
@@ -73,10 +72,12 @@ public:
 
 LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     size_t cu_buffer_size,
-    int socket)
+    int socket,
+    uint64_t received_address_offset)
     : cu_buffer_(cu_buffer)
     , cu_buffer_size_(cu_buffer_size)
     , socket_(socket)
+    , received_address_offset_(received_address_offset)
     , ready_(false)
     , exit_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
@@ -87,17 +88,18 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     , available_(NULL)
     , busy_(NULL)
     , cu_stream_(0)
+    , frame_ready_([](const LinuxReceiver&) {})
 {
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
-        ERROR("pthread_mutex_init failed, r=%d.\n", r);
+        throw std::runtime_error("pthread_mutex_init failed.");
     }
     pthread_condattr_t pthread_condattr;
     pthread_condattr_init(&pthread_condattr);
     pthread_condattr_setclock(&pthread_condattr, CLOCK_MONOTONIC);
     r = pthread_cond_init(&ready_condition_, &pthread_condattr);
     if (r != 0) {
-        ERROR("pthread_cond_init failed, r=%d.\n", r);
+        throw std::runtime_error("pthread_cond_init failed.");
     }
 
     // set the receive timeout, we use that to check to periodically return from the
@@ -106,13 +108,13 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     timeout.tv_sec = 0;
     timeout.tv_usec = 100000;
     if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
-        ERROR("setsockopt failed errno=%d.\n", (int)errno);
+        throw std::runtime_error(fmt::format("setsockopt failed errno={}", errno));
     }
 
     // See get_next_frame.
     CUresult cu_result = cuStreamCreate(&cu_stream_, CU_STREAM_NON_BLOCKING);
     if (cu_result != CUDA_SUCCESS) {
-        ERROR("cuSteramCreate failed, cu_result=%d.\n", (int)cu_result);
+        throw std::runtime_error(fmt::format("cuStreamCreate failed, cu_result={}.", cu_result));
     }
 }
 
@@ -124,7 +126,7 @@ LinuxReceiver::~LinuxReceiver()
 
 void LinuxReceiver::run()
 {
-    DEBUG("Starting.\n");
+    HSB_LOG_DEBUG("Starting.");
     native::NvtxTrace::setThreadName("linux_receiver");
 
     // Round the buffer size up to 64k
@@ -133,8 +135,7 @@ void LinuxReceiver::run()
     // Allocate three pages, details below
     CUresult cu_result = cuMemHostAlloc((void**)(&local_), buffer_size * 3, CU_MEMHOSTALLOC_WRITECOMBINED);
     if (cu_result != CUDA_SUCCESS) {
-        ERROR("cuMemHostAlloc failed, cu_result=%d.\n", (int)cu_result);
-        return;
+        throw std::runtime_error(fmt::format("cuMemHostAlloc failed, cu_result={}.", cu_result));
     }
     // Construct a descriptor for each page
     LinuxReceiverDescriptor d0(&local_[buffer_size * 0]);
@@ -148,7 +149,7 @@ void LinuxReceiver::run()
     available_.store(&d2);
 
     // Received UDP message goes here.
-    uint8_t received[8192];
+    uint8_t received[hololink::native::UDP_PACKET_SIZE];
 
     unsigned frame_count = 0, packet_count = 0;
     unsigned frame_packets_received = 0, frame_bytes_received = 0;
@@ -163,10 +164,12 @@ void LinuxReceiver::run()
         int recv_errno = errno;
 
         // Get the clock as close to the packet receipt as possible.
-        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-            ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
+        if (clock_gettime(CLOCK_REALTIME, &now) != 0) {
+            HSB_LOG_ERROR("clock_gettime failed, errno={}", errno);
             break;
         }
+
+        HSB_LOG_TRACE("received_bytes={} recv_errno={}.", received_bytes, recv_errno);
 
         if (received_bytes <= 0) {
             // check if there is a timeout
@@ -178,7 +181,7 @@ void LinuxReceiver::run()
                 // if not, continue
                 continue;
             }
-            ERROR("recv returned received_bytes=%d, recv_errno=%d.\n", (int)received_bytes, (int)recv_errno);
+            HSB_LOG_ERROR("recv returned received_bytes={}, recv_errno={}", received_bytes, recv_errno);
             break;
         }
 
@@ -201,7 +204,7 @@ void LinuxReceiver::run()
                     && deserializer.next_uint24_be(qp)
                     && deserializer.next_uint8(ack_request)
                     && deserializer.next_uint24_be(psn))) {
-                ERROR("Unable to decode runt IB request, received_bytes=%d.\n", (int)received_bytes);
+                HSB_LOG_ERROR("Unable to decode runt IB request, received_bytes={}", received_bytes);
                 break;
             }
 
@@ -227,9 +230,10 @@ void LinuxReceiver::run()
                 && deserializer.next_uint32_be(rkey)
                 && deserializer.next_uint32_be(size)
                 && deserializer.pointer(content, size)) {
-                TRACE("opcode=2A address=0x%llX size=0x%X\n", (unsigned long long)address, (unsigned)size);
-                if ((address >= cu_buffer_) && (address + size <= (cu_buffer_ + cu_buffer_size_))) {
-                    uint64_t offset = address - cu_buffer_;
+                HSB_LOG_TRACE("opcode=2A address={:x} size={:x}", address, size);
+                uint64_t target_address = address + received_address_offset_;
+                if ((target_address >= cu_buffer_) && (target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
+                    uint64_t offset = target_address - cu_buffer_;
                     memcpy(&receiving->memory_[offset], content, size);
                     frame_bytes_received += size;
                 }
@@ -246,9 +250,10 @@ void LinuxReceiver::run()
                 frame_count++;
                 native::NvtxTrace::event_u64("frame_count", frame_count);
 
-                TRACE("opcode=2B address=0x%llX size=0x%X\n", (unsigned long long)address, (unsigned)size);
-                if ((address >= cu_buffer_) && (address + size <= (cu_buffer_ + cu_buffer_size_))) {
-                    uint64_t offset = address - cu_buffer_;
+                HSB_LOG_TRACE("opcode=2B address={:#x} size={:x}", address, size);
+                uint64_t target_address = address + received_address_offset_;
+                if ((target_address >= cu_buffer_) && (target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
+                    uint64_t offset = target_address - cu_buffer_;
                     memcpy(&receiving->memory_[offset], content, size);
                     frame_bytes_received += size;
                 }
@@ -260,6 +265,7 @@ void LinuxReceiver::run()
                 //  was in available_ (but not consumed by
                 //  the application)
                 // - signal the pipeline so it wakes up if necessary.
+                Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(content, size);
                 LinuxReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
@@ -270,9 +276,9 @@ void LinuxReceiver::run()
                 metadata.frame_end_ns = now.tv_nsec;
                 metadata.imm_data = imm_data;
                 metadata.packets_dropped = packets_dropped;
-                metadata.received_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    std::chrono::system_clock::now().time_since_epoch())
-                                           .count();
+                metadata.received_s = now.tv_sec;
+                metadata.received_ns = now.tv_nsec;
+                metadata.frame_metadata = frame_metadata;
 
                 receiving = available_.exchange(receiving);
                 signal();
@@ -284,7 +290,7 @@ void LinuxReceiver::run()
                 break;
             }
 
-            ERROR("Unable to decode IB request with opcode=0x%X.\n", (unsigned)opcode);
+            HSB_LOG_ERROR("Unable to decode IB request with opcode={:x}", opcode);
         } while (false);
     }
 
@@ -293,28 +299,31 @@ void LinuxReceiver::run()
 
     cu_result = cuMemFreeHost((void*)(local_));
     if (cu_result != CUDA_SUCCESS) {
-        ERROR("cuMemFreeHost failed, cu_result=%d.\n", (int)cu_result);
+        HSB_LOG_ERROR("cuMemFreeHost failed, cu_result={}", cu_result);
         return;
     }
     local_ = NULL;
-    DEBUG("Done.\n");
+    HSB_LOG_DEBUG("Done.");
 }
 
 void LinuxReceiver::signal()
 {
     int r = pthread_mutex_lock(&ready_mutex_);
     if (r != 0) {
-        ERROR("pthread_mutex_lock returned r=%d.\n", r);
+        throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
     }
     ready_ = true;
     r = pthread_cond_signal(&ready_condition_);
     if (r != 0) {
-        ERROR("pthread_cond_signal returned r=%d.\n", r);
+        throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
     }
     r = pthread_mutex_unlock(&ready_mutex_);
     if (r != 0) {
-        ERROR("pthread_mutex_unlock returned r=%d.\n", r);
+        throw std::runtime_error(fmt::format("pthread_mutex_unlock returned r={}.", r));
     }
+    // Provide the local callback, letting the application know
+    // that get_next_frame won't block.
+    frame_ready_(this[0]);
 }
 
 bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata)
@@ -330,19 +339,19 @@ bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& m
             // finishes before the pipeline uses the destination buffer.
             CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, cu_stream_);
             if (cu_result != CUDA_SUCCESS) {
-                ERROR("cuMemcpyHtoD failed, cu_result=%d.\n", (int)cu_result);
+                HSB_LOG_ERROR("cuMemcpyHtoDAsync failed, cu_result={}", cu_result);
                 r = false;
             } else {
                 cu_result = cuStreamSynchronize(cu_stream_);
                 if (cu_result != CUDA_SUCCESS) {
-                    ERROR("cuStreamSynchronize failed, cu_result=%d.\n", (int)cu_result);
+                    HSB_LOG_ERROR("cuStreamSynchronize failed, cu_result={}", cu_result);
                     r = false;
                 }
             }
             metadata = busy_->metadata_;
         } else {
             // run() exited.
-            ERROR("get_next_frame failed, receiver has terminated.\n");
+            HSB_LOG_ERROR("get_next_frame failed, receiver has terminated.");
             r = false;
         }
     }
@@ -353,12 +362,11 @@ bool LinuxReceiver::wait(unsigned timeout_ms)
 {
     int status = pthread_mutex_lock(&ready_mutex_);
     if (status != 0) {
-        ERROR("pthread_mutex_lock returned status=%d.\n", status);
-        return false;
+        throw std::runtime_error(fmt::format("pthread_mutex_lock returned status={}.", status));
     }
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
-        ERROR("clock_gettime failed, errno=%d.\n", (int)errno);
+        HSB_LOG_ERROR("clock_gettime failed, errno={}", errno);
     }
     struct timespec timeout = add_ms(now, timeout_ms);
 
@@ -368,7 +376,7 @@ bool LinuxReceiver::wait(unsigned timeout_ms)
             break;
         }
         if (status != 0) {
-            ERROR("pthread_cond_wait returned status=%d.\n", status);
+            HSB_LOG_ERROR("pthread_cond_wait returned status={}", status);
             break;
         }
     }
@@ -376,7 +384,7 @@ bool LinuxReceiver::wait(unsigned timeout_ms)
     ready_ = false;
     status = pthread_mutex_unlock(&ready_mutex_);
     if (status != 0) {
-        ERROR("pthread_mutex_unlock returned status=%d.\n", status);
+        throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
     }
     return r;
 }
@@ -384,6 +392,11 @@ bool LinuxReceiver::wait(unsigned timeout_ms)
 void LinuxReceiver::close()
 {
     exit_ = true;
+}
+
+void LinuxReceiver::set_frame_ready(std::function<void(const LinuxReceiver&)> frame_ready)
+{
+    frame_ready_ = frame_ready;
 }
 
 } // namespace hololink::operators

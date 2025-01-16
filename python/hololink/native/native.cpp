@@ -130,6 +130,15 @@ PYBIND11_MODULE(_native, m)
                 }
                 return value;
             })
+        .def("next_uint64_le",
+            [](Deserializer& me) {
+                uint64_t value = 0;
+                bool r = me.next_uint64_le(value);
+                if (!r) {
+                    throw std::runtime_error("Buffer underflow");
+                }
+                return value;
+            })
         // next_buffer returns a pointer to an internal buffer, Python should not take ownership but
         // couple the lifetime of the pointer to the Deserializer instance
         .def(
@@ -250,6 +259,14 @@ PYBIND11_MODULE(_native, m)
 
     m.def("local_mac", &local_mac);
 
+    m.def("local_ip_and_mac", &local_ip_and_mac, "destination_ip"_a, "port"_a);
+
+    m.def("local_ip_and_mac_from_socket", &local_ip_and_mac_from_socket, "socket_fd"_a);
+
+    m.attr("UDP_PACKET_SIZE") = UDP_PACKET_SIZE;
+    m.attr("PAGE_SIZE") = PAGE_SIZE;
+
+    m.def("round_up", &round_up, "value"_a, "alignment"_a);
 } // PYBIND11_MODULE
 
 } // namespace hololink::native

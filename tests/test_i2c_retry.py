@@ -77,8 +77,14 @@ def test_i2c_retry(udpcam):
             # Workaround:
             # Keep a global reference to the Mockhololink instance to prevent it from beeing destroyed.
             global mh
+            sequence_number_checking = (
+                False if metadata["sequence_number_checking"] == 0 else True
+            )
             mh = MockHololink(
-                metadata["peer_ip"], metadata["control_port"], metadata["serial_number"]
+                metadata["peer_ip"],
+                metadata["control_port"],
+                metadata["serial_number"],
+                sequence_number_checking,
             )
             return mh
 

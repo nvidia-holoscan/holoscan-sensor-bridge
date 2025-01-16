@@ -31,6 +31,7 @@ target_include_directories(native
 target_link_libraries(native
   PRIVATE
     holoscan::core
+    hololink
   PUBLIC
     CUDA::cuda_driver
     CUDA::nvToolsExt

@@ -24,8 +24,8 @@ ECB reads.
 The SPI core has a 4-bit bi-directional signal data signal (SDIO), a chip select (CS_N)
 and clock signal (SCK) for each endpoint connected. The bi-directional data signal is
 broken up into a 4-bit input and 4-bit output signal, with an output enable (oen) signal
-for tri-stating. This SPI core supports single SPI mode using SDIO\[0\] as an output
-(MOSI) and SDIO\[1\] as an input (MISO). Dual and Quad SPI are supported using 2 and 4
+for tri-stating. This SPI core supports single SPI mode using SDIO[0] as an output
+(MOSI) and SDIO[1] as an input (MISO). Dual and Quad SPI are supported using 2 and 4
 bits of the SDIO signal respectively.
 
 The SPI core is clocked using the i_apb_clk and reset with i_apb_rst. All logic is based

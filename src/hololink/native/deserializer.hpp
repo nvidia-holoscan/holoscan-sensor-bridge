@@ -44,8 +44,8 @@ public:
             return false;
         }
 
-        result = (buffer_[position_ + 0] << 0) | (buffer_[position_ + 1] << 8)
-            | (buffer_[position_ + 2] << 16) | (buffer_[position_ + 3] << 24);
+        result = (uint32_t(buffer_[position_ + 0]) << 0) | (uint32_t(buffer_[position_ + 1]) << 8)
+            | (uint32_t(buffer_[position_ + 2]) << 16) | (uint32_t(buffer_[position_ + 3]) << 24);
 
         position_ += 4;
         return true;
@@ -85,7 +85,7 @@ public:
             return false;
         }
         result = buffer_[position_ + 0];
-        result |= (buffer_[position_ + 1] << 8);
+        result |= (uint16_t(buffer_[position_ + 1]) << 8);
         position_ += 2;
         return true;
     }
@@ -134,6 +134,25 @@ public:
         result = (result << 8) | buffer_[position_ + 5];
         result = (result << 8) | buffer_[position_ + 6];
         result = (result << 8) | buffer_[position_ + 7];
+        position_ += 8;
+        return true;
+    }
+
+    // Returns true if result is set;
+    // false on buffer overflow.
+    bool next_uint64_le(uint64_t& result)
+    {
+        if ((position_ + 8) > limit_) {
+            return false;
+        }
+        result = (uint64_t(buffer_[position_ + 0]) << 0);
+        result |= (uint64_t(buffer_[position_ + 1]) << 8);
+        result |= (uint64_t(buffer_[position_ + 2]) << 16);
+        result |= (uint64_t(buffer_[position_ + 3]) << 24);
+        result |= (uint64_t(buffer_[position_ + 4]) << 32);
+        result |= (uint64_t(buffer_[position_ + 5]) << 40);
+        result |= (uint64_t(buffer_[position_ + 6]) << 48);
+        result |= (uint64_t(buffer_[position_ + 7]) << 56);
         position_ += 8;
         return true;
     }

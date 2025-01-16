@@ -27,7 +27,10 @@ RUN apt-get update \
 
 ADD . /opt/hololink/
 
-RUN cd /opt/hololink/python && pip3 wheel .
+# See build.sh for why INSTALL_ENVIRONMENT is here.
+ARG INSTALL_ENVIRONMENT=""
+RUN cd /opt/hololink/python \
+    && $INSTALL_ENVIRONMENT pip3 wheel -v .
 
 # demo container
 FROM base AS demo

@@ -29,7 +29,6 @@ target_link_libraries(imx274_player
     hololink::native
     hololink::operators::csi_to_bayer
     hololink::operators::image_processor
-    hololink::operators::gamma_correction
     hololink::operators::roce_receiver
     holoscan::core
     holoscan::ops::bayer_demosaic

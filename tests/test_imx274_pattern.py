@@ -19,48 +19,13 @@ import ctypes
 import logging
 import os
 
-import cupy as cp
 import holoscan
+import operators
 import pytest
+import utils
 from cuda import cuda
 
 import hololink as hololink_module
-
-
-class Profiler(holoscan.core.Operator):
-    def __init__(self, *args, callback=None, out_tensor_name=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._out_tensor_name = out_tensor_name
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.from_dlpack(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({self._out_tensor_name: cp_frame}, "output")
-        # Give it some time to settle
-        if self._count < 20:
-            return
-        # Compute the Y of YCrCb
-        r = cp_frame[:, :, 0]
-        g = cp_frame[:, :, 1]
-        b = cp_frame[:, :, 2]
-        y = r * 0.299 + g * 0.587 + b * 0.114
-        logging.debug(f"{y=}")
-        #
-        unique = cp.unique(y)
-        logging.info(f"{unique=}")
-        buckets, _ = cp.histogram(y, bins=16, range=(0, 65536))
-        s = ",".join([f"{x}" for x in buckets])
-        logging.info(f"buckets=[{s}]")
-        self._callback(buckets)
-
 
 actual_left = None
 actual_right = None
@@ -98,6 +63,8 @@ class PatternTestApplication(holoscan.core.Application):
         ibv_port_right,
         camera_right,
         camera_mode_right,
+        watchdog_left,
+        watchdog_right,
     ):
         logging.info("__init__")
         super().__init__()
@@ -114,11 +81,20 @@ class PatternTestApplication(holoscan.core.Application):
         self._ibv_port_right = ibv_port_right
         self._camera_right = camera_right
         self._camera_mode_right = camera_mode_right
+        self._watchdog_left = watchdog_left
+        self._watchdog_right = watchdog_right
+        self._bucket_count_left = 0
+        self._bucket_count_right = 0
+        self._bucket_count_left_trigger = 10
+        self._bucket_count_right_trigger = 10
 
     def compose(self):
         logging.info("compose")
-        self._ok = holoscan.conditions.BooleanCondition(
-            self, name="ok", enable_tick=True
+        self._ok_left = holoscan.conditions.BooleanCondition(
+            self, name="ok_left", enable_tick=True
+        )
+        self._ok_right = holoscan.conditions.BooleanCondition(
+            self, name="ok_right", enable_tick=True
         )
         self._camera_left.set_mode(self._camera_mode_left)
         self._camera_right.set_mode(self._camera_mode_right)
@@ -165,33 +141,55 @@ class PatternTestApplication(holoscan.core.Application):
         frame_size = csi_to_bayer_operator_left.get_csi_length()
         logging.info(f"left {frame_size=}")
         frame_context = self._cuda_context
-        receiver_operator_left = hololink_module.operators.RoceReceiverOp(
-            self,
-            self._ok,
-            name="receiver_left",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name_left,
-            ibv_port=self._ibv_port_left,
-            hololink_channel=self._hololink_channel_left,
-            device=self._camera_left,
-        )
+        if self._ibv_name_left:
+            receiver_operator_left = hololink_module.operators.RoceReceiverOp(
+                self,
+                self._ok_left,
+                name="receiver_left",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                ibv_name=self._ibv_name_left,
+                ibv_port=self._ibv_port_left,
+                hololink_channel=self._hololink_channel_left,
+                device=self._camera_left,
+            )
+        else:
+            receiver_operator_left = hololink_module.operators.LinuxReceiverOperator(
+                self,
+                self._ok_left,
+                name="receiver_left",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                hololink_channel=self._hololink_channel_left,
+                device=self._camera_left,
+            )
 
         #
         frame_size = csi_to_bayer_operator_right.get_csi_length()
         logging.info(f"right {frame_size=}")
         frame_context = self._cuda_context
-        receiver_operator_right = hololink_module.operators.RoceReceiverOp(
-            self,
-            self._ok,
-            name="receiver_right",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name_right,
-            ibv_port=self._ibv_port_right,
-            hololink_channel=self._hololink_channel_right,
-            device=self._camera_right,
-        )
+        if self._ibv_name_right:
+            receiver_operator_right = hololink_module.operators.RoceReceiverOp(
+                self,
+                self._ok_right,
+                name="receiver_right",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                ibv_name=self._ibv_name_right,
+                ibv_port=self._ibv_port_right,
+                hololink_channel=self._hololink_channel_right,
+                device=self._camera_right,
+            )
+        else:
+            receiver_operator_right = hololink_module.operators.LinuxReceiverOperator(
+                self,
+                self._ok_right,
+                name="receiver_right",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                hololink_channel=self._hololink_channel_right,
+                device=self._camera_right,
+            )
 
         #
         rgba_components_per_pixel = 4
@@ -239,15 +237,15 @@ class PatternTestApplication(holoscan.core.Application):
         )
 
         #
-        profiler_left = Profiler(
+        color_profiler_left = operators.ColorProfiler(
             self,
-            name="profiler_left",
+            name="color_profiler_left",
             callback=lambda buckets: self.left_buckets(buckets),
             out_tensor_name="left",
         )
-        profiler_right = Profiler(
+        color_profiler_right = operators.ColorProfiler(
             self,
-            name="profiler_right",
+            name="color_profiler_right",
             callback=lambda buckets: self.right_buckets(buckets),
             out_tensor_name="right",
         )
@@ -284,14 +282,25 @@ class PatternTestApplication(holoscan.core.Application):
             window_title="IMX274 pattern test",
         )
         #
+        watchdog_operator_left = operators.WatchdogOp(
+            self,
+            name="watchdog_operator_left",
+            watchdog=self._watchdog_left,
+        )
+        watchdog_operator_right = operators.WatchdogOp(
+            self,
+            name="watchdog_operator_right",
+            watchdog=self._watchdog_right,
+        )
+        #
         self.add_flow(
             receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
         )
         self.add_flow(
             csi_to_bayer_operator_left, demosaic_left, {("output", "receiver")}
         )
-        self.add_flow(demosaic_left, profiler_left, {("transmitter", "input")})
-        self.add_flow(profiler_left, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic_left, color_profiler_left, {("transmitter", "input")})
+        self.add_flow(color_profiler_left, visualizer, {("output", "receivers")})
 
         self.add_flow(
             receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
@@ -299,109 +308,125 @@ class PatternTestApplication(holoscan.core.Application):
         self.add_flow(
             csi_to_bayer_operator_right, demosaic_right, {("output", "receiver")}
         )
-        self.add_flow(demosaic_right, profiler_right, {("transmitter", "input")})
-        self.add_flow(profiler_right, visualizer, {("output", "receivers")})
-
-    def _check_done(self):
-        global actual_left, actual_right
-        logging.trace(f"{actual_left=} {actual_right=}")
-        if actual_left is None:
-            return
-        if actual_right is None:
-            return
-        logging.info("DONE")
-        self._ok.disable_tick()
+        self.add_flow(demosaic_right, color_profiler_right, {("transmitter", "input")})
+        self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
+        #
+        self.add_flow(
+            color_profiler_left, watchdog_operator_left, {("output", "input")}
+        )
+        self.add_flow(
+            color_profiler_right, watchdog_operator_right, {("output", "input")}
+        )
 
     def left_buckets(self, buckets):
+        self._bucket_count_left += 1
         global actual_left
-        if actual_left is None:
-            actual_left = buckets
-        self._check_done()
+        actual_left = buckets
+        if self._bucket_count_left >= self._bucket_count_left_trigger:
+            # don't fail the watchdog while we're shutting down.
+            self._watchdog_left.update(timeout=30)
+            self._ok_left.disable_tick()
 
     def right_buckets(self, buckets):
+        self._bucket_count_right += 1
         global actual_right
-        if actual_right is None:
-            actual_right = buckets
-        self._check_done()
+        actual_right = buckets
+        if self._bucket_count_right >= self._bucket_count_right_trigger:
+            # don't fail the watchdog while we're shutting down.
+            self._watchdog_right.update(timeout=30)
+            self._ok_right.disable_tick()
 
 
-@pytest.mark.skip_unless_imx274
-@pytest.mark.accelerated_networking
-@pytest.mark.parametrize(
-    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
-    [
-        (
-            # left
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
-            10,
-            # fmt: off
-            [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
-            # fmt: on
-            # right
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
-            11,
-            # fmt: off
-            [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
-            # fmt: on
-        ),
-        (
-            # left
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
-            11,
-            # fmt: off
-            [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
-            # fmt: on
-            # right
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
-            10,
-            # fmt: off
-            [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
-            # fmt: on
-        ),
-        (
-            # left
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
-            10,
-            # fmt: off
-            [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
-            # fmt: on
-            # right
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
-            11,
-            # fmt: off
-            [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
-            # fmt: on
-        ),
-        (
-            # left
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
-            11,
-            # fmt: off
-            [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
-            # fmt: on
-            # right
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
-            10,
-            # fmt: off
-            [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
-            # fmt: on
-        ),
-    ],
-)
-@pytest.mark.parametrize(
-    "scheduler",
-    ["default", "greedy", "multithread", "event"],
-)
-def test_imx274_pattern(
+# This may execute on unaccelerated configurations, where
+# there may be any number of infiniband interfaces (but
+# most likely zero).  In this case, placate parametrize
+# by providing dummy None values in these columns.
+sys_ibv_name_left, sys_ibv_name_right = (
+    hololink_module.infiniband_devices() + [None, None]
+)[:2]
+
+
+expected_4k_results = [
+    (
+        # left
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        10,
+        # fmt: off
+        [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
+        # fmt: on
+        # right
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        11,
+        # fmt: off
+        [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
+        # fmt: on
+    ),
+    (
+        # left
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        11,
+        # fmt: off
+        [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
+        # fmt: on
+        # right
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        10,
+        # fmt: off
+        [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
+        # fmt: on
+    ),
+]
+
+expected_1080p_results = [
+    (
+        # left
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        10,
+        # fmt: off
+        [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
+        # fmt: on
+        # right
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        11,
+        # fmt: off
+        [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
+        # fmt: on
+    ),
+    (
+        # left
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        11,
+        # fmt: off
+        [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
+        # fmt: on
+        # right
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        10,
+        # fmt: off
+        [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
+        # fmt: on
+    ),
+]
+
+expected_results = []
+expected_results.extend(expected_4k_results)
+expected_results.extend(expected_1080p_results)
+
+
+def run_test(
+    headless,
+    channel_metadata_left,
+    ibv_name_left,
+    ibv_port_left,
     camera_mode_left,
     pattern_left,
     expected_left,
+    channel_metadata_right,
+    ibv_name_right,
+    ibv_port_right,
     camera_mode_right,
     pattern_right,
     expected_right,
-    headless,
-    hololink_address,
-    capsys,
     scheduler,
 ):
     #
@@ -416,111 +441,353 @@ def test_imx274_pattern(
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to data sources
-    hololink_left = hololink_address
-    channel_metadata_left = hololink_module.Enumerator.find_channel(
-        channel_ip=hololink_left
-    )
+    #
     hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
-    ip = [int(x) for x in hololink_address.split(".")]
-    ip[-1] += 1
-    hololink_right = ".".join([f"{x}" for x in ip])
-    channel_metadata_right = hololink_module.Enumerator.find_channel(
-        channel_ip=hololink_right
-    )
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     # Get a handle to the camera
     camera_left = CameraWrapper(hololink_channel_left, expander_configuration=0)
     camera_right = CameraWrapper(hololink_channel_right, expander_configuration=1)
-    #
-    ibv_name_left, ibv_name_right = sorted(os.listdir("/sys/class/infiniband"))
-    ibv_port_left, ibv_port_right = 1, 1
-    # Set up the application
-    application = PatternTestApplication(
-        headless,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel_left,
-        ibv_name_left,
-        ibv_port_left,
-        camera_left,
-        camera_mode_left,
-        hololink_channel_right,
-        ibv_name_right,
-        ibv_port_right,
-        camera_right,
-        camera_mode_right,
-    )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-    application.config(default_configuration)
-    # Run it.
-    hololink = hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
-    hololink.start()
-    assert camera_left._reset_callbacks == 0
-    assert camera_right._reset_callbacks == 0
-    hololink.reset()
-    assert camera_left._reset_callbacks == 1
-    assert camera_right._reset_callbacks == 1
-    camera_left.setup_clock()  # this also sets camera_right's clock
-    camera_left.configure(camera_mode_left)
-    camera_left.test_pattern(pattern_left)
-    camera_right.configure(camera_mode_right)
-    camera_right.test_pattern(pattern_right)
+    # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
+    # starts running (and builds CUDA code).
+    with utils.Watchdog(
+        "frame-reception-left",
+        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
+        timeout=0.5,
+    ) as watchdog_left:
+        with utils.Watchdog(
+            "frame-reception-right",
+            initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
+            timeout=0.5,
+        ) as watchdog_right:
+            # Set up the application
+            application = PatternTestApplication(
+                headless,
+                cu_context,
+                cu_device_ordinal,
+                hololink_channel_left,
+                ibv_name_left,
+                ibv_port_left,
+                camera_left,
+                camera_mode_left,
+                hololink_channel_right,
+                ibv_name_right,
+                ibv_port_right,
+                camera_right,
+                camera_mode_right,
+                watchdog_left,
+                watchdog_right,
+            )
+            default_configuration = os.path.join(
+                os.path.dirname(__file__), "example_configuration.yaml"
+            )
+            application.config(default_configuration)
+            # Run it.
+            hololink = hololink_channel_left.hololink()
+            assert hololink is hololink_channel_right.hololink()
+            hololink.start()
+            assert camera_left._reset_callbacks == 0
+            assert camera_right._reset_callbacks == 0
+            hololink.reset()
+            assert camera_left._reset_callbacks == 1
+            assert camera_right._reset_callbacks == 1
+            camera_left.setup_clock()  # this also sets camera_right's clock
+            camera_left.configure(camera_mode_left)
+            camera_left.test_pattern(pattern_left)
+            camera_right.configure(camera_mode_right)
+            camera_right.test_pattern(pattern_right)
 
-    # values for scheduler parameters.
-    if scheduler == "event":
-        app_scheduler = holoscan.schedulers.EventBasedScheduler(
-            application,
-            worker_thread_number=4,
-            name="event_scheduler",
-        )
-        application.scheduler(app_scheduler)
-    elif scheduler == "multithread":
-        app_scheduler = holoscan.schedulers.MultiThreadScheduler(
-            application,
-            worker_thread_number=4,
-            name="multithread_scheduler",
-        )
-        application.scheduler(app_scheduler)
-    elif scheduler == "greedy":
-        app_scheduler = holoscan.schedulers.GreedyScheduler(
-            application,
-            name="greedy_scheduler",
-        )
-        application.scheduler(app_scheduler)
-    elif scheduler == "default":
-        # Use the default one.
-        pass
-    else:
-        raise Exception(f"Unexpected {scheduler=}")
-
-    application.run()
-    hololink.stop()
+            # For testing, make sure we call the get_register method.
+            STANDBY = 0x3000
+            camera_left.get_register(STANDBY)
+            # Configure scheduler.
+            if scheduler == "event":
+                app_scheduler = holoscan.schedulers.EventBasedScheduler(
+                    application,
+                    worker_thread_number=4,
+                    name="event_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "multithread":
+                app_scheduler = holoscan.schedulers.MultiThreadScheduler(
+                    application,
+                    worker_thread_number=4,
+                    name="multithread_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "greedy":
+                app_scheduler = holoscan.schedulers.GreedyScheduler(
+                    application,
+                    name="greedy_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "default":
+                # Use the default one.
+                pass
+            else:
+                raise Exception(f"Unexpected {scheduler=}")
+            #
+            application.run()
+            hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
     # Now check the buckets.
     global actual_left, actual_right
     #
     logging.info(f"{expected_left=}")
     logging.info(f"{actual_left=}")
-    left_diffs = [abs(a - e) for e, a in zip(expected_left, actual_left, strict=True)]
-    logging.info(f"{left_diffs=}")
-    left_diff = sum(left_diffs)
-    logging.info(f"{left_diff=}")
+    if expected_left is not None:
+        left_diffs = [
+            abs(a - e) for e, a in zip(expected_left, actual_left, strict=True)
+        ]
+        logging.info(f"{left_diffs=}")
+        left_diff = sum(left_diffs)
+        logging.info(f"{left_diff=}")
     #
     logging.info(f"{expected_right=}")
-    logging.info(f"{actual_right=}")
-    right_diffs = [
-        abs(a - e) for e, a in zip(expected_right, actual_right, strict=True)
-    ]
-    logging.info(f"{right_diffs=}")
-    right_diff = sum(right_diffs)
-    logging.info(f"{right_diff=}")
+    if expected_right is not None:
+        logging.info(f"{actual_right=}")
+        right_diffs = [
+            abs(a - e) for e, a in zip(expected_right, actual_right, strict=True)
+        ]
+        logging.info(f"{right_diffs=}")
+        right_diff = sum(right_diffs)
+        logging.info(f"{right_diff=}")
 
-    assert 0 <= left_diff < 4
-    assert 0 <= right_diff < 4
+    if expected_left:
+        assert 0 <= left_diff < 4
+    if expected_right:
+        assert 0 <= right_diff < 4
+
+
+@pytest.mark.skip_unless_imx274
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
+    expected_results,
+)
+@pytest.mark.parametrize(
+    "ibv_name_left, ibv_name_right",
+    [
+        (sys_ibv_name_left, sys_ibv_name_right),
+    ],
+)
+@pytest.mark.parametrize(
+    "hololink_left, hololink_right",
+    [
+        ("192.168.0.2", "192.168.0.3"),
+    ],
+)
+def test_imx274_pattern(
+    camera_mode_left,
+    pattern_left,
+    expected_left,
+    camera_mode_right,
+    pattern_right,
+    expected_right,
+    headless,
+    hololink_left,
+    hololink_right,
+    scheduler,
+    ibv_name_left,
+    ibv_name_right,
+):
+    # Get a handle to data sources
+    channel_metadata_left = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_left
+    )
+    channel_metadata_right = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_right
+    )
+    ibv_port_left, ibv_port_right = 1, 1
+    run_test(
+        headless,
+        channel_metadata_left,
+        ibv_name_left,
+        ibv_port_left,
+        camera_mode_left,
+        pattern_left,
+        expected_left,
+        channel_metadata_right,
+        ibv_name_right,
+        ibv_port_right,
+        camera_mode_right,
+        pattern_right,
+        expected_right,
+        scheduler,
+    )
+
+
+@pytest.mark.skip_unless_imx274
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
+    expected_results,
+)
+@pytest.mark.parametrize(
+    "multicast_left, multicast_left_port, multicast_right, multicast_right_port",  # noqa: E501
+    [
+        ("224.0.0.228", 4791, "224.0.0.229", 4791),
+    ],
+)
+@pytest.mark.parametrize(
+    "ibv_name_left, ibv_name_right",  # noqa: E501
+    [
+        (sys_ibv_name_left, sys_ibv_name_right),
+    ],
+)
+@pytest.mark.parametrize(
+    "hololink_left, hololink_right",
+    [
+        ("192.168.0.2", "192.168.0.3"),
+    ],
+)
+def test_imx274_multicast(
+    camera_mode_left,
+    pattern_left,
+    expected_left,
+    camera_mode_right,
+    pattern_right,
+    expected_right,
+    headless,
+    hololink_left,
+    hololink_right,
+    scheduler,
+    multicast_left,
+    multicast_left_port,
+    multicast_right,
+    multicast_right_port,
+    ibv_name_left,
+    ibv_name_right,
+):
+    # Get a handle to data sources
+    channel_metadata_left = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_left
+    )
+    hololink_module.DataChannel.use_multicast(
+        channel_metadata_left, multicast_left, multicast_left_port
+    )
+    channel_metadata_right = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_right
+    )
+    hololink_module.DataChannel.use_multicast(
+        channel_metadata_right, multicast_right, multicast_right_port
+    )
+    ibv_port_left, ibv_port_right = 1, 1
+    run_test(
+        headless,
+        channel_metadata_left,
+        ibv_name_left,
+        ibv_port_left,
+        camera_mode_left,
+        pattern_left,
+        expected_left,
+        channel_metadata_right,
+        ibv_name_right,
+        ibv_port_right,
+        camera_mode_right,
+        pattern_right,
+        expected_right,
+        scheduler,
+    )
+
+
+# Test stereo patterns across a single network interface.
+@pytest.mark.skip_unless_imx274
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
+    expected_1080p_results,
+)
+@pytest.mark.parametrize(
+    "ibv_name, ibv_channel_ip",
+    [
+        (sys_ibv_name_left, "192.168.0.2"),
+        (sys_ibv_name_right, "192.168.0.3"),
+    ],
+)
+def test_imx274_stereo_single_interface(
+    camera_mode_left,
+    pattern_left,
+    expected_left,
+    camera_mode_right,
+    pattern_right,
+    expected_right,
+    headless,
+    scheduler,
+    ibv_name,
+    ibv_channel_ip,
+):
+    # Get a handle to data sources
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=ibv_channel_ip
+    )
+    # Now make separate ones for left and right; and set them to
+    # use sensor 0 and 1 respectively.
+    channel_metadata_left = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(channel_metadata_left, 0)
+    channel_metadata_right = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(channel_metadata_right, 1)
+    #
+    ibv_port = 1
+    run_test(
+        headless,
+        channel_metadata_left,
+        ibv_name,
+        ibv_port,
+        camera_mode_left,
+        pattern_left,
+        expected_left,
+        channel_metadata_right,
+        ibv_name,
+        ibv_port,
+        camera_mode_right,
+        pattern_right,
+        expected_right,
+        scheduler,
+    )
+
+
+# Test stereo patterns across a single network interface using linux sockets.
+# This test doesn't actually evaluate the image data due to expected packet losses.
+@pytest.mark.skip_unless_imx274
+@pytest.mark.parametrize(
+    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
+    expected_1080p_results,
+)
+def test_linux_imx274_stereo_single_interface(
+    camera_mode_left,
+    pattern_left,
+    expected_left,
+    camera_mode_right,
+    pattern_right,
+    expected_right,
+    headless,
+    scheduler,
+    channel_ip,
+):
+    # Get a handle to data sources
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=channel_ip)
+    # Now make separate ones for left and right; and set them to
+    # use sensor 0 and 1 respectively.
+    channel_metadata_left = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(channel_metadata_left, 0)
+    channel_metadata_right = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(channel_metadata_right, 1)
+    #
+    run_test(
+        headless,
+        channel_metadata_left,
+        None,  # ibv_name_left
+        None,  # ibv_port_left
+        camera_mode_left,
+        pattern_left,
+        None,  # expected_left
+        channel_metadata_right,
+        None,  # ibv_name_right
+        None,  # ibv_port_right
+        camera_mode_right,
+        pattern_right,
+        None,  # expected_right
+        scheduler,
+    )
