@@ -922,8 +922,8 @@ class Programmer:
         if strategy_constructor is None:
             raise Exception('Unsupported strategy "{strategy_name}" specified.')
         self._strategy = strategy_constructor(self)
-        if "license" not in self._manifest:
-            # Note that removing the "license" section from the manifest file,
+        if "licenses" not in self._manifest:
+            # Note that removing the "licenses" section from the manifest file,
             # in order to achieve this condition, constitutes agreement with it.
             self._skip_eula = True
 
