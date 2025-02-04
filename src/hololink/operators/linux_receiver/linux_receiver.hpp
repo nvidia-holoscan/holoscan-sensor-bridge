@@ -26,6 +26,8 @@
 
 #include <cuda.h>
 
+#include <hololink/hololink.hpp>
+
 namespace hololink::operators {
 
 class LinuxReceiverMetadata {
@@ -39,19 +41,12 @@ public:
     uint64_t frame_end_s;
     uint64_t frame_end_ns;
     uint32_t imm_data;
-    int64_t received_ns; // ns from the PTP epoch.
+    int64_t received_s;
+    int64_t received_ns;
     // Data accumulated over the life of the application
-    //  uint64_t packets_received;
-    //  uint64_t frames_received;
-    //  uint64_t frames_dropped;
-    //  uint64_t frames_timed_out;
-    //  uint64_t frames_seen;
-    //  uint64_t checksum_errors;
-    //  uint64_t unexpected_byte_counters;
-    //  uint64_t unexpected_packet_counts;
-    //  uint64_t data_overflow;
     uint64_t packets_dropped;
-    //  uint64_t rejected;
+    // Data received directly from HSB.
+    Hololink::FrameMetadata frame_metadata;
 };
 
 class LinuxReceiverDescriptor;
@@ -60,7 +55,8 @@ class LinuxReceiver {
 public:
     LinuxReceiver(CUdeviceptr cu_buffer,
         size_t cu_buffer_size,
-        int socket);
+        int socket,
+        uint64_t received_address_offset);
 
     ~LinuxReceiver();
 
@@ -89,6 +85,12 @@ public:
 
     uint32_t get_rkey() { return rkey_; };
 
+    /**
+     * If the application schedules the call to get_next_frame after this
+     * callback occurs, then get_next_frame won't block.
+     */
+    void set_frame_ready(std::function<void(const LinuxReceiver&)> frame_ready);
+
 protected:
     // Blocks execution until signal() is called;
     // @returns false if timeout_ms elapses before
@@ -102,6 +104,7 @@ protected:
     CUdeviceptr cu_buffer_;
     size_t cu_buffer_size_;
     int socket_;
+    uint64_t received_address_offset_;
     bool volatile ready_;
     bool volatile exit_;
     pthread_mutex_t ready_mutex_;
@@ -112,6 +115,7 @@ protected:
     std::atomic<LinuxReceiverDescriptor*> available_;
     LinuxReceiverDescriptor* busy_;
     CUstream cu_stream_; // Used to control cuMemcpyHtoDAsync.
+    std::function<void(const LinuxReceiver&)> frame_ready_;
 };
 
 } // namespace hololink::operators

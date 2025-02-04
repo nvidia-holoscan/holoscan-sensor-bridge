@@ -15,265 +15,335 @@ See the License for the specific language governing permissions and
 limitations under the License.
 """
 
-from collections import OrderedDict, namedtuple
+from collections import namedtuple
 from enum import Enum
 
 import hololink
 
 # values are on hex number system to be consistent with rest of the list
-IMX274_TABLE_WAIT_MS = "0000"
-IMX274_TABLE_END = "01"
-IMX274_WAIT_MS = "01"
-IMX274_WAIT_MS_START = "0f"
+IMX274_TABLE_WAIT_MS = "imx274-table-wait-ms"
+IMX274_WAIT_MS = 0x01
+IMX274_WAIT_MS_START = 0x0F
 
 # Register addresses for camera properties. They only accept 8bits of value.
 
 # Analog Gain
-REG_AG_MSB = "300B"
-REG_AG_LSB = "300A"
+REG_AG_MSB = 0x300B
+REG_AG_LSB = 0x300A
 
 # Exposure
-REG_EXP_MSB = "300D"
-REG_EXP_LSB = "300C"
+REG_EXP_MSB = 0x300D
+REG_EXP_LSB = 0x300C
 
 # Digital Gain
-REG_DG = "3012"
+REG_DG = 0x3012
 
-imx274_start = OrderedDict(
-    [
-        ("3000", "00"),  # mode select streaming on
-        ("303E", "02"),
-        (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS_START),
-        ("30F4", "00"),
-        ("3018", "A2"),
-        (IMX274_TABLE_END, IMX274_WAIT_MS_START),
-    ]
-)
-imx274_start = [(int(x, 16), int(y, 16)) for x, y in imx274_start.items()]
+imx274_start = [
+    (0x3000, 0x00),  # mode select streaming on
+    (0x303E, 0x02),
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS_START),
+    (0x30F4, 0x00),
+    (0x3018, 0xA2),
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS_START),
+]
 
-
-imx274_stop = OrderedDict(
-    [
-        (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
-        ("3000", "01"),  # mode select streaming off
-        (IMX274_TABLE_END, "00"),
-    ]
-)
-imx274_stop = [(int(x, 16), int(y, 16)) for x, y in imx274_stop.items()]
+imx274_stop = [
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
+    (0x3000, 0x01),  # mode select streaming off
+]
 
 # test pattern
-tp_colorbars = OrderedDict(
-    [
-        # test pattern
-        ("303C", "11"),
-        ("303D", "0B"),
-        ("370B", "11"),
-        ("370E", "00"),
-        ("377F", "01"),
-        ("3781", "01"),
-    ]
-)
-tp_colorbars = [(int(x, 16), int(y, 16)) for x, y in tp_colorbars.items()]
+tp_colorbars = [
+    # test pattern
+    (0x303C, 0x11),
+    (0x303D, 0x0B),
+    (0x370B, 0x11),
+    (0x370E, 0x00),
+    (0x377F, 0x01),
+    (0x3781, 0x01),
+]
 
 # Mode : 3840X2160 10 bits 60fps
 # value pairs use hex number system
-imx274_mode_3840X2160_60fps = OrderedDict(
-    [
-        (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
-        ("3000", "12"),
-        ("3120", "F0"),
-        ("3122", "02"),
-        ("3129", "9c"),
-        ("312A", "02"),
-        ("312D", "02"),
-        ("310B", "00"),
-        ("304C", "00"),
-        ("304D", "03"),
-        ("331C", "1A"),
-        ("3502", "02"),
-        ("3529", "0E"),
-        ("352A", "0E"),
-        ("352B", "0E"),
-        ("3538", "0E"),
-        ("3539", "0E"),
-        ("3553", "00"),
-        ("357D", "05"),
-        ("357F", "05"),
-        ("3581", "04"),
-        ("3583", "76"),
-        ("3587", "01"),
-        ("35BB", "0E"),
-        ("35BC", "0E"),
-        ("35BD", "0E"),
-        ("35BE", "0E"),
-        ("35BF", "0E"),
-        ("366E", "00"),
-        ("366F", "00"),
-        ("3670", "00"),
-        ("3671", "00"),
-        ("30EE", "01"),
-        ("3304", "32"),
-        ("3306", "32"),
-        ("3590", "32"),
-        ("3686", "32"),
-        # resolution */
-        ("30E2", "01"),
-        ("30F6", "07"),
-        ("30F7", "01"),
-        ("30F8", "C6"),
-        ("30F9", "11"),
-        ("3130", "78"),
-        ("3131", "08"),
-        ("3132", "70"),
-        ("3133", "08"),
-        # crop */
-        ("30DD", "01"),
-        ("30DE", "04"),
-        ("30E0", "03"),
-        ("3037", "01"),
-        ("3038", "0C"),
-        ("3039", "00"),
-        ("303A", "0C"),
-        ("303B", "0F"),
-        # mode setting */
-        ("3004", "01"),
-        ("3005", "01"),
-        ("3006", "00"),
-        ("3007", "02"),
-        ("300C", "0C"),
-        ("300D", "00"),
-        ("300E", "00"),
-        ("3019", "00"),
-        ("3A41", "08"),
-        ("3342", "0A"),
-        ("3343", "00"),
-        ("3344", "16"),
-        ("3345", "00"),
-        ("3528", "0E"),
-        ("3554", "1F"),
-        ("3555", "01"),
-        ("3556", "01"),
-        ("3557", "01"),
-        ("3558", "01"),
-        ("3559", "00"),
-        ("355A", "00"),
-        ("35BA", "0E"),
-        ("366A", "1B"),
-        ("366B", "1A"),
-        ("366C", "19"),
-        ("366D", "17"),
-        ("33A6", "01"),
-        ("306B", "05"),
-        (IMX274_TABLE_END, IMX274_WAIT_MS),
-    ]
-)
 imx274_mode_3840X2160_60fps = [
-    (int(x, 16), int(y, 16)) for x, y in imx274_mode_3840X2160_60fps.items()
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
+    (0x3000, 0x12),
+    (0x3120, 0xF0),
+    (0x3122, 0x02),
+    (0x3129, 0x9C),
+    (0x312A, 0x02),
+    (0x312D, 0x02),
+    (0x310B, 0x00),
+    (0x304C, 0x00),
+    (0x304D, 0x03),
+    (0x331C, 0x1A),
+    (0x3502, 0x02),
+    (0x3529, 0x0E),
+    (0x352A, 0x0E),
+    (0x352B, 0x0E),
+    (0x3538, 0x0E),
+    (0x3539, 0x0E),
+    (0x3553, 0x00),
+    (0x357D, 0x05),
+    (0x357F, 0x05),
+    (0x3581, 0x04),
+    (0x3583, 0x76),
+    (0x3587, 0x01),
+    (0x35BB, 0x0E),
+    (0x35BC, 0x0E),
+    (0x35BD, 0x0E),
+    (0x35BE, 0x0E),
+    (0x35BF, 0x0E),
+    (0x366E, 0x00),
+    (0x366F, 0x00),
+    (0x3670, 0x00),
+    (0x3671, 0x00),
+    (0x30EE, 0x01),
+    (0x3304, 0x32),
+    (0x3306, 0x32),
+    (0x3590, 0x32),
+    (0x3686, 0x32),
+    # resolution */
+    (0x30E2, 0x01),
+    (0x30F6, 0x07),
+    (0x30F7, 0x01),
+    (0x30F8, 0xC6),
+    (0x30F9, 0x11),
+    (0x3130, 0x78),
+    (0x3131, 0x08),
+    (0x3132, 0x70),
+    (0x3133, 0x08),
+    # crop */
+    (0x30DD, 0x01),
+    (0x30DE, 0x04),
+    (0x30E0, 0x03),
+    (0x3037, 0x01),
+    (0x3038, 0x0C),
+    (0x3039, 0x00),
+    (0x303A, 0x0C),
+    (0x303B, 0x0F),
+    # mode setting */
+    (0x3004, 0x01),
+    (0x3005, 0x01),
+    (0x3006, 0x00),
+    (0x3007, 0x02),
+    (0x300C, 0x0C),
+    (0x300D, 0x00),
+    (0x300E, 0x00),
+    (0x3019, 0x00),
+    (0x3A41, 0x08),
+    (0x3342, 0x0A),
+    (0x3343, 0x00),
+    (0x3344, 0x16),
+    (0x3345, 0x00),
+    (0x3528, 0x0E),
+    (0x3554, 0x1F),
+    (0x3555, 0x01),
+    (0x3556, 0x01),
+    (0x3557, 0x01),
+    (0x3558, 0x01),
+    (0x3559, 0x00),
+    (0x355A, 0x00),
+    (0x35BA, 0x0E),
+    (0x366A, 0x1B),
+    (0x366B, 0x1A),
+    (0x366C, 0x19),
+    (0x366D, 0x17),
+    (0x33A6, 0x01),
+    (0x306B, 0x05),
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
+]
+
+# Mode : 3840X2160 12 bits 60fps
+# value pairs use hex number system
+imx274_mode_3840X2160_60fps_12bits = [
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
+    (0x3000, 0x12),
+    (0x3120, 0xF0),
+    (0x3122, 0x02),
+    (0x3129, 0x9C),
+    (0x312A, 0x02),
+    (0x312D, 0x02),
+    (0x310B, 0x00),
+    (0x304C, 0x00),
+    (0x304D, 0x03),
+    (0x331C, 0x1A),
+    (0x3502, 0x02),
+    (0x3529, 0x0E),
+    (0x352A, 0x0E),
+    (0x352B, 0x0E),
+    (0x3538, 0x0E),
+    (0x3539, 0x0E),
+    (0x3553, 0x00),
+    (0x357D, 0x05),
+    (0x357F, 0x05),
+    (0x3581, 0x04),
+    (0x3583, 0x76),
+    (0x3587, 0x01),
+    (0x35BB, 0x0E),
+    (0x35BC, 0x0E),
+    (0x35BD, 0x0E),
+    (0x35BE, 0x0E),
+    (0x35BF, 0x0E),
+    (0x366E, 0x00),
+    (0x366F, 0x00),
+    (0x3670, 0x00),
+    (0x3671, 0x00),
+    (0x30EE, 0x01),
+    (0x3304, 0x32),
+    (0x3306, 0x32),
+    (0x3590, 0x32),
+    (0x3686, 0x32),
+    # resolution */
+    (0x30E2, 0x00),
+    (0x30F6, 0xED),
+    (0x30F7, 0x01),
+    (0x30F8, 0x08),
+    (0x30F9, 0x13),
+    (0x3130, 0x94),
+    (0x3131, 0x08),
+    (0x3132, 0x70),
+    (0x3133, 0x08),
+    # crop */
+    (0x30DD, 0x01),
+    (0x30DE, 0x04),  # crop 18 lines - 12h
+    (0x30E0, 0x03),  # 6 lines of ignored area
+    (0x3037, 0x01),
+    (0x3038, 0x0C),  # 12 H lines to crop
+    (0x3039, 0x00),
+    (0x303A, 0x0C),  # next cut at 3852
+    (0x303B, 0x0F),
+    # mode setting */
+    (0x3004, 0x00),
+    (0x3005, 0x07),
+    (0x3006, 0x00),
+    (0x3007, 0x02),
+    (0x300C, 0x0C),
+    (0x300D, 0x00),
+    (0x300E, 0x00),
+    (0x3019, 0x00),
+    (0x3A41, 0x10),
+    (0x3342, 0xFF),
+    (0x3343, 0x01),
+    (0x3344, 0xFF),
+    (0x3345, 0x01),
+    (0x3528, 0x0F),
+    (0x3554, 0x00),
+    (0x3555, 0x00),
+    (0x3556, 0x00),
+    (0x3557, 0x00),
+    (0x3558, 0x00),
+    (0x3559, 0x1F),
+    (0x355A, 0x1F),
+    (0x35BA, 0x0F),
+    (0x366A, 0x00),
+    (0x366B, 0x00),
+    (0x366C, 0x00),
+    (0x366D, 0x00),
+    (0x33A6, 0x01),
+    (0x306B, 0x07),
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
 ]
 
 # Mode : 1920x1080 10 bits 60fps
 # value pairs use hex number system
-imx274_mode_1920x1080_60fps = OrderedDict(
-    [
-        (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
-        ("3000", "12"),  # mode select streaming on
-        # input freq. 24M
-        ("3120", "F0"),
-        ("3122", "02"),
-        ("3129", "9c"),
-        ("312A", "02"),
-        ("312D", "02"),
-        ("310B", "00"),
-        ("304C", "00"),
-        ("304D", "03"),
-        ("331C", "1A"),
-        ("3502", "02"),
-        ("3529", "0E"),
-        ("352A", "0E"),
-        ("352B", "0E"),
-        ("3538", "0E"),
-        ("3539", "0E"),
-        ("3553", "00"),
-        ("357D", "05"),
-        ("357F", "05"),
-        ("3581", "04"),
-        ("3583", "76"),
-        ("3587", "01"),
-        ("35BB", "0E"),
-        ("35BC", "0E"),
-        ("35BD", "0E"),
-        ("35BE", "0E"),
-        ("35BF", "0E"),
-        ("366E", "00"),
-        ("366F", "00"),
-        ("3670", "00"),
-        ("3671", "00"),
-        ("30EE", "01"),
-        ("3304", "32"),
-        ("3306", "32"),
-        ("3590", "32"),
-        ("3686", "32"),
-        # resolution
-        ("30E2", "02"),
-        ("30F6", "04"),
-        ("30F7", "01"),
-        ("30F8", "0C"),
-        ("30F9", "12"),
-        ("3130", "40"),
-        ("3131", "04"),
-        ("3132", "38"),
-        ("3133", "04"),
-        # crop
-        ("30DD", "01"),
-        ("30DE", "07"),
-        ("30DF", "00"),
-        ("30E0", "04"),
-        ("30E1", "00"),
-        ("3037", "01"),
-        ("3038", "0C"),
-        ("3039", "00"),
-        ("303A", "0C"),
-        ("303B", "0F"),
-        # mode setting
-        ("3004", "02"),
-        ("3005", "21"),
-        ("3006", "00"),
-        ("3007", "B1"),
-        ("300C", "08"),  # SHR: Minimum 8
-        ("300D", "00"),
-        ("3019", "00"),
-        ("3A41", "08"),
-        ("3342", "0A"),
-        ("3343", "00"),
-        ("3344", "1A"),
-        ("3345", "00"),
-        ("3528", "0E"),
-        ("3554", "00"),
-        ("3555", "01"),
-        ("3556", "01"),
-        ("3557", "01"),
-        ("3558", "01"),
-        ("3559", "00"),
-        ("355A", "00"),
-        ("35BA", "0E"),
-        ("366A", "1B"),
-        ("366B", "1A"),
-        ("366C", "19"),
-        ("366D", "17"),
-        ("33A6", "01"),
-        ("306B", "05"),
-        (IMX274_TABLE_END, IMX274_WAIT_MS),
-    ]
-)
 imx274_mode_1920x1080_60fps = [
-    (int(x, 16), int(y, 16)) for x, y in imx274_mode_1920x1080_60fps.items()
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
+    (0x3000, 0x12),  # mode select streaming on
+    # input freq. 24M
+    (0x3120, 0xF0),
+    (0x3122, 0x02),
+    (0x3129, 0x9C),
+    (0x312A, 0x02),
+    (0x312D, 0x02),
+    (0x310B, 0x00),
+    (0x304C, 0x00),
+    (0x304D, 0x03),
+    (0x331C, 0x1A),
+    (0x3502, 0x02),
+    (0x3529, 0x0E),
+    (0x352A, 0x0E),
+    (0x352B, 0x0E),
+    (0x3538, 0x0E),
+    (0x3539, 0x0E),
+    (0x3553, 0x00),
+    (0x357D, 0x05),
+    (0x357F, 0x05),
+    (0x3581, 0x04),
+    (0x3583, 0x76),
+    (0x3587, 0x01),
+    (0x35BB, 0x0E),
+    (0x35BC, 0x0E),
+    (0x35BD, 0x0E),
+    (0x35BE, 0x0E),
+    (0x35BF, 0x0E),
+    (0x366E, 0x00),
+    (0x366F, 0x00),
+    (0x3670, 0x00),
+    (0x3671, 0x00),
+    (0x30EE, 0x01),
+    (0x3304, 0x32),
+    (0x3306, 0x32),
+    (0x3590, 0x32),
+    (0x3686, 0x32),
+    # resolution
+    (0x30E2, 0x02),
+    (0x30F6, 0x04),
+    (0x30F7, 0x01),
+    (0x30F8, 0x0C),
+    (0x30F9, 0x12),
+    (0x3130, 0x40),
+    (0x3131, 0x04),
+    (0x3132, 0x38),
+    (0x3133, 0x04),
+    # crop
+    (0x30DD, 0x01),
+    (0x30DE, 0x07),
+    (0x30DF, 0x00),
+    (0x30E0, 0x04),
+    (0x30E1, 0x00),
+    (0x3037, 0x01),
+    (0x3038, 0x0C),
+    (0x3039, 0x00),
+    (0x303A, 0x0C),
+    (0x303B, 0x0F),
+    # mode setting
+    (0x3004, 0x02),
+    (0x3005, 0x21),
+    (0x3006, 0x00),
+    (0x3007, 0xB1),
+    (0x300C, 0x08),  # SHR: Minimum 8
+    (0x300D, 0x00),
+    (0x3019, 0x00),
+    (0x3A41, 0x08),
+    (0x3342, 0x0A),
+    (0x3343, 0x00),
+    (0x3344, 0x1A),
+    (0x3345, 0x00),
+    (0x3528, 0x0E),
+    (0x3554, 0x00),
+    (0x3555, 0x01),
+    (0x3556, 0x01),
+    (0x3557, 0x01),
+    (0x3558, 0x01),
+    (0x3559, 0x00),
+    (0x355A, 0x00),
+    (0x35BA, 0x0E),
+    (0x366A, 0x1B),
+    (0x366B, 0x1A),
+    (0x366C, 0x19),
+    (0x366D, 0x17),
+    (0x33A6, 0x01),
+    (0x306B, 0x05),
+    (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
 ]
 
 
 class Imx274_Mode(Enum):
     IMX274_MODE_3840X2160_60FPS = 0
     IMX274_MODE_1920X1080_60FPS = 1
-    Unknown = 2
+    IMX274_MODE_3840X2160_60FPS_12BITS = 2
+    Unknown = 3
 
 
 frame_format = namedtuple(
@@ -288,4 +358,8 @@ imx_frame_format.insert(
 imx_frame_format.insert(
     Imx274_Mode.IMX274_MODE_1920X1080_60FPS.value,
     frame_format(1920, 1080, 60, hololink.sensors.csi.PixelFormat.RAW_10),
+)
+imx_frame_format.insert(
+    Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value,
+    frame_format(3840, 2160, 60, hololink.sensors.csi.PixelFormat.RAW_12),
 )

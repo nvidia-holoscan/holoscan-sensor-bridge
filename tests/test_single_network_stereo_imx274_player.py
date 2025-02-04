@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,46 +16,53 @@
 # See README.md for detailed information.
 
 import sys
-from os.path import exists
 from unittest import mock
-from urllib.request import urlretrieve
 
 import pytest
 
-import hololink as hololink_module
-from examples import linux_tao_peoplenet
+from examples import (
+    linux_single_network_stereo_imx274_player,
+    single_network_stereo_imx274_player,
+)
 
 
 @pytest.mark.skip_unless_imx274
-@pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
-    [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
-    ],
-)
-def test_linux_tao_peoplenet(
-    camera_mode, headless, frame_limit, hololink_address, capsys
+@pytest.mark.accelerated_networking
+def test_single_network_stereo_imx274_player(
+    headless, frame_limit, ibv_name, ibv_port, capsys
 ):
-    # Download the PeopleNet ONNX model
-    file_name = "examples/resnet34_peoplenet_int8.onnx"
-    if not exists(file_name):
-        url = "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/peoplenet/pruned_quantized_decrypted_v2.3.3/files?redirect=true&path=resnet34_peoplenet_int8.onnx"
-        urlretrieve(url, file_name)
-
     arguments = [
         sys.argv[0],
-        "--camera-mode",
-        str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
-        "--hololink",
-        hololink_address,
+        "--ibv-name",
+        ibv_name,
+        "--ibv-port",
+        str(ibv_port),
     ]
     if headless:
         arguments.extend(["--headless"])
 
     with mock.patch("sys.argv", arguments):
-        linux_tao_peoplenet.main()
+        single_network_stereo_imx274_player.main()
+
+        # check for errors
+        captured = capsys.readouterr()
+        assert captured.err == ""
+
+
+@pytest.mark.skip_unless_imx274
+def test_single_network_linux_stereo_imx274_player(headless, frame_limit, capsys):
+    arguments = [
+        sys.argv[0],
+        "--frame-limit",
+        str(frame_limit),
+    ]
+    if headless:
+        arguments.extend(["--headless"])
+
+    with mock.patch("sys.argv", arguments):
+        linux_single_network_stereo_imx274_player.main()
 
         # check for errors
         captured = capsys.readouterr()

@@ -19,6 +19,7 @@ import sys
 from unittest import mock
 
 import pytest
+import utils
 
 import hololink as hololink_module
 from examples import linux_imx274_player
@@ -47,8 +48,16 @@ def test_linux_imx274_player(
         arguments.extend(["--headless"])
 
     with mock.patch("sys.argv", arguments):
-        linux_imx274_player.main()
+        with mock.patch(
+            "hololink.operators.LinuxReceiverOperator",
+            utils.MockedLinuxReceiverOperator,
+        ):
+            linux_imx274_player.main()
 
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    # Make sure we actually did receive something;
+    # see utils.py to see how this is set
+    assert utils.receiver_count > 10
+
+    # check for errors
+    captured = capsys.readouterr()
+    assert captured.err == ""

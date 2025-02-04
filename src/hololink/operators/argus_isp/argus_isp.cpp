@@ -136,7 +136,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     // get the CUDA stream from the input message
     gxf_result_t stream_handler_result = cuda_stream_handler_.from_message(context.context(), entity);
     if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to get the CUDA stream from incoming messages");
+        throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
     }
 
     const auto input_tensor = entity.get<holoscan::Tensor>();
@@ -160,7 +160,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     if (dtype.code != kDLUInt || dtype.bits != 16) {
         throw std::runtime_error(fmt::format("Unexpected image data type '(code: {}, bits: {})',"
                                              "expected '(code: {}, bits: {})'",
-            dtype.code, dtype.bits, kDLUInt, 16));
+            static_cast<int>(dtype.code), dtype.bits, static_cast<int>(kDLUInt), 16));
     }
 
     const auto input_shape = input_tensor->shape();
@@ -304,7 +304,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
         oSizeROI,
         npp_stream_ctx_);
     if (status != NPP_SUCCESS) {
-        throw std::runtime_error(fmt::format("Failed with \"{}\" to convert NV12 to RGB\n", status));
+        throw std::runtime_error(fmt::format("Failed with \"{}\" to convert NV12 to RGB\n", static_cast<int>(status)));
     }
     // pass the CUDA stream to the output message
     stream_handler_result = cuda_stream_handler_.to_message(out_message);

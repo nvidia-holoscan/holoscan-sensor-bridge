@@ -26,7 +26,7 @@
 #include <map>
 #include <stdexcept>
 
-#include <holoscan/logger/logger.hpp>
+#include <hololink/logging.hpp>
 
 namespace hololink::native {
 
@@ -61,7 +61,7 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
     for (auto&& req : ifreq_buffer) {
         const std::string name(req.ifr_ifrn.ifrn_name);
         const in_addr ip = ((struct sockaddr_in*)&req.ifr_ifru.ifru_addr)->sin_addr;
-        HOLOSCAN_LOG_TRACE("name={} ip={}", name, inet_ntoa(ip));
+        HSB_LOG_TRACE("name={} ip={}", name, inet_ntoa(ip));
         interface_by_ip[ip.s_addr] = name;
     }
 
@@ -106,8 +106,61 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
     std::copy(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data,
         ifhwaddr_request.ifr_ifru.ifru_addr.sa_data + mac.max_size(),
         mac.begin());
-    HOLOSCAN_LOG_DEBUG("destination_ip={} local_ip={} mac_id={:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+    HSB_LOG_DEBUG("destination_ip={} local_ip={} mac_id={:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
         destination_ip, inet_ntoa(ip.sin_addr), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    return { inet_ntoa(ip.sin_addr), binterface, mac };
+}
+
+std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_from_socket(int socket_fd)
+{
+    // Start with a map of IP address to interfaces.
+    std::map<in_addr_t, std::string> interface_by_ip;
+    // First, find out how many interfaces there are.
+    ifconf ifconf_request {};
+    if (ioctl(socket_fd, SIOCGIFCONF, &ifconf_request) < 0) {
+        throw std::runtime_error(
+            fmt::format("ioctl failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+    assert(ifconf_request.ifc_len > 0);
+    //
+    std::vector<ifreq> ifreq_buffer(ifconf_request.ifc_len / sizeof(ifreq));
+    ifconf_request.ifc_ifcu.ifcu_req = ifreq_buffer.data();
+    if (ioctl(socket_fd, SIOCGIFCONF, &ifconf_request) < 0) {
+        throw std::runtime_error(
+            fmt::format("ioctl failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+    assert(ifconf_request.ifc_len == ifreq_buffer.size() * sizeof(ifreq));
+    assert(ifconf_request.ifc_ifcu.ifcu_req == ifreq_buffer.data());
+    for (auto&& req : ifreq_buffer) {
+        const std::string name(req.ifr_ifrn.ifrn_name);
+        const in_addr ip = ((struct sockaddr_in*)&req.ifr_ifru.ifru_addr)->sin_addr;
+        HSB_LOG_TRACE("name={} ip={}", name, inet_ntoa(ip));
+        interface_by_ip[ip.s_addr] = name;
+    }
+
+    sockaddr_in ip {};
+    ip.sin_family = AF_UNSPEC;
+    socklen_t ip_len = sizeof(ip);
+    if (getsockname(socket_fd, (sockaddr*)&ip, &ip_len) < 0) {
+        throw std::runtime_error(
+            fmt::format("getsockname failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+    const std::string binterface = interface_by_ip[ip.sin_addr.s_addr];
+
+    ifreq ifhwaddr_request {};
+    std::strncpy(ifhwaddr_request.ifr_ifrn.ifrn_name, binterface.c_str(),
+        sizeof(ifhwaddr_request.ifr_ifrn.ifrn_name));
+    if (ioctl(socket_fd, SIOCGIFHWADDR, &ifhwaddr_request) < 0) {
+        throw std::runtime_error(
+            fmt::format("ioctl failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+    MacAddress mac;
+    static_assert(mac.max_size() <= sizeof(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data));
+    std::copy(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data,
+        ifhwaddr_request.ifr_ifru.ifru_addr.sa_data + mac.max_size(),
+        mac.begin());
+    HSB_LOG_DEBUG("local_ip={} mac_id={:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+        inet_ntoa(ip.sin_addr), mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
     return { inet_ntoa(ip.sin_addr), binterface, mac };
 }
 

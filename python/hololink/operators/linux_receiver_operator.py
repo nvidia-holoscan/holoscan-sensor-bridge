@@ -15,7 +15,6 @@
 
 # See README.md for detailed information.
 
-import datetime
 import logging
 import os
 import socket
@@ -28,6 +27,7 @@ import hololink as hololink_module
 MS_PER_SEC = 1000
 US_PER_SEC = 1000 * MS_PER_SEC
 NS_PER_SEC = 1000 * US_PER_SEC
+SEC_PER_NS = 1.0 / NS_PER_SEC
 
 
 class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
@@ -47,14 +47,20 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
 
     def _start_receiver(self):
         self._check_buffer_size(self._frame_size)
+        self._hololink_channel.configure_socket(self._data_socket.fileno())
         self._receiver = hololink_module.operators.LinuxReceiver(
             self._frame_memory,
             self._frame_size,
             self._data_socket.fileno(),
+            self.received_address_offset(),
         )
-        self._data_socket.bind(("", 0))
+
+        def _ready(receiver):
+            self.frame_ready()
+
+        self._receiver.set_frame_ready(_ready)
         self._receiver_thread = threading.Thread(
-            daemon=True, name="receiver_thread", target=self._run
+            daemon=True, name=self.name, target=self._run
         )
         self._receiver_thread.start()
         self._hololink_channel.authenticate(
@@ -77,22 +83,19 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms)
         if not ok:
             return None
-        now_ns = datetime.datetime.now(datetime.timezone.utc).timestamp() * NS_PER_SEC
-        # Extend the timestamp we got from the data,
-        # (which is ns plus 2 bits of seconds).  Note that
-        # we don't look at the 2 bits of seconds here.
-        ns = receiver_metadata.imm_data % NS_PER_SEC
-        timestamp_ns = (now_ns - (now_ns % NS_PER_SEC)) + ns
-        # always round down
-        if timestamp_ns > now_ns:
-            timestamp_ns -= NS_PER_SEC
         application_metadata = {
             "frame_number": receiver_metadata.frame_number,
             "frame_packets_received": receiver_metadata.frame_packets_received,
             "frame_bytes_received": receiver_metadata.frame_bytes_received,
+            "received_s": receiver_metadata.received_s,
             "received_ns": receiver_metadata.received_ns,
-            "timestamp_ns": timestamp_ns,
+            "timestamp_s": receiver_metadata.timestamp_s,
+            "timestamp_ns": receiver_metadata.timestamp_ns,
+            "metadata_s": receiver_metadata.metadata_s,
+            "metadata_ns": receiver_metadata.metadata_ns,
             "packets_dropped": receiver_metadata.packets_dropped,
+            "crc": receiver_metadata.crc,
+            "psn": receiver_metadata.psn,
         }
         return application_metadata
 

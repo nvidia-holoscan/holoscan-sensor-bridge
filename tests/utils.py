@@ -16,6 +16,10 @@
 # See README.md for detailed information.
 
 import logging
+import os
+import queue
+import threading
+import time
 
 import numpy as np
 
@@ -191,3 +195,168 @@ def make_image(
     image = image_encoder(image)
     bayer_image = bayer_encoder(bayer_image)
     return image, bayer_image
+
+
+class Watchdog:
+    """When used this way:
+
+        with Watchdog("watchdog-name", timeout=2) as watchdog:
+            while True:
+                watchdog.tap()
+                do_something()
+
+    If do_something takes longer than 2 seconds to execute, we'll
+    assert fail with a watchdog timeout.
+
+    Some variations:
+
+    - Allow the first pass to take longer:
+
+        with Watchdog("watchdog-name", initial_timeout=10, timeout=2) as watchdog:
+            while True:
+                watchdog.tap()
+                do_something()
+
+    - allow do_something() to take up to 30 seconds for the first 20 iterations,
+      then only allow 2 seconds after that:
+
+        with Watchdog("watchdog-name", initial_timeout=[30]*20, timeout=2) as watchdog:
+            while True:
+                watchdog.tap()
+                do_something()
+
+      This accomodates workflows where initialization may make the first n iterations
+      take longer.
+
+    - use a dynamic timeout by passing in a new limit each call to tap:
+
+        with Watchdog("watchdog-name", timeout=10) as watchdog:
+            while True:
+                watchdog.tap(2)
+                do_something()
+
+      Watchdog always prefers to use the value passed to tap, and will fall back to
+      the next initial values (if any remain) or finally the value passed as timeout to
+      the constructor.
+    """
+
+    def __init__(self, name, timeout, initial_timeout=None):
+        self._name = name
+        logging.trace(f'Creating watchdog@{id(self):#x} "{self._name}"')
+        if initial_timeout is None:
+            initial_timeout = [timeout]
+        try:
+            self._initial_timeout = iter(initial_timeout)
+        except TypeError:
+            self._initial_timeout = iter([initial_timeout])
+        self._next_timeout = timeout
+        self._q = queue.Queue()
+        self._count = 0
+        self._lock = threading.Lock()
+        self._tap_time = None
+
+    def __enter__(self):
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+        return self
+
+    def __exit__(self, *args):
+        self._q.put(None)
+        self._thread.join()
+
+    def tap(self, timeout=None):
+        self._count += 1
+        logging.trace(
+            f'tapping watchdog@{id(self):#x} "{self._name}" count={self._count} {timeout=}'
+        )
+        self._tap_time = time.monotonic()
+        self._q.put(self._get_next_timeout(timeout))
+
+    def _get_next_timeout(self, user_value=None):
+        with self._lock:
+            if user_value is not None:
+                return user_value
+            try:
+                timeout = next(self._initial_timeout)
+                return timeout
+            except StopIteration:
+                pass
+            return self._next_timeout
+
+    def _run(self):
+        hololink_module.NvtxTrace.setThreadName(self._name)
+        logging.trace(f'running watchdog@{id(self):#x} "{self._name}".')
+        try:
+            timeout = self._get_next_timeout()
+            while True:
+                timeout = self._q.get(block=True, timeout=timeout)
+                if timeout is None:
+                    logging.trace(f'closing watchdog@{id(self):#x} "{self._name}".')
+                    return
+        except queue.Empty:
+            pass
+        dt = "N/A"
+        if self._tap_time is not None:
+            now = time.monotonic()
+            dt = now - self._tap_time
+        message = f'watchdog@{id(self):#x} "{self._name}" timed out, count={self._count}, {timeout=}, time since last tap={dt}.'
+        logging.trace(message)
+        raise Exception(message)
+
+    def update(self, timeout, initial_timeout=None, tap=True):
+        """Reconfigure how the next tap() works."""
+        if initial_timeout is None:
+            initial_timeout = [timeout]
+        with self._lock:
+            try:
+                self._initial_timeout = iter(initial_timeout)
+            except TypeError:
+                self._initial_timeout = iter([initial_timeout])
+            self._next_timeout = timeout
+        if tap:
+            self.tap()
+
+
+receiver_count = 0
+
+
+class MockedLinuxReceiverOperator(hololink_module.operators.LinuxReceiverOperator):
+    """
+    Use with unittest.mock("hololink.operators.LinuxReceiverOperator")
+    to assert fail when the stack doesn't receive a frame in time.
+    """
+
+    def __init__(self, *args, **kwargs):
+        logging.info("Using MockedLinuxReceiverOperator.")
+        super().__init__(*args, **kwargs)
+        global receiver_count
+        receiver_count = self._count
+
+    def compute(self, op_input, op_output, context):
+        r = super().compute(op_input, op_output, context)
+        # Allow test fixturing to check the number of times
+        # we've been called.
+        global receiver_count
+        receiver_count = self._count
+        return r
+
+    def timeout(self, op_input, op_output, context):
+        logging.error(f"Frame reception timeout, {self._count=}.")
+        if self._count > 10:
+            assert False
+
+
+class PriorityScheduler:
+    def __init__(self):
+        self._scheduler = os.sched_getscheduler(0)
+        self._params = os.sched_getparam(0)
+
+    def __enter__(self):
+        logging.debug("Setting scheduler.")
+        sched_priority = self._params.sched_priority + 1
+        sched_param = os.sched_param(sched_priority=sched_priority)
+        os.sched_setscheduler(0, os.SCHED_FIFO, sched_param)
+
+    def __exit__(self, *args):
+        logging.debug("Resetting scheduler.")
+        os.sched_setscheduler(0, self._scheduler, self._params)

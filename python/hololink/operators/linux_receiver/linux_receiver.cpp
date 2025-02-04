@@ -17,6 +17,7 @@
 
 #include <hololink/operators/linux_receiver/linux_receiver.hpp>
 
+#include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 
 using pybind11::literals::operator""_a;
@@ -39,7 +40,7 @@ PYBIND11_MODULE(_linux_receiver, m)
     // NOTE: pybind11 never implicitly release the GIL (see https://pybind11.readthedocs.io/en/stable/advanced/misc.html#global-interpreter-lock-gil),
     //       therefore for blocking function explicitly release the GIL using `py::call_guard<py::gil_scoped_release>()`.
     py::class_<LinuxReceiver>(m, "LinuxReceiver")
-        .def(py::init<CUdeviceptr, size_t, int>(), "cu_buffer"_a, "cu_buffer_size"_a, "socket"_a)
+        .def(py::init<CUdeviceptr, size_t, int, uint64_t>(), "cu_buffer"_a, "cu_buffer_size"_a, "socket"_a, "received_address_offset"_a)
         .def("run", &LinuxReceiver::run, py::call_guard<py::gil_scoped_release>())
         .def("close", &LinuxReceiver::close)
         .def(
@@ -50,7 +51,8 @@ PYBIND11_MODULE(_linux_receiver, m)
             },
             py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a)
         .def("get_qp_number", &LinuxReceiver::get_qp_number)
-        .def("get_rkey", &LinuxReceiver::get_rkey);
+        .def("get_rkey", &LinuxReceiver::get_rkey)
+        .def("set_frame_ready", &LinuxReceiver::set_frame_ready, "frame_ready"_a);
 
     py::class_<LinuxReceiverMetadata>(m, "LinuxReceiverMetadata")
         .def_readonly("frame_packets_received", &LinuxReceiverMetadata::frame_packets_received)
@@ -62,7 +64,26 @@ PYBIND11_MODULE(_linux_receiver, m)
         .def_readonly("frame_end_ns", &LinuxReceiverMetadata::frame_end_ns)
         .def_readonly("imm_data", &LinuxReceiverMetadata::imm_data)
         .def_readonly("packets_dropped", &LinuxReceiverMetadata::packets_dropped)
-        .def_readonly("received_ns", &LinuxReceiverMetadata::received_ns);
+        .def_readonly("received_s", &LinuxReceiverMetadata::received_s)
+        .def_readonly("received_ns", &LinuxReceiverMetadata::received_ns)
+        .def_property_readonly("timestamp_s", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.timestamp_s;
+        })
+        .def_property_readonly("timestamp_ns", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.timestamp_ns;
+        })
+        .def_property_readonly("metadata_s", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.metadata_s;
+        })
+        .def_property_readonly("metadata_ns", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.metadata_ns;
+        })
+        .def_property_readonly("crc", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.crc;
+        })
+        .def_property_readonly("psn", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.psn;
+        });
 
 } // PYBIND11_MODULE
 

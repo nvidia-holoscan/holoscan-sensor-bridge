@@ -334,12 +334,6 @@ class SrcFragment(holoscan.core.Fragment):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         image_shift = hololink_module.operators.ImageShiftToUint8Operator(
             self, name="image_shift", shift=8
         )
@@ -349,6 +343,7 @@ class SrcFragment(holoscan.core.Fragment):
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            framebuffer_srgb=True,
             **self.kwargs("holoviz"),
         )
         #
@@ -357,8 +352,7 @@ class SrcFragment(holoscan.core.Fragment):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, image_shift)
+        self.add_flow(demosaic, image_shift, {("transmitter", "input")})
         self.add_flow(image_shift, visualizer, {("output", "receivers")})
 
 
@@ -519,14 +513,10 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    default_infiniband_interface = "roceP5p3s0f0"
-    try:
-        default_infiniband_interface = sorted(os.listdir("/sys/class/infiniband"))[0]
-    except FileNotFoundError:
-        pass
+    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=default_infiniband_interface,
+        default=infiniband_devices[0],
         help="IBV device to use",
     )
     parser.add_argument(

@@ -21,73 +21,13 @@ import logging
 import sys
 from unittest import mock
 
-import cupy as cp
 import holoscan
+import operators
 import pytest
+import utils
 
 import hololink as hololink_module
 from examples import imx274_player
-
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
-
-
-class Profiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        callback=None,
-        metadata_callback=None,
-        hololink_channel=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._metadata_callback = metadata_callback
-        self._timestamps = []
-        self._hololink = hololink_channel.hololink()
-        self._packets_dropped = None
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.from_dlpack(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({"": cp_frame}, "output")
-        #
-        metadata = self.metadata()
-        frame_number = metadata["frame_number"]
-        packets_dropped = metadata["packets_dropped"]
-        if packets_dropped != self._packets_dropped:
-            logging.info(f"{packets_dropped=} ({packets_dropped:#X}) {frame_number=}")
-            self._packets_dropped = packets_dropped
-        image_timestamp_ns = metadata["timestamp_ns"]
-        received_timestamp_ns = metadata["received_ns"]
-        pipeline_timestamp_ns = (
-            datetime.datetime.now(datetime.timezone.utc).timestamp() * NS_PER_SEC
-        )
-        self._timestamps.append(
-            (
-                image_timestamp_ns,
-                received_timestamp_ns,
-                pipeline_timestamp_ns,
-                frame_number,
-            )
-        )
-        if self._count < 200:
-            return
-        self._callback(self._timestamps)
-
-    def metadata(self):
-        return self._metadata_callback()
-
 
 timestamps = None
 network_mode = None
@@ -121,6 +61,7 @@ class TimestampTestApplication(holoscan.core.Application):
         self._camera = camera
         self._camera_mode = camera_mode
         self._frame_limit = frame_limit
+        self.is_metadata_enabled = True
 
     def compose(self):
         logging.info("compose")
@@ -208,12 +149,10 @@ class TimestampTestApplication(holoscan.core.Application):
             bayer_grid_pos=bayer_format.value,
             interpolation_mode=0,
         )
-        profiler = Profiler(
+        profiler = operators.TimeProfiler(
             self,
             name="profiler",
-            hololink_channel=self._hololink_channel,
             callback=lambda timestamps: self._terminate(timestamps),
-            metadata_callback=lambda: receiver_operator.metadata(),
         )
         visualizer = holoscan.operators.HolovizOp(
             self,
@@ -233,18 +172,9 @@ class TimestampTestApplication(holoscan.core.Application):
         timestamps = recorded_timestamps
 
 
-def to_s(timestamp_ns):
-    return float(timestamp_ns) / 1000 / 1000 / 1000
-
-
-def diff_s(later_timestamp_ns, earlier_timestamp_ns):
-    diff_ns = later_timestamp_ns - earlier_timestamp_ns
-    return to_s(diff_ns)
-
-
 # frame_time represents the constant time difference between when the
 #   frame-start and frame-end messages arrive at the FPGA; for IMX274
-#   it takes about 8ms for a 1080p or almost 16ms for a 4k image.
+#   it takes just under 8ms for a 1080p or almost 16ms for a 4k image.
 # time_limit, the acceptable amount of time between when the frame was sent and
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
@@ -252,31 +182,35 @@ def diff_s(later_timestamp_ns, earlier_timestamp_ns):
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
-    "camera_mode, roce_mode, frame_time, time_limit",  # noqa: E501
+    "camera_mode, roce_mode, frame_time, time_limit, max_recv_time",  # noqa: E501
     [
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
             True,
             0.015,
             0.004,
+            0.0015,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             True,
-            0.008,
-            0.004,
+            0.0075,
+            0.0040,
+            0.0015,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
             False,
             0.015,
             0.012,
+            0.0015,
         ),
         (
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             False,
-            0.008,
-            0.012,
+            0.0075,
+            0.0120,
+            0.0035,
         ),
     ],
 )
@@ -285,6 +219,7 @@ def test_imx274_timestamps(
     roce_mode,
     frame_time,
     time_limit,
+    max_recv_time,
     headless,
     hololink_address,
     ibv_name,
@@ -317,39 +252,49 @@ def test_imx274_timestamps(
         with mock.patch(
             "examples.imx274_player.HoloscanApplication", TimestampTestApplication
         ):
-            imx274_player.main()
+            with utils.PriorityScheduler():
+                imx274_player.main()
 
     # check for errors
     global timestamps
     pipeline_dts, receiver_dts = [], []
+    metadata_receiver_dts = []
     # Allow for startup times to be a bit longer
     settled_timestamps = timestamps[5:-5]
     assert len(settled_timestamps) >= 100
     for (
-        image_timestamp_ns,
-        received_timestamp_ns,
-        pipeline_timestamp_ns,
+        image_timestamp_s,
+        metadata_timestamp_s,
+        received_timestamp_s,
+        pipeline_timestamp_s,
         frame_number,
     ) in settled_timestamps:
-        image_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(image_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        received_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(received_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        pipeline_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(pipeline_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        pipeline_dt = diff_s(pipeline_timestamp_ns, image_timestamp_ns)
+        image_timestamp = datetime.datetime.fromtimestamp(image_timestamp_s).isoformat()
+        metadata_timestamp = datetime.datetime.fromtimestamp(
+            metadata_timestamp_s
+        ).isoformat()
+        received_timestamp = datetime.datetime.fromtimestamp(
+            received_timestamp_s
+        ).isoformat()
+        pipeline_timestamp = datetime.datetime.fromtimestamp(
+            pipeline_timestamp_s
+        ).isoformat()
+        pipeline_dt = pipeline_timestamp_s - image_timestamp_s
         logging.debug(
-            f"{image_timestamp_s=} {pipeline_timestamp_s=} {pipeline_dt=:0.6f} {frame_number=}"
+            f"{image_timestamp=} {pipeline_timestamp=} {pipeline_dt=:0.6f} {frame_number=}"
         )
         pipeline_dts.append(round(pipeline_dt, 4))
-        receiver_dt = diff_s(received_timestamp_ns, image_timestamp_ns)
+        receiver_dt = received_timestamp_s - image_timestamp_s
         logging.debug(
-            f"{image_timestamp_s=} {received_timestamp_s=} {receiver_dt=:0.6f} {frame_number=}"
+            f"{image_timestamp=} {received_timestamp=} {receiver_dt=:0.6f} {frame_number=}"
         )
         receiver_dts.append(round(receiver_dt, 4))
+        metadata_receiver_dt = received_timestamp_s - metadata_timestamp_s
+        logging.debug(
+            f"{metadata_timestamp=} {received_timestamp=} {metadata_receiver_dt=:0.6f} {frame_number=}"
+        )
+        metadata_receiver_dts.append(round(metadata_receiver_dt, 4))
+
     smallest_time_difference = min(pipeline_dts)
     largest_time_difference = max(pipeline_dts)
     logging.info(f"pipeline {smallest_time_difference=} {largest_time_difference=}")
@@ -368,3 +313,14 @@ def test_imx274_timestamps(
     assert (frame_time + 0) <= smallest_time_difference
     assert smallest_time_difference < largest_time_difference
     assert largest_time_difference < (frame_time + time_limit)
+    #
+    smallest_time_difference = min(metadata_receiver_dts)
+    largest_time_difference = max(metadata_receiver_dts)
+    average_time_difference = sum(metadata_receiver_dts) / len(metadata_receiver_dts)
+    logging.info(
+        f"FPGA to full frame received {smallest_time_difference=} {largest_time_difference=}"
+    )
+    assert smallest_time_difference < largest_time_difference
+    # The time taken from the end of image frame received at HSB fpga to full frame
+    # received on IGX should be less than max_recv_time on average.
+    assert average_time_difference < max_recv_time

@@ -21,13 +21,33 @@
 #include <unistd.h> // for close()
 
 #include <array>
+#include <fmt/format.h>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <tuple>
 
 #include "nullable_pointer.hpp"
 
 namespace hololink::native {
+
+// When we recv from a UDP socket, use
+// a buffer large enough to accomodate
+// a 9k jumbo packet.
+constexpr uint32_t UDP_PACKET_SIZE = 10240;
+
+// All our I/O are aligned to this page size.
+constexpr uint32_t PAGE_SIZE = 128;
+
+// Round up
+constexpr static uint32_t round_up(uint32_t value, uint32_t alignment)
+{
+    // This only works when alignment is a power of two.
+    if (alignment & (alignment - 1)) {
+        throw std::runtime_error(fmt::format("round_up called with an invalid alignment={:#x}; it must be a power of two.", alignment));
+    }
+    return (value + alignment - 1) & ~(alignment - 1);
+}
 
 /// MAC (medium access control) address
 using MacAddress = std::array<uint8_t, 6>;
@@ -44,6 +64,14 @@ using UniqueFileDescriptor = std::unique_ptr<Nullable<int>, Nullable<int>::Delet
  */
 std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
     const std::string& destination_ip, uint32_t port = 1);
+
+/**
+ * @brief Works only on Linux.
+ *
+ * @returns our IP address, interface name, and the MAC ID for the interface that
+ * socket_fd uses to transmit.
+ */
+std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_from_socket(int socket_fd);
 
 /**
  * @brief Get the Mac ID for the given interface by name

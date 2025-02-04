@@ -17,6 +17,7 @@
 
 #include <hololink/data_channel.hpp>
 #include <hololink/enumerator.hpp>
+#include <hololink/native/nvtx_trace.hpp>
 #include <hololink/timeout.hpp>
 
 #include <pybind11/functional.h>
@@ -151,6 +152,10 @@ PYBIND11_MODULE(_hololink, m)
             }
             return metadata;
         }))
+        .def(py::init([](const Metadata& source) {
+            auto metadata = std::make_shared<Metadata>(source);
+            return metadata;
+        }))
         /**
          * @returns an iterator object that can iterate over all objects in Metadata
          */
@@ -175,11 +180,12 @@ PYBIND11_MODULE(_hololink, m)
                 return element;
             },
             "name"_a, "value"_a)
-        .def("__repr__", [](const Metadata& metadata) { return fmt::format("{}", metadata); });
+        .def("__repr__", [](const Metadata& metadata) { return fmt::format("{}", metadata); })
+        .def("update", &Metadata::update, "other"_a);
 
     py::class_<Enumerator, std::shared_ptr<Enumerator>>(m, "Enumerator")
-        .def(py::init<const std::string&, uint32_t, uint32_t, uint32_t>(),
-            "local_interface"_a = std::string(), "enumeration_port"_a = 10001u,
+        .def(py::init<const std::string&, uint32_t, uint32_t>(),
+            "local_interface"_a = std::string(),
             "bootp_request_port"_a = 12267u, "bootp_reply_port"_a = 12268u)
         .def_static("enumerated", &Enumerator::enumerated, "call_back"_a,
             "timeout"_a = std::shared_ptr<Timeout>())
@@ -213,20 +219,23 @@ PYBIND11_MODULE(_hololink, m)
     m.attr("I2C_DONE") = I2C_DONE;
     m.attr("FPGA_VERSION") = FPGA_VERSION;
     m.attr("FPGA_DATE") = FPGA_DATE;
+    m.attr("METADATA_SIZE") = METADATA_SIZE;
     m.attr("DP_PACKET_SIZE") = DP_PACKET_SIZE;
     m.attr("DP_HOST_MAC_LOW") = DP_HOST_MAC_LOW;
     m.attr("DP_HOST_MAC_HIGH") = DP_HOST_MAC_HIGH;
     m.attr("DP_HOST_IP") = DP_HOST_IP;
     m.attr("DP_HOST_UDP_PORT") = DP_HOST_UDP_PORT;
     m.attr("DP_VIP_MASK") = DP_VIP_MASK;
-    m.attr("DP_ROCE_CFG") = DP_ROCE_CFG;
-    m.attr("DP_ROCE_RKEY_0") = DP_ROCE_RKEY_0;
-    m.attr("DP_ROCE_VADDR_MSB_0") = DP_ROCE_VADDR_MSB_0;
-    m.attr("DP_ROCE_VADDR_LSB_0") = DP_ROCE_VADDR_LSB_0;
-    m.attr("DP_ROCE_BUF_END_MSB_0") = DP_ROCE_BUF_END_MSB_0;
-    m.attr("DP_ROCE_BUF_END_LSB_0") = DP_ROCE_BUF_END_LSB_0;
+    m.attr("DP_ADDRESS_0") = DP_ADDRESS_0;
+    m.attr("DP_ADDRESS_1") = DP_ADDRESS_1;
+    m.attr("DP_ADDRESS_2") = DP_ADDRESS_2;
+    m.attr("DP_ADDRESS_3") = DP_ADDRESS_3;
+    m.attr("DP_BUFFER_LENGTH") = DP_BUFFER_LENGTH;
+    m.attr("DP_BUFFER_MASK") = DP_BUFFER_MASK;
+    m.attr("DP_QP") = DP_QP;
+    m.attr("DP_RKEY") = DP_RKEY;
     m.attr("HOLOLINK_LITE_BOARD_ID") = HOLOLINK_LITE_BOARD_ID;
-    m.attr("HOLOLINK_BOARD_ID") = HOLOLINK_BOARD_ID;
+    m.attr("HOLOLINK_NANO_BOARD_ID") = HOLOLINK_NANO_BOARD_ID;
     m.attr("HOLOLINK_100G_BOARD_ID") = HOLOLINK_100G_BOARD_ID;
     m.attr("MICROCHIP_POLARFIRE_BOARD_ID") = MICROCHIP_POLARFIRE_BOARD_ID;
 
@@ -239,16 +248,19 @@ PYBIND11_MODULE(_hololink, m)
         .def("hololink", &DataChannel::hololink)
         .def("peer_ip", &DataChannel::peer_ip)
         .def("authenticate", &DataChannel::authenticate, "qp_number"_a, "rkey"_a)
-        .def("configure", &DataChannel::configure, "frame_address"_a, "frame_size"_a,
-            "local_data_port"_a)
-        .def("write_uint32", &DataChannel::write_uint32, "address"_a, "value"_a);
+        .def("configure", &DataChannel::configure, "frame_memory"_a, "frame_size"_a, "page_size"_a, "pages"_a, "local_data_port"_a)
+        .def("unconfigure", &DataChannel::unconfigure)
+        .def_static("use_multicast", &DataChannel::use_multicast, "metadata"_a, "address"_a, "port"_a)
+        .def_static("use_broadcast", &DataChannel::use_broadcast, "metadata"_a, "port"_a)
+        .def("configure_socket", &DataChannel::configure_socket, "socket_fd"_a)
+        .def_static("use_sensor", &DataChannel::use_sensor, "metadata"_a, "sensor_number"_a);
 
     py::register_exception<TimeoutError>(m, "TimeoutError");
     py::register_exception<UnsupportedVersion>(m, "UnsupportedVersion");
 
     py::class_<Hololink, PyHololink, std::shared_ptr<Hololink>>(m, "Hololink")
-        .def(py::init<const std::string&, uint32_t, const std::string&>(), "peer_ip"_a,
-            "control_port"_a, "serial_number"_a)
+        .def(py::init<const std::string&, uint32_t, const std::string&, bool>(), "peer_ip"_a,
+            "control_port"_a, "serial_number"_a, "sequence_number_checking"_a)
         .def_static("from_enumeration_metadata", &Hololink::from_enumeration_metadata, "metadata"_a)
         .def_static("reset_framework", &Hololink::reset_framework)
         .def_static("enumerated", &Hololink::enumerated, "metadata"_a)
@@ -257,17 +269,25 @@ PYBIND11_MODULE(_hololink, m)
         .def("stop", &Hololink::stop)
         .def("reset", &Hololink::reset)
         .def("get_fpga_version", &Hololink::get_fpga_version,
-            "timeout"_a = std::shared_ptr<Timeout>())
+            "timeout"_a = std::shared_ptr<Timeout>(), "check_sequence"_a = true)
         .def("get_fpga_date", &Hololink::get_fpga_date)
-        .def("write_uint32", &Hololink::write_uint32, "address"_a, "value"_a,
-            "timeout"_a = std::shared_ptr<Timeout>(), "retry"_a = true)
-        .def("read_uint32", &Hololink::read_uint32, "address"_a,
-            "timeout"_a = std::shared_ptr<Timeout>())
+        .def(
+            "write_uint32",
+            [](Hololink& me, uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout, bool retry) {
+                return me.write_uint32(address, value, timeout, retry);
+            },
+            "address"_a, "value"_a, "timeout"_a = std::shared_ptr<Timeout>(), "retry"_a = true)
+        .def(
+            "read_uint32",
+            [](Hololink& me, uint32_t address, const std::shared_ptr<Timeout>& timeout) {
+                return me.read_uint32(address, timeout);
+            },
+            "address"_a, "timeout"_a = std::shared_ptr<Timeout>())
         .def("setup_clock", &Hololink::setup_clock, "clock_profile"_a)
         .def("get_i2c", &Hololink::get_i2c, "i2c_address"_a)
         .def("get_spi", &Hololink::get_spi, "spi_address"_a, "chip_select"_a,
             "clock_divisor"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1)
-        .def("get_gpio", &Hololink::get_gpio)
+        .def("get_gpio", &Hololink::get_gpio, "metadata"_a)
         .def("send_control", &Hololink::send_control)
         .def(
             "on_reset",
@@ -366,13 +386,17 @@ PYBIND11_MODULE(_hololink, m)
                     .def("set_direction", &Hololink::GPIO::set_direction, "pin"_a, "direction"_a)
                     .def("get_direction", &Hololink::GPIO::get_direction, "pin"_a)
                     .def("set_value", &Hololink::GPIO::set_value, "pin"_a, "value"_a)
-                    .def("get_value", &Hololink::GPIO::get_value, "pin"_a);
+                    .def("get_value", &Hololink::GPIO::get_value, "pin"_a)
+                    .def("get_supported_pin_num", &Hololink::GPIO::get_supported_pin_num);
     gpio.attr("IN") = Hololink::GPIO::IN;
     gpio.attr("OUT") = Hololink::GPIO::OUT;
     gpio.attr("LOW") = Hololink::GPIO::LOW;
     gpio.attr("HIGH") = Hololink::GPIO::HIGH;
     gpio.attr("GPIO_PIN_RANGE") = Hololink::GPIO::GPIO_PIN_RANGE;
 
+    py::class_<native::NvtxTrace, std::shared_ptr<native::NvtxTrace>>(m, "NvtxTrace")
+        .def_static("setThreadName", &native::NvtxTrace::setThreadName, "threadName"_a)
+        .def_static("event_u64", &native::NvtxTrace::event_u64, "message"_a, "datum"_a);
 } // PYBIND11_MODULE
 
 } // namespace hololink

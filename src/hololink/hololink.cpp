@@ -26,11 +26,13 @@
 
 #include <cassert>
 #include <cstdint>
+#include <filesystem>
 #include <thread>
 
+#include <hololink/logging.hpp>
+#include <hololink/native/arp_wrapper.hpp>
 #include <hololink/native/deserializer.hpp>
 #include <hololink/native/serializer.hpp>
-#include <holoscan/logger/logger.hpp>
 
 #include "metadata.hpp"
 
@@ -48,21 +50,65 @@ namespace {
     constexpr uint32_t SPI_CFG_CPHA = 0b0000'0000'0010'0000;
 
     // GPIO Registers
-    // bitmask 0:F, ecah bit correspondes to a GPIO pin
-    // GPIO_OUTPUT_REGISTER    - W   - set output pin values
-    // GPIO_DIRECTION_REGISTER - R/W - set/read GPIO pin direction
-    // GPIO_STATUS_REGISTER    - R   - read input GPIO value
-    constexpr uint32_t GPIO_OUTPUT_REGISTER = 0x0000'000C;
-    constexpr uint32_t GPIO_DIRECTION_REGISTER = 0x0000'002C;
-    constexpr uint32_t GPIO_STATUS_REGISTER = 0x0000'008C;
+    // bitmask 0:1F, each bit correspondes to a GPIO pin
+    // GPIO_OUTPUT_BASE_REGISTER    - W   - set output pin values
+    // GPIO_DIRECTION_BASE_REGISTER - R/W - set/read GPIO pin direction
+    // GPIO_STATUS_BASE_REGISTER    - R   - read input GPIO value
+    //
+    // FPGA can support up to 256 GPIO pins that are spread
+    // on 8 OUTPUT/DIRECTION/STATUS registers.
+    // For each type of register, the address offset is 4:
+    // OUTPUT registers are:    0x0C(base),0x10,0x14,0x18....0x28
+    // DIRECTION registers are: 0x2C(base),0x20,0x24,0x28....0x38
+    // STATUS registers are:    0x8C(base),0x90,0x94,0x98....0xA8
+    constexpr uint32_t GPIO_OUTPUT_BASE_REGISTER = 0x0000'000C;
+    constexpr uint32_t GPIO_DIRECTION_BASE_REGISTER = 0x0000'002C;
+    constexpr uint32_t GPIO_STATUS_BASE_REGISTER = 0x0000'008C;
+    constexpr uint32_t GPIO_REGISTER_ADDRESS_OFFSET = 0x0000'0004;
+
+    static char const* response_code_description(uint32_t response_code)
+    {
+        switch (response_code) {
+        case RESPONSE_SUCCESS:
+            return "RESPONSE_SUCCESS";
+        case RESPONSE_ERROR_GENERAL:
+            return "RESPONSE_ERROR_GENERAL";
+        case RESPONSE_INVALID_ADDR:
+            return "RESPONSE_INVALID_ADDR";
+        case RESPONSE_INVALID_CMD:
+            return "RESPONSE_INVALID_CMD";
+        case RESPONSE_INVALID_PKT_LENGTH:
+            return "RESPONSE_INVALID_PKT_LENGTH";
+        case RESPONSE_INVALID_FLAGS:
+            return "RESPONSE_INVALID_FLAGS";
+        case RESPONSE_BUFFER_FULL:
+            return "RESPONSE_BUFFER_FULL";
+        case RESPONSE_INVALID_BLOCK_SIZE:
+            return "RESPONSE_INVALID_BLOCK_SIZE";
+        case RESPONSE_INVALID_INDIRECT_ADDR:
+            return "RESPONSE_INVALID_INDIRECT_ADDR";
+        case RESPONSE_COMMAND_TIMEOUT:
+            return "RESPONSE_COMMAND_TIMEOUT";
+        case RESPONSE_SEQUENCE_CHECK_FAIL:
+            return "RESPONSE_SEQUENCE_CHECK_FAIL";
+        default:
+            return "(unknown)";
+        }
+    }
+
+    // Allocate buffers for control plane requests and replies to this
+    // size, which is guaranteed to be large enough for the largest
+    // of any of those buffers.
+    constexpr uint32_t CONTROL_PACKET_SIZE = 20;
 
 } // anonymous namespace
 
 Hololink::Hololink(
-    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number)
+    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking)
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
+    , sequence_number_checking_(sequence_number_checking)
     , execute_mutex_()
 {
 }
@@ -87,8 +133,11 @@ Hololink::Hololink(
             throw std::runtime_error("Metadata has no \"control_port\"");
         }
 
+        auto opt_sequence_number_checking = metadata.get<int64_t>("sequence_number_checking");
+        bool sequence_number_checking = (opt_sequence_number_checking != 0);
+
         r = std::make_shared<Hololink>(
-            peer_ip.value(), control_port.value(), serial_number.value());
+            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking);
 
         hololink_by_serial_number[serial_number.value()] = r;
     } else {
@@ -102,7 +151,7 @@ Hololink::Hololink(
 {
     auto it = hololink_by_serial_number.begin();
     while (it != hololink_by_serial_number.end()) {
-        HOLOSCAN_LOG_INFO("Removing hololink \"{}\"", it->first);
+        HSB_LOG_INFO("Removing hololink \"{}\"", it->first);
         it = hololink_by_serial_number.erase(it);
     }
 }
@@ -139,9 +188,18 @@ void Hololink::start()
     }
     // ARP packets are slow, so allow for more timeout on this initial read.
     auto get_fpga_version_timeout = std::make_shared<Timeout>(30.f, 0.2f);
-    version_ = get_fpga_version(get_fpga_version_timeout);
+
+    // Because we're at the start of our session with HSB, let's reset it to
+    // use the sequence number that we have from our constructor.  Following
+    // this, unless the user specifies otherwise, we'll always check the
+    // sequence number on every transaction-- which will trigger a fault if
+    // another program goes in and does any sort of control-plane transaction.
+    // Note that when a control plane request triggers a fault, the actual
+    // command is ignored.
+    bool check_sequence = false;
+    version_ = get_fpga_version(get_fpga_version_timeout, check_sequence);
     datecode_ = get_fpga_date();
-    HOLOSCAN_LOG_INFO("FPGA version={:#x} datecode={:#x}", version_, datecode_);
+    HSB_LOG_INFO("FPGA version={:#x} datecode={:#x}", version_, datecode_);
 }
 
 void Hololink::stop() { control_socket_.reset(); }
@@ -170,19 +228,34 @@ void Hololink::reset()
         // we won't get a reply.
         write_uint32(0x4, 0x8, nullptr, /*retry*/ false);
     } catch (const std::exception& e) {
-        HOLOSCAN_LOG_INFO("ignoring error {}.", e.what());
+        HSB_LOG_INFO("ignoring error {}.", e.what());
     }
 
     // Now wait for the device to come back up.
     // This guy raises an exception if we're not found;
     // this can happen if set-ip is used in one-time
     // mode.
-    Enumerator::find_channel(peer_ip_, std::make_shared<Timeout>(30.f));
+    Metadata channel_metadata = Enumerator::find_channel(peer_ip_, std::make_shared<Timeout>(30.f));
+
+    // When the connection was lost, the host flushes its ARP cache.
+    // Because ARP requests are slow, let's just set the ARP cache here,
+    // because we know the MAC ID and the IP address of the system that
+    // just enumerated.  This avoids timeouts when we try fetching the FPGA
+    // version ID while the kernel is waiting for ARP to be updated.
+    std::string interface = channel_metadata.get<std::string>("interface").value();
+    std::string client_ip_address = channel_metadata.get<std::string>("client_ip_address").value();
+    std::string mac_id = channel_metadata.get<std::string>("mac_id").value();
+    hololink::native::ArpWrapper::arp_set(control_socket_.get(), interface.c_str(), client_ip_address.c_str(), mac_id.c_str());
+
+    // At this point, the device has reset its latched sequence number to 0; so
+    // our next request should have a sequence value of 1.  If our reset didn't
+    // work, we'll detect that with a sequence number fault in the reply.
+    sequence_ = 1;
 
     // ARP packets are slow, so allow for more timeout on this initial read.
     auto get_fpga_version_timeout = std::make_shared<Timeout>(30.f, 0.2f);
     uint32_t version = get_fpga_version(get_fpga_version_timeout);
-    HOLOSCAN_LOG_INFO("version={:#x}", version);
+    HSB_LOG_INFO("version={:#x}", version);
 
     // Now go through and reset all registered clients.
     for (std::shared_ptr<ResetController> reset_controller : reset_controllers_) {
@@ -190,9 +263,9 @@ void Hololink::reset()
     }
 }
 
-uint32_t Hololink::get_fpga_version(const std::shared_ptr<Timeout>& timeout)
+uint32_t Hololink::get_fpga_version(const std::shared_ptr<Timeout>& timeout, bool check_sequence)
 {
-    const uint32_t version = read_uint32(FPGA_VERSION, timeout);
+    const uint32_t version = read_uint32(FPGA_VERSION, timeout, check_sequence);
     return version;
 }
 
@@ -203,7 +276,7 @@ uint32_t Hololink::get_fpga_date()
 }
 
 bool Hololink::write_uint32(
-    uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& in_timeout, bool retry)
+    uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& in_timeout, bool retry, bool sequence_check)
 {
     uint32_t count = 0;
     std::exception_ptr eptr;
@@ -211,7 +284,7 @@ bool Hololink::write_uint32(
     try {
         while (true) {
             count += 1;
-            bool status = write_uint32_(address, value, timeout, retry /*response_expected*/);
+            bool status = write_uint32_(address, value, timeout, retry, sequence_check);
             if (status) {
                 return status;
             }
@@ -238,9 +311,9 @@ bool Hololink::write_uint32(
 }
 
 bool Hololink::write_uint32_(uint32_t address, uint32_t value,
-    const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>(), bool response_expected)
+    const std::shared_ptr<Timeout>& timeout, bool response_expected, bool sequence_check)
 {
-    HOLOSCAN_LOG_DEBUG("write_uint32(address={:#x}, value={:#x})", address, value);
+    HSB_LOG_DEBUG("write_uint32(address={:#x}, value={:#x})", address, value);
     if ((address & 3) != 0) {
         throw std::runtime_error(
             fmt::format("Invalid address \"{:#x}\", has to be a multiple of four", address));
@@ -248,11 +321,21 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
     // BLOCKING on ack or timeout
     // This routine serializes a write_uint32 request
     // and forwards it to the device.
-    const uint16_t sequence = next_sequence();
+
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+
+    const uint16_t sequence = next_sequence(lock);
     // Serialize
-    std::vector<uint8_t> request(20);
+    std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
     native::Serializer serializer(request.data(), request.size());
-    if (!(serializer.append_uint8(WR_DWORD) && serializer.append_uint8(REQUEST_FLAGS_ACK_REQUEST)
+    uint8_t flags = REQUEST_FLAGS_ACK_REQUEST;
+    if (sequence_check) {
+        flags |= REQUEST_FLAGS_SEQUENCE_CHECK;
+    }
+    if (!(serializer.append_uint8(WR_DWORD) && serializer.append_uint8(flags)
             && serializer.append_uint16_be(sequence) && serializer.append_uint8(0) // reserved
             && serializer.append_uint8(0) // reserved
             && serializer.append_uint32_be(address) && serializer.append_uint32_be(value))) {
@@ -260,28 +343,29 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
     }
     request.resize(serializer.length());
 
-    std::vector<uint8_t> reply(20);
-    auto [status, response_code, deserializer] = execute(sequence, request, reply, timeout);
+    std::vector<uint8_t> reply(CONTROL_PACKET_SIZE);
+    auto [status, optional_response_code, deserializer] = execute(sequence, request, reply, timeout, lock);
     if (!status) {
         // timed out
         return false;
     }
-    if (response_code != RESPONSE_SUCCESS) {
-        if (!response_code.has_value()) {
+    if (optional_response_code != RESPONSE_SUCCESS) {
+        if (!optional_response_code.has_value()) {
             if (response_expected) {
-                HOLOSCAN_LOG_ERROR(
+                HSB_LOG_ERROR(
                     "write_uint32 address={:#X} value={:#X} response_code=None", address, value);
                 return false;
             }
         }
+        uint32_t response_code = optional_response_code.value();
         throw std::runtime_error(
-            fmt::format("write_uint32 address={:#X} value={:#X} response_code={:#X}", address,
-                value, response_code.value()));
+            fmt::format("write_uint32 address={:#X} value={:#X} response_code={:#X}({})", address,
+                value, response_code, response_code_description(response_code)));
     }
     return true;
 }
 
-uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>& in_timeout)
+uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool check_sequence)
 {
     uint32_t count = 0;
     std::exception_ptr eptr;
@@ -289,7 +373,7 @@ uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>&
     try {
         while (true) {
             count += 1;
-            auto [status, value] = read_uint32_(address, timeout);
+            auto [status, value] = read_uint32_(address, timeout, check_sequence);
             if (status) {
                 return value.value();
             }
@@ -312,9 +396,9 @@ uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>&
 }
 
 std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
-    uint32_t address, const std::shared_ptr<Timeout>& timeout)
+    uint32_t address, const std::shared_ptr<Timeout>& timeout, bool sequence_check)
 {
-    HOLOSCAN_LOG_DEBUG("read_uint32(address={:#x})", address);
+    HSB_LOG_DEBUG("read_uint32(address={:#x})", address);
     if ((address & 3) != 0) {
         throw std::runtime_error(
             fmt::format("Invalid address \"{:#x}\", has to be a multiple of four", address));
@@ -322,43 +406,56 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
     // BLOCKING on ack or timeout
     // This routine serializes a read_uint32 request
     // and forwards it to the device.
-    uint16_t sequence = next_sequence();
+
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+
+    uint16_t sequence = next_sequence(lock);
     // Serialize
-    std::vector<uint8_t> request(20);
+    std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
     native::Serializer serializer(request.data(), request.size());
-    if (!(serializer.append_uint8(RD_DWORD) && serializer.append_uint8(REQUEST_FLAGS_ACK_REQUEST)
+    uint8_t flags = REQUEST_FLAGS_ACK_REQUEST;
+    if (sequence_check) {
+        flags |= REQUEST_FLAGS_SEQUENCE_CHECK;
+    }
+    if (!(serializer.append_uint8(RD_DWORD) && serializer.append_uint8(flags)
             && serializer.append_uint16_be(sequence) && serializer.append_uint8(0) // reserved
             && serializer.append_uint8(0) // reserved
             && serializer.append_uint32_be(address))) {
         throw std::runtime_error("Unable to serialize");
     }
     request.resize(serializer.length());
-    HOLOSCAN_LOG_TRACE("read_uint32: {}....{}", request, sequence);
+    HSB_LOG_TRACE("read_uint32: {}....{}", request, sequence);
 
-    std::vector<uint8_t> reply(20);
-    auto [status, response_code, deserializer] = execute(sequence, request, reply, timeout);
+    std::vector<uint8_t> reply(CONTROL_PACKET_SIZE);
+    auto [status, optional_response_code, deserializer] = execute(sequence, request, reply, timeout, lock);
     if (!status) {
         // timed out
         return { false, {} };
     }
-    if (response_code != RESPONSE_SUCCESS) {
+    if (optional_response_code != RESPONSE_SUCCESS) {
+        uint32_t response_code = optional_response_code.value();
         throw std::runtime_error(
-            fmt::format("read_uint32 response_code={}", response_code.value()));
+            fmt::format("read_uint32 response_code={}({})", response_code, response_code_description(response_code)));
     }
     uint8_t reserved;
     uint32_t response_address;
     uint32_t value;
+    uint16_t latched_sequence;
     if (!(deserializer->next_uint8(reserved) /* reserved */
             && deserializer->next_uint32_be(response_address) /* address */
-            && deserializer->next_uint32_be(value))) {
+            && deserializer->next_uint32_be(value)
+            && deserializer->next_uint16_be(latched_sequence))) {
         throw std::runtime_error("Unable to deserialize");
     }
     assert(response_address == address);
-    HOLOSCAN_LOG_DEBUG("read_uint32(address={:#x})={:#x}", address, value);
+    HSB_LOG_DEBUG("read_uint32(address={:#x})={:#x}", address, value);
     return { true, value };
 }
 
-uint16_t Hololink::next_sequence()
+uint16_t Hololink::next_sequence(std::lock_guard<std::mutex>&)
 {
     uint16_t r = sequence_;
     sequence_ = sequence_ + 1;
@@ -367,15 +464,10 @@ uint16_t Hololink::next_sequence()
 
 std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<native::Deserializer>> Hololink::execute(
     uint16_t sequence, const std::vector<uint8_t>& request, std::vector<uint8_t>& reply,
-    const std::shared_ptr<Timeout>& timeout)
+    const std::shared_ptr<Timeout>& timeout, std::lock_guard<std::mutex>&)
 {
-    HOLOSCAN_LOG_TRACE("Sending request={}", request);
+    HSB_LOG_TRACE("Sending request={}", request);
     double request_time = Timeout::now_s();
-
-    // HSB only supports a single command/response at a time--
-    // in other words we need to inhibit other threads from sending
-    // a command until we receive the response for the current one.
-    std::lock_guard lock(execute_mutex_);
 
     send_control(request);
     while (true) {
@@ -396,8 +488,8 @@ std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<native::Deserializer>>
                 && deserializer->next_uint8(response_code))) {
             throw std::runtime_error("Unable to deserialize");
         }
-        HOLOSCAN_LOG_TRACE("reply reply_sequence={} response_code={} sequence={}", reply_sequence,
-            response_code, sequence);
+        HSB_LOG_TRACE("reply reply_sequence={} response_code={}({}) sequence={}", reply_sequence,
+            response_code, response_code_description(response_code), sequence);
         if (sequence == reply_sequence) {
             return { true, response_code, deserializer };
         }
@@ -406,7 +498,7 @@ std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<native::Deserializer>>
 
 void Hololink::send_control(const std::vector<uint8_t>& request)
 {
-    HOLOSCAN_LOG_TRACE(
+    HSB_LOG_TRACE(
         "_send_control request={} peer_ip={} control_port={}", request, peer_ip_, control_port_);
     sockaddr_in address {};
     address.sin_family = AF_INET;
@@ -452,15 +544,11 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
         fd_set x = r;
         int result = select(control_socket_.get() + 1, &r, nullptr, &x, select_timeout);
         if (result == -1) {
-            if (errno == EINTR) {
-                // retry
-                continue;
-            }
             throw std::runtime_error(
                 fmt::format("select failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
         if (FD_ISSET(control_socket_.get(), &x)) {
-            HOLOSCAN_LOG_ERROR("Error reading enumeration sockets.");
+            HSB_LOG_ERROR("Error reading enumeration sockets.");
             return {};
         }
         if (result == 0) {
@@ -468,7 +556,7 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
             continue;
         }
 
-        std::vector<uint8_t> received(8192);
+        std::vector<uint8_t> received(hololink::native::UDP_PACKET_SIZE);
         sockaddr_in peer_address {};
         peer_address.sin_family = AF_UNSPEC;
         socklen_t peer_address_len = sizeof(peer_address);
@@ -476,7 +564,7 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
         do {
             received_bytes = recvfrom(control_socket_.get(), received.data(), received.size(), 0,
                 (sockaddr*)&peer_address, &peer_address_len);
-            if ((received_bytes == -1) && (errno != EINTR)) {
+            if (received_bytes == -1) {
                 throw std::runtime_error(
                     fmt::format("recvfrom failed with errno={}: \"{}\"", errno, strerror(errno)));
             }
@@ -490,7 +578,7 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
 void Hololink::executed(double request_time, const std::vector<uint8_t>& request, double reply_time,
     const std::vector<uint8_t>& reply)
 {
-    HOLOSCAN_LOG_TRACE("Got reply={}", reply);
+    HSB_LOG_TRACE("Got reply={}", reply);
 }
 
 void Hololink::add_read_retries(uint32_t n) { }
@@ -499,11 +587,11 @@ void Hololink::add_write_retries(uint32_t n) { }
 
 void Hololink::write_renesas(I2c& i2c, const std::vector<uint8_t>& data)
 {
-    HOLOSCAN_LOG_TRACE("write_renesas data={}", data);
+    HSB_LOG_TRACE("write_renesas data={}", data);
     uint32_t read_byte_count = 0;
     constexpr uint32_t RENESAS_I2C_ADDRESS = 0x09;
     std::vector<uint8_t> reply = i2c.i2c_transaction(RENESAS_I2C_ADDRESS, data, read_byte_count);
-    HOLOSCAN_LOG_TRACE("reply={}.", reply);
+    HSB_LOG_TRACE("reply={}.", reply);
 }
 
 void Hololink::setup_clock(const std::vector<std::vector<uint8_t>>& clock_profile)
@@ -561,9 +649,37 @@ std::shared_ptr<Hololink::Spi> Hololink::get_spi(uint32_t spi_address, uint32_t 
     return std::make_shared<Hololink::Spi>(*this, spi_address, spi_cfg);
 }
 
-std::shared_ptr<Hololink::GPIO> Hololink::get_gpio()
+std::shared_ptr<Hololink::GPIO> Hololink::get_gpio(Metadata& metadata)
 {
-    auto r = std::make_shared<Hololink::GPIO>(*this);
+
+    // get board id from enumaration metadata
+    int64_t board_id = metadata.get<int64_t>("board_id").value();
+    uint32_t gpio_pin_number;
+
+    // set number of GPIO pins per board
+    // nano        - 54
+    // 10G         - 16
+    // microchip   - 0
+    // unknown - set to 16 as default
+    switch (board_id) {
+    case HOLOLINK_NANO_BOARD_ID:
+        gpio_pin_number = 54;
+        break;
+
+    case HOLOLINK_LITE_BOARD_ID:
+        gpio_pin_number = 16;
+        break;
+
+    case MICROCHIP_POLARFIRE_BOARD_ID:
+        throw std::runtime_error(fmt::format("GPIO is not supported on this Hololink board!"));
+        break;
+
+    default:
+        throw std::runtime_error(fmt::format("Invalid Hololink board id:{}!", board_id));
+        break;
+    }
+
+    auto r = std::make_shared<Hololink::GPIO>(*this, gpio_pin_number);
     return r;
 }
 
@@ -587,7 +703,7 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
     const std::vector<uint8_t>& write_bytes, uint32_t read_byte_count,
     const std::shared_ptr<Timeout>& in_timeout)
 {
-    HOLOSCAN_LOG_DEBUG("i2c_transaction peripheral={:#x} len(write_bytes)={} read_byte_count={}",
+    HSB_LOG_DEBUG("i2c_transaction peripheral={:#x} len(write_bytes)={} read_byte_count={}",
         peripheral_i2c_address, write_bytes.size(), read_byte_count);
     if (peripheral_i2c_address >= 0x80) {
         throw std::runtime_error(
@@ -611,7 +727,10 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
     // Hololink FPGA doesn't support resetting the I2C interface;
     // so the best we can do is make sure it's not busy.
     uint32_t value = hololink_.read_uint32(reg_control_, timeout);
-    assert((value & I2C_BUSY) == 0);
+    if (value & I2C_BUSY) {
+        throw std::runtime_error(fmt::format(
+            "Unexpected I2C_BUSY bit set, reg_control={:#x}, control value={:#x}", reg_control_, value));
+    }
     //
     // set the device address and enable the i2c controller
     // I2C_DONE_CLEAR -> 1
@@ -622,7 +741,7 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
     hololink_.write_uint32(reg_control_, control, timeout);
     // make sure DONE is 0.
     value = hololink_.read_uint32(reg_control_, timeout);
-    HOLOSCAN_LOG_DEBUG("control value={:#x}", value);
+    HSB_LOG_DEBUG("control value={:#x}", value);
     assert((value & I2C_DONE) == 0);
     // write the num_bytes
     uint32_t num_bytes = (write_byte_count << 0) | (read_byte_count << 8);
@@ -655,7 +774,7 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
         }
         if (!timeout->retry()) {
             // timed out
-            HOLOSCAN_LOG_DEBUG("Timed out.");
+            HSB_LOG_DEBUG("Timed out.");
             throw TimeoutError(
                 fmt::format("i2c_transaction i2c_address={:#x}", peripheral_i2c_address));
         }
@@ -663,14 +782,14 @@ std::vector<uint8_t> Hololink::I2c::i2c_transaction(uint32_t peripheral_i2c_addr
     // Poll until done.  Future version will have an event packet too.
     while (true) {
         value = hololink_.read_uint32(reg_control_, timeout);
-        HOLOSCAN_LOG_TRACE("control={:#x}.", value);
+        HSB_LOG_TRACE("control={:#x}.", value);
         const uint32_t done = value & I2C_DONE;
         if (done != 0) {
             break;
         }
         if (!timeout->retry()) {
             // timed out
-            HOLOSCAN_LOG_DEBUG("Timed out.");
+            HSB_LOG_DEBUG("Timed out.");
             throw TimeoutError(
                 fmt::format("i2c_transaction i2c_address={:#x}", peripheral_i2c_address));
         }
@@ -778,7 +897,7 @@ std::vector<uint8_t> Hololink::Spi::spi_transaction(const std::vector<uint8_t>& 
         }
         if (!timeout->retry()) {
             // timed out
-            HOLOSCAN_LOG_DEBUG("Timed out.");
+            HSB_LOG_DEBUG("Timed out.");
             throw TimeoutError(fmt::format("spi_transaction control={:#x}", reg_control_));
         }
     }
@@ -801,31 +920,41 @@ std::vector<uint8_t> Hololink::Spi::spi_transaction(const std::vector<uint8_t>& 
     return r;
 }
 
-Hololink::GPIO::GPIO(Hololink& hololink)
+Hololink::GPIO::GPIO(Hololink& hololink, uint32_t gpio_pin_number)
     : hololink_(hololink)
 {
+    if (gpio_pin_number > GPIO_PIN_RANGE) {
+        HSB_LOG_ERROR("Number of GPIO pins requested={} exceeds system limits={}", gpio_pin_number, GPIO_PIN_RANGE);
+        throw std::runtime_error(fmt::format("Number of GPIO pins requested={} exceeds system limits={}", gpio_pin_number, GPIO_PIN_RANGE));
+    }
+
+    gpio_pin_number_ = gpio_pin_number;
 }
 
 void Hololink::GPIO::set_direction(uint32_t pin, uint32_t direction)
 {
-    if (pin < GPIO_PIN_RANGE) {
+    if (pin < gpio_pin_number_) {
+
+        uint32_t register_address = GPIO_DIRECTION_BASE_REGISTER + ((pin / 32) * GPIO_REGISTER_ADDRESS_OFFSET);
+        uint32_t pin_bit = pin % 32; // map 0-255 to 0-31
 
         // Read direction register
-        uint32_t reg_val = hololink_.read_uint32(GPIO_DIRECTION_REGISTER);
+        uint32_t reg_val = hololink_.read_uint32(register_address);
 
         // modify direction pin value
         if (direction == IN) {
-            reg_val = set_bit(reg_val, pin);
+            reg_val = set_bit(reg_val, pin_bit);
         } else if (direction == OUT) {
-            reg_val = clear_bit(reg_val, pin);
+            reg_val = clear_bit(reg_val, pin_bit);
         } else {
             // raise exception
             throw std::runtime_error(fmt::format("GPIO:{},invalid direction:{}", pin, direction));
         }
 
         // write back modified value
-        hololink_.write_uint32(GPIO_DIRECTION_REGISTER, reg_val);
-        HOLOSCAN_LOG_INFO("GPIO:{},set to direction:{}", pin, direction);
+        hololink_.write_uint32(register_address, reg_val);
+
+        HSB_LOG_DEBUG("GPIO:{},set to direction:{}", pin, direction);
         return;
     }
 
@@ -835,9 +964,13 @@ void Hololink::GPIO::set_direction(uint32_t pin, uint32_t direction)
 
 uint32_t Hololink::GPIO::get_direction(uint32_t pin)
 {
-    if (pin < GPIO_PIN_RANGE) {
-        uint32_t reg_val = hololink_.read_uint32(GPIO_DIRECTION_REGISTER);
-        return read_bit(reg_val, pin);
+    if (pin < gpio_pin_number_) {
+
+        uint32_t register_address = GPIO_DIRECTION_BASE_REGISTER + ((pin / 32) * GPIO_REGISTER_ADDRESS_OFFSET);
+        uint32_t pin_bit = pin % 32; // map 0-255 to 0-31
+
+        uint32_t reg_val = hololink_.read_uint32(register_address);
+        return read_bit(reg_val, pin_bit);
     }
 
     // raise exception
@@ -846,27 +979,32 @@ uint32_t Hololink::GPIO::get_direction(uint32_t pin)
 
 void Hololink::GPIO::set_value(uint32_t pin, uint32_t value)
 {
-    if (pin < GPIO_PIN_RANGE) {
+    if (pin < gpio_pin_number_) {
         // make sure this is an output pin
         const uint32_t direction = get_direction(pin);
 
+        uint32_t status_register_address = GPIO_STATUS_BASE_REGISTER + ((pin / 32) * GPIO_REGISTER_ADDRESS_OFFSET); // read from status
+        uint32_t output_register_address = GPIO_OUTPUT_BASE_REGISTER + ((pin / 32) * GPIO_REGISTER_ADDRESS_OFFSET); // write to output
+        uint32_t pin_bit = pin % 32; // map 0-255 to 0-31
+
         if (direction == OUT) {
             // Read output register values
-            uint32_t reg_val = hololink_.read_uint32(GPIO_STATUS_REGISTER);
+            uint32_t reg_val = hololink_.read_uint32(status_register_address);
 
             // Modify pin in the register
             if (value == HIGH) {
-                reg_val = set_bit(reg_val, pin);
+                reg_val = set_bit(reg_val, pin_bit);
             } else if (value == LOW) {
-                reg_val = clear_bit(reg_val, pin);
+                reg_val = clear_bit(reg_val, pin_bit);
             } else {
                 // raise exception
                 throw std::runtime_error(fmt::format("GPIO:{},invalid value:{}", pin, value));
             }
 
             // write back modified value
-            hololink_.write_uint32(GPIO_OUTPUT_REGISTER, reg_val);
-            HOLOSCAN_LOG_INFO("GPIO:{},set to value:{}", pin, value);
+            hololink_.write_uint32(output_register_address, reg_val);
+
+            HSB_LOG_DEBUG("GPIO:{},set to value:{}", pin, value);
             return;
         } else {
             // raise exception
@@ -881,12 +1019,21 @@ void Hololink::GPIO::set_value(uint32_t pin, uint32_t value)
 
 uint32_t Hololink::GPIO::get_value(uint32_t pin)
 {
-    if (pin < GPIO_PIN_RANGE) {
-        const uint32_t reg_val = hololink_.read_uint32(GPIO_STATUS_REGISTER);
-        return read_bit(reg_val, pin);
+    if (pin < gpio_pin_number_) {
+
+        uint32_t register_address = GPIO_STATUS_BASE_REGISTER + ((pin / 32) * GPIO_REGISTER_ADDRESS_OFFSET);
+        uint32_t pin_bit = pin % 32; // map 0-255 to 0-31
+
+        const uint32_t reg_val = hololink_.read_uint32(register_address);
+        return read_bit(reg_val, pin_bit);
     }
     // raise exception
     throw std::runtime_error(fmt::format("GPIO:{},invalid pin", pin));
+}
+
+uint32_t Hololink::GPIO::get_supported_pin_num(void)
+{
+    return gpio_pin_number_;
 }
 
 /*static*/ uint32_t Hololink::GPIO::set_bit(uint32_t value, uint32_t bit)
@@ -913,26 +1060,29 @@ public:
     /** Constructs a lock using the shm_open() call to access a named
      * semaphore with the given name.
      */
-    NamedLock(std::string name)
-        : sem_(0)
+    NamedLock(Hololink& hololink, std::string name)
+        : fd_(-1)
     {
-        // Allow one thread to lock this guy.  sem_open requires
-        // an initial "/" -- don't burden our callers with knowing this.
-        std::string formatted_name = fmt::format("/{}", name);
+        // We use lockf on this file as our interprocess locking
+        // mechanism; that way if this program exits unexpectedly
+        // we don't leave the lock held.  (An earlier implementation
+        // using shm_open didn't guarantee releasing the lock if we exited due
+        // to the user pressing control/C.)
+        std::string formatted_name = hololink.device_specific_filename(name);
         int permissions = 0666; // make sure other processes can write
-        sem_ = sem_open(formatted_name.c_str(), O_CREAT, permissions, 1);
-        if (sem_ == SEM_FAILED) {
+        fd_ = open(formatted_name.c_str(), O_WRONLY | O_CREAT, permissions);
+        if (fd_ < 0) {
             throw std::runtime_error(
-                fmt::format("sem_open failed with errno={}: \"{}\"", errno, strerror(errno)));
+                fmt::format("open({}, ...) failed with errno={}: \"{}\"", formatted_name, errno, strerror(errno)));
         }
     }
 
     ~NamedLock() noexcept(false)
     {
-        int r = sem_close(sem_);
+        int r = close(fd_);
         if (r != 0) {
             throw std::runtime_error(
-                fmt::format("sem_close failed with errno={}: \"{}\"", errno, strerror(errno)));
+                fmt::format("close failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
     }
 
@@ -942,10 +1092,10 @@ public:
     void lock()
     {
         // Block until we're the owner.
-        int r = sem_wait(sem_);
+        int r = lockf(fd_, F_LOCK, 0);
         if (r != 0) {
             throw std::runtime_error(
-                fmt::format("sem_wait failed with errno={}: \"{}\"", errno, strerror(errno)));
+                fmt::format("lockf failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
     }
 
@@ -956,32 +1106,54 @@ public:
     void unlock()
     {
         // Let another process take ownership.
-        int r = sem_post(sem_);
+        int r = lockf(fd_, F_ULOCK, 0);
         if (r != 0) {
             throw std::runtime_error(
-                fmt::format("sem_post failed with errno={}: \"{}\"", errno, strerror(errno)));
+                fmt::format("lockf failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
     }
 
 protected:
-    sem_t* sem_;
+    int fd_;
 };
 
 Hololink::NamedLock& Hololink::i2c_lock()
 {
-    static NamedLock lock("hololink-i2c-lock");
+    static NamedLock lock(this[0], "hololink-i2c-lock");
     return lock;
 }
 
 Hololink::NamedLock& Hololink::spi_lock()
 {
-    static NamedLock lock("hololink-spi-lock");
+    static NamedLock lock(this[0], "hololink-spi-lock");
+    return lock;
+}
+
+Hololink::NamedLock& Hololink::lock()
+{
+    static NamedLock lock(this[0], "hololink-lock");
     return lock;
 }
 
 void Hololink::on_reset(std::shared_ptr<Hololink::ResetController> reset_controller)
 {
     reset_controllers_.push_back(reset_controller);
+}
+
+std::string Hololink::device_specific_filename(std::string name)
+{
+    // Create a directory, if necessary, with our serial number.
+    auto path = std::filesystem::temp_directory_path();
+    path.append("hololink");
+    path.append(serial_number_);
+    if (!std::filesystem::exists(path)) {
+        if (!std::filesystem::create_directories(path)) {
+            throw std::runtime_error(
+                fmt::format("create_directory({}) failed with errno={}: \"{}\"", std::string(path), errno, strerror(errno)));
+        }
+    }
+    path.append(name);
+    return std::string(path);
 }
 
 Hololink::ResetController::~ResetController()
@@ -993,7 +1165,7 @@ bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
     // Wait for a non-zero time value
     while (true) {
         std::shared_ptr<Timeout> read_timeout = Timeout::default_timeout();
-        auto [status, value] = read_uint32_(FPGA_PTP_SYNC_TS_0, read_timeout);
+        auto [status, value] = read_uint32_(FPGA_PTP_SYNC_TS_0, read_timeout, sequence_number_checking_);
         if (status) {
             uint32_t ptp_count = value.value();
             if (ptp_count != 0) {
@@ -1008,6 +1180,42 @@ bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 
     // Time is sync'd now.
     return true;
+}
+
+Hololink::FrameMetadata Hololink::deserialize_metadata(const uint8_t* metadata_buffer, unsigned metadata_buffer_size)
+{
+    hololink::native::Deserializer deserializer(metadata_buffer, metadata_buffer_size);
+    FrameMetadata r = {}; // fill with 0s
+    if (!(deserializer.next_uint32_be(r.flags)
+            && deserializer.next_uint32_be(r.psn)
+            && deserializer.next_uint32_be(r.crc)
+            && deserializer.next_uint64_be(r.timestamp_s)
+            && deserializer.next_uint32_be(r.timestamp_ns)
+            && deserializer.next_uint64_be(r.bytes_written)
+            && deserializer.next_uint32_be(r.frame_number)
+            && deserializer.next_uint64_be(r.metadata_s)
+            && deserializer.next_uint32_be(r.metadata_ns))) {
+        throw std::runtime_error(fmt::format("Buffer underflow in metadata"));
+    }
+    HSB_LOG_TRACE("flags={:#x} psn={:#x} crc={:#x} timestamp_s={:#x} timestamp_ns={:#x} bytes_written={:#x} frame_number={:#x}",
+        r.flags, r.psn, r.crc, r.timestamp_s, r.timestamp_ns, r.bytes_written, r.frame_number);
+    return r;
+}
+
+bool Hololink::and_uint32(uint32_t address, uint32_t mask)
+{
+    std::lock_guard lock(this->lock());
+    uint32_t value = read_uint32(address);
+    value &= mask;
+    return write_uint32(address, value);
+}
+
+bool Hololink::or_uint32(uint32_t address, uint32_t mask)
+{
+    std::lock_guard lock(this->lock());
+    uint32_t value = read_uint32(address);
+    value |= mask;
+    return write_uint32(address, value);
 }
 
 } // namespace hololink

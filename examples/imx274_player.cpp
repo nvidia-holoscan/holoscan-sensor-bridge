@@ -23,9 +23,9 @@
 #include <hololink/data_channel.hpp>
 #include <hololink/enumerator.hpp>
 #include <hololink/hololink.hpp>
+#include <hololink/logging.hpp>
 #include <hololink/native/cuda_helper.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
-#include <hololink/operators/gamma_correction/gamma_correction.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
 
@@ -126,17 +126,14 @@ public:
             holoscan::Arg("alpha_value", 65535), holoscan::Arg("bayer_grid_pos", int(bayer_format)),
             holoscan::Arg("interpolation_mode", 0));
 
-        auto gamma_correction = make_operator<hololink::operators::GammaCorrectionOp>(
-            "gamma_correction", holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
-
         auto visualizer = make_operator<holoscan::ops::HolovizOp>("holoviz",
-            holoscan::Arg("fullscreen", fullscreen_), holoscan::Arg("headless", headless_));
+            holoscan::Arg("fullscreen", fullscreen_), holoscan::Arg("headless", headless_),
+            holoscan::Arg("framebuffer_srgb", true));
 
         add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
         add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
         add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
-        add_flow(demosaic, gamma_correction, { { "transmitter", "input" } });
-        add_flow(gamma_correction, visualizer, { { "output", "receivers" } });
+        add_flow(demosaic, visualizer, { { "transmitter", "receivers" } });
     }
 
 private:
@@ -302,7 +299,7 @@ int main(int argc, char** argv)
         }
         hololink_module.attr("logging_level")(python_log_level);
 
-        HOLOSCAN_LOG_INFO("Initializing.");
+        HSB_LOG_INFO("Initializing.");
 
         // Get a handle to the GPU
         CudaCheck(cuInit(0));
@@ -314,7 +311,7 @@ int main(int argc, char** argv)
 
         // Get a handle to the data source
         hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
-        HOLOSCAN_LOG_INFO(fmt::format("channel_metadata {}", channel_metadata));
+        HSB_LOG_INFO(fmt::format("channel_metadata {}", channel_metadata));
 
         hololink::DataChannel hololink_channel(channel_metadata);
 
@@ -343,7 +340,7 @@ int main(int argc, char** argv)
         if (pattern_set) {
             camera.attr("test_pattern")(pattern);
         }
-        HOLOSCAN_LOG_INFO("Calling run");
+        HSB_LOG_INFO("Calling run");
         {
             // we need release the Python GIL before starting the application to make sure the
             // operators can call camera device functions
@@ -355,7 +352,7 @@ int main(int argc, char** argv)
         CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
 
     } catch (std::exception& e) {
-        HOLOSCAN_LOG_ERROR(e.what());
+        HSB_LOG_ERROR(e.what());
         return -1;
     }
 

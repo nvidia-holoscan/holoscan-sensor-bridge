@@ -21,7 +21,7 @@
 
 #include <nvrtc.h>
 
-#include <holoscan/logger/logger.hpp>
+#include <hololink/logging.hpp>
 
 /**
  * NvRTC API error check helper
@@ -103,7 +103,7 @@ CudaFunctionLauncher::~CudaFunctionLauncher()
     try {
         CudaCheck(cuModuleUnload(module_));
     } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("CudaFunctionLauncher destructor failed with {}", e.what());
+        HSB_LOG_ERROR("CudaFunctionLauncher destructor failed with {}", e.what());
     }
 }
 
@@ -150,10 +150,10 @@ CudaContextScopedPush::~CudaContextScopedPush()
         CUcontext popped_context;
         CudaCheck(cuCtxPopCurrent(&popped_context));
         if (popped_context != cuda_context_) {
-            HOLOSCAN_LOG_ERROR("Cuda: Unexpected context popped");
+            HSB_LOG_ERROR("Cuda: Unexpected context popped");
         }
     } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("ScopedPush destructor failed with {}", e.what());
+        HSB_LOG_ERROR("ScopedPush destructor failed with {}", e.what());
     }
 }
 

@@ -51,9 +51,19 @@ constexpr uint32_t WR_DWORD = 0x04;
 constexpr uint32_t RD_DWORD = 0x14;
 // request packet flag bits
 constexpr uint32_t REQUEST_FLAGS_ACK_REQUEST = 0b0000'0001;
+constexpr uint32_t REQUEST_FLAGS_SEQUENCE_CHECK = 0b0000'0010;
 // response codes
-constexpr uint32_t RESPONSE_SUCCESS = 0;
+constexpr uint32_t RESPONSE_SUCCESS = 0x00;
+constexpr uint32_t RESPONSE_ERROR_GENERAL = 0x02;
+constexpr uint32_t RESPONSE_INVALID_ADDR = 0x03;
 constexpr uint32_t RESPONSE_INVALID_CMD = 0x04;
+constexpr uint32_t RESPONSE_INVALID_PKT_LENGTH = 0x05;
+constexpr uint32_t RESPONSE_INVALID_FLAGS = 0x06;
+constexpr uint32_t RESPONSE_BUFFER_FULL = 0x07;
+constexpr uint32_t RESPONSE_INVALID_BLOCK_SIZE = 0x08;
+constexpr uint32_t RESPONSE_INVALID_INDIRECT_ADDR = 0x09;
+constexpr uint32_t RESPONSE_COMMAND_TIMEOUT = 0x0A;
+constexpr uint32_t RESPONSE_SEQUENCE_CHECK_FAIL = 0x0B;
 
 // control flags
 constexpr uint32_t I2C_START = 0b0000'0000'0000'0001;
@@ -72,10 +82,13 @@ constexpr uint32_t FPGA_PTP_SYNC_TS_0 = 0x180;
 constexpr uint32_t FPGA_PTP_OFM = 0x18C;
 
 // board IDs
-constexpr uint32_t HOLOLINK_LITE_BOARD_ID = 1u;
-constexpr uint32_t HOLOLINK_BOARD_ID = 2u;
+constexpr uint32_t HOLOLINK_LITE_BOARD_ID = 2u;
 constexpr uint32_t HOLOLINK_100G_BOARD_ID = 3u;
 constexpr uint32_t MICROCHIP_POLARFIRE_BOARD_ID = 4u;
+constexpr uint32_t HOLOLINK_NANO_BOARD_ID = 5u;
+
+// Other constants
+constexpr uint32_t METADATA_SIZE = 128;
 
 class TimeoutError : public std::runtime_error {
 public:
@@ -94,10 +107,18 @@ public:
 };
 
 /**
+ * Defined in data_channel.hpp.
+ */
+class DataChannel;
+
+/**
  * @brief
  *
  */
 class Hololink {
+    /** DataChannel calls some methods we don't want to share. */
+    friend class DataChannel;
+
 public:
     /**
      * @brief Construct a new Hololink object
@@ -107,7 +128,7 @@ public:
      * @param serial_number
      */
     explicit Hololink(
-        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number);
+        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking);
     Hololink() = delete;
 
     virtual ~Hololink() = default;
@@ -135,9 +156,8 @@ public:
     static bool enumerated(const Metadata& metadata);
 
     /**
-     * @brief
-     *
-     * @return std::tuple<uint32_t, uint32_t, uint32_t, uint32_t>
+     * Returns (frame_start_size, frame_end_size, line_start_size, line_end_size),
+     * all are in bytes.
      */
     std::tuple<uint32_t, uint32_t, uint32_t, uint32_t> csi_size();
 
@@ -160,7 +180,7 @@ public:
      * @param timeout
      * @returns the FPGA version
      */
-    uint32_t get_fpga_version(const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>());
+    uint32_t get_fpga_version(const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>(), bool check_sequence = true);
 
     /**
      * @returns the FPGA date
@@ -178,7 +198,19 @@ public:
      * @return false
      */
     bool write_uint32(uint32_t address, uint32_t value,
-        const std::shared_ptr<Timeout>& in_timeout = std::shared_ptr<Timeout>(), bool retry = true);
+        const std::shared_ptr<Timeout>& in_timeout, bool retry, bool sequence_check);
+
+    bool write_uint32(uint32_t address, uint32_t value,
+        const std::shared_ptr<Timeout>& timeout, bool retry = true)
+    {
+        return write_uint32(address, value, timeout, retry, sequence_number_checking_);
+    }
+
+    bool write_uint32(uint32_t address, uint32_t value)
+    {
+        const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>();
+        return write_uint32(address, value, timeout);
+    }
 
     /**
      * @brief Returns the value found at the location or calls hololink timeout if there's a
@@ -189,7 +221,18 @@ public:
      * @return uint32_t
      */
     uint32_t read_uint32(
-        uint32_t address, const std::shared_ptr<Timeout>& in_timeout = std::shared_ptr<Timeout>());
+        uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool check_sequence);
+
+    uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
+    {
+        return read_uint32(address, timeout, sequence_number_checking_);
+    }
+
+    uint32_t read_uint32(uint32_t address)
+    {
+        const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>();
+        return read_uint32(address, timeout);
+    }
 
     /**
      * @brief Setup the clock
@@ -205,6 +248,7 @@ public:
      * the device-- the same is true for SPI.
      */
     class NamedLock;
+    friend class NamedLock;
 
     class I2c {
     public:
@@ -342,7 +386,7 @@ public:
          *
          * @param hololink
          */
-        explicit GPIO(Hololink& hololink);
+        explicit GPIO(Hololink& hololink, uint32_t gpio_pin_number);
         GPIO() = delete;
 
         // Direction constants
@@ -353,8 +397,12 @@ public:
         inline static constexpr uint32_t LOW = 0;
         inline static constexpr uint32_t HIGH = 1;
 
-        // 16 pins - range 0...15
-        inline static constexpr uint32_t GPIO_PIN_RANGE = 0x10;
+        // 256 pins in FPGA - range 0...255
+        // Diffrent board configurations will use different pin numbers
+        // Lattice 10G - 16 pins
+        // Bajoran nano - 54 pins
+        // Future platform up to 256 pins supported by FPGA
+        inline static constexpr uint32_t GPIO_PIN_RANGE = 0x100;
 
         /**
          * @brief
@@ -388,8 +436,17 @@ public:
          */
         uint32_t get_value(uint32_t pin);
 
+        /**
+         * @brief
+         *
+         * @param
+         * @return uint32_t
+         */
+        uint32_t get_supported_pin_num(void);
+
     private:
         Hololink& hololink_;
+        uint32_t gpio_pin_number_;
 
         static uint32_t set_bit(uint32_t value, uint32_t bit);
         static uint32_t clear_bit(uint32_t value, uint32_t bit);
@@ -401,7 +458,7 @@ public:
      *
      * @return std::shared_ptr<GPIO>
      */
-    std::shared_ptr<GPIO> get_gpio();
+    std::shared_ptr<GPIO> get_gpio(Metadata& metadata);
 
     /**
      * @brief
@@ -428,6 +485,24 @@ public:
      */
     bool ptp_synchronize(const std::shared_ptr<Timeout>& timeout);
 
+    /**
+     * Tool for deserializing HSB received metadata blob.
+     */
+    typedef struct {
+        uint32_t flags;
+        uint32_t psn;
+        uint32_t crc;
+        uint32_t frame_number;
+        // Time when the first sample data for the frame was received
+        uint32_t timestamp_ns;
+        uint64_t timestamp_s;
+        uint64_t bytes_written;
+        // Time at which the metadata packet was sent
+        uint32_t metadata_ns;
+        uint64_t metadata_s;
+    } FrameMetadata;
+    static FrameMetadata deserialize_metadata(const uint8_t* metadata_buffer, unsigned metadata_buffer_size);
+
 protected:
     /**
      * @brief Override this guy to record timing around ACKs etc
@@ -440,11 +515,43 @@ protected:
     virtual void executed(double request_time, const std::vector<uint8_t>& request, double reply_time,
         const std::vector<uint8_t>& reply);
 
+    /**
+     * Return a filename that, for any program talking to
+     * this specific device, will always produce the same
+     * filename for a given value in name.  This file is
+     * not guaranteed to persist past host reboot.  This is
+     * useful e.g. providing locks for transactions to a
+     * specific board.  Note that this works for all processes
+     * on this host but isn't smart enough to share the same
+     * space with other hosts.
+     */
+    std::string device_specific_filename(std::string name);
+
+    /**
+     * Return a named semaphore that guarantees singleton access
+     * to misc Hololink device resources, across all processes
+     * on the current machine.  and_uint32 and or_uint32 use this.
+     */
+    NamedLock& lock();
+
+    /**
+     * Clears any bits of the given memory location with
+     * the bits not set in mask.
+     */
+    bool and_uint32(uint32_t address, uint32_t mask);
+
+    /**
+     * Sets any bits of the given memory location with
+     * the bits set in the mask.
+     */
+    bool or_uint32(uint32_t address, uint32_t mask);
+
 private:
     const std::string peer_ip_;
     const uint32_t control_port_;
     const std::string serial_number_;
     uint16_t sequence_ = 0x100;
+    bool sequence_number_checking_ = true;
 
     native::UniqueFileDescriptor control_socket_;
     uint32_t version_;
@@ -453,21 +560,28 @@ private:
     std::mutex execute_mutex_; // protects command/response transactions with the device.
 
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
-        bool response_expected = true);
+        bool response_expected, bool sequence_check);
     std::tuple<bool, std::optional<uint32_t>> read_uint32_(
-        uint32_t address, const std::shared_ptr<Timeout>& timeout);
+        uint32_t address, const std::shared_ptr<Timeout>& timeout, bool sequence_check);
+
     void add_read_retries(uint32_t n);
     void add_write_retries(uint32_t n);
 
+    // Note that we take the lock_guard as a parameter not because we
+    // actually use it but because we rely on the caller holding a
+    // mutex for us-- and forcing them to pass that in here guarantees
+    // that they have it in the first place.
     std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<native::Deserializer>> execute(
         uint16_t sequence, const std::vector<uint8_t>& request, std::vector<uint8_t>& reply,
-        const std::shared_ptr<Timeout>& timeout);
+        const std::shared_ptr<Timeout>& timeout, std::lock_guard<std::mutex>&);
 
     std::vector<uint8_t> receive_control(const std::shared_ptr<Timeout>& timeout);
 
     void write_renesas(I2c& i2c, const std::vector<uint8_t>& data);
 
-    uint16_t next_sequence();
+    // See the comment above for execute(...) about why we take
+    // std::lock_guard as a parameter here.
+    uint16_t next_sequence(std::lock_guard<std::mutex>&);
 };
 
 } // namespace hololink

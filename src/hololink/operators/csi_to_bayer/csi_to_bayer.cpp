@@ -17,6 +17,7 @@
 
 #include "csi_to_bayer.hpp"
 
+#include <hololink/logging.hpp>
 #include <hololink/native/cuda_helper.hpp>
 #include <holoscan/holoscan.hpp>
 
@@ -150,7 +151,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     gxf_result_t stream_handler_result
         = cuda_stream_handler_.from_message(context.context(), entity);
     if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to get the CUDA stream from incoming messages");
+        throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
     }
 
     const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
@@ -163,7 +164,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     if (input_tensor->storage_type() == nvidia::gxf::MemoryStorageType::kHost) {
         if (!is_integrated_ && !host_memory_warning_) {
             host_memory_warning_ = true;
-            HOLOSCAN_LOG_WARN(
+            HSB_LOG_WARN(
                 "The input tensor is stored in host memory, this will reduce performance of this "
                 "operator. For best performance store the input tensor in device memory.");
         }

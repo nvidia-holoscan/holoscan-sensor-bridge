@@ -28,8 +28,8 @@ class MyCamera:
         # write_buffer will contain the big-endian 2-byte address
         # of the register we're reading.
         write_buffer = bytearray(10)  # must be at least 2
-        serializer = hololink_module.abstract_os.Serializer(write_buffer)
-        serializer.append_u16_be(register)
+        serializer = hololink_module.Serializer(write_buffer)
+        serializer.append_uint16_be(register)
         # send write_buffer to the peripheral device,
         # and return data read back from it.  reply will
         # be a 4 byte buffer, or None if there's a problem
@@ -41,7 +41,7 @@ class MyCamera:
         )
         # deserializer fetches data from reply; this
         # raises an exception if reply is None
-        deserializer = hololink_module.abstract_os.Deserializer(reply)
+        deserializer = hololink_module.Deserializer(reply)
         # Fetch an unsigned 32-bit value stored in big-endian format
         r = deserializer.next_u32_be()
         return r

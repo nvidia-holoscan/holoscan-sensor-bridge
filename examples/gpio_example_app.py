@@ -44,15 +44,18 @@ class GpioSetOp(holoscan.core.Operator):
     This operator changes the GPIOs pin by pin according to the test
     configuration it currently runs (specified in the 'configs' variable).
     It sends the latest changed pin + the current test configuration to the
-    GpioReadOp for validation purposes.
+    GpioGetOp for validation purposes.
     once a sweep on all 16 pins is completed, next test configuration is set.
     """
 
-    def __init__(self, fragment, hololink_channel, *args, **kwargs):
+    def __init__(self, fragment, hololink_channel, gpio, *args, **kwargs):
         self._hololink = hololink_channel.hololink()
-        self._GPIO = self._hololink.get_gpio()
+        self._gpio = gpio
         self.pin = 0
         self.test_config = 0
+
+        # how many pins are supported on the platform running the example
+        self._supported_pins_number = self._gpio.get_supported_pin_num()
 
         # Need to call the base class constructor last
         super().__init__(fragment, *args, **kwargs)
@@ -62,9 +65,9 @@ class GpioSetOp(holoscan.core.Operator):
         spec.output("test_config_out")
 
         # set all gpios as output, high - test fast setting via loop
-        for i in range(self._GPIO.GPIO_PIN_RANGE):
-            self._GPIO.set_direction(i, self._GPIO.OUT)
-            self._GPIO.set_value(i, self._GPIO.HIGH)
+        for i in range(self._supported_pins_number):
+            self._gpio.set_direction(i, self._gpio.OUT)
+            self._gpio.set_value(i, self._gpio.HIGH)
 
     def compute(self, op_input, op_output, context):
 
@@ -73,29 +76,29 @@ class GpioSetOp(holoscan.core.Operator):
         # set gpio pins per test configuration 1 pin at a time per current
         # configuration tested
         if configs[self.test_config] == "ALL_OUT_L":
-            self._GPIO.set_direction(self.pin, self._GPIO.OUT)
-            self._GPIO.set_value(self.pin, self._GPIO.LOW)
+            self._gpio.set_direction(self.pin, self._gpio.OUT)
+            self._gpio.set_value(self.pin, self._gpio.LOW)
 
         elif configs[self.test_config] == "ALL_OUT_H":
-            self._GPIO.set_direction(self.pin, self._GPIO.OUT)
-            self._GPIO.set_value(self.pin, self._GPIO.HIGH)
+            self._gpio.set_direction(self.pin, self._gpio.OUT)
+            self._gpio.set_value(self.pin, self._gpio.HIGH)
 
         elif configs[self.test_config] == "ALL_IN":
-            self._GPIO.set_direction(self.pin, self._GPIO.IN)
+            self._gpio.set_direction(self.pin, self._gpio.IN)
 
         elif configs[self.test_config] == "ODD_OUT_H":
             if (self.pin & 0x1) == 1:  # odd pin
-                self._GPIO.set_direction(self.pin, self._GPIO.OUT)
-                self._GPIO.set_value(self.pin, self._GPIO.HIGH)
+                self._gpio.set_direction(self.pin, self._gpio.OUT)
+                self._gpio.set_value(self.pin, self._gpio.HIGH)
             else:  # even pin
-                self._GPIO.set_direction(self.pin, self._GPIO.IN)
+                self._gpio.set_direction(self.pin, self._gpio.IN)
 
         else:  # EVEN_OUT_H
             if (self.pin & 0x1) == 1:  # odd pin
-                self._GPIO.set_direction(self.pin, self._GPIO.IN)
+                self._gpio.set_direction(self.pin, self._gpio.IN)
             else:  # even pin
-                self._GPIO.set_direction(self.pin, self._GPIO.OUT)
-                self._GPIO.set_value(self.pin, self._GPIO.HIGH)
+                self._gpio.set_direction(self.pin, self._gpio.OUT)
+                self._gpio.set_value(self.pin, self._gpio.HIGH)
 
         # send current changed pin and tested configuration to
         # second operator to validate value changes
@@ -104,7 +107,7 @@ class GpioSetOp(holoscan.core.Operator):
 
         # prepare for next gpio to change
         self.pin += 1
-        self.pin %= self._GPIO.GPIO_PIN_RANGE
+        self.pin %= self._supported_pins_number
 
         # done pins sweep - move to next configuration to test
         if self.pin == 0:
@@ -112,17 +115,18 @@ class GpioSetOp(holoscan.core.Operator):
             self.test_config %= len(configs)
 
 
-class GpioReadOp(holoscan.core.Operator):
+class GpioGetOp(holoscan.core.Operator):
     """
     operator to demonstrate reads from the GPIO bank
     Recieves the last changed GPIO number and it is set to input
     reads and prints it value and direction.
-    sleeps 10 seconds to allow physcal board measurements
+    sleeps for the given time to allow physcal board measurements
     """
 
-    def __init__(self, fragment, hololink_channel, *args, **kwargs):
+    def __init__(self, fragment, hololink_channel, gpio, sleep_time, *args, **kwargs):
         self._hololink = hololink_channel.hololink()
-        self._GPIO = self._hololink.get_gpio()
+        self._gpio = gpio
+        self._sleep_time = sleep_time
 
         # Need to call the base class constructor last
         super().__init__(fragment, *args, **kwargs)
@@ -136,30 +140,61 @@ class GpioReadOp(holoscan.core.Operator):
         pin = op_input.receive("gpio_changed_in")
         test_config = op_input.receive("test_config_in")
 
-        logging.info(f"GpioReadOp[{configs[test_config]}]")
-        direction = self._GPIO.get_direction(pin)
-        value = self._GPIO.get_value(pin)
+        logging.info(f"GpioGetOp[{configs[test_config]}]")
+        direction = self._gpio.get_direction(pin)
+        value = self._gpio.get_value(pin)
         logging.info(f"pin:{pin}, direction:{dir[direction]},value:{value}")
 
-        # sleep 10 seconds to allow time for pysical board measurememt
-        time.sleep(10)
+        # sleep to allow time for pysical board measurememt
+        time.sleep(self._sleep_time)
 
 
 class HoloscanApplication(holoscan.core.Application):
     def __init__(
         self,
         hololink_channel,
+        channel_metadata,
+        sleep_time,
+        cycle_limit,
     ):
         logging.info("__init__")
         super().__init__()
         self._hololink_channel = hololink_channel
+        self._channel_metadata = channel_metadata
+        self._hololink = hololink_channel.hololink()
+        self._sleep_time = sleep_time
+        self._cycle_limit = cycle_limit  # may be None
 
     def compose(self):
         logging.info("compose")
 
+        # create the GPIO instance to be shared with the two operators
+        self._gpio = self._hololink.get_gpio(self._channel_metadata)
+
+        # Conditions support cycle-limit
+        if self._cycle_limit:
+            self._count = holoscan.conditions.CountCondition(
+                self,
+                name="count",
+                count=self._cycle_limit,
+            )
+            condition = self._count
+        else:
+            self._ok = holoscan.conditions.BooleanCondition(
+                self, name="ok", enable_tick=True
+            )
+            condition = self._ok
+
         # example of operator instantiation
-        gpio_read = GpioReadOp(self, self._hololink_channel, name="gpio_read")
-        gpio_set = GpioSetOp(self, self._hololink_channel, name="gpio_set")
+        gpio_read = GpioGetOp(
+            self,
+            self._hololink_channel,
+            self._gpio,
+            self._sleep_time,
+            condition,
+            name="gpio_read",
+        )
+        gpio_set = GpioSetOp(self, self._hololink_channel, self._gpio, name="gpio_set")
         self.add_flow(
             gpio_set,
             gpio_read,
@@ -192,6 +227,17 @@ def main():
         default=20,
         help="Logging level to display",
     )
+    parser.add_argument(
+        "--sleep-time",
+        type=float,
+        default=2.0,
+        help="Time to allow for physical signal measurement.",
+    )
+    parser.add_argument(
+        "--cycle-limit",
+        type=int,
+        help="Limit the number of cycles for the application; by default this runs forever.",
+    )
 
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
@@ -204,6 +250,9 @@ def main():
     # Set up the application
     application = HoloscanApplication(
         hololink_channel,
+        channel_metadata,
+        args.sleep_time,
+        args.cycle_limit,
     )
     application.config(args.configuration)
     # Run it.

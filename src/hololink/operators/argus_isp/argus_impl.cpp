@@ -17,6 +17,8 @@
 
 #include "argus_impl.hpp"
 
+#include <hololink/logging.hpp>
+
 namespace hololink::operators {
 
 ArgusImpl::ArgusImpl(std::shared_ptr<Argus::CameraProvider> cameraProvider)
@@ -40,11 +42,11 @@ void ArgusImpl::setup_camera_devices()
             "Error while listing camera devices: "
             "Unable to get camera devices list from camera provider interface "
             "(Argus Status: {})",
-            status));
+            static_cast<int>(status)));
     }
 
     if (camera_devices_.size() == 0) {
-        HOLOSCAN_LOG_WARN("no camera devices are available");
+        HSB_LOG_WARN("no camera devices are available");
     } else if (camera_devices_.size() > 0) {
         for (uint32_t i = 0; i < camera_devices_.size(); i++) {
             Argus::ICameraProperties* i_camera_properties = Argus::interface_cast<Argus::ICameraProperties>(camera_devices_[i]);
@@ -79,7 +81,7 @@ void ArgusImpl::set_sensor_mode_info(uint32_t sensorModeIndex)
         throw std::runtime_error("Failed to get sensor mode interface");
     }
 
-    HOLOSCAN_LOG_INFO(fmt::format("Capturing from mono device using sensor mode {} ({}x{})\n",
+    HSB_LOG_INFO(fmt::format("Capturing from mono device using sensor mode {} ({}x{})\n",
         sensorModeIndex,
         i_sensor_mode_->getResolution().width(),
         i_sensor_mode_->getResolution().height()));

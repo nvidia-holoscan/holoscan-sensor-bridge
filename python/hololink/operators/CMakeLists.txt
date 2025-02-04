@@ -14,11 +14,10 @@
 # limitations under the License.
 
 # include the operators
-add_subdirectory(csi_to_bayer)
 if(DEFINED ENV{CONTAINER_TYPE} AND "$ENV{CONTAINER_TYPE}" STREQUAL "igpu")
   add_subdirectory(argus_isp)
 endif()
+add_subdirectory(csi_to_bayer)
 add_subdirectory(image_processor)
-add_subdirectory(gamma_correction)
 add_subdirectory(linux_receiver)
 add_subdirectory(roce_receiver)

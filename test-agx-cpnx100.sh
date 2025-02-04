@@ -1,4 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#!/bin/bash
+
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,12 +14,16 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
 
-include(pybind11_add_hololink_module)
+set -o errexit
 
-pybind11_add_hololink_module(
-    CPP_CMAKE_TARGET gamma_correction
-    CLASS_NAME "GammaCorrectionOp"
-    IMPORT "import holoscan.core"
-    SOURCES gamma_correction.cpp
-)
+#
+# This script runs `pytest` with the switches appropriate for an AGX
+# host connected to a Lattice CPNX100-ETH-SENSOR-BRIDGE with an IMX274 attached;
+# the network is connected from the first HSB port to the on-board ethernet.
+#
+# This test only runs the non-network-accelerated tests and only works with
+# the first (192.168.0.2) HSB interface.
+#
+pytest --imx274 --unaccelerated-only --channel-ips=192.168.0.2 --schedulers=default

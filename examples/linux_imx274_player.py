@@ -128,17 +128,12 @@ class HoloscanApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        gamma_correction = hololink_module.operators.GammaCorrectionOp(
-            self,
-            name="gamma_correction",
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            framebuffer_srgb=True,
         )
 
         #
@@ -147,17 +142,20 @@ class HoloscanApplication(holoscan.core.Application):
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, gamma_correction, {("transmitter", "input")})
-        self.add_flow(gamma_correction, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
 
 
 def main():
     parser = argparse.ArgumentParser()
+    modes = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode
+    mode_choices = [mode.value for mode in modes]
+    mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS.value,
-        help="IMX274 mode",
+        choices=mode_choices,
+        default=mode_choices[0],
+        help=mode_help,
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(

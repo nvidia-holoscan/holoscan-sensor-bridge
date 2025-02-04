@@ -1,5 +1,8 @@
 # Troubleshooting
 
+Additional troubleshooting notes can be found on the
+[release notes page](RELEASE_NOTES.md).
+
 ## Segmentation fault from Holoscan Visualizer
 
 If the Holoscan visualizer is not able to access the host display, the program will
@@ -14,7 +17,10 @@ The `hololink enumerate` command, in the demo container, can be used to monitor
 enumeration messages sent by the sensor bridge device. If no messages appear, then check
 for power to the sensor bridge device, physical connections to the device, and
 appropriate network configurations as listed above. `ping 192.168.0.2` and
-`ping 192.168.0.3` can also be used to check for connectivity.
+`ping 192.168.0.3` can be used to check for connectivity. If an HSB device is running an
+incompatible FPGA image (e.g. FPGA is 2407 while the host software requires 2412), ping
+would be successful but no enumeration data would appear. Firmware version problems can
+be solved by [reprogramming your device](sensor_bridge_firmware_setup.md).
 
 ## Visualizer display is completely white
 
@@ -45,7 +51,7 @@ sensor bridge board.
 
 ## Sensor Bridge LED indications
 
-The Holsocan Sensor Bridge board has two leds that depending on their state have the
+The Holoscan Sensor Bridge board has two leds that depending on their state have the
 following indications:
 
 1. **Both leds are off** - The Holoscan Sensor Bridge Board is not powered.

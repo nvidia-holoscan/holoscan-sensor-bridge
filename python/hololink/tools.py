@@ -13,24 +13,19 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# we don't expose the C++ interface of the operator yet, therfore link
-# statically
-add_library(gamma_correction STATIC
-gamma_correction.cpp
-  )
+# See README.md for detailed information.
 
-set_property(TARGET gamma_correction PROPERTY POSITION_INDEPENDENT_CODE ON)
+import os
 
-add_library(hololink::operators::gamma_correction ALIAS gamma_correction)
 
-target_include_directories(gamma_correction
-  INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
-  )
-
-target_link_libraries(gamma_correction
-  PRIVATE
-    hololink::native
-    holoscan::core
-  )
+#
+def infiniband_devices():
+    """
+    Return a sorted list of Infiniband devices.
+    """
+    files = []
+    try:
+        files = os.listdir("/sys/class/infiniband")
+    except FileNotFoundError:
+        pass
+    return sorted(files)

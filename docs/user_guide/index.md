@@ -11,9 +11,11 @@ build
 examples
 applications
 architecture
+latency
 new_sensors
 fpga_index
 sensor_bridge_firmware_setup
 troubleshooting
 notes
+RELEASE_NOTES
 ```
