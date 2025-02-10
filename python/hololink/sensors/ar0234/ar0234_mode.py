@@ -192,12 +192,7 @@ frame_format = namedtuple(
     "FrameFormat", ["width", "height", "framerate", "pixel_format"]
 )
 
-imx_frame_format = []
-imx_frame_format.insert(
-    Ar0234_Mode.AR0234_MODE_1920X1200_120FPS.value,
-    frame_format(1920, 1200, 120, hololink.sensors.csi.PixelFormat.RAW_10),
-)
-imx_frame_format.insert(
-    Ar0234_Mode.AR0234_MODE_1920X1200_30FPS.value,
-    frame_format(1920, 1200, 30, hololink.sensors.csi.PixelFormat.RAW_10),
-)
+imx_frame_format = {
+    Ar0234_Mode.AR0234_MODE_1920X1200_120FPS.value: frame_format(1920, 1200, 120, hololink.sensors.csi.PixelFormat.RAW_10),
+    Ar0234_Mode.AR0234_MODE_1920X1200_30FPS.value: frame_format(1920, 1200, 30, hololink.sensors.csi.PixelFormat.RAW_10),
+}

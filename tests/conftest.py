@@ -156,7 +156,6 @@ def pytest_addoption(parser):
         help="Include tests for IMX477.",
     )
     parser.addoption(
-<<<<<<< HEAD
         "--hsb",
         action="store_true",
         default=False,
