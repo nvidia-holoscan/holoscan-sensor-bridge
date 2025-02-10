@@ -132,6 +132,11 @@ def pytest_addoption(parser):
         default=False,
         help="Include tests for IMX477.",
     )
+    parser.addoption(
+        "--ar0234",
+        action="store_true",
+        help="Don't skip tests using AR0234.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -167,6 +172,11 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_imx477" in item.keywords:
                 item.add_marker(skip_imx477)
+    if not config.getoption("--ar0234"):
+        skip_ar0234 = pytest.mark.skip(reason="Tests only run in --ar0234 mode.")
+        for item in items:
+            if "skip_unless_ar0234" in item.keywords:
+                item.add_marker(skip_ar0234)
 
 
 @pytest.fixture
