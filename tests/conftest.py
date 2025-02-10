@@ -156,6 +156,7 @@ def pytest_addoption(parser):
         help="Include tests for IMX477.",
     )
     parser.addoption(
+<<<<<<< HEAD
         "--hsb",
         action="store_true",
         default=False,
@@ -178,6 +179,11 @@ def pytest_addoption(parser):
         default=["default", "greedy", "multithread", "event"],
         nargs="+",
         help="Use these schedulers.",
+    )
+    parser.addoption(
+        "--ar0234",
+        action="store_true",
+        help="Don't skip tests using AR0234.",
     )
 
 
@@ -224,6 +230,11 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_hsb_nano" in item.keywords:
                 item.add_marker(skip_hsb_nano)
+    if not config.getoption("--ar0234"):
+        skip_ar0234 = pytest.mark.skip(reason="Tests only run in --ar0234 mode.")
+        for item in items:
+            if "skip_unless_ar0234" in item.keywords:
+                item.add_marker(skip_ar0234)
 
 
 @pytest.fixture
