@@ -568,3 +568,13 @@ class Imx477:
 
     def bayer_format(self):
         return hololink_module.sensors.csi.BayerFormat.RGGB
+
+    def set_analog_gain(self, value=0x33F):
+        """This function sets MSB (2 bits) and LSB (8 bits) of analog gain value regsiters 0x204 and 0x205 respectively"""
+        if value >= 1024 or value < 0:
+            logging.warn(f"AG value {value} should be in range 0 to 1023")
+            self.set_register(0x204, 0x3)
+            self.set_register(0x205, 0x3F)
+        else:
+            self.set_register(0x204, (value >> 8) & 3)
+            self.set_register(0x205, value & 0xFF)
