@@ -103,7 +103,6 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
-            # Optical black value for IMX477 is 100
             optical_black=100,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
@@ -136,6 +135,7 @@ class HoloscanApplication(holoscan.core.Application):
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            framebuffer_srgb=True,
         )
 
         #
@@ -247,6 +247,10 @@ def main():
             logging.debug("PTP synchronized.")
     # Configures the camera for 3840x2160, 60fps
     camera.configure()
+
+    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+    camera.set_analog_gain(0x2FF)
+
     if args.pattern:
         camera.set_pattern()
     application.run()

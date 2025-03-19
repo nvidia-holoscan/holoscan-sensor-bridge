@@ -152,7 +152,6 @@ class PatternTestApplication(holoscan.core.Application):
         self._check_done()
 
 
-@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2410 FPGAs YET")
 @pytest.mark.skip_unless_imx477
 @pytest.mark.parametrize(
     "camera_mode,expected",
