@@ -169,15 +169,6 @@ class TimestampTestApplication(holoscan.core.Application):
         timestamps = recorded_timestamps
 
 
-def to_s(timestamp_ns):
-    return float(timestamp_ns) / 1000 / 1000 / 1000
-
-
-def diff_s(later_timestamp_ns, earlier_timestamp_ns):
-    diff_ns = later_timestamp_ns - earlier_timestamp_ns
-    return to_s(diff_ns)
-
-
 # frame_time represents the constant time difference between when the
 #   frame-start and frame-end messages arrive at the FPGA.
 # time_limit, the acceptable amount of time between when the frame was sent and
@@ -240,34 +231,43 @@ def test_imx477_timestamps(
     # check for errors
     global timestamps
     pipeline_dts, receiver_dts = [], []
+    metadata_receiver_dts = []
     # Allow for startup times to be a bit longer
     settled_timestamps = timestamps[5:-5]
     assert len(settled_timestamps) >= 100
     for (
-        image_timestamp_ns,
-        received_timestamp_ns,
-        pipeline_timestamp_ns,
+        image_timestamp_s,
+        metadata_timestamp_s,
+        received_timestamp_s,
+        pipeline_timestamp_s,
         frame_number,
     ) in settled_timestamps:
-        image_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(image_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        received_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(received_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        pipeline_timestamp_s = datetime.datetime.fromtimestamp(
-            to_s(pipeline_timestamp_ns)
-        ).isoformat()  # strftime("%H:%M:%S.%f")
-        pipeline_dt = diff_s(pipeline_timestamp_ns, image_timestamp_ns)
+        image_timestamp = datetime.datetime.fromtimestamp(image_timestamp_s).isoformat()
+        metadata_timestamp = datetime.datetime.fromtimestamp(
+            metadata_timestamp_s
+        ).isoformat()
+        received_timestamp = datetime.datetime.fromtimestamp(
+            received_timestamp_s
+        ).isoformat()
+        pipeline_timestamp = datetime.datetime.fromtimestamp(
+            pipeline_timestamp_s
+        ).isoformat()
+        pipeline_dt = pipeline_timestamp_s - image_timestamp_s
         logging.debug(
-            f"{image_timestamp_s=} {pipeline_timestamp_s=} {pipeline_dt=:0.6f} {frame_number=}"
+            f"{image_timestamp=} {pipeline_timestamp=} {pipeline_dt=:0.6f} {frame_number=}"
         )
         pipeline_dts.append(round(pipeline_dt, 4))
-        receiver_dt = diff_s(received_timestamp_ns, image_timestamp_ns)
+        receiver_dt = received_timestamp_s - image_timestamp_s
         logging.debug(
-            f"{image_timestamp_s=} {received_timestamp_s=} {receiver_dt=:0.6f} {frame_number=}"
+            f"{image_timestamp=} {received_timestamp=} {receiver_dt=:0.6f} {frame_number=}"
         )
         receiver_dts.append(round(receiver_dt, 4))
+        metadata_receiver_dt = received_timestamp_s - metadata_timestamp_s
+        logging.debug(
+            f"{metadata_timestamp=} {received_timestamp=} {metadata_receiver_dt=:0.6f} {frame_number=}"
+        )
+        metadata_receiver_dts.append(round(metadata_receiver_dt, 4))
+
     smallest_time_difference = min(pipeline_dts)
     largest_time_difference = max(pipeline_dts)
     logging.info(f"pipeline {smallest_time_difference=} {largest_time_difference=}")
@@ -286,3 +286,10 @@ def test_imx477_timestamps(
     assert (frame_time + 0) <= smallest_time_difference
     assert smallest_time_difference < largest_time_difference
     assert largest_time_difference < (frame_time + time_limit)
+    #
+    smallest_time_difference = min(metadata_receiver_dts)
+    largest_time_difference = max(metadata_receiver_dts)
+    logging.info(
+        f"FPGA to full frame received {smallest_time_difference=} {largest_time_difference=}"
+    )
+    assert smallest_time_difference < largest_time_difference

@@ -119,7 +119,7 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
         lfilename = filename_2407
         lfname = fname_2407
     else:
-        raise Exception("In correct FPGA bit versio")
+        raise Exception("In correct FPGA bit version")
     download_extract(fpga_bit_version)
     in_spi = hololink.get_spi(
         spi_con_addr,

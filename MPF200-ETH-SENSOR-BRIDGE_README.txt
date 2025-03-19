@@ -3,14 +3,14 @@ Microchip PolarFire MPF200-ETH-SENSOR-BRIDGE kit purchasing information and and 
 
 
 
-Prgramming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge software
+Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge software
 --------------------------------------------------------------------------------------
 
 1. Connect the ethernet cable to J6 connector on  MPF200-ETH-SENSOR-BRIDGE to AGX/IGX ethernet port. Check if Nvidia AGX/IGX is connected to Holoscan board by doing a ping test by issuing following command.
 	a. ping 192.168.0.2
 2. In new terminal. Issue the following command to change directory to hololink-sensor-bridge folder
 	a.	cd <PATH/TO/hololink-sensor-bridge>
-3. Run the below commands to tranfer .spi(job/RTL design) file to on board SPI flash of MPF200-ETH-SENSOR-BRIDGE board.
+3. Run the below commands to transfer .spi(job/RTL design) file to on board SPI flash of MPF200-ETH-SENSOR-BRIDGE board.
 	a. 	xhost + <enter>
 	b.	sh docker/demo.sh <enter>
 			b.1:The above command runs holoscan-sensor-bridge docker container
@@ -20,7 +20,7 @@ Prgramming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge sof
 			d.1 The above command flashes(Transfers to on board SPI flash) 2412 version bit file. 
 			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407
 4. Step 3.c(or 3.d) downloads FPGA design file from internet and takes around 50 minutes to transfer the design file to on-board flash.
-5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker contianer
+5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker container
 	a.	polarfire_esb --program
  			a.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA
 	b.	polarfire_esb --force --program
@@ -50,7 +50,7 @@ Running imx477 applications - single camera
 		c.1 The above command display video from camera 1
 
 
-note1 : Camera that is connected to J14 is refered as "cam 0" and camera that is connected to J17 is refered as "cam 1" on  MPF200-ETH-SENSOR-BRIDGE board
+note1 : Camera that is connected to J14 is referred as "cam 0" and camera that is connected to J17 is referred as "cam 1" on  MPF200-ETH-SENSOR-BRIDGE board
 note2 : To work with "cam 0" connect ethernet cable to J6 connector. To work with "cam 1" connect ethernet cable to J3 connector on MPF200-ETH-SENSOR-BRIDGE board.
 
 
@@ -60,7 +60,7 @@ Running imx477 application - Tao People net
 
 1. Run the docker container by changing directory to holoscan-sensor-bridge folder
 	a. cd <PATH/TO/hololink-sensor-bridge>
-2. Follow the steps from below and the link mentioned in 2.c to setup enviroment for running tao people net
+2. Follow the steps from below and the link mentioned in 2.c to setup environment for running tao people net
 	a. xhost +
 	b. sh docker/demo.sh <enter>
 		b.1: It runs holoscan-sensor-bridge docker container
@@ -76,7 +76,7 @@ Running imx477 application - body pose estimation
 
 1. Run the docker container by changing directory to holoscan-sensor-bridge folder
 	a. cd <PATH/TO/hololink-sensor-bridge>
-2. Follow the steps from below and the link mentioned in 2.c to setup enviroment for running tao people net
+2. Follow the steps from below and the link mentioned in 2.c to setup environment for running tao people net
 	a. xhost +
 	b. sh docker/demo.sh <enter>
 		b.1: It runs holoscan-sensor-bridge docker container
