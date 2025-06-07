@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# we don't expose the C++ interface of the operator yet, therfore link
+# we don't expose the C++ interface of the operator yet, therefore link
 # statically
 
 add_library(argus_isp STATIC
@@ -42,7 +42,7 @@ set(ARGUS_LIBRARY_DIR "/usr/lib/aarch64-linux-gnu/nvidia")
 
 target_link_libraries(argus_isp
   PRIVATE
-    hololink::native
+    hololink::core
     holoscan::core
     CUDA::nvrtc
     CUDA::nppicc
@@ -53,3 +53,14 @@ target_link_libraries(argus_isp
     ${ARGUS_LIBRARY_DIR}/libnvscf.so
     ${ARGUS_LIBRARY_DIR}/libnvodm_imager.so
   )
+
+# Installation of the argus_isp operator
+install(TARGETS argus_isp
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/argus_isp.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/camera_provider.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/argus_impl.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/argus_isp
+        COMPONENT hololink-operators)

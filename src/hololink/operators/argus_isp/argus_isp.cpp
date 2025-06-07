@@ -39,6 +39,8 @@ void ArgusIspOp::setup(holoscan::OperatorSpec& spec)
     spec.param(analog_gain_, "analog_gain", "AnalogGain", "Min analog gain");
     spec.param(pixel_bit_depth_, "pixel_bit_depth", "PixelBitDepth", "Pixel bit depth of the Bayer frame");
     spec.param(pool_, "pool", "Pool", "Pool to allocate the output message.");
+    spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName", "Name of the output tensor", std::string(""));
+    spec.param(camera_index_, "camera_index", "CameraIndex", "Argus camera index number");
 
     cuda_stream_handler_.define_params(spec);
 }
@@ -58,7 +60,7 @@ void ArgusIspOp::start()
     argus_impl_->output_pixel_format_ = OUTPUT_PIXEL_FORMAT_YUV420;
 
     // Get the camera devices.
-    argus_impl_->setup_camera_devices();
+    argus_impl_->setup_camera_devices(camera_index_);
 
     // set sensormode.
     uint32_t sensor_mode_index = 0;
@@ -80,7 +82,7 @@ void ArgusIspOp::start()
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_device_));
     is_integrated_ = (integrated != 0);
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     CudaCheck(cuEGLStreamConsumerConnect(&argus_impl_->cuda_egl_o_connection_,
         argus_impl_->i_egl_output_stream_->getEGLStream()));
@@ -103,7 +105,7 @@ void ArgusIspOp::start()
 
 void ArgusIspOp::stop()
 {
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     Argus::ICaptureSession* i_capture_session = Argus::interface_cast<Argus::ICaptureSession>(argus_impl_->capture_session_);
     i_capture_session->stopRepeat();
@@ -171,7 +173,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
         throw std::runtime_error(fmt::format("Unexpected component count {}, expected '1'", components));
     }
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
     cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
 
     // Map the cuda pointer to the EGL frame
@@ -235,7 +237,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
         = CreateTensorMap(context.context(),
             allocator.value(),
-            { { "output",
+            { { out_tensor_name_.get(),
                 nvidia::gxf::MemoryStorageType::kDevice,
                 nvidia::gxf::Shape { static_cast<int>(height),
                     static_cast<int>(width),
@@ -253,10 +255,10 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
         throw std::runtime_error("failed to create out_message\n");
     }
 
-    const auto tensor = out_message.value().get<nvidia::gxf::Tensor>("output");
+    const auto tensor = out_message.value().get<nvidia::gxf::Tensor>(out_tensor_name_.get().c_str());
     if (!tensor) {
         throw std::runtime_error(
-            fmt::format("failed to create out_tensor with name \"{}\"", "output"));
+            fmt::format("failed to create out_tensor with name \"{}\"", out_tensor_name_.get()));
     }
 
     void* output_data_ptr = tensor.value()->pointer();

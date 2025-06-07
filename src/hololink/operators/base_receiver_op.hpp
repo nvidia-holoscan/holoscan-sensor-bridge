@@ -28,9 +28,9 @@
 
 #include <holoscan/holoscan.hpp>
 
-#include <hololink/metadata.hpp>
-#include <hololink/native/cuda_helper.hpp>
-#include <hololink/native/networking.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/metadata.hpp>
+#include <hololink/core/networking.hpp>
 
 namespace hololink {
 class DataChannel;
@@ -52,8 +52,8 @@ public:
     CUdeviceptr get() { return mem_; };
 
 protected:
-    native::UniqueCUdeviceptr deviceptr_;
-    native::UniqueCUhostptr host_deviceptr_;
+    common::UniqueCUdeviceptr deviceptr_;
+    common::UniqueCUhostptr host_deviceptr_;
     CUdeviceptr mem_;
 };
 
@@ -78,7 +78,7 @@ protected:
     std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
     uint64_t frame_count_;
 
-    native::UniqueFileDescriptor data_socket_;
+    core::UniqueFileDescriptor data_socket_;
 
     virtual void start_receiver() = 0;
     virtual void stop_receiver() = 0;

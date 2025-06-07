@@ -58,6 +58,11 @@ SKIP=( \
     build*
 )
 
+# Codespell checks for spelling mistakes.  Project exemptions include
+# - "docs/user_guide/peripherals_interface.md" has signal names that don't meet spelling rules
+# - PDF files
+CODESPELL_FILES=( `git ls-files | grep -v '.pdf$' | egrep -v '^(docs/user_guide/peripheral_interface.md)'` )
+
 C_FILES=( `git ls-files | egrep '.(cpp|hpp)$' ` )
 DOCS_FILES=( `git ls-files | egrep '.md$' ` )
 
@@ -71,6 +76,15 @@ SKIP_ISORT=${SKIP[*]/#/--skip }
 # value used by black.
 MDFORMAT="--wrap 88 --end-of-line lf"
 
+# Allow some flake8 violations
+# E203 - black puts spaces around the ':' in array slices
+# E501 - black uses 88 character lengths; flake8 complains for lines longer than 79
+# F824 - Allow the code to say 'global x' then only read from that variable; this
+#   helps readers of your code.
+# W503 - black formats long expressions with the operator at the beginning
+#   of the line
+FLAKE8="--ignore=E203,E501,F824,W503"
+
 umask 0
 
 # By default, run lint; specify "--format" to
@@ -83,9 +97,10 @@ case "$1" in
         set -o xtrace
         isort $SKIP_ISORT --profile black .
         black "--extend-exclude=$SKIP_RE" .
-        flake8 --ignore=E501,E203,W503 --extend-exclude=$SKIP_COMMAS
-        clang-format --style=webkit -i ${C_FILES[*]}
+        flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
+        clang-format --style=file:${ROOT}/.clang-format -i ${C_FILES[*]}
         mdformat $MDFORMAT ${DOCS_FILES[*]}
+        codespell ${CODESPELL_FILES[*]}
         exit 0
         ;;
     --do-lint)
@@ -93,9 +108,10 @@ case "$1" in
         set -o xtrace
         isort --check-only $SKIP_ISORT --profile black .
         black --check "--extend-exclude=$SKIP_RE" .
-        flake8 --ignore=E501,E203,W503 --extend-exclude=$SKIP_COMMAS
-        clang-format --style=webkit --dry-run -Werror ${C_FILES[*]}
+        flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
+        clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror ${C_FILES[*]}
         mdformat --check $MDFORMAT ${DOCS_FILES[*]}
+        codespell ${CODESPELL_FILES[*]}
         exit 0
         ;;
     --do-*)

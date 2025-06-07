@@ -17,6 +17,7 @@
 
 import datetime
 import logging
+import math
 
 import cupy as cp
 import holoscan
@@ -128,6 +129,70 @@ class WatchdogOp(holoscan.core.Operator):
         spec.input("input")
 
     def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        in_message.get("")
+        _ = op_input.receive("input")
         self._watchdog.tap()
+
+
+class MonitorOperator(holoscan.core.Operator):
+    def __init__(
+        self,
+        *args,
+        # If you don't give us a callback, do nothing
+        callback=lambda op, metadata: None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._callback = callback
+
+    def setup(self, spec):
+        logging.info("setup")
+        spec.input("input")
+
+    def compute(self, op_input, op_output, context):
+        # What time is it now?
+        complete = datetime.datetime.utcnow()
+
+        _ = op_input.receive("input")
+        #
+        self.save_timestamp(self.metadata, "complete", complete)
+        self._callback(self, self.metadata)
+
+    def save_timestamp(self, metadata, name, timestamp):
+        # This method works around the fact that we can't store
+        # datetime objects in metadata.
+        f, s = math.modf(timestamp.timestamp())
+        metadata[f"{name}_s"] = int(s)
+        metadata[f"{name}_ns"] = int(f * NS_PER_SEC)
+
+    def get_timestamp(self, metadata, name):
+        s = metadata[f"{name}_s"]
+        f = metadata[f"{name}_ns"]
+        f *= SEC_PER_NS
+        return s + f
+
+    def get_times(self, metadata, rename_metadata=lambda name: name):
+        #
+        frame_number = metadata.get(rename_metadata("frame_number"), 0)
+
+        # frame_start_s is the time that the first data arrived at the FPGA;
+        # the network receiver calls this "timestamp".
+        frame_start_s = self.get_timestamp(metadata, rename_metadata("timestamp"))
+
+        # After the FPGA sends the last sensor data packet for a frame, it follows
+        # that with a 128-byte metadata packet.  This timestamp (which the network
+        # receiver calls "metadata") is the time at which the FPGA sends that
+        # packet; so it's the time immediately after the the last byte of sensor
+        # data in this window.  The difference between frame_start_s and frame_end_s
+        # is how long it took for the sensor to produce enough data for a complete
+        # frame.
+        frame_end_s = self.get_timestamp(metadata, rename_metadata("metadata"))
+
+        # complete_s is the time when our compute ran, after visualization finished.
+        complete_s = self.get_timestamp(metadata, "complete")
+
+        return {
+            rename_metadata("frame_number"): frame_number,
+            rename_metadata("frame_start"): frame_start_s,
+            rename_metadata("frame_end"): frame_end_s,
+            "complete": complete_s,
+        }

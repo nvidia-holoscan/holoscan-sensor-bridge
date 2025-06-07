@@ -66,12 +66,16 @@ public:
         float analog_gain,
         int pixel_bit_depth,
         std::shared_ptr<holoscan::Allocator> pool,
-        const std::string& name = "argus_isp")
+        const std::string& name = "argus_isp",
+        const std::string& out_tensor_name = "output",
+        uint32_t camera_index = 0)
         : ArgusIspOp(holoscan::ArgList { holoscan::Arg { "bayer_format", bayer_format },
             holoscan::Arg { "exposure_time_ms", exposure_time_ms },
             holoscan::Arg { "analog_gain", analog_gain },
             holoscan::Arg { "pixel_bit_depth", pixel_bit_depth },
-            holoscan::Arg { "pool", pool } })
+            holoscan::Arg { "pool", pool },
+            holoscan::Arg { "out_tensor_name", out_tensor_name },
+            holoscan::Arg { "camera_index", camera_index } })
     {
         name_ = name;
         fragment_ = fragment;
@@ -96,14 +100,18 @@ PYBIND11_MODULE(_argus_isp, m)
                            float,
                            int,
                            std::shared_ptr<holoscan::Allocator>,
-                           const std::string&>(),
+                           const std::string&,
+                           const std::string&,
+                           uint32_t>(),
                       "fragment"_a,
                       "bayer_format"_a,
                       "exposure_time_ms"_a,
                       "analog_gain"_a,
                       "pixel_bit_depth"_a,
                       "pool"_a,
-                      "name"_a = "argus_isp"s)
+                      "name"_a = "argus_isp"s,
+                      "out_tensor_name"_a = "output"s,
+                      "camera_index"_a = 0)
                   .def("setup", &ArgusIspOp::setup, "spec"_a);
 
     py::enum_<ArgusIspOp::BayerFormat>(op, "BayerFormat")

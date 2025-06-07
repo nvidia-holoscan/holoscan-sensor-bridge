@@ -8,6 +8,7 @@ cscope.*
 # cache
 .cache
 # build folders
+build
 *.egg-info
 # tao peoplenet files
 *.fp16
@@ -15,3 +16,9 @@ cscope.*
 # NSight profiler files
 *.ncu-rep
 *.nsys-rep
+# Configurator files
+configurator/build
+configurator/meta-openembedded
+configurator/poky
+spi-vm.log
+spi-vm.pid

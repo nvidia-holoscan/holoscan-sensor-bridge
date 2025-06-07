@@ -45,10 +45,15 @@ setuptools.setup(
     version=VERSION,
     packages=[
         "hololink",
-        "hololink/native",
+        "hololink/hololink_core",
         "hololink/operators",
         "hololink/sensors",
+        "hololink/sensors/camera",
+        "hololink/sensors/camera/imx274",
         "hololink/sensors/imx274",
+        "hololink/sensors/imx715",
+        "hololink/sensors/vb1940",
+        "hololink/sensors/ecam0m30tof",
         "tools",
     ],
     ext_modules=[
@@ -80,6 +85,7 @@ setuptools.setup(
         "console_scripts": [
             "hololink=tools.hololink:main",
             "imx274=tools.imx274:main",
+            "program_lattice_cpnx100=tools.program_lattice_cpnx100:main",
             "polarfire_esb=tools.polarfire_esb:main",
         ],
     },

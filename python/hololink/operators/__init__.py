@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,13 +20,24 @@ import sys
 
 _MODULES = {
     "ArgusIspOp": "argus_isp",
+    "AudioPacketizerOp": "audio_packetizer",
     "BaseReceiverOp": "base_receiver_op",
     "CsiToBayerOp": "csi_to_bayer",
     "ImageProcessorOp": "image_processor",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
+    "IQDecoderOp": "iq_dec",
+    "IQEncoderOp": "iq_enc",
+    "LinuxCoeReceiver": "linux_coe_receiver",
+    "LinuxCoeReceiverOp": "linux_coe_receiver_operator",
     "LinuxReceiver": "linux_receiver",
     "LinuxReceiverOperator": "linux_receiver_operator",
+    "PackedFormatConverterOp": "packed_format_converter",
+    "Rational": "sig_gen",
     "RoceReceiverOp": "roce_receiver",
+    "RoceTransmitterOp": "roce_transmitter",
+    "SignalGeneratorOp": "sig_gen",
+    "SignalViewerOp": "sig_viewer",
+    "UdpTransmitterOp": "udp_transmitter",
 }
 
 __all__ = []

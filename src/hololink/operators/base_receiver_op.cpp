@@ -24,8 +24,8 @@
 #include <holoscan/holoscan.hpp>
 #include <yaml-cpp/parser.h>
 
-#include <hololink/data_channel.hpp>
-#include <hololink/logging.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/logging_internal.hpp>
 
 /**
  * @brief This macro defining a YAML converter which throws for unsupported types.

@@ -262,6 +262,8 @@ def test_imx274_timestamps(
     # Allow for startup times to be a bit longer
     settled_timestamps = timestamps[5:-5]
     assert len(settled_timestamps) >= 100
+    last_image_timestamp_s = None
+    last_received_timestamp_s = None
     for (
         image_timestamp_s,
         metadata_timestamp_s,
@@ -294,6 +296,14 @@ def test_imx274_timestamps(
             f"{metadata_timestamp=} {received_timestamp=} {metadata_receiver_dt=:0.6f} {frame_number=}"
         )
         metadata_receiver_dts.append(round(metadata_receiver_dt, 4))
+        if last_image_timestamp_s is not None:
+            time_from_last_image_s = image_timestamp_s - last_image_timestamp_s
+            time_from_last_received_s = received_timestamp_s - last_received_timestamp_s
+            logging.debug(
+                f"{time_from_last_image_s=:.4f} {time_from_last_received_s=:.4f}"
+            )
+        last_image_timestamp_s = image_timestamp_s
+        last_received_timestamp_s = received_timestamp_s
 
     smallest_time_difference = min(pipeline_dts)
     largest_time_difference = max(pipeline_dts)

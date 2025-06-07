@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +19,13 @@ import sys
 # Define operator modules and classes for lazy loading
 _MODULES = [
     "imx274",
-    "udp_cam",
+    "camera",
     "csi",
+    "ecam0m30tof",
+    "edepth",
     "imx477",
+    "imx715",
+    "vb1940",
 ]
 
 _OBJECTS = {
@@ -30,10 +34,21 @@ _OBJECTS = {
 
 __all__ = [
     "csi",
+    "Sensor",
+    "I2CExpanderOutputEN",
+    "LII2CExpander",
 ]
 
 __all__.extend(_MODULES)
 __all__.extend(_OBJECTS.keys())
+
+# Pre-populate the sensor module
+from . import _hololink_sensor as sensor  # noqa: E402, F401
+
+# Export sensor-related classes/enums
+Sensor = sensor.Sensor
+I2CExpanderOutputEN = sensor.I2CExpanderOutputEN
+LII2CExpander = sensor.LII2CExpander
 
 
 # Autocomplete

@@ -7,7 +7,7 @@ There are two distributed examples available:
 - `distributed_tao_peoplenet.py` is the distributed version of `tao_peoplenet.py`
   application.
 
-## Geting the source
+## Getting the source
 
 ```bash
 
@@ -113,6 +113,29 @@ To know more about the optional parameters like `--driver`, `--worker`, `--fragm
 and `--address`, refer Holoscan SDK user guide about running Holoscan distributed
 applications -
 https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_create_distributed_app.html.
+
+### Running the SignalGenerator Python app
+
+The SignalGeneratorApp is a sample app that does the following:
+
+1. Generates two signals. One represents the signal's I component and the other
+   represents the signal's Q components.
+1. The two signal components are encoded into an IQ buffer
+1. The encoded buffer is transmitted to the FPGA using RoCE
+
+Use the following command to get the most up-to-date program options:
+
+**Python:**
+
+```bash
+  python3 ./examples/signal_generator.py --help
+```
+
+**C++:**
+
+```bash
+  ./signal_generator --help
+```
 
 ## Using locally built holoscan sdk image as base image
 

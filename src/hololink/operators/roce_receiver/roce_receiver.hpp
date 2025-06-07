@@ -29,9 +29,9 @@
 
 #include <infiniband/verbs.h>
 
-#include <hololink/hololink.hpp>
-#include <hololink/native/deserializer.hpp>
-#include <hololink/native/nvtx_trace.hpp>
+#include <hololink/core/deserializer.hpp>
+#include <hololink/core/hololink.hpp>
+#include <hololink/core/nvtx_trace.hpp>
 
 namespace hololink::operators {
 

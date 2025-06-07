@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,7 +30,7 @@
 #include <holoscan/core/operator_spec.hpp>
 #include <holoscan/core/resources/gxf/allocator.hpp>
 
-#include <hololink/data_channel.hpp>
+#include <hololink/core/data_channel.hpp>
 
 using std::string_literals::operator""s;
 using pybind11::literals::operator""_a;
@@ -59,8 +59,7 @@ public:
     // Define a constructor that fully initializes the object.
     PyRoceReceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
-        CUdeviceptr frame_memory, const std::string& ibv_name, uint32_t ibv_port,
-        const std::string& name)
+        const std::string& ibv_name, uint32_t ibv_port, const std::string& name)
         : device_(device)
         , RoceReceiverOp(holoscan::ArgList {
               holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
@@ -75,7 +74,6 @@ public:
               holoscan::Arg {
                   "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
               holoscan::Arg { "frame_size", frame_size },
-              holoscan::Arg { "frame_memory", frame_memory },
               holoscan::Arg { "ibv_name", ibv_name }, holoscan::Arg { "ibv_port", ibv_port } })
     {
         add_positional_condition_and_resource_args(this, args);
@@ -85,7 +83,7 @@ public:
         setup(*spec_.get());
     }
 
-    // the `'start`, 'stop` and `get_next_frame` funcions are overwritten by the
+    // the `'start`, 'stop` and `get_next_frame` functions are overwritten by the
     // `InstrumentedReceiverOperator` to measure performance
 
     void start() override
@@ -128,10 +126,9 @@ PYBIND11_MODULE(_roce_receiver, m)
     py::class_<RoceReceiverOp, PyRoceReceiverOp, holoscan::Operator,
         std::shared_ptr<RoceReceiverOp>>(m, "RoceReceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, CUdeviceptr, const std::string&, uint32_t, const std::string&>(),
+                 size_t, const std::string&, uint32_t, const std::string&>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
-            "frame_memory"_a = 0, "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1,
-            "name"_a = "roce_receiver"s)
+            "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "name"_a = "roce_receiver"s)
         .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a)
         .def("setup", &RoceReceiverOp::setup, "spec"_a)
         .def("start", &RoceReceiverOp::start)

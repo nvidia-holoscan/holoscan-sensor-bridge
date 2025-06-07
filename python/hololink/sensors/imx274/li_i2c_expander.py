@@ -41,6 +41,18 @@ class LII2CExpander:
         read_byte_count = 0
         self._i2c.i2c_transaction(
             self.I2C_EXPANDER_ADDRESS,
-            write_bytes[: serializer.length()],
+            serializer.data(),
+            read_byte_count,
+        )
+
+    def synchronized_configure(self, sequencer, output_en):
+        write_bytes = bytearray(100)
+        serializer = hololink.Serializer(write_bytes)
+        serializer.append_uint8(output_en)  # turn the i2c expander to enable output
+        read_byte_count = 0
+        self._i2c.encode_i2c_request(
+            sequencer,
+            self.I2C_EXPANDER_ADDRESS,
+            serializer.data(),
             read_byte_count,
         )

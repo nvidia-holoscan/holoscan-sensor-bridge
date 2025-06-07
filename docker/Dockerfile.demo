@@ -44,6 +44,10 @@ RUN apt-get update \
     && apt-get install -y net-tools iputils-ping iproute2 \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update \
+    && apt-get install -y python3-requests python3-yaml \
+    && rm -rf /var/lib/apt/lists/*
+
 # install the wheel we build before
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
 RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \

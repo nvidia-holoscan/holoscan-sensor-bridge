@@ -50,13 +50,13 @@ def test_hsb_sequence_checking(hololink_address):
     )
     hololink_b.start()
     # Advance the sequence number by performing a control plane transaction.
-    version_b = hololink_b.get_fpga_version()
+    version_b = hololink_b.get_hsb_ip_version()
     logging.info(f"Got {version_b=:#x}")
 
     # hololink_a's cache of the sequence number is now out-of-date.  Performing
     # a transaction with it should result in an exception.
     try:
-        bad_version_a = hololink_a.get_fpga_version()
+        bad_version_a = hololink_a.get_hsb_ip_version()
         logging.info(f"Got {bad_version_a=:#x}")
     except RuntimeError as e:
         logging.info(f"Caught {e=}({type(e)=}) as expected.")

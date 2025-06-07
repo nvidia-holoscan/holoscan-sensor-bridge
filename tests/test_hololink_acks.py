@@ -62,7 +62,7 @@ def test_hololink_acks(hololink_address):
             )
         #
         for i in range(20):
-            hololink.get_fpga_version()
+            hololink.get_hsb_ip_version()
             hololink.get_fpga_date()
         hololink.stop()
 

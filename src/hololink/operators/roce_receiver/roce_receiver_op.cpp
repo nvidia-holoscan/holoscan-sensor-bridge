@@ -21,9 +21,9 @@
 
 #include <netinet/in.h>
 
-#include <hololink/data_channel.hpp>
-#include <hololink/logging.hpp>
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/logging_internal.hpp>
 
 #include "roce_receiver.hpp"
 
@@ -41,12 +41,12 @@ void RoceReceiverOp::setup(holoscan::OperatorSpec& spec)
 
 void RoceReceiverOp::start_receiver()
 {
-    size_t metadata_address = hololink::native::round_up(frame_size_.get(), hololink::native::PAGE_SIZE);
+    size_t metadata_address = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
     // page_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
     // Prove that PAGE_SIZE is a power of two
-    static_assert((hololink::native::PAGE_SIZE & (hololink::native::PAGE_SIZE - 1)) == 0);
+    static_assert((hololink::core::PAGE_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     // Prove that METADATA_SIZE is an even multiple of PAGE_SIZE
-    static_assert((hololink::METADATA_SIZE & (hololink::native::PAGE_SIZE - 1)) == 0);
+    static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     size_t page_size = metadata_address + hololink::METADATA_SIZE;
     size_t buffer_size = page_size * PAGES;
     frame_memory_.reset(new ReceiverMemoryDescriptor(frame_context_, buffer_size));
@@ -82,7 +82,7 @@ void RoceReceiverOp::start_receiver()
     auto [local_ip, local_port] = local_ip_and_port();
     HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
 
-    hololink_channel_->configure(receiver_->external_frame_memory(), frame_size_, page_size, PAGES, local_port);
+    hololink_channel_->configure_roce(receiver_->external_frame_memory(), frame_size_, page_size, PAGES, local_port);
 }
 
 void RoceReceiverOp::run()

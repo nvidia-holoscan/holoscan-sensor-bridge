@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,16 @@
 if(DEFINED ENV{CONTAINER_TYPE} AND "$ENV{CONTAINER_TYPE}" STREQUAL "igpu")
   add_subdirectory(argus_isp)
 endif()
+add_subdirectory(audio_packetizer)
 add_subdirectory(csi_to_bayer)
 add_subdirectory(image_processor)
+add_subdirectory(iq_dec)
+add_subdirectory(iq_enc)
 add_subdirectory(linux_receiver)
+add_subdirectory(linux_coe_receiver)
+add_subdirectory(packed_format_converter)
 add_subdirectory(roce_receiver)
+add_subdirectory(roce_transmitter)
+add_subdirectory(sig_gen)
+add_subdirectory(sig_viewer)
+add_subdirectory(udp_transmitter)

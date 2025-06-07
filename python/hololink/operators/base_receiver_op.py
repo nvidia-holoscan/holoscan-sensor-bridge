@@ -42,8 +42,8 @@ class BaseReceiverOp(holoscan.core.Operator):
         self._ok = False
         self._count = 0
         self._frame_size = frame_size
-        aligned_frame_size = hololink_module.native.round_up(
-            frame_size, hololink_module.native.PAGE_SIZE
+        aligned_frame_size = hololink_module.round_up(
+            frame_size, hololink_module.PAGE_SIZE
         )
         self._metadata_size = hololink_module.METADATA_SIZE
         self._allocation_size = aligned_frame_size + self._metadata_size
@@ -72,12 +72,12 @@ class BaseReceiverOp(holoscan.core.Operator):
         #
         self._data_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self._start_receiver()
-        local_ip, local_port = self._local_ip_and_port()
+        local_ip, local_port = self._data_socket.getsockname()
         logging.info(f"{local_ip=} {local_port=}")
         page_size = self._allocation_size
         pages = 1
         distal_memory_address_start = 0  # See received_address_offset()
-        self._hololink_channel.configure(
+        self._hololink_channel.configure_roce(
             distal_memory_address_start, self._frame_size, page_size, pages, local_port
         )
         self._frame_ready_condition.event_state = (
@@ -92,10 +92,6 @@ class BaseReceiverOp(holoscan.core.Operator):
 
     def _start_receiver(self):
         raise NotImplementedError()
-
-    def _local_ip_and_port(self):
-        local_ip, local_port = self._data_socket.getsockname()
-        return local_ip, local_port
 
     def stop(self):
         self._device.stop()

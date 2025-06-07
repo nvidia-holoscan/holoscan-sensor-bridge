@@ -13,9 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+find_package(ibverbs REQUIRED)
+
 add_library(roce_transmitter STATIC
-  roce_transmitter.cpp
-  )
+  ibv.cpp
+  roce_transmitter_op.cpp
+)
 
 set_property(TARGET roce_transmitter PROPERTY POSITION_INDEPENDENT_CODE ON)
 
@@ -25,10 +28,22 @@ target_include_directories(roce_transmitter
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:src>
-  )
+    ${ibverbs_INCLUDE_DIRS}
+)
 
 target_link_libraries(roce_transmitter
   PRIVATE
-    hololink::native
+    hololink::core
+    holoscan::core
     CUDA::cuda_driver
-  )
+    ${ibverbs_LIBRARIES}
+)
+
+# Installation of the roce_transmitter operator
+install(TARGETS roce_transmitter
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-roce-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/roce_transmitter_op.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/roce_transmitter
+        COMPONENT hololink-roce-operators)

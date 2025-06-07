@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,11 +20,11 @@
 #include <iostream>
 #include <string>
 
-#include <hololink/data_channel.hpp>
-#include <hololink/enumerator.hpp>
-#include <hololink/hololink.hpp>
-#include <hololink/logging.hpp>
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/enumerator.hpp>
+#include <hololink/core/hololink.hpp>
+#include <hololink/core/logging.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
@@ -61,7 +61,7 @@ public:
 
     void compose() override
     {
-        // aquire the Python GIL to be able to call the Python functions of the camera device
+        // acquire the Python GIL to be able to call the Python functions of the camera device
         py::gil_scoped_acquire guard;
 
         std::shared_ptr<holoscan::Condition> condition;
@@ -82,7 +82,10 @@ public:
         auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
             "csi_to_bayer", holoscan::Arg("allocator", csi_to_bayer_pool),
             holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
-        camera_.attr("configure_converter")(csi_to_bayer_operator);
+        // Without this; pybind11 doesn't know how to get the right superclass
+        // for configure_converter.
+        std::shared_ptr<hololink::csi::CsiConverter> csi_converter = csi_to_bayer_operator;
+        camera_.attr("configure_converter")(csi_converter);
 
         const size_t frame_size = csi_to_bayer_operator->get_csi_length();
         auto receiver_operator = make_operator<hololink::operators::RoceReceiverOp>("receiver",
@@ -91,22 +94,22 @@ public:
             holoscan::Arg("ibv_port", ibv_port_),
             holoscan::Arg("hololink_channel", &hololink_channel_),
             holoscan::Arg("device_start", std::function<void()>([this] {
-                // aquire the Python GIL lock to be able to call the Python functions of the camera
+                // acquire the Python GIL lock to be able to call the Python functions of the camera
                 // device
                 py::gil_scoped_acquire guard;
                 camera_.attr("start")();
             })),
             holoscan::Arg("device_stop", std::function<void()>([this] {
-                // aquire the Python GIL lock to be able to call the Python functions of the camera
+                // acquire the Python GIL lock to be able to call the Python functions of the camera
                 // device
                 py::gil_scoped_acquire guard;
                 camera_.attr("stop")();
             })));
 
         auto bayer_format = camera_.attr("bayer_format")()
-                                .cast<hololink::operators::ImageProcessorOp::BayerFormat>();
+                                .cast<hololink::csi::BayerFormat>();
         auto pixel_format
-            = camera_.attr("pixel_format")().cast<hololink::operators::CsiToBayerOp::PixelFormat>();
+            = camera_.attr("pixel_format")().cast<hololink::csi::PixelFormat>();
         auto image_processor_operator = make_operator<hololink::operators::ImageProcessorOp>(
             "image_processor",
             // Optical black value for imx274 is 50
@@ -299,7 +302,7 @@ int main(int argc, char** argv)
         }
         hololink_module.attr("logging_level")(python_log_level);
 
-        HSB_LOG_INFO("Initializing.");
+        std::cout << "Initializing." << std::endl;
 
         // Get a handle to the GPU
         CudaCheck(cuInit(0));
@@ -311,7 +314,6 @@ int main(int argc, char** argv)
 
         // Get a handle to the data source
         hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
-        HSB_LOG_INFO(fmt::format("channel_metadata {}", channel_metadata));
 
         hololink::DataChannel hololink_channel(channel_metadata);
 
@@ -340,7 +342,7 @@ int main(int argc, char** argv)
         if (pattern_set) {
             camera.attr("test_pattern")(pattern);
         }
-        HSB_LOG_INFO("Calling run");
+        std::cout << "Calling run" << std::endl;
         {
             // we need release the Python GIL before starting the application to make sure the
             // operators can call camera device functions
@@ -352,7 +354,7 @@ int main(int argc, char** argv)
         CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
 
     } catch (std::exception& e) {
-        HSB_LOG_ERROR(e.what());
+        std::cout << e.what() << std::endl;
         return -1;
     }
 

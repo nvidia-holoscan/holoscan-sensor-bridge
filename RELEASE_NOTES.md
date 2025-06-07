@@ -77,7 +77,7 @@ look at `docs/user_guide/_build/html/index.html`.
   manifest file. From within the demo container:
 
   ```sh
-  hololink program scripts/manifest-2407.yaml
+  program_lattice_cpnx100 scripts/manifest-2407.yaml
   ```
 
   After programming and power cycling, the board will no longer be visible to the 2.0-GA

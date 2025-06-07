@@ -22,6 +22,7 @@ import os
 import pydoc
 import socket
 import struct
+import sys
 import time
 
 import requests
@@ -30,13 +31,9 @@ import yaml
 import hololink as hololink_module
 
 
-def hexes(values):
-    return " ".join(["%02X" % x for x in values])
-
-
-def _fpga_version(args, hololink):
-    fpga_version = hololink.get_fpga_version()
-    print(hex(fpga_version))
+def _hsb_ip_version(args, hololink):
+    hsb_ip_version = hololink.get_hsb_ip_version()
+    print(hex(hsb_ip_version))
 
 
 def _read_uint32(args, hololink):
@@ -77,8 +74,8 @@ def reverse(b):
 reverse_map = bytearray([reverse(b) for b in range(256)])
 
 
-def _set_ips(ips_by_mac, timeout_s=None, one_time=False):
-    enumerator = hololink_module.Enumerator()
+def _set_ips(ips_by_mac, timeout_s=None, one_time=False, interface=""):
+    enumerator = hololink_module.Enumerator(interface)
     # Runs forever if "timeout_s" is None
     # Make sure the MAC IDs are all upper case.
     by_mac = {k.upper(): v for k, v in ips_by_mac.items()}
@@ -124,7 +121,7 @@ def _set_ips(ips_by_mac, timeout_s=None, one_time=False):
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             socket_fd = s.fileno()
-            r = hololink_module.native.ArpWrapper.arp_set(
+            r = hololink_module.ArpWrapper.arp_set(
                 socket_fd, local_device, new_peer_ip, mac_id
             )
             if r != 0:
@@ -194,11 +191,16 @@ def _set_ip(args):
         logging.info(
             "Running in daemon mode; run with '--one-time' to exit after configuration."
         )
-    _set_ips(ips_by_mac, timeout_s=timeout_s, one_time=args.one_time)
+    _set_ips(
+        ips_by_mac,
+        timeout_s=timeout_s,
+        one_time=args.one_time,
+        interface=args.interface,
+    )
 
 
 def _i2c_proxy(args, hololink):
-    i2c = hololink.get_i2c(args.address)
+    i2c = hololink.get_i2c(args.i2c_bus)
     # i2c_proxy runs forever.
     hololink_module.i2c_proxy(i2c, args.driver)
 
@@ -210,13 +212,13 @@ def _enumerate(args):
             logging.info(f"{channel_metadata}")
         else:
             mac_id = channel_metadata.get("mac_id", "N/A")
-            cpnx_version = channel_metadata.get("cpnx_version", "N/A")
-            clnx_version = channel_metadata.get("clnx_version", "N/A")
-            ip_address = channel_metadata.get("client_ip_address", "N/A")
+            hsb_ip_version = channel_metadata.get("hsb_ip_version", "N/A")
+            fpga_crc = channel_metadata.get("fpga_crc", "N/A")
+            ip_address = channel_metadata.get("peer_ip", "N/A")
             serial_number = channel_metadata.get("serial_number", "N/A")
             interface = channel_metadata.get("interface", "N/A")
             logging.info(
-                f"{mac_id=!s} {cpnx_version=:#X} {clnx_version=:#X} {ip_address=!s} {serial_number=!s} {interface=!s}"
+                f"{mac_id=!s} {hsb_ip_version=:#X} {fpga_crc=:#X} {ip_address=!s} {serial_number=!s} {interface=!s}"
             )
         # continue
         return True
@@ -225,208 +227,6 @@ def _enumerate(args):
         call_back,
         args.timeout if not args.timeout else hololink_module.Timeout(args.timeout),
     )
-
-
-# Programming
-class WindbondW25q128jw:
-    # SPI commands
-    PAGE_PROGRAM = 0x2
-    READ = 0x3
-    STATUS = 0x5
-    WRITE_ENABLE = 0x6
-    WRITE_STATUS_2 = 0x31
-    ENABLE_RESET = 0x66
-    RESET = 0x99
-    JEDEC_ID = 0x9F
-    BLOCK_ERASE = 0xD8
-    #
-    WINBOND = 0xEF
-    W25Q128JW_IQ = 0x6018
-    #
-    QE = 0x2
-    #
-    BLOCK_SIZE = 128  # bytes
-    ERASE_SIZE = 64 * 1024  # bytes
-
-    #
-    def __init__(self, context, hololink, spi_address):
-        self._context = context
-        self._hololink = hololink
-
-    def _wait_for_spi_ready(self):
-        while True:
-            r = self._spi_command([self.STATUS], read_byte_count=1)
-            if (r[0] & 1) == 0:
-                return
-            logging.debug(
-                "%s: BUSY, got r=%s"
-                % (self._context, " ".join(["%02X" % x for x in r]))
-            )
-
-    def _check_id(self):
-        manufacturer_device_id = self._spi_command([self.JEDEC_ID], read_byte_count=3)
-        logging.info(
-            "%s: manufacturer_device_id=%s"
-            % (
-                self._context,
-                hexes(manufacturer_device_id),
-            )
-        )
-        assert manufacturer_device_id == bytearray(
-            [
-                self.WINBOND,
-                self.W25Q128JW_IQ >> 8,
-                self.W25Q128JW_IQ & 0xFF,
-            ]
-        )
-
-    def _status(self, message):
-        logging.info(f"{self._context}: {message}")
-
-    def program(self, content):
-        self._check_id()
-        content_size = len(content)
-        for erase_address in range(0, content_size, self.ERASE_SIZE):
-            logging.debug(
-                "%s: erase address=0x%X"
-                % (
-                    self._context,
-                    erase_address,
-                )
-            )
-            self._wait_for_spi_ready()
-            self._spi_command([self.WRITE_ENABLE])
-            page_erase = [
-                self.BLOCK_ERASE,
-                (erase_address >> 16) & 0xFF,
-                (erase_address >> 8) & 0xFF,
-                (erase_address >> 0) & 0xFF,
-            ]
-            self._spi_command(page_erase)
-            for address in range(
-                erase_address,
-                min(content_size, erase_address + self.ERASE_SIZE),
-                self.BLOCK_SIZE,
-            ):
-                # Provide some status.
-                if (address & 0xFFFF) == 0:
-                    self._status("address=0x%X" % (address,))
-                # Write this page.
-                self._wait_for_spi_ready()
-                self._spi_command([self.WRITE_ENABLE])
-                command_bytes = [
-                    self.PAGE_PROGRAM,
-                    (address >> 16) & 0xFF,
-                    (address >> 8) & 0xFF,
-                    (address >> 0) & 0xFF,
-                ]
-                self._spi_command(
-                    command_bytes, content[address : address + self.BLOCK_SIZE]
-                )
-        self._wait_for_spi_ready()
-        self._spi_command([self.ENABLE_RESET])
-        self._spi_command([self.RESET])
-        self._wait_for_spi_ready()
-
-    def verify(self, content):
-        self._check_id()
-        ok = True
-        for address in range(0, len(content), self.BLOCK_SIZE):
-            # Provide some status.
-            if (address & 0xFFFF) == 0:
-                self._status("verify address=0x%X" % (address,))
-            # original_content, on the last page, will be shorter than BLOCK_SIZE
-            original_content = content[address : address + self.BLOCK_SIZE]
-            # Fetch this page from flash
-            self._wait_for_spi_ready()
-            command_bytes = [
-                self.READ,
-                (address >> 16) & 0xFF,
-                (address >> 8) & 0xFF,
-                (address >> 0) & 0xFF,
-            ]
-            flash_content = self._spi_command(
-                command_bytes, read_byte_count=len(original_content)
-            )
-            # Check it
-            if flash_content != original_content:
-                logging.info(
-                    "%s: verify failed, address=0x%X"
-                    % (
-                        self._context,
-                        address,
-                    )
-                )
-                ok = False
-        return ok
-
-
-class ClnxFlash(WindbondW25q128jw):
-    # CLNX registers
-    CLNX_WRITE = 0x1
-    FLASH_FORWARD_EN_ADDRESS = 6
-
-    #
-    def __init__(self, context, hololink, spi_controller_address):
-        super().__init__(context, hololink, spi_controller_address)
-        self._slow_spi = hololink.get_spi(
-            spi_controller_address,
-            chip_select=0,
-            cpol=0,
-            cpha=1,
-            width=1,
-            clock_divisor=0xF,
-        )
-        self._fast_spi = hololink.get_spi(
-            spi_controller_address,
-            chip_select=0,
-            cpol=1,
-            cpha=1,
-            width=4,
-            clock_divisor=0x4,
-        )
-
-    def _spi_command(self, command_bytes, write_bytes=[], read_byte_count=0):
-        # enable_clnx_bridge for 1 transaction
-        transactions = 1
-        spi_flash_forward_value = 0x1 | (transactions << 4)
-        request = [
-            self.CLNX_WRITE,
-            self.FLASH_FORWARD_EN_ADDRESS,
-            spi_flash_forward_value,
-        ]
-        self._slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
-        # execute its spi flash command
-        return self._fast_spi.spi_transaction(
-            bytearray(command_bytes), bytearray(write_bytes), read_byte_count
-        )
-
-
-class CpnxFlash(WindbondW25q128jw):
-    #
-    def __init__(self, context, hololink, spi_controller_address):
-        super().__init__(context, hololink, spi_controller_address)
-        #       self._slow_spi = hololink.get_spi(
-        #           spi_controller_address,
-        #           chip_select=0,
-        #           cpol=1,
-        #           cpha=1,
-        #           width=1,
-        #           clock_divisor=0xF,
-        #       )
-        self._fast_spi = hololink.get_spi(
-            spi_controller_address,
-            chip_select=0,
-            cpol=1,
-            cpha=1,
-            width=1,
-            clock_divisor=0,
-        )
-
-    def _spi_command(self, command_bytes, write_bytes=[], read_byte_count=0):
-        return self._fast_spi.spi_transaction(
-            bytearray(command_bytes), bytearray(write_bytes), read_byte_count
-        )
 
 
 class Timer:
@@ -453,6 +253,35 @@ class Timer:
         r = self._first
         self._first = False
         return r
+
+
+class StratixMailboxError(Exception):
+    def __init__(self, response_id, length, error_code, data, *args):
+        self.response_id = response_id
+        self.length = length
+        self.error_code = error_code
+        self.data = data
+        super().__init__(*args)
+
+    def log_error(self):
+        logging.error(
+            f"{self.response_id=:#x} {self.length=:#x} {self.error_code=:#x} {self.data=}"
+        )
+
+
+# build exception hook for StratixMailboxError to only log if uncaught
+# if exception is not caught, an error the error is logged. else behave as normal.
+def build_stratix_mailbox_except_hook(original_hook):
+    def stratix_mailbox_except_hook(type, value, traceback):
+        if isinstance(value, StratixMailboxError):
+            value.log_error()
+        original_hook(type, value, traceback)
+
+    return stratix_mailbox_except_hook
+
+
+# register the exception hook in the system
+sys.excepthook = build_stratix_mailbox_except_hook(sys.excepthook)
 
 
 class StratixMailbox:
@@ -570,14 +399,12 @@ class StratixMailbox:
         header, data = r[0], r[1:]
         response_id, length, error_code = (
             (header >> 24) & 0xF,
-            (header >> 12) & 1023,
-            (header >> 0) & 1023,
+            (header >> 12) & 0x7FF,
+            (header >> 0) & 0x7FF,
         )
-        __ck = logging.debug
+        logging.debug(f"{response_id=} {length=} {error_code=:#x} {len(data)=}")
         if error_code != 0:
-            __ck = logging.error
-        __ck(f"{response_id=} {length=} {error_code=:#x} {len(data)=}")
-        assert error_code == 0
+            raise StratixMailboxError(response_id, length, error_code, data)
         assert (length == len(data)) or ((length == 0) and (len(data) == 1024))
         assert response_id == (self._id & 0xF)
         return data
@@ -615,7 +442,7 @@ class StratixMailbox:
         # fpga_flash_address = rsu_status["current"]
         # return fpga_flash_address
         # FOR NOW we're just hard-coding this address.
-        return 0x9A8000
+        return 0xB10000
 
     def rsu_image_update(self, address):
         logging.info(f"rsu_image_update {address=:#x}")
@@ -642,6 +469,9 @@ class StratixQspi:
     ERASE_64K_WORDS = 0x4000
     ERASE_64K_BYTES = ERASE_64K_WORDS * 4
 
+    # Errors
+    QSPI_NOT_OPENED_BY_CLIENT = 0x008
+
     #
     def __init__(self, mailbox):
         self._mailbox = mailbox
@@ -649,8 +479,11 @@ class StratixQspi:
     def __enter__(self):
         try:
             self.close()
-        except Exception as e:
-            logging.debug(f"Ignoring {e}({type(e)=})")
+        except StratixMailboxError as e:
+            if e.error_code == self.QSPI_NOT_OPENED_BY_CLIENT:
+                logging.debug(f"Ignoring {e}({type(e)=})")
+            else:
+                raise
         self.open()
         self.set_cs(0)
         return self
@@ -717,16 +550,16 @@ class SensorBridgeStrategy:
         self._args = programmer._args
 
     def hololink(self, channel_metadata):
-        channel_board_id = channel_metadata["board_id"]
-        if not self.board_id_ok(channel_board_id):
+        fpga_uuid = channel_metadata["fpga_uuid"]
+        if not self.check_fpga_uuid(fpga_uuid):
             return None
         hololink_channel = hololink_module.DataChannel(channel_metadata)
         hololink = hololink_channel.hololink()
         hololink.start()
         return hololink
 
-    def board_id_ok(self, board_id):
-        raise Exception('Unexpected call to abstract "board_id_ok"')
+    def check_fpga_uuid(self, fpga_uuid):
+        raise Exception('Unexpected call to abstract "check_fpga_uuid"')
 
     def program_and_verify_images(self, hololink):
         raise Exception('Unexpected call to abstract "program_and_verify_images"')
@@ -742,11 +575,11 @@ class SensorBridge100Strategy(SensorBridgeStrategy):
     def __init__(self, programmer):
         super().__init__(programmer)
 
-    def board_id_ok(self, board_id):
-        board_ids = [
-            hololink_module.HOLOLINK_100G_BOARD_ID,
-        ]
-        return board_id in board_ids
+    def check_fpga_uuid(self, fpga_uuid):
+        supported_fpga_uuids = {
+            "7a377bf7-76cb-4756-a4c5-7dddaed8354b",  # Stratix 10 HSB
+        }
+        return fpga_uuid in supported_fpga_uuids
 
     def program_and_verify_images(self, hololink):
         content = self._programmer._content
@@ -846,65 +679,16 @@ class SensorBridge100Strategy(SensorBridgeStrategy):
             channel_ip=args.hololink, timeout=hololink_module.Timeout(30)
         )
         # Following reset, allow for more timeout on this initial read.
-        get_fpga_version_timeout = hololink_module.Timeout(timeout_s=30, retry_s=0.2)
-        version = hololink.get_fpga_version(timeout=get_fpga_version_timeout)
+        get_hsb_ip_version_timeout = hololink_module.Timeout(timeout_s=30, retry_s=0.2)
+        version = hololink.get_hsb_ip_version(
+            timeout=get_hsb_ip_version_timeout, check_sequence=False
+        )
         logging.info(f"{version=:#x}")
-
-
-class SensorBridge10Strategy(SensorBridgeStrategy):
-    def __init__(self, programmer):
-        super().__init__(programmer)
-
-    def board_id_ok(self, board_id):
-        board_ids = [
-            hololink_module.HOLOLINK_NANO_BOARD_ID,
-            hololink_module.HOLOLINK_LITE_BOARD_ID,
-        ]
-        return board_id in board_ids
-
-    def program_and_verify_images(self, hololink):
-        content = self._programmer._content
-        if "clnx" in content:
-            self.program_clnx(hololink, hololink_module.CLNX_SPI_CTRL, content["clnx"])
-            self.verify_clnx(hololink, hololink_module.CLNX_SPI_CTRL, content["clnx"])
-        if "cpnx" in content:
-            self.program_cpnx(hololink, hololink_module.CPNX_SPI_CTRL, content["cpnx"])
-            self.verify_cpnx(hololink, hololink_module.CPNX_SPI_CTRL, content["cpnx"])
-
-    def program_clnx(self, hololink, spi_controller_address, content):
-        if self._args.skip_program_clnx:
-            logging.info("Skipping programming CLNX per command-line instructions.")
-            return
-        clnx_flash = ClnxFlash("CLNX", hololink, spi_controller_address)
-        clnx_flash.program(content)
-
-    def verify_clnx(self, hololink, spi_controller_address, content):
-        if self._args.skip_verify_clnx:
-            logging.info("Skipping verification CLNX per command-line instructions.")
-            return
-        clnx_flash = ClnxFlash("CLNX", hololink, spi_controller_address)
-        clnx_flash.verify(content)
-
-    def program_cpnx(self, hololink, spi_controller_address, content):
-        if self._args.skip_program_cpnx:
-            logging.info("Skipping programming CPNX per command-line instructions.")
-            return
-        cpnx_flash = CpnxFlash("CPNX", hololink, spi_controller_address)
-        cpnx_flash.program(content)
-
-    def verify_cpnx(self, hololink, spi_controller_address, content):
-        if self._args.skip_verify_cpnx:
-            logging.info("Skipping verification CPNX per command-line instructions.")
-            return
-        cpnx_flash = CpnxFlash("CPNX", hololink, spi_controller_address)
-        cpnx_flash.verify(content)
 
 
 strategies = {
     "sensor_bridge_100": SensorBridge100Strategy,
-    "sensor_bridge_10": SensorBridge10Strategy,
 }
-default_strategy = "sensor_bridge_10"  # if not listed in the manifest file
 
 
 class Programmer:
@@ -917,7 +701,7 @@ class Programmer:
         with open(self._manifest_filename, "rt") as f:
             manifest = yaml.safe_load(f)
         self._manifest = manifest[section]
-        strategy_name = self._manifest.get("strategy", default_strategy)
+        strategy_name = self._manifest["strategy"]
         strategy_constructor = strategies.get(strategy_name)
         if strategy_constructor is None:
             raise Exception('Unsupported strategy "{strategy_name}" specified.')
@@ -1017,28 +801,26 @@ class Programmer:
         logging.debug(f"{channel_metadata=}")
         r = self._strategy.hololink(channel_metadata)
         if r is None:
-            ip = channel_metadata["client_ip_address"]
-            channel_board_id = channel_metadata["board_id"]
+            ip = channel_metadata["peer_ip"]
+            fpga_uuid = channel_metadata["fpga_uuid"]
             raise Exception(
-                f"Sensor bridge {ip=} (board_id={channel_board_id}) isn't supported by this manifest file."
+                f"Sensor bridge {ip=} ({fpga_uuid}) isn't supported by this manifest file."
             )
         return r
 
 
 def manual_enumeration(args):
     m = {
-        "configuration_address": 0,
         "control_port": 8192,
-        "cpnx_version": 0x2410,
-        "data_plane": 0,
+        "hsb_ip_version": 0x2502,
         "peer_ip": args.hololink,
-        "sensor": 0,
         "sequence_number_checking": 0,
         "serial_number": "100",
-        "vip_mask": 0,
-        "board_id": 2,
+        "fpga_uuid": args.fpga_uuid,
     }
     metadata = hololink_module.Metadata(m)
+    hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
+    hololink_module.DataChannel.use_sensor(metadata, 0)
     return metadata
 
 
@@ -1082,11 +864,11 @@ def main():
         help="Subcommands", dest="command", required=True
     )
 
-    # "fpga_version": Fetch the FPGA version register and show it.
-    fpga_version = subparsers.add_parser(
-        "fpga_version", help="Show the version ID of the Hololink FPGA."
+    # "hsb_ip_version": Fetch the HSB IP version register and show it.
+    hsb_ip_version = subparsers.add_parser(
+        "hsb_ip_version", help="Show the version ID of the Hololink FPGA."
     )
-    fpga_version.set_defaults(go=_fpga_version)
+    hsb_ip_version.set_defaults(go=_hsb_ip_version)
 
     # "read_uint32 (address)": Display the value read from the given FPGA address.
     read_uint32 = subparsers.add_parser(
@@ -1135,6 +917,11 @@ def main():
         help="Don't run in daemon mode.",
     )
     set_ip.add_argument(
+        "--interface",
+        default="",
+        help="Only listen on the given interface.",
+    )
+    set_ip.add_argument(
         "mac_id_and_ip",
         help="Two arguments for each node: MAC ID and IP address of a device to configure.",
         nargs="+",
@@ -1148,10 +935,9 @@ def main():
         help="Run the I2C proxy enabling hololink_i2c to access the I2C bus devices on the given hololink board.",
     )
     i2c_proxy.add_argument(
-        "--address",
-        type=lambda x: int(x, 0),  # allow users to say "--address=0xABC"
-        default=hololink_module.CAM_I2C_CTRL,
-        choices=(hololink_module.BL_I2C_CTRL, hololink_module.CAM_I2C_CTRL),
+        "--i2c-bus",
+        type=lambda x: int(x, 0),  # allow users to say "--i2c-bus=1"
+        default=hololink_module.CAM_I2C_BUS,
     )
     parser.add_argument(
         "--driver", default="/dev/hololink_i2c", help="Device to access."
@@ -1189,26 +975,6 @@ def main():
         help="Use a local zip archive instead of downloading it.",
     )
     program.add_argument(
-        "--skip-program-clnx",
-        action="store_true",
-        help="Skip program_clnx",
-    )
-    program.add_argument(
-        "--skip-verify-clnx",
-        action="store_true",
-        help="Skip verify_clnx",
-    )
-    program.add_argument(
-        "--skip-program-cpnx",
-        action="store_true",
-        help="Skip program_cpnx",
-    )
-    program.add_argument(
-        "--skip-verify-cpnx",
-        action="store_true",
-        help="Skip verify_cpnx",
-    )
-    program.add_argument(
         "--accept-eula",
         action="store_true",
         help="Provide non-interactive EULA acceptance",
@@ -1227,6 +993,12 @@ def main():
         "--skip-verify-stratix",
         action="store_true",
         help="Skip verify_stratix",
+    )
+
+    program.add_argument(
+        "--fpga-uuid",
+        default="7a377bf7-76cb-4756-a4c5-7dddaed8354b",  # Stratix 10 HSB
+        help="FPGA UUID, which determines how the device is programmed",
     )
     program.set_defaults(go=_program, needs_hololink=False)
 

@@ -95,9 +95,9 @@ def main():
 ````
 ````{tab-item} C++
 ```cpp
-#include <hololink/data_channel.hpp>
-#include <hololink/enumerator.hpp>
-#include <hololink/hololink.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/enumerator.hpp>
+#include <hololink/core/hololink.hpp>
 
 int main(int argc, char** argv)
 {
@@ -346,7 +346,7 @@ received video frame.
 ## body_pose_estimation
 
 The Body Pose Estimation application takes input from a live video, performs inference
-using YOLOv8 pose model, and then shows keypoints overlayed onto the original video. The
+using YOLOv8 pose model, and then shows keypoints overlaid onto the original video. The
 keypoints are:
 
 \[nose, left eye, right eye, left ear, right ear, left shoulder, right shoulder, left

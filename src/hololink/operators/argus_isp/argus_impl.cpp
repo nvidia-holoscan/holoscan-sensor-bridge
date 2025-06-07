@@ -17,7 +17,7 @@
 
 #include "argus_impl.hpp"
 
-#include <hololink/logging.hpp>
+#include <hololink/core/logging_internal.hpp>
 
 namespace hololink::operators {
 
@@ -29,7 +29,7 @@ ArgusImpl::ArgusImpl(std::shared_ptr<Argus::CameraProvider> cameraProvider)
         throw std::runtime_error("Failed to get ICameraProvider interface");
 }
 
-void ArgusImpl::setup_camera_devices()
+void ArgusImpl::setup_camera_devices(uint32_t cameraIndex)
 {
     Argus::Status status = Argus::STATUS_OK;
     // Get the camera devices.
@@ -45,22 +45,22 @@ void ArgusImpl::setup_camera_devices()
             static_cast<int>(status)));
     }
 
-    if (camera_devices_.size() == 0) {
-        HSB_LOG_WARN("no camera devices are available");
-    } else if (camera_devices_.size() > 0) {
-        for (uint32_t i = 0; i < camera_devices_.size(); i++) {
-            Argus::ICameraProperties* i_camera_properties = Argus::interface_cast<Argus::ICameraProperties>(camera_devices_[i]);
-            if (!i_camera_properties) {
-                throw std::runtime_error("Error while listing camera devices: "
-                                         "Failed to get ICameraProperties interface");
-            }
-        }
+    if (camera_devices_.size() <= cameraIndex) {
+        throw std::runtime_error(fmt::format(
+            "Unable to find camera device {} (limit={}).", cameraIndex, camera_devices_.size()));
     }
+    Argus::ICameraProperties* i_camera_properties = Argus::interface_cast<Argus::ICameraProperties>(camera_devices_[cameraIndex]);
+    if (!i_camera_properties) {
+        throw std::runtime_error("Error while listing camera devices: "
+                                 "Failed to get ICameraProperties interface");
+    }
+
+    camera_index_ = cameraIndex;
 }
 
 void ArgusImpl::set_sensor_mode_info(uint32_t sensorModeIndex)
 {
-    Argus::ICameraProperties* i_camera_properties = Argus::interface_cast<Argus::ICameraProperties>(camera_devices_[0]);
+    Argus::ICameraProperties* i_camera_properties = Argus::interface_cast<Argus::ICameraProperties>(camera_devices_[camera_index_]);
     if (!i_camera_properties) {
         throw std::runtime_error("Failed to get ICameraProperties interface\n");
     }
@@ -90,7 +90,7 @@ void ArgusImpl::set_sensor_mode_info(uint32_t sensorModeIndex)
 
 void ArgusImpl::set_reprocess_info(int bayerFormat, int pixelBitDepth)
 {
-    i_reprocess_info_ = Argus::interface_cast<Argus::IReprocessInfo>(camera_devices_[0]);
+    i_reprocess_info_ = Argus::interface_cast<Argus::IReprocessInfo>(camera_devices_[camera_index_]);
     if (!i_reprocess_info_) {
         throw std::runtime_error("Failed to get the reprocessInfo interface");
     }
@@ -113,7 +113,7 @@ void ArgusImpl::set_reprocess_info(int bayerFormat, int pixelBitDepth)
     i_reprocess_info_->setReprocessingModeDynamicPixelBitDepth(pixelBitDepth);
 
     // Create capture session before ICaptureSession.
-    capture_session_.reset(i_camera_provider_->createCaptureSession(camera_devices_[0]));
+    capture_session_.reset(i_camera_provider_->createCaptureSession(camera_devices_[camera_index_]));
 }
 
 void ArgusImpl::setup_capture_request(float analogGain, float exporeTimeMs)
@@ -179,7 +179,7 @@ void ArgusImpl::setup_output_streams(const uint8_t sensorModeIndex)
     if (!i_stream_settings) {
         throw std::runtime_error("Failed to get IOutputStreamSettings interface for stream 0");
     }
-    i_stream_settings->setCameraDevice(camera_devices_[0]);
+    i_stream_settings->setCameraDevice(camera_devices_[camera_index_]);
     Argus::IEGLOutputStreamSettings* i_egl_stream_settings = Argus::interface_cast<Argus::IEGLOutputStreamSettings>(out_stream_settings_);
     if (!i_egl_stream_settings) {
         throw std::runtime_error("Failed to get IEGLOutputStreamSettings interface for stream 0");

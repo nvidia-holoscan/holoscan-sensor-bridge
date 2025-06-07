@@ -40,7 +40,7 @@ dir = {0: "output", 1: "input"}
 # define custom Operators for use in the demo
 class GpioSetOp(holoscan.core.Operator):
     """
-    operator to demonstrate different GPIO test configurtion settings.
+    operator to demonstrate different GPIO test configuration settings.
     This operator changes the GPIOs pin by pin according to the test
     configuration it currently runs (specified in the 'configs' variable).
     It sends the latest changed pin + the current test configuration to the
@@ -118,7 +118,7 @@ class GpioSetOp(holoscan.core.Operator):
 class GpioGetOp(holoscan.core.Operator):
     """
     operator to demonstrate reads from the GPIO bank
-    Recieves the last changed GPIO number and it is set to input
+    Receives the last changed GPIO number and it is set to input
     reads and prints it value and direction.
     sleeps for the given time to allow physcal board measurements
     """
@@ -145,7 +145,7 @@ class GpioGetOp(holoscan.core.Operator):
         value = self._gpio.get_value(pin)
         logging.info(f"pin:{pin}, direction:{dir[direction]},value:{value}")
 
-        # sleep to allow time for pysical board measurememt
+        # sleep to allow time for physical board measurememt
         time.sleep(self._sleep_time)
 
 

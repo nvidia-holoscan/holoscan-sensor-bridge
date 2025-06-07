@@ -32,5 +32,5 @@ RUN apt-get update \
     clang-format \
   && rm -rf /var/lib/apt/lists/*
 
-RUN pip3 install black flake8 isort
+RUN pip3 install black flake8 isort codespell
 RUN pip3 install mdformat mdformat-tables

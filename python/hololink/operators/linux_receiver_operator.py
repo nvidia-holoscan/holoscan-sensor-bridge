@@ -31,7 +31,13 @@ SEC_PER_NS = 1.0 / NS_PER_SEC
 
 
 class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
-    def __init__(self, *args, receiver_affinity=None, **kwargs):
+    def __init__(
+        self,
+        *args,
+        receiver_affinity=None,
+        rename_metadata=lambda original_name: original_name,
+        **kwargs
+    ):
         super().__init__(*args, **kwargs)
         self._receiver_affinity = receiver_affinity
         if self._receiver_affinity is None:
@@ -44,6 +50,20 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
             # to avoid affinity settings.
             if (affinity is not None) and (len(affinity) > 0):
                 self._receiver_affinity = {int(affinity)}
+        self._frame_number_metadata = rename_metadata("frame_number")
+        self._frame_packets_received_metadata = rename_metadata(
+            "frame_packets_received"
+        )
+        self._frame_bytes_received_metadata = rename_metadata("frame_bytes_received")
+        self._received_s_metadata = rename_metadata("received_s")
+        self._received_ns_metadata = rename_metadata("received_ns")
+        self._timestamp_s_metadata = rename_metadata("timestamp_s")
+        self._timestamp_ns_metadata = rename_metadata("timestamp_ns")
+        self._metadata_s_metadata = rename_metadata("metadata_s")
+        self._metadata_ns_metadata = rename_metadata("metadata_ns")
+        self._packets_dropped_metadata = rename_metadata("packets_dropped")
+        self._crc_metadata = rename_metadata("crc")
+        self._psn_metadata = rename_metadata("psn")
 
     def _start_receiver(self):
         self._check_buffer_size(self._frame_size)
@@ -84,18 +104,18 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         if not ok:
             return None
         application_metadata = {
-            "frame_number": receiver_metadata.frame_number,
-            "frame_packets_received": receiver_metadata.frame_packets_received,
-            "frame_bytes_received": receiver_metadata.frame_bytes_received,
-            "received_s": receiver_metadata.received_s,
-            "received_ns": receiver_metadata.received_ns,
-            "timestamp_s": receiver_metadata.timestamp_s,
-            "timestamp_ns": receiver_metadata.timestamp_ns,
-            "metadata_s": receiver_metadata.metadata_s,
-            "metadata_ns": receiver_metadata.metadata_ns,
-            "packets_dropped": receiver_metadata.packets_dropped,
-            "crc": receiver_metadata.crc,
-            "psn": receiver_metadata.psn,
+            self._frame_number_metadata: receiver_metadata.frame_number,
+            self._frame_packets_received_metadata: receiver_metadata.frame_packets_received,
+            self._frame_bytes_received_metadata: receiver_metadata.frame_bytes_received,
+            self._received_s_metadata: receiver_metadata.received_s,
+            self._received_ns_metadata: receiver_metadata.received_ns,
+            self._timestamp_s_metadata: receiver_metadata.timestamp_s,
+            self._timestamp_ns_metadata: receiver_metadata.timestamp_ns,
+            self._metadata_s_metadata: receiver_metadata.metadata_s,
+            self._metadata_ns_metadata: receiver_metadata.metadata_ns,
+            self._packets_dropped_metadata: receiver_metadata.packets_dropped,
+            self._crc_metadata: receiver_metadata.crc,
+            self._psn_metadata: receiver_metadata.psn,
         }
         return application_metadata
 

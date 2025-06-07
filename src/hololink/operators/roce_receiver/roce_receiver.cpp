@@ -26,8 +26,9 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <hololink/logging.hpp>
-#include <hololink/native/nvtx_trace.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/core/nvtx_trace.hpp>
 
 #undef PERIODIC_STATUS
 
@@ -176,7 +177,7 @@ bool RoceReceiver::start()
         break;
     }
     if (ib_device == NULL) {
-        HSB_LOG_ERROR("ibv_get_device_list didnt find a device named \"{}\".", ibv_name_);
+        HSB_LOG_ERROR("ibv_get_device_list didn't find a device named \"{}\".", ibv_name_);
         ibv_free_device_list(ib_devices);
         return false;
     }
@@ -437,7 +438,7 @@ static inline bool before(struct timespec& a, struct timespec& b)
 
 void RoceReceiver::blocking_monitor()
 {
-    native::NvtxTrace::setThreadName("RoceReceiver::run");
+    core::NvtxTrace::setThreadName("RoceReceiver::run");
     HSB_LOG_DEBUG("Running.");
 
     struct ibv_wc ib_wc = { 0 };
@@ -558,7 +559,7 @@ void RoceReceiver::blocking_monitor()
                 }
                 current_buffer_ = cu_buffer_ + cu_page_size_ * page;
                 frame_number_++;
-                native::NvtxTrace::event_u64("frame_number", frame_number_);
+                core::NvtxTrace::event_u64("frame_number", frame_number_);
                 HSB_LOG_TRACE("frame_number={}", frame_number_);
                 received_.tv_sec = event_time_.tv_sec;
                 received_.tv_nsec = event_time_.tv_nsec;
@@ -566,7 +567,7 @@ void RoceReceiver::blocking_monitor()
                     frame_number_, imm_data_, received_.tv_sec, received_.tv_nsec);
                 // Send it
                 ready_ = true;
-                native::NvtxTrace::event_u64("signal", 1);
+                core::NvtxTrace::event_u64("signal", 1);
                 r = pthread_cond_signal(&ready_condition_);
                 if (r != 0) {
                     throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));

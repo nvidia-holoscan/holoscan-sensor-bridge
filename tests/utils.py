@@ -225,7 +225,7 @@ class Watchdog:
                 watchdog.tap()
                 do_something()
 
-      This accomodates workflows where initialization may make the first n iterations
+      This accommodates workflows where initialization may make the first n iterations
       take longer.
 
     - use a dynamic timeout by passing in a new limit each call to tap:

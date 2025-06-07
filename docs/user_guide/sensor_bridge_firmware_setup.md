@@ -24,25 +24,25 @@ components are programmable and should be updated.
    address you expect.
 
 1. If your current configuration is a Lattice CPNX100-ETH-SENSOR-BRIDGE device currently
-   loaded with 2412 or newer firmware, `hololink program` will reprogram it:
+   loaded with 2412 or newer firmware, `program_lattice_cpnx100` will reprogram it:
 
    ```none
-   hololink program scripts/manifest.yaml
+   program_lattice_cpnx100 scripts/manifest.yaml
    ```
 
    If you're using a nonstandard IP address, replace "192.168.200.2" with the address
    you've configured for your device in:
 
    ```none
-   hololink --hololink=192.168.200.2 program scripts/manifest.yaml
+   program_lattice_cpnx100 --hololink=192.168.200.2 scripts/manifest.yaml
    ```
 
 1. If your configuration is a Lattice CPNX100-ETH-SENSOR-BRIDGE device with older (e.g.
-   2407\) firmware, `hololink --force program` will reprogram it. Note that this only
-   works on units that are available at the default IP address of 192.168.0.2.
+   2407\) firmware, `program_lattice_cpnx100 --force` will reprogram it. Note that this
+   only works on units that are available at the default IP address of 192.168.0.2.
 
    ```none
-   hololink --force program scripts/manifest.yaml
+   program_lattice_cpnx100 --force scripts/manifest.yaml
    ```
 
    The way that HSB units are enumerated by the host has changed, so systems producing

@@ -26,7 +26,7 @@
 
 #include <cuda.h>
 
-#include <hololink/hololink.hpp>
+#include <hololink/core/hololink.hpp>
 
 namespace hololink::operators {
 

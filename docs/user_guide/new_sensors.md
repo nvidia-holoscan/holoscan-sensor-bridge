@@ -54,9 +54,9 @@ def main():
     # Get a handle to the Hololink port we're connected to.
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip="192.168.0.2")
     hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Instantiate the camera itself; CAM_I2C_CTRL is the base address of the I2C
-    # controller our camera is attached to
-    camera = MyCamera(hololink_channel, hololink_module.CAM_I2C_CTRL)
+    # Instantiate the camera itself; CAM_I2C_BUS is the appropriate bus enable setting
+    # for the I2C controller our camera is attached to
+    camera = MyCamera(hololink_channel, hololink_module.CAM_I2C_BUS)
     # Establish a connection to the hololink device
     hololink = hololink_channel.hololink()
     hololink.start()

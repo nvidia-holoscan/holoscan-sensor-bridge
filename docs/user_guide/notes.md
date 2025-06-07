@@ -46,10 +46,10 @@ with the `hololink enumerate` command. Within the
 
 ```none
 $ hololink enumerate
-INFO:root:mac_id=48:B0:2D:EE:03:8E cpnx_version=0X2402 clnx_version=0XFFFF ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
-INFO:root:mac_id=48:B0:2D:EE:03:8F cpnx_version=0X2402 clnx_version=0XFFFF ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
-INFO:root:mac_id=48:B0:2D:EE:03:8E cpnx_version=0X2402 clnx_version=0XFFFF ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
-INFO:root:mac_id=48:B0:2D:EE:03:8F cpnx_version=0X2402 clnx_version=0XFFFF ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
+INFO:root:mac_id=48:B0:2D:EE:03:8E hsb_ip_version=0X2402 ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
+INFO:root:mac_id=48:B0:2D:EE:03:8F hsb_ip_version=0X2402 ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
+INFO:root:mac_id=48:B0:2D:EE:03:8E hsb_ip_version=0X2402 ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
+INFO:root:mac_id=48:B0:2D:EE:03:8F hsb_ip_version=0X2402 ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
 ```
 
 This configuration has two network ports, with MAC ID 48:B0:2D:EE:03:8E connected to the

@@ -1,0 +1,69 @@
+diff --git a/iiod/init/iiod.init.cmakein b/iiod/init/iiod.init.cmakein
+index 2799925..9ca51d4 100644
+--- a/iiod/init/iiod.init.cmakein
++++ b/iiod/init/iiod.init.cmakein
+@@ -11,10 +11,14 @@
+ # Debian init.d script for the IIO Daemon
+ # Copyright (C) 2016 Analog Devices Inc.
+ 
+-. /lib/lsb/init-functions
++. /etc/init.d/functions
++
++set -e
+ 
+ # Server-side demuxing by default
+ IIOD_OPTS=-D
++DAEMON=@CMAKE_INSTALL_FULL_SBINDIR@/iiod
++PID=/var/run/iiod.pid
+ 
+ if test -f /etc/default/iiod; then
+     . /etc/default/iiod
+@@ -22,21 +26,16 @@ fi
+ 
+ case "$1" in
+ 	start)
+-		log_daemon_msg "Starting IIO Daemon" "iiod" || true
+-		if start-stop-daemon -S -b -q -m -p /var/run/iiod.pid -x @CMAKE_INSTALL_FULL_SBINDIR@/iiod -- $IIOD_OPTS; then
+-			log_end_msg 0 || true
+-		else
+-			log_end_msg 1 || true
+-		fi
++		echo -n "Starting IIO Daemon: "
++		start-stop-daemon -S -b -q -m -p $PID -x $DAEMON -- $IIOD_OPTS
++		echo "iiod"
+ 		;;
+ 
+ 	stop)
+-		log_daemon_msg "Stopping IIO Daemon" "iiod" || true
+-		if start-stop-daemon -K -q -p /var/run/iiod.pid; then
+-			log_end_msg 0 || true
+-		else
+-			log_end_msg 1 || true
+-		fi
++		echo -n "Stopping IIO Daemon: "
++		start-stop-daemon -K -q -p $PID
++		rm -f $PID
++		echo "iiod"
+ 		;;
+ 
+ 	restart|force-reload)
+@@ -45,15 +44,13 @@ case "$1" in
+ 		;;
+ 
+ 	status)
+-		if [ -f /var/run/iiod.pid ] ; then
+-			status_of_proc -p /var/run/iiod.pid @CMAKE_INSTALL_FULL_SBINDIR@/iiod iiod && exit 0 || exit $?
+-		else
+-			status_of_proc @CMAKE_INSTALL_FULL_SBINDIR@/iiod iiod && exit 0 || exit $?
+-		fi
++		# otherwise status will exit without any echo since pidof does not return 0
++		set +e
++		status $DAEMON
+ 		;;
+ 
+ 	*)
+-		log_action_msg "Usage: /etc/init.d/iiod.sh {start|stop|restart|status}" || true
++		echo "Usage: /etc/init.d/iiod.sh {start|stop|restart|status}"
+ 		exit 1
+ esac
+ 

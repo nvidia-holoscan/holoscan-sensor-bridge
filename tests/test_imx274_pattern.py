@@ -87,6 +87,14 @@ class PatternTestApplication(holoscan.core.Application):
         self._bucket_count_right = 0
         self._bucket_count_left_trigger = 10
         self._bucket_count_right_trigger = 10
+        # These are HSDK controls-- because we have stereo
+        # camera paths going into the same visualizer, don't
+        # raise an error when each path present metadata
+        # with the same names.  Because we don't use that metadata,
+        # it's easiest to just ignore new items with the same
+        # names as existing items.
+        self.is_metadata_enabled = True
+        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
         logging.info("compose")
@@ -280,6 +288,8 @@ class PatternTestApplication(holoscan.core.Application):
             height=window_height,
             width=window_width,
             window_title="IMX274 pattern test",
+            enable_camera_pose_output=True,
+            camera_pose_output_type="extrinsics_model",
         )
         #
         watchdog_operator_left = operators.WatchdogOp(
@@ -312,10 +322,10 @@ class PatternTestApplication(holoscan.core.Application):
         self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
         #
         self.add_flow(
-            color_profiler_left, watchdog_operator_left, {("output", "input")}
+            visualizer, watchdog_operator_left, {("camera_pose_output", "input")}
         )
         self.add_flow(
-            color_profiler_right, watchdog_operator_right, {("output", "input")}
+            visualizer, watchdog_operator_right, {("camera_pose_output", "input")}
         )
 
     def left_buckets(self, buckets):

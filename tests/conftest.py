@@ -15,10 +15,12 @@
 
 # See README.md for detailed information.
 
+import json
 import logging
 import logging.handlers
 import os
 import socket
+import subprocess
 import threading
 import traceback
 from unittest.mock import patch
@@ -85,12 +87,36 @@ def hololink_session(request):
     request.addfinalizer(_hololink_session_finalizer)
 
 
+# Produce a default list of COE interfaces.  For now
+# we just find the device names associated with the
+# routes to 192.168.0.2 and 192.168.0.3 and provide
+# those.  Override those using the "--coe-interface=..."
+# switch.
+def coe_devices():
+    device_addresses = ["192.168.0.2", "192.168.0.3"]
+    r = []
+    for device_address in device_addresses:
+        command = f"ip -j route get {device_address}".split(" ")
+        try:
+            process = subprocess.run(
+                command, capture_output=True, text=True, check=True
+            )
+            route_info = json.loads(process.stdout)
+            dev = route_info[0].get("dev")
+            r.append(dev)
+        except Exception as e:
+            logging.error(
+                f'Skipping COE interface detection for "{device_address}" due to {e}.'
+            )
+    return ",".join(r)
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--imx274",
         action="store_true",
         default=False,
-        help="Don't skip test_udp.",
+        help="Don't skip tests specific to IMX274",
     )
     parser.addoption(
         "--headless",
@@ -105,8 +131,8 @@ def pytest_addoption(parser):
         type=int,
     )
     parser.addoption(
-        "--udpcam",
-        help="IP address of UDPCam server; omit to create a temporary one.",
+        "--mock-camera",
+        help="IP address of MockCamera server; omit to create a temporary one.",
     )
     parser.addoption(
         "--hololink",
@@ -156,6 +182,12 @@ def pytest_addoption(parser):
         help="Include tests for IMX477.",
     )
     parser.addoption(
+        "--imx715",
+        action="store_true",
+        default=False,
+        help="Include tests for IMX715.",
+    )
+    parser.addoption(
         "--hsb",
         action="store_true",
         default=False,
@@ -178,6 +210,30 @@ def pytest_addoption(parser):
         default=["default", "greedy", "multithread", "event"],
         nargs="+",
         help="Use these schedulers.",
+    )
+    parser.addoption(
+        "--vb1940",
+        action="store_true",
+        default=False,
+        help="Don't skip tests using VB1940.",
+    )
+    coe_interfaces = coe_devices()
+    parser.addoption(
+        "--coe-interface",
+        default=coe_interfaces,
+        help="Run 1722 COE tests using the given interface-name(s).",
+    )
+    parser.addoption(
+        "--ecam0m30tof",
+        action="store_true",
+        default=False,
+        help="Include tests for ECam0M30Tof.",
+    )
+    parser.addoption(
+        "--audio",
+        action="store_true",
+        default=False,
+        help="Include tests for Audio.",
     )
 
 
@@ -224,6 +280,42 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_hsb_nano" in item.keywords:
                 item.add_marker(skip_hsb_nano)
+    if not config.getoption("--vb1940"):
+        skip_vb1940 = pytest.mark.skip(reason="Tests only run in --vb1940 mode.")
+        for item in items:
+            if "skip_unless_vb1940" in item.keywords:
+                item.add_marker(skip_vb1940)
+    if not config.getoption("--coe-interface"):
+        skip_coe = pytest.mark.skip(
+            reason="Tests only run when --coe-interface=(interface,...) is given."
+        )
+        for item in items:
+            if "skip_unless_coe" in item.keywords:
+                item.add_marker(skip_coe)
+    if not config.getoption("--imx715"):
+        skip_imx715 = pytest.mark.skip(reason="Tests only run in --imx715 mode.")
+        for item in items:
+            if "skip_unless_imx715" in item.keywords:
+                item.add_marker(skip_imx715)
+    if not config.getoption("--ecam0m30tof"):
+        skip_ecam0m30tof = pytest.mark.skip(
+            reason="Tests only run in --ecam0m30tof mode."
+        )
+        for item in items:
+            if "skip_unless_ecam0m30tof" in item.keywords:
+                item.add_marker(skip_ecam0m30tof)
+    if not config.getoption("--mock-camera"):
+        skip_mock_camera = pytest.mark.skip(
+            reason="Tests only run in --mock-camera mode."
+        )
+        for item in items:
+            if "skip_unless_mock_camera" in item.keywords:
+                item.add_marker(skip_mock_camera)
+    if not config.getoption("--audio"):
+        skip_audio = pytest.mark.skip(reason="Tests only run in --audio mode.")
+        for item in items:
+            if "skip_unless_audio" in item.keywords:
+                item.add_marker(skip_audio)
 
 
 @pytest.fixture
@@ -237,8 +329,8 @@ def frame_limit(request):
 
 
 @pytest.fixture
-def udpcam(request):
-    return request.config.getoption("--udpcam")
+def mock_camera_ip(request):
+    return request.config.getoption("--mock-camera")
 
 
 @pytest.fixture
@@ -261,6 +353,26 @@ def ibv_name(request):
 @pytest.fixture
 def channel_ips(request):
     return request.config.getoption("--channel-ips")
+
+
+# If a test runs on COE, provide the interface name(s) for that.
+# NOTE that this is a list which may be empty.
+@pytest.fixture
+def coe_interfaces(request):
+    s = request.config.getoption("--coe-interface")
+    return s.split(",")
+
+
+# "ptp_enable" is True if the user specified "--ptp" on
+# the command line.
+@pytest.fixture
+def ptp_enable(request):
+    return request.config.getoption("--ptp")
+
+
+@pytest.fixture
+def audio_enable(request):
+    return request.config.getoption("--audio")
 
 
 def pytest_generate_tests(metafunc):

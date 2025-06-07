@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -26,21 +26,13 @@
 #include <holoscan/core/parameter.hpp>
 #include <holoscan/utils/cuda_stream_handler.hpp>
 
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
 
 namespace hololink::operators {
 
 class ImageProcessorOp : public holoscan::Operator {
 public:
     HOLOSCAN_OPERATOR_FORWARD_ARGS(ImageProcessorOp);
-
-    enum class BayerFormat {
-        INVALID = -1,
-        // NOTE THAT THESE GUYS LINE UP WITH THE VALUES USED BY NPP; see
-        // https://docs.nvidia.com/cuda/npp/nppdefs.html#c.NppiBayerGridPosition
-        RGGB = 1,
-        GBRG = 2,
-    };
 
     void setup(holoscan::OperatorSpec& spec) override;
     void start() override;
@@ -60,10 +52,10 @@ private:
 
     holoscan::CudaStreamHandler cuda_stream_handler_;
 
-    std::shared_ptr<hololink::native::CudaFunctionLauncher> cuda_function_launcher_;
+    std::shared_ptr<hololink::common::CudaFunctionLauncher> cuda_function_launcher_;
 
-    hololink::native::UniqueCUdeviceptr histogram_memory_;
-    hololink::native::UniqueCUdeviceptr white_balance_gains_memory_;
+    hololink::common::UniqueCUdeviceptr histogram_memory_;
+    hololink::common::UniqueCUdeviceptr white_balance_gains_memory_;
 
     uint32_t histogram_threadblock_size_;
 };

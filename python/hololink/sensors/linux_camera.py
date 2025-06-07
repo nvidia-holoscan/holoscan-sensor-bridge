@@ -48,7 +48,7 @@ class LinuxCamera:
         self._hololink_i2c_device = hololink_i2c_device
         self._hololink_video_device = hololink_video_device
         self._hololink = hololink_channel.hololink()
-        self._camera_i2c_address = hololink_module.CAM_I2C_CTRL
+        self._camera_i2c_bus = hololink_module.CAM_I2C_BUS
         self._device_i2c_address = device_i2c_address
 
     def setup_clock(self):
@@ -59,7 +59,7 @@ class LinuxCamera:
 
     def configure(self, height, width, bayer_format, pixel_format, frame_rate_s):
         # Set up a kernel-mode I2C bus for this guy.
-        self._i2c = self._hololink.get_i2c(self._camera_i2c_address)
+        self._i2c = self._hololink.get_i2c(self._camera_i2c_bus)
         self.setup_i2c()
         #
         self._video_fd = os.open(self._hololink_video_device, os.O_RDWR)
@@ -94,29 +94,24 @@ class LinuxCamera:
         arg = ctypes.c_int(V4L2_BUF_TYPE_VIDEO_CAPTURE)
         fcntl.ioctl(self._video_fd, v4l2_ids.VIDIOC_STREAMOFF, arg)
 
-    # NOTE THIS IS IMX274 SPECIFIC; FIND A BETTER
-    # WAY TO DO THIS
     def configure_converter(self, converter):
-        align_64 = hololink_module.sensors.csi.align_64
-        # We get 175 bytes of metadata in RAW10 mode
-        (
-            frame_start_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-        ) = self._hololink.csi_size()
+        # where do we find the first received byte?
+        start_byte = converter.receiver_start_byte()
+        transmitted_line_bytes = converter.transmitted_line_bytes(
+            self._pixel_format, self._width
+        )
+        received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+        # We get 175 bytes of metadata preceding the image data; ignore that
+        start_byte += converter.received_line_bytes(175)
         assert self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10
-        # We get 175 bytes of metadata in RAW10 mode
-        metadata_size = align_64(line_start_size + 175 + line_end_size)
+        # sensor has 8 lines of optical black before the real image data starts; ignore that
+        start_byte += received_line_bytes * 8
         converter.configure(
+            start_byte,
+            received_line_bytes,
             self._width,
             self._height,
             self._pixel_format,
-            frame_start_size + metadata_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-            margin_top=8,  # sensor has 8 lines of optical black before the real image data starts
         )
 
     def configure_camera(self, height, width, bayer_format, pixel_format, frame_rate_s):
@@ -124,7 +119,7 @@ class LinuxCamera:
         # before each I2C transaction; so that needs the
         # driver to help.
         i2c_expander = li_i2c_expander.LII2CExpander(
-            self._hololink, self._camera_i2c_address
+            self._hololink, self._camera_i2c_bus
         )
         i2c_expander.configure(li_i2c_expander.I2C_Expander_Output_EN.OUTPUT_1.value)
 

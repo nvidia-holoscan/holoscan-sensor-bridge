@@ -51,6 +51,15 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera_mode = camera_mode
         self._frame_limit = frame_limit
         self._engine = engine
+        # These are HSDK controls-- because we have both the
+        # image data and postprocessor output
+        # going into the same visualizer, don't
+        # raise an error when each path present metadata
+        # with the same names.  Because we don't use that metadata,
+        # it's easiest to just ignore new items with the same
+        # names as existing items.
+        self.is_metadata_enabled = True
+        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
         logging.info("compose")

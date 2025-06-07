@@ -165,7 +165,7 @@ limited to 10Gbps so support is only provided for observing stereo video in 1080
 
 `examples/gpio_example_app.py` is a simple example of using the GPIO interface of the
 sensor bridge to set GPIO directions, read input values from GPIO pins and write output
-values to GPIO pins. To run the appliction:
+values to GPIO pins. To run the application:
 
 ```sh
 $ python3 examples/gpio_example_app.py

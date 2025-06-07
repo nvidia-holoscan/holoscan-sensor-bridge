@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +17,16 @@ cmake_minimum_required(VERSION 3.20)
 
 # Options
 option(HOLOLINK_BUILD_PYTHON "Build Hololink Python Bindings" ON)
+option(HOLOLINK_BUILD_TESTS "Build Hololink Tests" ON)
 
-project(hololink)
+file(READ "VERSION" HOLOLINK_VERSION)
+string(STRIP ${HOLOLINK_VERSION} HOLOLINK_VERSION)
+string(REGEX MATCH "^([0-9]+\.[0-9]+\.[0-9]+)" HOLOLINK_VERSION_NUM ${HOLOLINK_VERSION})
+
+# Compile both C++ and Cuda files
+project(hololink
+  LANGUAGES CXX CUDA
+  VERSION ${HOLOLINK_VERSION_NUM})
 
 include(CTest)
 
@@ -29,7 +37,7 @@ find_package(holoscan 0.6 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 
 set(HOLOSCAN_SDK_VERSION "$ENV{HOLOSCAN_SDK_VERSION}")
-set(HOLOSCAN_SDK_VERSION_EXPECTED "2.7.0")
+set(HOLOSCAN_SDK_VERSION_EXPECTED "3.2.0")
 
 if(NOT HOLOSCAN_SDK_VERSION VERSION_EQUAL HOLOSCAN_SDK_VERSION_EXPECTED)
   message(FATAL_ERROR "Expected Holoscan version ${HOLOSCAN_SDK_VERSION_EXPECTED} but found ${HOLOSCAN_SDK_VERSION}, please check pybind11 version of the Holoscan SDK and update here if needed")
@@ -45,10 +53,20 @@ FetchContent_Declare(pybind11
 )
 FetchContent_MakeAvailable(pybind11)
 
+# We fetch googletest since we need the same version as the Holoscan SDK.
+# As recommended by the user guide (https://google.github.io/googletest/quickstart-cmake.html),
+# we use Git commit hash of the GoogleTest version to use the same version as the Holoscan SDK.
+# (https://github.com/google/googletest/releases/tag/release-1.12.1)
+FetchContent_Declare(
+  googletest
+  URL https://github.com/google/googletest/archive/58d77fa8070e8cec2dc1ed015d66b454c8d78850.zip
+)
+FetchContent_MakeAvailable(googletest)
+
 # add CMAKE_MODULE_PATH for pybind11_add_hololink_module
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
-# enabled trace and debug log messages in debug buld only
+# enabled trace and debug log messages in debug build only
 if(CMAKE_BUILD_TYPE STREQUAL "Release")
   add_compile_definitions(HOLOSCAN_LOG_ACTIVE_LEVEL=2)
 else()
@@ -61,8 +79,16 @@ endif()
 
 add_subdirectory(src)
 
+if(HOLOLINK_BUILD_TESTS)
+  add_subdirectory(tests)
+endif()
+
 if(HOLOLINK_BUILD_PYTHON)
   add_subdirectory(python)
 endif()
 
 add_subdirectory(examples)
+add_subdirectory(scripts)
+
+# Add packaging
+include(cmake/HololinkCPack.cmake)

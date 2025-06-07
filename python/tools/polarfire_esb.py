@@ -96,7 +96,7 @@ def _wait_for_spi_ready(in_spi):
     timeout = 3
     now = time.monotonic()
     while True:
-        r = in_spi.spi_transaction([STATUS], [], read_byte_count=1)
+        r = in_spi.spi_transaction([STATUS], [], read_byte_count=1)[1:]
         if (r[0] & 1) == 0:
             break
         elif time.monotonic() >= (now + timeout):
@@ -177,18 +177,16 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
 
 def manual_enumeration(args):
     m = {
-        "configuration_address": 0,
         "control_port": 8192,
-        "cpnx_version": 0x2410,
-        "data_plane": 0,
-        "peer_ip": "192.168.0.2",
-        "sensor": 0,
+        "hsb_ip_version": 0x2502,
+        "peer_ip": args.hololink,
         "sequence_number_checking": 0,
         "serial_number": "100",
-        "vip_mask": 0,
         "board_id": 4,
     }
     metadata = hololink_module.Metadata(m)
+    hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
+    hololink_module.DataChannel.use_sensor(metadata, 0)
     return metadata
 
 
@@ -256,7 +254,7 @@ def main():
     hololink.start()
 
     if args.flash:
-        spi_con_addr = hololink_module.CLNX_SPI_CTRL
+        spi_con_addr = hololink_module.CLNX_SPI_BUS
         _spi_flash(spi_con_addr, hololink, args.fpga_bit_version)
     elif args.program:
         _spi_program(hololink)
