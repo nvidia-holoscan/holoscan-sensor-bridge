@@ -1,6 +1,6 @@
 hololink:
   archive:
-    enrollment_date: '2025-06-07T16:18:19.660914+00:00'
+    enrollment_date: '2025-06-08T18:25:29.033838+00:00'
     version: '2506'
   content:
     NVIDIA_RTL_License_Agreement.txt:
@@ -12,7 +12,7 @@ hololink:
       size: 376082
       url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2506/fpga_clnx_v2506.bit
     fpga_cpnx_v2506.bit:
-      md5: d83516f8e4d995e076f3e4004ae762b6
+      md5: 30b970489fecb0ff205bdc8bb11daf2f
       size: 1962227
       url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2506/fpga_cpnx_v2506.bit
   fpga_uuid:
