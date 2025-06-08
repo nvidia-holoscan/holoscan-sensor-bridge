@@ -123,7 +123,7 @@ constexpr uint32_t LEOPARD_EAGLE_BOARD_ID = 7u;
 // Other constants
 constexpr uint32_t METADATA_SIZE = 128;
 constexpr double APB_TIMEOUT_SCALE = 1.0 / 51.2e-9;
-constexpr double APB_TIMEOUT_MAX = 0xFFFFFF / APB_TIMEOUT_SCALE;
+constexpr double APB_TIMEOUT_MAX = 0xFFFF / APB_TIMEOUT_SCALE;
 
 class TimeoutError : public std::runtime_error {
 public:
