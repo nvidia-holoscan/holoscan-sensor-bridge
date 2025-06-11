@@ -200,15 +200,15 @@ namespace {
 
         // In enum-v1, we don't get fpga-uuid, so let's emulate that here.
         if (board_id == HOLOLINK_LITE_BOARD_ID) {
-            metadata["fpga_uuid"] = "889b7ce3-65a5-4247-8b05-4ff1904c3359";
+            metadata["fpga_uuid"] = HOLOLINK_LITE_UUID;
         } else if (board_id == HOLOLINK_NANO_BOARD_ID) {
-            metadata["fpga_uuid"] = "d0f015e0-93b6-4473-b7d1-7dbd01cbeab5";
+            metadata["fpga_uuid"] = HOLOLINK_NANO_UUID;
         } else if (board_id == HOLOLINK_100G_BOARD_ID) {
-            metadata["fpga_uuid"] = "7a377bf7-76cb-4756-a4c5-7dddaed8354b";
+            metadata["fpga_uuid"] = HOLOLINK_100G_UUID;
         } else if (board_id == MICROCHIP_POLARFIRE_BOARD_ID) {
-            metadata["fpga_uuid"] = "ed6a9292-debf-40ac-b603-a24e025309c1";
+            metadata["fpga_uuid"] = MICROCHIP_POLARFIRE_UUID;
         } else if (board_id == LEOPARD_EAGLE_BOARD_ID) {
-            metadata["fpga_uuid"] = "f1627640-b4dc-48af-a360-c55b09b3d230";
+            metadata["fpga_uuid"] = LEOPARD_EAGLE_UUID;
         }
     }
 

@@ -54,9 +54,13 @@ namespace {
         uint32_t sif_address;
         uint32_t vp_address;
     };
-    static const std::map<int, SensorConfiguration> sensor_map {
+    static const std::map<int, SensorConfiguration> sensor_map_default {
         { 0, SensorConfiguration { 0, 0x1, Hololink::Event::SIF_0_FRAME_END, 0x01000000, 0x1000 } },
         { 1, SensorConfiguration { 2, 0x4, Hololink::Event::SIF_1_FRAME_END, 0x01010000, 0x1080 } },
+    };
+    static const std::map<int, SensorConfiguration> sensor_map_leopard_eagle {
+        { 0, SensorConfiguration { 0, 0x1, Hololink::Event::SIF_0_FRAME_END, 0x01000000, 0x1000 } },
+        { 1, SensorConfiguration { 1, 0x2, Hololink::Event::SIF_1_FRAME_END, 0x01010000, 0x1040 } },
     };
 
 } // anonymous namespace
@@ -96,6 +100,7 @@ DataChannel::DataChannel(const Metadata& metadata, const std::function<std::shar
         HSB_LOG_INFO(fmt::format("DataChannel multicast address={} port={}.", multicast_, multicast_port_));
     }
     frame_end_event_ = static_cast<Hololink::Event>(metadata.get<int64_t>("frame_end_event").value());
+    fpga_uuid_=metadata.get<std::string>("fpga_uuid").value();
 }
 
 /*static*/ bool DataChannel::enumerated(const Metadata& metadata)
@@ -257,23 +262,29 @@ void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pix
 
 void DataChannel::unconfigure()
 {
-    // This stops transmission.
-    hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
-    // Let any in-transit data flush out.
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    // Clear the ROCE configuration.
-    hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, 0);
-    hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
-    hololink_->write_uint32(vp_address_ + DP_QP, 0);
-    hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, 0);
-    hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
-    hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
-    hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
-    hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
+    if (fpga_uuid_ != LEOPARD_EAGLE_UUID) {  // for all boards that are not leopard eagle
+            
+        // This stops transmission.
+        hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
+        // Let any in-transit data flush out.
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        // Clear the ROCE configuration.
+        hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, 0);
+        hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
+        hololink_->write_uint32(vp_address_ + DP_QP, 0);
+        hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
+        hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, 0);
+        hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, 0);
+        hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, 0);
+        hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, 0);
+        hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
+        hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
+        hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
+        hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
+        } else  {
+            // skip for now as this causes to lose ping on vb1940-aio
+        }
+    
 }
 
 void DataChannel::configure_socket(int socket_fd)
@@ -366,8 +377,21 @@ void DataChannel::configure_socket(int socket_fd)
 
 /* static */ void DataChannel::use_sensor(Metadata& metadata, int64_t sensor_number)
 {
-    auto configuration = sensor_map.find(sensor_number);
-    if (configuration == sensor_map.cend()) {
+    const std::map<int, SensorConfiguration>* sensor_map;
+    const auto uuid = metadata.get<std::string>("fpga_uuid");
+    if (uuid == HOLOLINK_LITE_UUID
+        || uuid == HOLOLINK_NANO_UUID
+        || uuid == HOLOLINK_100G_UUID
+        || uuid == MICROCHIP_POLARFIRE_UUID) {
+        sensor_map = &sensor_map_default;
+    } else if (uuid == LEOPARD_EAGLE_UUID) {
+        sensor_map = &sensor_map_leopard_eagle;
+    } else {
+        throw std::runtime_error("Unsupported board");
+    }
+
+    auto configuration = sensor_map->find(sensor_number);
+    if (configuration == sensor_map->cend()) {
         throw std::runtime_error(fmt::format("use_sensor failed, sensor_number={} is out-of-range.", sensor_number));
     }
     HSB_LOG_TRACE(fmt::format("sensor_number={}", sensor_number));

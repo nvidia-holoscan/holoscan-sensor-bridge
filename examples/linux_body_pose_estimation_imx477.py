@@ -186,6 +186,9 @@ class HoloscanApplication(holoscan.core.Application):
         self.add_flow(inference, postprocessor, {("transmitter", "in")})
         self.add_flow(postprocessor, visualizer, {("out", "receivers")})
 
+        # Not using metadata
+        self.enable_metadata(False)
+
 
 def main():
     parser = argparse.ArgumentParser()

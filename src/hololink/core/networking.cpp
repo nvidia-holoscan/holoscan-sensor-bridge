@@ -23,8 +23,11 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
+#include <algorithm>
 #include <map>
+#include <memory>
 #include <stdexcept>
+#include <string>
 #include <vector>
 
 #include "logging_internal.hpp"

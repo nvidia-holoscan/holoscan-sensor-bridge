@@ -57,7 +57,7 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
         // Obtain compilation log from the program.
         size_t logSize;
         NvRTCCheck(nvrtcGetProgramLogSize(prog, &logSize));
-        std::unique_ptr<char> log(new char[logSize]);
+        std::unique_ptr<char[]> log(new char[logSize]);
         NvRTCCheck(nvrtcGetProgramLog(prog, log.get()));
         std::stringstream buf;
         buf << "Failed to compile: " << log.get();
