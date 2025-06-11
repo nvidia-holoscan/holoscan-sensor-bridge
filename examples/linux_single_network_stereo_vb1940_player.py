@@ -151,16 +151,16 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_left = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor_left",
-            # Optical black value for imx274 is 50
-            optical_black=50,
+            # Optical black value for vb1940 raw10 format is 8
+            optical_black=8,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
         )
         image_processor_right = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor_right",
-            # Optical black value for imx274 is 50
-            optical_black=50,
+            # Optical black value for vb1940 raw10 format is 8
+            optical_black=8,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
         )

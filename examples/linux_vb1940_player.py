@@ -101,8 +101,8 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
-            # Optical black value for imx715 is 50 for RAW10
-            optical_black=50,
+            # Optical black value for vb1940 is 8 for RAW10
+            optical_black=8,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
         )

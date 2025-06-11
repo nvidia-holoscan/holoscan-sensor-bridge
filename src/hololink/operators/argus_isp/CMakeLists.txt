@@ -42,7 +42,7 @@ set(ARGUS_LIBRARY_DIR "/usr/lib/aarch64-linux-gnu/nvidia")
 
 target_link_libraries(argus_isp
   PRIVATE
-    hololink::core
+    hololink
     holoscan::core
     CUDA::nvrtc
     CUDA::nppicc

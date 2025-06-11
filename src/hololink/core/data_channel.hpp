@@ -191,6 +191,7 @@ private:
     uint32_t vp_address_;
     uint32_t hif_address_;
     uint32_t sif_address_;
+    std::string fpga_uuid_;
 };
 
 } // namespace hololink
