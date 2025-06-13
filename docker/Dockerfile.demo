@@ -25,6 +25,29 @@ RUN apt-get update \
     && apt-get install -y python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
 
+RUN apt-get update && apt-get install -y \
+    git \
+    cmake \
+    libssl-dev \
+    libusb-1.0-0-dev \
+    libglfw3-dev \
+    libgtk-3-dev \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+# Clone librealsense
+RUN git clone https://github.com/IntelRealSense/librealsense.git /opt/librealsense \
+    && cd /opt/librealsense \
+    && git checkout development
+
+# Build it
+RUN cd /opt/librealsense \
+    && mkdir build && cd build \
+    && cmake .. -DCMAKE_BUILD_TYPE=Release -DBUILD_EXAMPLES=false -DBUILD_GRAPHICAL_EXAMPLES=false \
+    && make -j$(nproc) \
+    && make install \
+    && ldconfig
+
 ADD . /opt/hololink/
 
 # See build.sh for why INSTALL_ENVIRONMENT is here.
@@ -35,16 +58,32 @@ RUN cd /opt/hololink/python \
 # demo container
 FROM base AS demo
 
+# set proxy settings
+ENV HTTPS_PROXY="http://proxy-iil.intel.com:912"
+ENV HTTP_PROXY="http://proxy-iil.intel.com:912"
+ENV https_proxy="http://proxy-iil.intel.com:912"
+ENV http_proxy="http://proxy-iil.intel.com:912"
+ENV NO_PROXY="localhost,127.0.0.1,localaddress,intel.com"
+
 RUN python3 -m pip install --upgrade pip
-RUN pip3 install pytest
+RUN pip3 install pytest pyrealsense2 opencv-python
 
 # net-tools gives us the "arp" command
 # iputils-ping gives us the "ping" command
 RUN apt-get update \
-    && apt-get install -y net-tools iputils-ping iproute2 \
+    && apt-get install -y net-tools iputils-ping iproute2 libusb-1.0-0 libgl1 \
     && rm -rf /var/lib/apt/lists/*
 
 # install the wheel we build before
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
 RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \
     && pip3 install ${WHEEL}
+
+# Copy RealSense runtime libraries from builder
+COPY --from=builder /usr/local/lib/ /usr/local/lib/
+COPY --from=builder /usr/local/include/ /usr/local/include/
+COPY --from=builder /usr/local/bin/ /usr/local/bin/
+COPY --from=builder /usr/local/share/ /usr/local/share/
+
+# Make sure dynamic linker sees the libraries
+RUN ldconfig

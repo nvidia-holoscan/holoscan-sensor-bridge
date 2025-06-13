@@ -15,3 +15,5 @@ cscope.*
 # NSight profiler files
 *.ncu-rep
 *.nsys-rep
+
+build/

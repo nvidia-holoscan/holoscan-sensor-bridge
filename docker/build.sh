@@ -124,11 +124,23 @@ then
 INSTALL_ENVIRONMENT="taskset -c 0-2"
 fi
 
+
+# Export proxy settings to build arguments
+PROXY_ARGS=""
+[ -n "$http_proxy" ]  && PROXY_ARGS+="--build-arg http_proxy=$http_proxy "
+[ -n "$https_proxy" ] && PROXY_ARGS+="--build-arg https_proxy=$https_proxy "
+[ -n "$HTTP_PROXY" ]  && PROXY_ARGS+="--build-arg HTTP_PROXY=$HTTP_PROXY "
+[ -n "$HTTPS_PROXY" ] && PROXY_ARGS+="--build-arg HTTPS_PROXY=$HTTPS_PROXY "
+[ -n "$no_proxy" ]    && PROXY_ARGS+="--build-arg no_proxy=$no_proxy "
+[ -n "$NO_PROXY" ]    && PROXY_ARGS+="--build-arg NO_PROXY=$NO_PROXY "
+
+
 # Build the development container.  We specifically rely on buildkit skipping
 # the dgpu or igpu stages that aren't included in the final image we're
 # creating.
 DOCKER_BUILDKIT=1 docker build \
     --network=host \
+    $PROXY_ARGS \
     --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     -t hololink-prototype:$VERSION \
     -f $HERE/Dockerfile \
@@ -138,6 +150,7 @@ DOCKER_BUILDKIT=1 docker build \
 # Build a container that has python extensions set up.
 DOCKER_BUILDKIT=1 docker build \
     --network=host \
+    $PROXY_ARGS \
     --build-arg CONTAINER_VERSION=hololink-prototype:$VERSION \
     --build-arg "INSTALL_ENVIRONMENT=$INSTALL_ENVIRONMENT" \
     -t hololink-demo:$VERSION \

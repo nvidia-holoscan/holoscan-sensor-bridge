@@ -13,18 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# include the operators
-if(DEFINED ENV{CONTAINER_TYPE} AND "$ENV{CONTAINER_TYPE}" STREQUAL "igpu")
-  add_subdirectory(argus_isp)
-endif()
-add_subdirectory(csi_to_bayer)
-add_subdirectory(image_processor)
-add_subdirectory(linux_receiver)
-add_subdirectory(roce_receiver)
-# add_subdirectory(dummy_csi_source)
-# add_subdirectory(d455_realsense_rgb_source)
-# add_subdirectory(d455_realsense_depth_source)
-# add_subdirectory(d455_realsense_dual_source)
-# add_subdirectory(d457_realsense_rgb_source)
-# add_subdirectory(d457_realsense_depth_source)
-add_subdirectory(image_decoder)
+add_library(dummy_csi_source STATIC
+  dummy_csi_source.cpp
+)
+
+set_property(TARGET dummy_csi_source PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+# Optional: Create an alias for consistent use in other modules
+add_library(hololink::operators::dummy_csi_source ALIAS dummy_csi_source)
+
+target_include_directories(dummy_csi_source
+  INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
+    $<INSTALL_INTERFACE:src>
+)
+
+target_link_libraries(dummy_csi_source
+  PUBLIC
+    hololink::native             # if needed for CudaContextScopedPush, etc.
+  PRIVATE
+    holoscan::core
+)
