@@ -36,6 +36,7 @@ BLOCK_ERASE = 0xD8
 PAGE_PROGRAM = 0x2
 START_ADDR = 0xA00000
 
+READ_CMD = 0x3
 
 PFSRV_CMD_OFFSET = 0x4
 PFSRV_IAP_PROGRAM_OP = 0x43
@@ -62,6 +63,13 @@ url_2407 = (
     + fname_2407
 )
 
+filename_2506 = "PF_ESB_HSB2506_v2025p1.spi"
+fname_2506 = "PF_ESB_HSB2506_v2025p1.zip"
+expected_md5_2506 = "34c78006fedc447212e918059213f556"
+url_2506 = (
+    "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
+    + fname_2506
+)
 
 def download_extract(args):
     if args == "2412":
@@ -86,6 +94,16 @@ def download_extract(args):
         if md5_returned != expected_md5_2407:
             raise Exception("md5 Hash mismatch")
 
+    elif args == "2506":
+        r = requests.get(url_2506)
+        open(fname_2506, "wb").write(r.content)
+        with zipfile.ZipFile(fname_2506) as zip_ref:
+            zip_ref.extractall(".")
+        with open(filename_2506, "rb") as file_to_check:
+            data = file_to_check.read()
+            md5_returned = hashlib.md5(data).hexdigest()
+        if md5_returned != expected_md5_2506:
+            raise Exception("md5 Hash mismatch")
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
     in_spi.spi_transaction(command, w_data, read_count)
@@ -118,10 +136,14 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
     elif fpga_bit_version == "2407":
         lfilename = filename_2407
         lfname = fname_2407
+    elif fpga_bit_version == "2506":
+        lfilename = filename_2506
+        lfname = fname_2506
     else:
         raise Exception("In correct FPGA bit version")
     download_extract(fpga_bit_version)
-    in_spi = hololink.get_spi(
+    in_spi = hololink_module.get_traditional_spi(
+        hololink,
         spi_con_addr,
         chip_select=0,
         cpol=1,
@@ -132,6 +154,7 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
     f = open(lfilename, "rb")
     content = list(f.read())
     con_len = len(content) + START_ADDR
+    tot_len = len(content)
     _spi_command(in_spi, [0x01, 0])
     for erase_add in range(START_ADDR, con_len, ERASE_SIZE):
         _wait_for_spi_ready(in_spi)
@@ -145,6 +168,14 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
             (erase_add >> 0) & 0xFF,
         ]
         _spi_command(in_spi, page_erase)
+        _wait_for_spi_ready(in_spi)
+        command_bytes = [
+            READ_CMD,
+            (START_ADDR >> 24) & 0xFF,
+            (START_ADDR >> 16) & 0xFF,
+            (START_ADDR >> 8) & 0xFF,
+            (START_ADDR >> 0) & 0xFF,
+        ]
         for addr in range(erase_add, min(con_len, erase_add + ERASE_SIZE), BLOCK_SIZE):
             _wait_for_spi_ready(in_spi)
             _spi_command(in_spi, [WRITE_ENABLE])
@@ -158,6 +189,15 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
             ]
             offset = addr - START_ADDR
             _spi_command(in_spi, command_bytes, content[offset : offset + BLOCK_SIZE])
+            print(f"writing to spi: {offset}/{tot_len}", end='\r')
+            _wait_for_spi_ready(in_spi)
+            command_bytes = [
+                READ_CMD,
+                (addr >> 24) & 0xFF,
+                (addr >> 16) & 0xFF,
+                (addr >> 8) & 0xFF,
+                (addr >> 0) & 0xFF,
+            ]
     _wait_for_spi_ready(in_spi)
     f.close()
     _spi_command(in_spi, [ENABLE_RESET])
@@ -182,7 +222,7 @@ def manual_enumeration(args):
         "peer_ip": args.hololink,
         "sequence_number_checking": 0,
         "serial_number": "100",
-        "board_id": 4,
+        "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
     }
     metadata = hololink_module.Metadata(m)
     hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
@@ -211,6 +251,11 @@ def main():
         default=20,
         help="Logging level to display",
     )
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
 
     subparsers = parser.add_subparsers(help="Subcommands", dest="flash", required=False)
 
@@ -222,9 +267,9 @@ def main():
     flash.add_argument(
         "--fpga-bit-version",
         type=str,
-        help="FPAG bit file version to be flashed. Currently supported versions 2412 and 2407",
-        default="2412",
-        choices=("2412", "2407"),
+        help="FPAG bit file version to be flashed. Currently supported versions 2506, 2412 and 2407",
+        default="2506",
+        choices=("2412", "2407", "2506"),
         required=True,
     )
 
@@ -254,7 +299,7 @@ def main():
     hololink.start()
 
     if args.flash:
-        spi_con_addr = hololink_module.CLNX_SPI_BUS
+        spi_con_addr = 0x03000000
         _spi_flash(spi_con_addr, hololink, args.fpga_bit_version)
     elif args.program:
         _spi_program(hololink)
