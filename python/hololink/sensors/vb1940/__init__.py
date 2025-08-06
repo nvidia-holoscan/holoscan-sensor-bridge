@@ -13,9 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from . import vb1940, vb1940_mode
+from .imu import Imu
+from .vb1940 import Vb1940Cam
+from .vb1940_mode import Vb1940_Mode
 
 __all__ = [
-    "vb1940",
-    "vb1940_mode",
+    "Imu",
+    "Vb1940Cam",
+    "Vb1940_Mode",
 ]

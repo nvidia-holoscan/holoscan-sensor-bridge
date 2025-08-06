@@ -14,7 +14,10 @@
 # limitations under the License.
 
 add_subdirectory(core)
+add_subdirectory(sensors)
+if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
 add_subdirectory(common)
 add_subdirectory(expr_eval)
 add_subdirectory(operators)
-add_subdirectory(sensors)
+add_subdirectory(emulation)
+endif()

@@ -5,18 +5,18 @@ sections.
 
 ## Global Reset
 
-| Signal Name | Direction | Description                             |
-| ----------- | --------- | --------------------------------------- |
-| i_sys_rst   | Input     | Global, Asynchronous, Active High Reset |
+| **Signal Name** | **Direction** | **Description**                         |
+| --------------- | ------------- | --------------------------------------- |
+| i_sys_rst       | Input         | Global, Asynchronous, Active High Reset |
 
 ## User Register Ports
 
 Table 1 User Register Clock and Reset Ports
 
-| Signal Name | Direction | Description                            |
-| ----------- | --------- | -------------------------------------- |
-| i_apb_clk   | Input     | APB Clock. Must be greater than 20MHz. |
-| o_apb_rst   | Output    | APB Synchronous, Active High Reset     |
+| **Signal Name** | **Direction** | **Description**                        |
+| --------------- | ------------- | -------------------------------------- |
+| i_apb_clk       | Input         | APB Clock. Must be greater than 20MHz. |
+| o_apb_rst       | Output        | APB Synchronous, Active High Reset     |
 
 Table 2 User Register APB Ports
 
@@ -50,14 +50,14 @@ Table 4 Sensor Interface Clock and Reset Ports
 
 Table 5 Sensor RX Interface Ports
 
-| **Signal Name**                            | **Directi on** | **Description**                                                                |
-| ------------------------------------------ | -------------- | ------------------------------------------------------------------------------ |
-| i_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Input          | AXI-Stream Valid                                                               |
-| i_sif_axis_tlast[N-1:0]<sup>1<sup>         | Input          | AXI-Stream Last. Currently not supported. See Sensor RX section for more info. |
-| [W-1:0] i_sif_axis_tdata[0:N-1]<sup>1<sup> | Input          | AXI-Stream Data.                                                               |
-| [X-1:0] i_sif_axis_tkeep[0:N-1]<sup>1<sup> | Input          | AXI-Stream Keep. Currently not supported. See Sensor RX section for more info. |
-| [Y-1:0] i_sif_axis_tuser[0:N-1]<sup>1<sup> | Input          | AXI-Stream User.                                                               |
-| o_sif_axis_tready[N-1:0]<sup>1<sup>        | Output         | AXI-Stream Ready                                                               |
+| **Signal Name**                            | **Direction** | **Description**                                                                |
+| ------------------------------------------ | ------------- | ------------------------------------------------------------------------------ |
+| i_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Input         | AXI-Stream Valid                                                               |
+| i_sif_axis_tlast[N-1:0]<sup>1<sup>         | Input         | AXI-Stream Last.                                                               |
+| [W-1:0] i_sif_axis_tdata[0:N-1]<sup>1<sup> | Input         | AXI-Stream Data.                                                               |
+| [X-1:0] i_sif_axis_tkeep[0:N-1]<sup>1<sup> | Input         | AXI-Stream Keep. Currently not supported. See Sensor RX section for more info. |
+| [Y-1:0] i_sif_axis_tuser[0:N-1]<sup>1<sup> | Input         | AXI-Stream User.                                                               |
+| o_sif_axis_tready[N-1:0]<sup>1<sup>        | Output        | AXI-Stream Ready                                                               |
 
 1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
    Definitions section for details.Table 6 Sensor Event Ports
@@ -65,25 +65,23 @@ Table 5 Sensor RX Interface Ports
 Table 6 Sensor TX Interface Ports Sensor TX interface is unsupported but TBD for future
 revisions. Sensor TX interface ports should still be instantiated.
 
-| **Signal Name**                            | **Directi on** | **Description** |
-| ------------------------------------------ | -------------- | --------------- |
-| o_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Output         | TBD             |
-| o_sif_axis_tlast[N-1:0]<sup>1<sup>         | Output         | TBD             |
-| [W-1:0] o_sif_axis_tdata[0:N-1]<sup>1<sup> | Output         | TBD             |
-| [X-1:0] o_sif_axis_tkeep[0:N-1]<sup>1<sup> | Output         | TBD             |
-| [Y-1:0] o_sif_axis_tuser[0:N-1]<sup>1<sup> | Output         | TBD             |
-| i_sif_axis_tready[N-1:0]<sup>1<sup>        | Input          | TBD             |
+| **Signal Name**                            | **Direction** | **Description** |
+| ------------------------------------------ | ------------- | --------------- |
+| o_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Output        | TBD             |
+| o_sif_axis_tlast[N-1:0]<sup>1<sup>         | Output        | TBD             |
+| [W-1:0] o_sif_axis_tdata[0:N-1]<sup>1<sup> | Output        | TBD             |
+| [X-1:0] o_sif_axis_tkeep[0:N-1]<sup>1<sup> | Output        | TBD             |
+| [Y-1:0] o_sif_axis_tuser[0:N-1]<sup>1<sup> | Output        | TBD             |
+| i_sif_axis_tready[N-1:0]<sup>1<sup>        | Input         | TBD             |
 
 1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
    Definitions section for details.
 
 Table 7 Sensor Event Ports
 
-| **Signal Name**                | **Direction** | **Description**                                                      |
-| ------------------------------ | ------------- | -------------------------------------------------------------------- |
-| i_sif_event [N-1:0]<sup>1<sup> | Input         | Sensor Interface Event. Refer to Sensor RX section for more details. |
-
-1.N=SENSOR_IF_INST. See Macro Definitions section for details.
+| **Signal Name**    | **Direction** | **Description**                                                                    |
+| ------------------ | ------------- | ---------------------------------------------------------------------------------- |
+| i_sif_event [15:0] | Input         | Sensor Interface Event. Asynchronous. Refer to Sensor RX section for more details. |
 
 ## Host Interface Ports
 
@@ -165,16 +163,17 @@ Table 14 JESD Ports
 JESD Sensor Ports are unsupported and do not need to be instantiated. TBD in future
 revisions.
 
-| **Signal Name**    | **Direction** | **Description** |
-| ------------------ | ------------- | --------------- |
-| i_jesd_rxdp[7:0]   | Input         | TBD             |
-| i_jesd_rxdn[7:0]   | Input         | TBD             |
-| o_jesd_txdp[7:0]   | Output        | TBD             |
-| o_jesd_txdn[7:0]   | Output        | TBD             |
-| i_jesd_tx_sysref   | Input         | TBD             |
-| i_jesd_rx_sysref   | Input         | TBD             |
-| i_jesd_xcvr_refclk | Input         | TBD             |
-| i_jesd_pll_refclk  | Input         | TBD             |
+| **Signal Name**     | **Direction** | **Description** |
+| ------------------- | ------------- | --------------- |
+| i_jesd_rxdp[7:0]    | Input         | TBD             |
+| i_jesd_rxdn[7:0]    | Input         | TBD             |
+| o_jesd_txdp[7:0]    | Output        | TBD             |
+| o_jesd_txdn[7:0]    | Output        | TBD             |
+| i_jesd_tx_sysref    | Input         | TBD             |
+| i_jesd_rx_sysref    | Input         | TBD             |
+| i_jesd_xcvr_refclk  | Input         | TBD             |
+| i_jesd_core_clk     | Input         | TBD             |
+| i_jesd_core_dev_clk | Input         | TBD             |
 
 Table 15 Sensor Reset Port
 
@@ -189,6 +188,8 @@ Table 16 PTP Port
 
 | **Signal Name**      | **Direction** | **Description**                                                          |
 | -------------------- | ------------- | ------------------------------------------------------------------------ |
-| o_ptp_sec [47:0]     | Output        | PTP Seconds Field per PTP1588-2019 v2 spec. Synchronous to i_hif_clk     |
-| o_ptp_nanosec [31:0] | Output        | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_hif_clk |
-| o_pps                | Output        | Pulse Per Second. Synchronous to i_hif_clk                               |
+| i_ptp_clk            | Input         | PTP Clock                                                                |
+| o_ptp_rst            | Output        | PTP Reset                                                                |
+| o_ptp_sec [47:0]     | Output        | PTP Seconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk     |
+| o_ptp_nanosec [31:0] | Output        | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk |
+| o_pps                | Output        | Pulse Per Second. Synchronous to i_ptp_clk                               |

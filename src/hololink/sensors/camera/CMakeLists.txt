@@ -35,7 +35,9 @@ target_link_libraries(hololink_camera_sensor
   PUBLIC
     hololink::sensor
     hololink::sensors::native_imx274_camera_sensor
+    hololink::sensors::native_vb1940_camera_sensor
   )
 
 # Add camera implementation subdirectories
 add_subdirectory(imx274)
+add_subdirectory(vb1940)

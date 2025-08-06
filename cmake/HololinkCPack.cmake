@@ -52,14 +52,15 @@ include(CPack)
 
 # Add the components for hololink-core
 cpack_add_component(hololink-core GROUP core)
+cpack_add_component(hololink-tools GROUP core)
 
 # Add the components for hsb-dev
 cpack_add_component(hololink-common GROUP dev)
 cpack_add_component(hololink-examples GROUP dev)
 cpack_add_component(hololink-scripts GROUP dev)
-cpack_add_component(hololink-tools GROUP dev)
 cpack_add_component(hololink-operators GROUP dev)
 cpack_add_component(hololink-python_libs GROUP dev)
+cpack_add_component(hololink-python_tools GROUP dev)
 
 # Add the components for hsb-roce
 cpack_add_component(hololink-roce-operators GROUP roce)

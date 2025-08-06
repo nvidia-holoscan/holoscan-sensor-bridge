@@ -69,6 +69,7 @@ LinuxCoeReceiver::LinuxCoeReceiver(CUdeviceptr cu_buffer,
     : cu_buffer_(cu_buffer)
     , cu_buffer_size_(cu_buffer_size)
     , socket_(socket)
+    , channel_(channel)
     , ready_(false)
     , exit_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
@@ -78,7 +79,7 @@ LinuxCoeReceiver::LinuxCoeReceiver(CUdeviceptr cu_buffer,
     , busy_(NULL)
     , cu_stream_(0)
     , frame_ready_([](const LinuxCoeReceiver&) {})
-    , channel_(channel)
+    , frame_number_()
 {
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
@@ -121,7 +122,7 @@ void LinuxCoeReceiver::run()
     core::NvtxTrace::setThreadName("linux_coe_receiver");
 
     // Round the buffer size up so that the next buffer starts on a 128-byte boundary.
-    uint64_t buffer_size = hololink::core::round_up(cu_buffer_size_, 128);
+    size_t buffer_size = hololink::core::round_up(cu_buffer_size_, 128);
     // Allocate three pages, details below
     CUresult cu_result = cuMemHostAlloc((void**)(&local_), buffer_size * 3, CU_MEMHOSTALLOC_WRITECOMBINED);
     if (cu_result != CUDA_SUCCESS) {
@@ -142,7 +143,8 @@ void LinuxCoeReceiver::run()
     constexpr uint32_t ETHERNET_PACKET_SIZE = 10240;
     uint8_t received[ETHERNET_PACKET_SIZE];
 
-    unsigned frame_count = 0, packet_count = 0;
+    unsigned frame_count = 0;
+    [[maybe_unused]] unsigned packet_count = 0;
     unsigned frame_packets_received = 0, frame_bytes_received = 0;
     struct timespec now = { 0 }, frame_start = { 0 };
 
@@ -196,9 +198,9 @@ void LinuxCoeReceiver::run()
             uint8_t sequence_number_c = 0;
             uint16_t channel = 0;
             uint8_t flags = 0;
-            constexpr uint32_t FRAME_START = 0x01;
-            constexpr uint32_t FRAME_END = 0x02;
-            constexpr uint32_t LINE_END = 0x04;
+            [[maybe_unused]] constexpr uint32_t FRAME_START = 0x01;
+            [[maybe_unused]] constexpr uint32_t FRAME_END = 0x02;
+            [[maybe_unused]] constexpr uint32_t LINE_END = 0x04;
             uint32_t address = 0;
             const uint8_t* payload = 0;
 
@@ -234,17 +236,17 @@ void LinuxCoeReceiver::run()
             // NOTE that ntscv_data_length is really
             // (sv, version (3 bits), r, and length (11 bits))
             // per 1722-2016.pdf page 78.
-            uint8_t sv = (ntscf_data_length & 0x8000) >> 15;
-            uint8_t version = (ntscf_data_length > 12) & 0x7;
-            uint8_t r = (ntscf_data_length & 0x800) >> 11;
+            [[maybe_unused]] uint8_t sv = (ntscf_data_length & 0x8000) >> 15;
+            [[maybe_unused]] uint8_t version = (ntscf_data_length >> 12) & 0x7;
+            [[maybe_unused]] uint8_t r = (ntscf_data_length & 0x800) >> 11;
             ntscf_data_length &= 0x7FF;
             // NOTE that channel is really
             // (e, se, fcv, ver (2 bits), exposure (2 bits), reserved (3 bits), channel number (6 bits)
-            uint8_t e = (channel & 0x8000) >> 15; // Not clear how this is used
-            uint8_t se = (channel & 0x4000) >> 14; // Not clear how this is used
-            uint8_t fcv = (channel & 0x2000) >> 13; // Not clear how this is used
-            uint8_t acf_version = (channel & 0x1800) >> 11; // Not clear how this is used
-            uint8_t exposure = (channel & 0x600) >> 9; // Not clear how this is used
+            [[maybe_unused]] uint8_t e = (channel & 0x8000) >> 15; // Not clear how this is used
+            [[maybe_unused]] uint8_t se = (channel & 0x4000) >> 14; // Not clear how this is used
+            [[maybe_unused]] uint8_t fcv = (channel & 0x2000) >> 13; // Not clear how this is used
+            [[maybe_unused]] uint8_t acf_version = (channel & 0x1800) >> 11; // Not clear how this is used
+            [[maybe_unused]] uint8_t exposure = (channel & 0x600) >> 9; // Not clear how this is used
             channel &= 0x3F;
             // Skip traffic for other channels.
             if (channel != channel_) {
@@ -254,7 +256,7 @@ void LinuxCoeReceiver::run()
             uint32_t payload_bytes = received_bytes - deserializer.position();
             // NOTE that address is really
             // ( frame number (4 bits), byte offset (28 bits) )
-            uint8_t frame_number = (address & 0xF000'0000) >> 28;
+            [[maybe_unused]] uint8_t frame_number = (address & 0xF000'0000) >> 28;
             address &= 0xFFF'FFFF;
 
             core::NvtxTrace::event_u64(fmt::format("address={:#x} flags={:#x} sequence_number_c={} payload_bytes={}",
@@ -287,7 +289,7 @@ void LinuxCoeReceiver::run()
                 LinuxCoeReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
-                metadata.frame_number = frame_count;
+                metadata.received_frame_number = frame_count;
                 metadata.frame_start_s = frame_start.tv_sec;
                 metadata.frame_start_ns = frame_start.tv_nsec;
                 metadata.frame_end_s = now.tv_sec;
@@ -295,6 +297,7 @@ void LinuxCoeReceiver::run()
                 metadata.received_s = now.tv_sec;
                 metadata.received_ns = now.tv_nsec;
                 metadata.frame_metadata = frame_metadata;
+                metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
 
                 receiving = available_.exchange(receiving);
                 signal();

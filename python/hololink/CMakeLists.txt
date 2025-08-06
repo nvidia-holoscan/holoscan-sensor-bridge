@@ -20,6 +20,7 @@ file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR})
 add_subdirectory(hololink_core)
 add_subdirectory(operators)
 add_subdirectory(sensors)
+add_subdirectory(emulation)
 
 include(pybind11_add_hololink_module)
 

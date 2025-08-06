@@ -22,6 +22,12 @@ including instructions for setup on
 configurations. Please see the user guide for host configuration and instructions on
 running unit tests.
 
+## Troubleshooting
+
+Be sure and check the
+[release notes](https://docs.nvidia.com/holoscan/sensor-bridge/latest/release_notes.html)
+for frequently asked questions and troubleshooting tips.
+
 ## Submitting changes
 
 This software is published under the Apache 2.0 license, allowing unrestricted

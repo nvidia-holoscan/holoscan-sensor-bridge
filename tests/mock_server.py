@@ -572,14 +572,15 @@ class MockServer:
                                 metadata_timestamp = time.time_ns()
                                 metadata_s, metadata_ns = ns_to_sns(metadata_timestamp)
                                 metadata = struct.pack(
-                                    "!IIIQIQIQI",
+                                    "!IIIQIQHHQI",
                                     0,  # flags
                                     self._psn,
                                     overall_crc,
                                     timestamp_s,
                                     timestamp_ns,
                                     bytes_written,
-                                    frame_number,
+                                    0,
+                                    frame_number & 0xFFFF,
                                     metadata_s,
                                     metadata_ns,
                                 )
@@ -747,7 +748,6 @@ class TestServer:
             self._process = multiprocessing.Process(
                 target=self._run,
                 name="udp-server",
-                daemon=True,
             )
             self._process.start()
             self._server_address = "127.0.0.1"

@@ -28,6 +28,12 @@ target_include_directories(hololink
     $<INSTALL_INTERFACE:src>
   )
 
+if(TARGET CUDA::nvtx3)
+  set(CUDA_NVTX_TARGET CUDA::nvtx3)
+else()
+  set(CUDA_NVTX_TARGET CUDA::nvToolsExt)
+endif()
+
 target_link_libraries(hololink
   PRIVATE
     holoscan::core
@@ -38,8 +44,8 @@ target_link_libraries(hololink
   PUBLIC
     hololink::core
     CUDA::cuda_driver
-    CUDA::nvToolsExt
     CUDA::nvrtc
+    ${CUDA_NVTX_TARGET}
   )
 
 # Installation of the hololink library

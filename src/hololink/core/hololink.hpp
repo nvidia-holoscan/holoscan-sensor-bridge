@@ -20,6 +20,7 @@
 #ifndef SRC_HOLOLINK_HOLOLINK
 #define SRC_HOLOLINK_HOLOLINK
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <stdint.h>
@@ -90,10 +91,21 @@ constexpr uint32_t I2C_DONE = 0b0000'0000'0001'0000;
 constexpr uint32_t HSB_IP_VERSION = 0x80;
 constexpr uint32_t FPGA_DATE = 0x84;
 constexpr uint32_t FPGA_PTP_CTRL = 0x104;
+constexpr uint32_t FPGA_PTP_DELAY_ASYMMETRY = 0x10C;
 constexpr uint32_t FPGA_PTP_CTRL_DPLL_CFG1 = 0x110;
 constexpr uint32_t FPGA_PTP_CTRL_DPLL_CFG2 = 0x114;
+constexpr uint32_t FPGA_PTP_CTRL_DELAY_AVG_FACTOR = 0x118;
 constexpr uint32_t FPGA_PTP_SYNC_TS_0 = 0x180;
+constexpr uint32_t FPGA_PTP_SYNC_STAT = 0x188;
 constexpr uint32_t FPGA_PTP_OFM = 0x18C;
+
+// VSYNC control
+constexpr uint32_t VSYNC_CONTROL = 0x70000000;
+constexpr uint32_t VSYNC_FREQUENCY = 0x70000004;
+constexpr uint32_t VSYNC_DELAY = 0x70000008;
+constexpr uint32_t VSYNC_START = 0x7000000C;
+constexpr uint32_t VSYNC_EXPOSURE = 0x70000010;
+constexpr uint32_t VSYNC_GPIO = 0x70000014;
 
 // Async event messaging
 constexpr uint32_t CTRL_EVENT = 0x0000'0200;
@@ -120,17 +132,12 @@ constexpr uint32_t MICROCHIP_POLARFIRE_BOARD_ID = 4u;
 constexpr uint32_t HOLOLINK_NANO_BOARD_ID = 5u;
 constexpr uint32_t LEOPARD_EAGLE_BOARD_ID = 7u;
 
-// FPGA UUIDs
-const std::string HOLOLINK_LITE_UUID = "889b7ce3-65a5-4247-8b05-4ff1904c3359";
-const std::string HOLOLINK_NANO_UUID = "d0f015e0-93b6-4473-b7d1-7dbd01cbeab5";
-const std::string HOLOLINK_100G_UUID = "7a377bf7-76cb-4756-a4c5-7dddaed8354b";
-const std::string MICROCHIP_POLARFIRE_UUID = "ed6a9292-debf-40ac-b603-a24e025309c1";
-const std::string LEOPARD_EAGLE_UUID = "f1627640-b4dc-48af-a360-c55b09b3d230";
-
 // Other constants
 constexpr uint32_t METADATA_SIZE = 128;
 constexpr double APB_TIMEOUT_SCALE = 1.0 / 51.2e-9;
 constexpr double APB_TIMEOUT_MAX = 0xFFFF / APB_TIMEOUT_SCALE;
+
+constexpr uint16_t DATA_SOURCE_UDP_PORT = 12288;
 
 class TimeoutError : public std::runtime_error {
 public:
@@ -152,6 +159,58 @@ public:
  * Defined in data_channel.hpp.
  */
 class DataChannel;
+
+/**
+ * Objects that can be attached to a Synchronizer.
+ */
+class Synchronizable {
+public:
+    Synchronizable();
+    virtual ~Synchronizable() = default;
+};
+
+/**
+ * Abstract base class for synchronizers that provide timing pulses
+ * to various device functions (e.g. VSYNC camera inputs).
+ */
+class Synchronizer {
+public:
+    static std::shared_ptr<Synchronizer> null_synchronizer();
+
+public:
+    virtual ~Synchronizer() = default;
+
+    /**
+     * Attach a synchronizable peer to this synchronizer.
+     * @param peer The peer to attach
+     */
+    void attach(std::shared_ptr<Synchronizable> peer);
+
+    /**
+     * Detach a synchronizable peer from this synchronizer.
+     * @param peer The peer to detach
+     */
+    void detach(std::shared_ptr<Synchronizable> peer);
+
+    /**
+     * Set up the synchronizer. Called when the first peer is attached.
+     */
+    virtual void setup() = 0;
+
+    /**
+     * Shut down the synchronizer. Called when the last peer is detached.
+     */
+    virtual void shutdown() = 0;
+
+    /**
+     * Returns false if synchronization is not used.
+     */
+    virtual bool is_enabled() = 0;
+
+protected:
+    std::vector<std::shared_ptr<Synchronizable>> peers_;
+    mutable std::mutex peers_mutex_;
+};
 
 /**
  * @brief
@@ -217,7 +276,7 @@ public:
      * @param timeout
      * @returns the FPGA version
      */
-    uint32_t get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>(), bool check_sequence = true);
+    uint32_t get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>(), bool sequence_check = true);
 
     /**
      * @returns the FPGA date
@@ -258,7 +317,7 @@ public:
      * @return uint32_t
      */
     uint32_t read_uint32(
-        uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool check_sequence);
+        uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check);
 
     uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
     {
@@ -602,11 +661,18 @@ public:
     std::shared_ptr<GPIO> get_gpio(Metadata& metadata);
 
     /**
-     * @brief
-     *
-     * @param request
+     * This is the routine which actually sends an ECB
+     * request to the network.  The only real use of overriding
+     * this method is for testing.
      */
     virtual void send_control(const std::vector<uint8_t>& request);
+
+    /**
+     * This is the routine which blocks until receipt of an ECB
+     * reply is found, or the timeout elapses.  The only real use
+     * of overriding this method is for testing.
+     */
+    virtual std::vector<uint8_t> receive_control(const std::shared_ptr<Timeout>& timeout);
 
     class ResetController {
     public:
@@ -627,20 +693,51 @@ public:
     bool ptp_synchronize(const std::shared_ptr<Timeout>& timeout);
 
     /**
+     * ptp_synchronize(...) with a default timeout of 20 seconds.
+     */
+    bool ptp_synchronize()
+    {
+        float timeout_s = 20; // seconds
+        auto timeout = std::make_shared<Timeout>(timeout_s);
+        return ptp_synchronize(timeout);
+    }
+
+    /**
+     * Get a PTP synchronizer instance.
+     * @param frequency Optional frequency parameter (default: 60 Hz)
+     * @returns A shared pointer to a Synchronizer instance
+     */
+    std::shared_ptr<Synchronizer> ptp_pps_output(unsigned frequency = 0);
+
+    class PtpSynchronizer : public Synchronizer {
+    public:
+        PtpSynchronizer(Hololink&);
+        void set_frequency(unsigned frequency);
+        void setup() override;
+        void shutdown() override;
+        bool is_enabled() override;
+
+    private:
+        Hololink& hololink_;
+        unsigned frequency_;
+        unsigned frequency_control_;
+    };
+
+    /**
      * Tool for deserializing HSB received metadata blob.
      */
     typedef struct {
-        uint32_t flags;
-        uint32_t psn;
-        uint32_t crc;
-        uint32_t frame_number;
+        uint32_t flags = 0;
+        uint32_t psn = 0;
+        uint32_t crc = 0;
+        uint16_t frame_number = 0;
         // Time when the first sample data for the frame was received
-        uint32_t timestamp_ns;
-        uint64_t timestamp_s;
-        uint64_t bytes_written;
+        uint32_t timestamp_ns = 0;
+        uint64_t timestamp_s = 0;
+        uint64_t bytes_written = 0;
         // Time at which the metadata packet was sent
-        uint32_t metadata_ns;
-        uint64_t metadata_s;
+        uint32_t metadata_ns = 0;
+        uint64_t metadata_s = 0;
     } FrameMetadata;
     static FrameMetadata deserialize_metadata(const uint8_t* metadata_buffer, unsigned metadata_buffer_size);
 
@@ -731,11 +828,12 @@ private:
     uint32_t null_sequence_location_;
     bool skip_sequence_initialization_; // workaround for programming antique devices
     bool started_;
+    std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
 
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
-        bool response_expected, bool sequence_check);
+        bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
     std::tuple<bool, std::optional<uint32_t>> read_uint32_(
-        uint32_t address, const std::shared_ptr<Timeout>& timeout, bool sequence_check);
+        uint32_t address, const std::shared_ptr<Timeout>& timeout, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
 
     void add_read_retries(uint32_t n);
     void add_write_retries(uint32_t n);
@@ -748,13 +846,39 @@ private:
         uint16_t sequence, const std::vector<uint8_t>& request, std::vector<uint8_t>& reply,
         const std::shared_ptr<Timeout>& timeout, std::lock_guard<std::mutex>&);
 
-    std::vector<uint8_t> receive_control(const std::shared_ptr<Timeout>& timeout);
-
     void write_renesas(I2c& i2c, const std::vector<uint8_t>& data);
 
     // See the comment above for execute(...) about why we take
     // std::lock_guard as a parameter here.
     uint16_t next_sequence(std::lock_guard<std::mutex>&);
+};
+
+// Tool to manage extending e.g. uint16_t changes
+// into e.g. a uint32_t counter.  InType and OutType
+// must be unsigned.
+template <class OutType, class InType>
+class ExtendedCounter {
+public:
+    ExtendedCounter()
+        : current_(0)
+        , previous_(0)
+    {
+    }
+
+    static_assert(std::is_unsigned_v<InType> && std::is_unsigned_v<OutType>,
+        "ExtendedCounter requires unsigned types");
+
+    OutType update(InType in)
+    {
+        InType delta = in - previous_;
+        previous_ = in;
+        current_ += delta;
+        return current_;
+    }
+
+protected:
+    OutType current_;
+    InType previous_;
 };
 
 } // namespace hololink

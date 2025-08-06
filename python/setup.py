@@ -46,6 +46,7 @@ setuptools.setup(
     packages=[
         "hololink",
         "hololink/hololink_core",
+        "hololink/emulation",
         "hololink/operators",
         "hololink/sensors",
         "hololink/sensors/camera",
@@ -85,7 +86,6 @@ setuptools.setup(
         "console_scripts": [
             "hololink=tools.hololink:main",
             "imx274=tools.imx274:main",
-            "program_lattice_cpnx100=tools.program_lattice_cpnx100:main",
             "polarfire_esb=tools.polarfire_esb:main",
         ],
     },

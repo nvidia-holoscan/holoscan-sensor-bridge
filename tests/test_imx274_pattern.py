@@ -63,8 +63,7 @@ class PatternTestApplication(holoscan.core.Application):
         ibv_port_right,
         camera_right,
         camera_mode_right,
-        watchdog_left,
-        watchdog_right,
+        watchdog,
     ):
         logging.info("__init__")
         super().__init__()
@@ -81,8 +80,7 @@ class PatternTestApplication(holoscan.core.Application):
         self._ibv_port_right = ibv_port_right
         self._camera_right = camera_right
         self._camera_mode_right = camera_mode_right
-        self._watchdog_left = watchdog_left
-        self._watchdog_right = watchdog_right
+        self._watchdog = watchdog
         self._bucket_count_left = 0
         self._bucket_count_right = 0
         self._bucket_count_left_trigger = 10
@@ -292,15 +290,10 @@ class PatternTestApplication(holoscan.core.Application):
             camera_pose_output_type="extrinsics_model",
         )
         #
-        watchdog_operator_left = operators.WatchdogOp(
+        watchdog_operator = operators.WatchdogOp(
             self,
-            name="watchdog_operator_left",
-            watchdog=self._watchdog_left,
-        )
-        watchdog_operator_right = operators.WatchdogOp(
-            self,
-            name="watchdog_operator_right",
-            watchdog=self._watchdog_right,
+            name="watchdog_operator",
+            watchdog=self._watchdog,
         )
         #
         self.add_flow(
@@ -321,30 +314,27 @@ class PatternTestApplication(holoscan.core.Application):
         self.add_flow(demosaic_right, color_profiler_right, {("transmitter", "input")})
         self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
         #
-        self.add_flow(
-            visualizer, watchdog_operator_left, {("camera_pose_output", "input")}
-        )
-        self.add_flow(
-            visualizer, watchdog_operator_right, {("camera_pose_output", "input")}
-        )
+        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
     def left_buckets(self, buckets):
         self._bucket_count_left += 1
-        global actual_left
-        actual_left = buckets
         if self._bucket_count_left >= self._bucket_count_left_trigger:
             # don't fail the watchdog while we're shutting down.
-            self._watchdog_left.update(timeout=30)
+            self._watchdog.update(timeout=30)
             self._ok_left.disable_tick()
+            return
+        global actual_left
+        actual_left = buckets
 
     def right_buckets(self, buckets):
         self._bucket_count_right += 1
-        global actual_right
-        actual_right = buckets
         if self._bucket_count_right >= self._bucket_count_right_trigger:
             # don't fail the watchdog while we're shutting down.
-            self._watchdog_right.update(timeout=30)
+            self._watchdog.update(timeout=30)
             self._ok_right.disable_tick()
+            return
+        global actual_right
+        actual_right = buckets
 
 
 # This may execute on unaccelerated configurations, where
@@ -460,84 +450,78 @@ def run_test(
     # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
     # starts running (and builds CUDA code).
     with utils.Watchdog(
-        "frame-reception-left",
+        "watchdog",
         initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
         timeout=0.5,
-    ) as watchdog_left:
-        with utils.Watchdog(
-            "frame-reception-right",
-            initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-            timeout=0.5,
-        ) as watchdog_right:
-            # Set up the application
-            application = PatternTestApplication(
-                headless,
-                cu_context,
-                cu_device_ordinal,
-                hololink_channel_left,
-                ibv_name_left,
-                ibv_port_left,
-                camera_left,
-                camera_mode_left,
-                hololink_channel_right,
-                ibv_name_right,
-                ibv_port_right,
-                camera_right,
-                camera_mode_right,
-                watchdog_left,
-                watchdog_right,
-            )
-            default_configuration = os.path.join(
-                os.path.dirname(__file__), "example_configuration.yaml"
-            )
-            application.config(default_configuration)
-            # Run it.
-            hololink = hololink_channel_left.hololink()
-            assert hololink is hololink_channel_right.hololink()
-            hololink.start()
-            assert camera_left._reset_callbacks == 0
-            assert camera_right._reset_callbacks == 0
-            hololink.reset()
-            assert camera_left._reset_callbacks == 1
-            assert camera_right._reset_callbacks == 1
-            camera_left.setup_clock()  # this also sets camera_right's clock
-            camera_left.configure(camera_mode_left)
-            camera_left.test_pattern(pattern_left)
-            camera_right.configure(camera_mode_right)
-            camera_right.test_pattern(pattern_right)
+    ) as watchdog:
+        # Set up the application
+        application = PatternTestApplication(
+            headless,
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel_left,
+            ibv_name_left,
+            ibv_port_left,
+            camera_left,
+            camera_mode_left,
+            hololink_channel_right,
+            ibv_name_right,
+            ibv_port_right,
+            camera_right,
+            camera_mode_right,
+            watchdog,
+        )
+        default_configuration = os.path.join(
+            os.path.dirname(__file__), "example_configuration.yaml"
+        )
+        application.config(default_configuration)
+        # Run it.
+        hololink = hololink_channel_left.hololink()
+        assert hololink is hololink_channel_right.hololink()
+        hololink.start()
+        assert camera_left._reset_callbacks == 0
+        assert camera_right._reset_callbacks == 0
+        hololink.reset()
+        assert camera_left._reset_callbacks == 1
+        assert camera_right._reset_callbacks == 1
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        camera_left.configure(camera_mode_left)
+        camera_left.test_pattern(pattern_left)
+        camera_right.configure(camera_mode_right)
+        camera_right.test_pattern(pattern_right)
 
-            # For testing, make sure we call the get_register method.
-            STANDBY = 0x3000
-            camera_left.get_register(STANDBY)
-            # Configure scheduler.
-            if scheduler == "event":
-                app_scheduler = holoscan.schedulers.EventBasedScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="event_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "multithread":
-                app_scheduler = holoscan.schedulers.MultiThreadScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="multithread_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "greedy":
-                app_scheduler = holoscan.schedulers.GreedyScheduler(
-                    application,
-                    name="greedy_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "default":
-                # Use the default one.
-                pass
-            else:
-                raise Exception(f"Unexpected {scheduler=}")
-            #
-            application.run()
-            hololink.stop()
+        # For testing, make sure we call the get_register method.
+        STANDBY = 0x3000
+        camera_left.get_register(STANDBY)
+        # Configure scheduler.
+        if scheduler == "event":
+            app_scheduler = holoscan.schedulers.EventBasedScheduler(
+                application,
+                worker_thread_number=4,
+                name="event_scheduler",
+            )
+            application.scheduler(app_scheduler)
+        elif scheduler == "multithread":
+            app_scheduler = holoscan.schedulers.MultiThreadScheduler(
+                application,
+                worker_thread_number=4,
+                name="multithread_scheduler",
+            )
+            application.scheduler(app_scheduler)
+        elif scheduler == "greedy":
+            app_scheduler = holoscan.schedulers.GreedyScheduler(
+                application,
+                name="greedy_scheduler",
+            )
+            application.scheduler(app_scheduler)
+        elif scheduler == "default":
+            # Use the default one.
+            pass
+        else:
+            raise Exception(f"Unexpected {scheduler=}")
+        #
+        application.run()
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

@@ -50,10 +50,11 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
             # to avoid affinity settings.
             if (affinity is not None) and (len(affinity) > 0):
                 self._receiver_affinity = {int(affinity)}
-        self._frame_number_metadata = rename_metadata("frame_number")
         self._frame_packets_received_metadata = rename_metadata(
             "frame_packets_received"
         )
+        self._frame_number_metadata = rename_metadata("frame_number")
+        self._received_frame_number_metadata = rename_metadata("received_frame_number")
         self._frame_bytes_received_metadata = rename_metadata("frame_bytes_received")
         self._received_s_metadata = rename_metadata("received_s")
         self._received_ns_metadata = rename_metadata("received_ns")
@@ -104,9 +105,10 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         if not ok:
             return None
         application_metadata = {
-            self._frame_number_metadata: receiver_metadata.frame_number,
             self._frame_packets_received_metadata: receiver_metadata.frame_packets_received,
             self._frame_bytes_received_metadata: receiver_metadata.frame_bytes_received,
+            self._frame_number_metadata: receiver_metadata.frame_number,
+            self._received_frame_number_metadata: receiver_metadata.received_frame_number,
             self._received_s_metadata: receiver_metadata.received_s,
             self._received_ns_metadata: receiver_metadata.received_ns,
             self._timestamp_s_metadata: receiver_metadata.timestamp_s,

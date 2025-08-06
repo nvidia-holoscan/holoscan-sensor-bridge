@@ -5,6 +5,7 @@ ci/coverage.xml
 dist
 tags
 cscope.*
+.vscode/
 # cache
 .cache
 # build folders
@@ -22,3 +23,9 @@ configurator/meta-openembedded
 configurator/poky
 spi-vm.log
 spi-vm.pid
+
+# Emulation files
+src/hololink/emulation/test_emulator_hsb
+*.o
+dlpack.h
+

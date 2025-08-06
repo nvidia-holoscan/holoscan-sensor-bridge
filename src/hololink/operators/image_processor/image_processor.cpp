@@ -234,7 +234,6 @@ void ImageProcessorOp::setup(holoscan::OperatorSpec& spec)
 void ImageProcessorOp::start()
 {
     CudaCheck(cuInit(0));
-    CUdevice device;
     CudaCheck(cuDeviceGet(&cuda_device_, cuda_device_ordinal_.get()));
     CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
     int integrated = 0;
@@ -248,8 +247,8 @@ void ImageProcessorOp::start()
     const auto warp_size = 1 << log2_warp_size;
 
     // size of histogram memory
-    const auto histogram_warp_memory = HISTOGRAM_BIN_COUNT * sizeof(uint32_t) * CHANNELS;
-    histogram_memory_.reset([histogram_warp_memory] {
+    constexpr auto histogram_warp_memory = HISTOGRAM_BIN_COUNT * sizeof(uint32_t) * CHANNELS;
+    histogram_memory_.reset([] {
         CUdeviceptr mem = 0;
         CudaCheck(cuMemAlloc(&mem, histogram_warp_memory));
         return mem;

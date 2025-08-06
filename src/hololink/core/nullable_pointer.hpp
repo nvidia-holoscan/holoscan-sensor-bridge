@@ -18,6 +18,8 @@
 #ifndef SRC_HOLOLINK_NATIVE_NULLABLE_POINTER
 #define SRC_HOLOLINK_NATIVE_NULLABLE_POINTER
 
+#include <cstddef>
+
 /**
  * Helper class for using handles with std::unique_ptr which requires that a custom
  * handle type satisfies NullablePointer https://en.cppreference.com/w/cpp/named_req/NullablePointer.
@@ -31,7 +33,7 @@ public:
         : value_(value)
     {
     }
-    Nullable(nullptr_t)
+    Nullable(std::nullptr_t)
         : value_(0)
     {
     }

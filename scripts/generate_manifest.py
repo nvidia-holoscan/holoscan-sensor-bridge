@@ -76,7 +76,6 @@ def main():
     )
     parser.add_argument(
         "--manifest",
-        default="manifest.yaml",
         help="Manifest file to write with programming data.",
     )
     parser.add_argument(

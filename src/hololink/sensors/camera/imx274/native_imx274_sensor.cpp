@@ -107,7 +107,9 @@ uint8_t NativeImx274Sensor::get_register(uint16_t reg)
     // Deserialize the reply
     core::Deserializer deserializer(reply.data(), reply.size());
     uint8_t value;
-    deserializer.next_uint8(value);
+    if (!deserializer.next_uint8(value)) {
+        throw std::runtime_error("Failed to read register value");
+    }
 
     HSB_LOG_DEBUG("get_register(register={}(0x{:X}))={}(0x{:X})", reg, reg, value, value);
 

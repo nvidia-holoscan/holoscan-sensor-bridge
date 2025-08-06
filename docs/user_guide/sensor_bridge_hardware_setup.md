@@ -61,7 +61,7 @@ width="100%"/>
    <img src="jetson_agx_ports.png" alt="Jetson AGX Orin Ports" width="90%"/>
 
 1. Connect a USB-C power supply with a minimum of 12V/2A to the USB-C power connector of
-   the sensor bridge device and wait for the green leds on the sensor bridge board to
+   the sensor bridge device and wait for the green LEDs on the sensor bridge board to
    light up.
 4. For more details see the [Lattice CPNX100-ETH-SENSOR-BRIDGE](https://www.latticesemi.com/products/designsoftwareandip/intellectualproperty/referencedesigns/referencedesigns05/lattice-nvidia-edge-ai)
 
@@ -109,6 +109,42 @@ The camera module is mounted on the sensor bridge device in the following manner
 3. Use the power switch to power up the board.
 
 4. For more details see the [Microchip MPF200-ETH-SENSOR-BRIDGE](https://www.microchip.com/en-us/products/fpgas-and-plds/boards-and-kits/ethernet-sensor-bridge)
+
+Follow the instructions in the [setup page](setup.md) to configure your host system.
+````
+````{tab-item} Leopard imaging VB1940 Eagle Camera
+Here are instructions to set up the VB1940 Eagle camera and connect it directly to the
+IGX and Jetson AGX Orin devkits.
+
+## The VB1940 Eagle Camera
+
+The Leopard imaging VB1940 Eagle camera is a Power Over Ethernet (POE) camera that connects directly
+to the devkit without requiring a sensor bridge device. 
+It features:
+
+- **Direct Ethernet connection** - Connects directly to the host system using CAT-6 Ethernet cable
+- **Industrial grade** - Designed for industrial, Robotics and medical applications
+- **Compact design** - No additional bridge hardware required
+
+   <img src="vb1940-aio.jpg" alt="LI VB1940 Eagle Camera" width="80%"/>
+
+## Connecting VB1940 Eagle Camera to the Host
+
+1. Connect the Ethernet cable from the VB1940 Eagle Camera to an available Ethernet port on your devkit
+
+2. For IGX Devkit, use a QSFP adapter to connect to the QSFP Ethernet port marked with a red arrow on the back panel
+
+   <img src="igx_backpanel.png" alt="igx back panel" width="100%"/>
+
+3. For AGX Orin Devkit, connect to the 10G Ethernet port (marked 'H' in the image below)
+
+   <img src="jetson_agx_ports.png" alt="Jetson AGX Orin Ports" width="90%"/>
+
+4. Make sure the VB1940 Eagle camera is powered 
+
+5. Verify connectivity by running `ping 192.168.0.2`
+
+6. For more details, see the [Leopard imaging Eagle Camera documentation](https://leopardimaging.com)
 
 Follow the instructions in the [setup page](setup.md) to configure your host system.
 ````

@@ -143,7 +143,7 @@ public:
   CudaProgram(const std::string& cuda_code) {
       // Generate a unique program name
       std::ostringstream oss;
-      oss << "expr_eval_" << std::setw(sizeof(this) * 2) << std::setfill('0') << std::hex << reinterpret_cast<uintptr_t>(this) << ".cu";
+      oss << "expr_eval_" << std::setw(sizeof(this) * 2) << std::setfill('0') << std::hex << reinterpret_cast<uintptr_t>(this) << ".cu" << std::dec;
       name_ = oss.str();
       HSB_LOG_DEBUG("Creating Cuda program: {}", name_);
       NVRTC_CHECK(nvrtcCreateProgram(&program_, cuda_code.c_str(), name_.c_str(), 0, nullptr, nullptr));

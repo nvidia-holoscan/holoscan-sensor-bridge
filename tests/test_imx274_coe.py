@@ -66,10 +66,9 @@ class DualCoeTestApplication(holoscan.core.Application):
         hololink_channel_right,
         camera_right,
         camera_mode_right,
-        watchdog_left,
-        watchdog_right,
         coe_interface_left,
         coe_interface_right,
+        watchdog,
     ):
         logging.info("__init__")
         super().__init__()
@@ -87,6 +86,7 @@ class DualCoeTestApplication(holoscan.core.Application):
         self._camera_right = camera_right
         self._camera_mode_right = camera_mode_right
         self._coe_interface_right = coe_interface_right
+        self._watchdog = watchdog
         # Each camera sharing a network connection must use
         # a unique channel number from 0..63.
         self._coe_channel_left = 1
@@ -98,7 +98,7 @@ class DualCoeTestApplication(holoscan.core.Application):
         # with the same names.  Because we don't use that metadata,
         # it's easiest to just ignore new items with the same
         # names as existing items.
-        self.is_metadata_enabled = True
+        self.enable_metadata(True)
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
@@ -272,6 +272,13 @@ class DualCoeTestApplication(holoscan.core.Application):
             height=window_height,
             width=window_width,
             window_title="IMX274 pattern test",
+            enable_camera_pose_output=True,
+            camera_pose_output_type="extrinsics_model",
+        )
+        watchdog_operator = operators.WatchdogOp(
+            self,
+            name="watchdog_operator",
+            watchdog=self._watchdog,
         )
 
         #
@@ -284,6 +291,7 @@ class DualCoeTestApplication(holoscan.core.Application):
         self.add_flow(converter_right, isp_right, {("output", "input")})
         self.add_flow(isp_right, demosaic_right, {("output", "receiver")})
         self.add_flow(demosaic_right, visualizer, {("transmitter", "receivers")})
+        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
 
 def run_dual_coe_test(
@@ -321,49 +329,42 @@ def run_dual_coe_test(
     # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
     # starts running (and builds CUDA code).
     with utils.Watchdog(
-        "frame-reception-left",
-        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-        timeout=0.5,
-    ) as watchdog_left:
-        with utils.Watchdog(
-            "frame-reception-right",
-            initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-            timeout=0.5,
-        ) as watchdog_right:
-            # Set up the application
-            application = DualCoeTestApplication(
-                frame_limit,
-                headless,
-                cu_context,
-                cu_device_ordinal,
-                hololink_channel_left,
-                camera_left,
-                camera_mode_left,
-                hololink_channel_right,
-                camera_right,
-                camera_mode_right,
-                watchdog_left,
-                watchdog_right,
-                coe_interface_left,
-                coe_interface_right,
-            )
-            default_configuration = os.path.join(
-                os.path.dirname(__file__), "example_configuration.yaml"
-            )
-            application.config(default_configuration)
-            # Run it.
-            hololink = hololink_channel_left.hololink()
-            assert hololink is hololink_channel_right.hololink()
-            hololink.start()
-            hololink.reset()
-            camera_left.setup_clock()  # this also sets camera_right's clock
-            camera_left.configure(camera_mode_left)
-            camera_left.test_pattern(pattern_left)
-            camera_right.configure(camera_mode_right)
-            camera_right.test_pattern(pattern_right)
-            #
-            application.run()
-            hololink.stop()
+        "frame-reception",
+        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
+    ) as watchdog:
+        # Set up the application
+        application = DualCoeTestApplication(
+            frame_limit,
+            headless,
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel_left,
+            camera_left,
+            camera_mode_left,
+            hololink_channel_right,
+            camera_right,
+            camera_mode_right,
+            coe_interface_left,
+            coe_interface_right,
+            watchdog,
+        )
+        default_configuration = os.path.join(
+            os.path.dirname(__file__), "example_configuration.yaml"
+        )
+        application.config(default_configuration)
+        # Run it.
+        hololink = hololink_channel_left.hololink()
+        assert hololink is hololink_channel_right.hololink()
+        hololink.start()
+        hololink.reset()
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        camera_left.configure(camera_mode_left)
+        camera_left.test_pattern(pattern_left)
+        camera_right.configure(camera_mode_right)
+        camera_right.test_pattern(pattern_right)
+        #
+        application.run()
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
@@ -384,12 +385,6 @@ def run_dual_coe_test(
         ),
     ],
 )
-@pytest.mark.parametrize(
-    "hololink_left, hololink_right",
-    [
-        ("192.168.0.2", "192.168.0.3"),
-    ],
-)
 def test_dual_imx274_pattern_coe(
     frame_limit,
     camera_mode_left,
@@ -397,10 +392,16 @@ def test_dual_imx274_pattern_coe(
     camera_mode_right,
     pattern_right,
     headless,
-    hololink_left,
-    hololink_right,
+    channel_ips,
     coe_interfaces,
 ):
+    # This only works if there are two interfaces listed in channel_ips.
+    if len(channel_ips) < 2:
+        pytest.skip(
+            "Test is valid only when --channel-ips has more than one interface."
+        )
+    hololink_left = channel_ips[0]
+    hololink_right = channel_ips[1]
     # This only works if there are two interfaces listed in coe_interfaces.
     if len(coe_interfaces) < 2:
         pytest.skip(
@@ -452,6 +453,7 @@ class CoeTestApplication(holoscan.core.Application):
         self._hololink = hololink_channel.hololink()
         self._camera = camera
         self._camera_mode = camera_mode
+        self._watchdog = watchdog
         self._coe_interface = coe_interface
         # Each camera sharing a network connection must use
         # a unique channel number from 0..63.
@@ -535,6 +537,13 @@ class CoeTestApplication(holoscan.core.Application):
             name="visualizer",
             headless=self._headless,
             window_title="Visualizer",
+            enable_camera_pose_output=True,
+            camera_pose_output_type="extrinsics_model",
+        )
+        watchdog_operator = operators.WatchdogOp(
+            self,
+            name="watchdog_operator",
+            watchdog=self._watchdog,
         )
 
         #
@@ -542,6 +551,7 @@ class CoeTestApplication(holoscan.core.Application):
         self.add_flow(data_in, isp, {("output", "input")})
         self.add_flow(isp, demosaic, {("output", "receiver")})
         self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
+        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
 
 @pytest.mark.skip_unless_imx274
@@ -589,9 +599,8 @@ def test_imx274_pattern_coe(
     # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
     # starts running (and builds CUDA code).
     with utils.Watchdog(
-        "frame-reception-left",
-        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-        timeout=0.5,
+        "frame-reception",
+        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
     ) as watchdog:
         # Set up the application
         application = CoeTestApplication(

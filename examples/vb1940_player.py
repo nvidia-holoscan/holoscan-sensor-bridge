@@ -157,7 +157,7 @@ def main():
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
+        default=hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
         help="VB1940 mode",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
@@ -202,11 +202,11 @@ def main():
         help="Port number of IBV device",
     )
     parser.add_argument(
-        "--expander-configuration",
+        "--use-sensor",
         type=int,
         default=0,
         choices=(0, 1),
-        help="I2C Expander configuration",
+        help="Use sensor 0 or 1",
     )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
@@ -221,14 +221,11 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    hololink_module.DataChannel.use_sensor(channel_metadata, args.use_sensor)
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
-    camera = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
-        args.camera_mode
-    )
+    camera = hololink_module.sensors.vb1940.Vb1940Cam(hololink_channel)
+    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode(args.camera_mode)
     # Set up the application
     application = HoloscanApplication(
         args.headless,
@@ -249,7 +246,13 @@ def main():
     hololink.reset()
     hololink.write_uint32(0x8, 0x0)  # Keep the sensor RESET at low
     camera.setup_clock()
-    hololink.write_uint32(0x8, 0x1)  # Release the sensor RESET to high
+    # Release the sensor RESET to high
+    if args.use_sensor == 0:
+        hololink.write_uint32(0x8, 0x1)
+    elif args.use_sensor == 1:
+        hololink.write_uint32(0x8, 0x2)
+    else:
+        raise Exception(f"Unexpected value for use-sensor ({args.use_sensor})")
     time.sleep(100 / 1000)
     camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
     camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)

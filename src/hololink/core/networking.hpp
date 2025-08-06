@@ -39,7 +39,7 @@ constexpr uint32_t UDP_PACKET_SIZE = 10240;
 constexpr uint32_t PAGE_SIZE = 128;
 
 // Round up
-uint32_t round_up(uint32_t value, uint32_t alignment);
+size_t round_up(size_t value, size_t alignment);
 
 /// MAC (medium access control) address
 using MacAddress = std::array<uint8_t, 6>;

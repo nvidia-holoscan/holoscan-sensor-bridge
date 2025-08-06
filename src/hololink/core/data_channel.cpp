@@ -31,38 +31,6 @@ namespace {
     // version or newer.
     constexpr int64_t MINIMUM_HSB_IP_VERSION = 0x2501;
 
-    /**
-     *
-     */
-    struct DataPlaneConfiguration {
-        uint32_t hif_address;
-    };
-    static const std::map<int, DataPlaneConfiguration> data_plane_map {
-        { 0, DataPlaneConfiguration { 0x02000300 } },
-        { 1, DataPlaneConfiguration { 0x02010300 } },
-    };
-    /** Hololink-lite data plane configuration is implied by the value
-     * passed in the bootp transaction_id field, which is coopted
-     * by FPGA to imply which port is publishing the request.  We use
-     * that port ID to figure out what the address of the port's
-     * configuration data is; which is the value listed here.
-     */
-    struct SensorConfiguration {
-        uint32_t sensor_interface;
-        uint32_t vp_mask;
-        Hololink::Event frame_end_event;
-        uint32_t sif_address;
-        uint32_t vp_address;
-    };
-    static const std::map<int, SensorConfiguration> sensor_map_default {
-        { 0, SensorConfiguration { 0, 0x1, Hololink::Event::SIF_0_FRAME_END, 0x01000000, 0x1000 } },
-        { 1, SensorConfiguration { 2, 0x4, Hololink::Event::SIF_1_FRAME_END, 0x01010000, 0x1080 } },
-    };
-    static const std::map<int, SensorConfiguration> sensor_map_leopard_eagle {
-        { 0, SensorConfiguration { 0, 0x1, Hololink::Event::SIF_0_FRAME_END, 0x01000000, 0x1000 } },
-        { 1, SensorConfiguration { 1, 0x2, Hololink::Event::SIF_1_FRAME_END, 0x01010000, 0x1040 } },
-    };
-
 } // anonymous namespace
 
 DataChannel::DataChannel(const Metadata& metadata, const std::function<std::shared_ptr<Hololink>(const Metadata& metadata)>& create_hololink)
@@ -75,7 +43,21 @@ DataChannel::DataChannel(const Metadata& metadata, const std::function<std::shar
         throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
             hsb_ip_version.value(), MINIMUM_HSB_IP_VERSION));
     }
-    hololink_ = create_hololink(metadata);
+    auto hololink = create_hololink(metadata);
+    initialize(metadata, hololink);
+}
+
+// This protected constructor is only valid for programming tools which
+// circumvent version checking done above.
+DataChannel::DataChannel(const Metadata& metadata, std::shared_ptr<Hololink> hololink)
+{
+    initialize(metadata, hololink);
+}
+
+void DataChannel::initialize(const Metadata& metadata, std::shared_ptr<Hololink> hololink)
+{
+    enumeration_metadata_ = metadata;
+    hololink_ = hololink;
     peer_ip_ = metadata.get<std::string>("peer_ip").value();
     vp_mask_ = metadata.get<int64_t>("vp_mask").value();
     data_plane_ = metadata.get<int64_t>("data_plane").value();
@@ -99,8 +81,14 @@ DataChannel::DataChannel(const Metadata& metadata, const std::function<std::shar
         multicast_port_ = static_cast<uint16_t>(multicast_port.value());
         HSB_LOG_INFO(fmt::format("DataChannel multicast address={} port={}.", multicast_, multicast_port_));
     }
-    frame_end_event_ = static_cast<Hololink::Event>(metadata.get<int64_t>("frame_end_event").value());
-    fpga_uuid_=metadata.get<std::string>("fpga_uuid").value();
+    frame_end_event_valid_ = false;
+    frame_end_event_ = static_cast<Hololink::Event>(0); // not used when frame_end_event_valid_ is false
+    auto frame_end_event = metadata.get<int64_t>("frame_end_event");
+    if (frame_end_event) {
+        frame_end_event_valid_ = true;
+        frame_end_event_ = static_cast<Hololink::Event>(frame_end_event.value());
+    }
+    fpga_uuid_ = metadata.get<std::string>("fpga_uuid").value();
 }
 
 /*static*/ bool DataChannel::enumerated(const Metadata& metadata)
@@ -142,7 +130,11 @@ static uint32_t compute_payload_size(uint32_t frame_size, uint32_t header_size)
 {
     const uint32_t mtu = 1472; // TCP/IP illustrated vol 1 (1994), section 11.6, page 151
     const uint32_t page_size = hololink::core::PAGE_SIZE;
-    const uint32_t payload_size = ((mtu - header_size + page_size - 1) / page_size) * page_size;
+    uint32_t payload_size = ((mtu - header_size + page_size - 1) / page_size) * page_size;
+    if (payload_size > mtu) {
+        /* Max payload size is 1408 bytes. */
+        payload_size = 1408;
+    }
     const uint64_t packets = (frame_size + payload_size - 1) / payload_size; // round up
     HSB_LOG_INFO(
         "header_size={} payload_size={} packets={}", header_size, payload_size, packets);
@@ -180,6 +172,7 @@ void DataChannel::configure_common(uint32_t frame_size, uint32_t header_size, ui
 
 #define PAGES(x) ((x) >> 7)
     hololink_->write_uint32(hif_address_ + DP_PACKET_SIZE, PAGES(payload_size));
+    hololink_->write_uint32(hif_address_ + DP_PACKET_UDP_PORT, DATA_SOURCE_UDP_PORT);
     hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, frame_size);
     hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, mac_low);
     hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, mac_high);
@@ -196,9 +189,9 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     if (page_size & (hololink::core::PAGE_SIZE - 1)) {
         throw std::runtime_error(fmt::format("page_size={:#x} must be {}-byte aligned.", page_size, hololink::core::PAGE_SIZE));
     }
-    uint32_t aligned_frame_size = hololink::core::round_up(frame_size, hololink::core::PAGE_SIZE);
-    uint32_t metadata_size = hololink::core::PAGE_SIZE;
-    uint32_t aligned_frame_with_metadata = aligned_frame_size + metadata_size;
+    size_t aligned_frame_size = hololink::core::round_up(frame_size, hololink::core::PAGE_SIZE);
+    size_t metadata_size = hololink::core::PAGE_SIZE;
+    size_t aligned_frame_with_metadata = aligned_frame_size + metadata_size;
     if (page_size < aligned_frame_with_metadata) {
         throw std::runtime_error(fmt::format("page_size={:#x} must be at least {:#x} bytes.", page_size, aligned_frame_with_metadata));
     }
@@ -207,6 +200,10 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     }
     if (pages < 1) {
         throw std::runtime_error(fmt::format("pages={} must be at least 1.", pages));
+    }
+    size_t highest_address = frame_memory + page_size * pages;
+    if (PAGES(highest_address) > std::numeric_limits<uint32_t>::max()) {
+        throw std::runtime_error(fmt::format("highest_address={:#x}; pages={:#x} cannot fit in 32-bits.", highest_address, PAGES(highest_address)));
     }
 
     // Clearing DP_VP_MASK should be unnecessary-- we should only
@@ -228,19 +225,28 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     hololink_->or_uint32(hif_address_ + DP_VP_MASK, vp_mask_);
 }
 
-void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pixel_width)
+void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pixel_width, bool vlan_enabled)
 {
     HSB_LOG_INFO("Enabling 1722 COE: channel={}, frame_size={}, pixel_width={}", channel, frame_size, pixel_width);
 
     if (channel >= 64) {
         throw std::runtime_error(fmt::format("channel={} must be less than 64.", channel));
     }
+
+    if (vlan_enabled) {
+        /* No known HSB version supports VLAN at the moment. */
+        throw std::runtime_error("VLAN is not supported");
+    }
+
     // Clearing DP_VP_MASK should be unnecessary-- we should only
     // be here following a reset, but be defensive and make
     // sure we're not transmitting anything while we update.
     hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
 
-    const size_t header_size = 84; // 14 Ethernet + 20 IP + 50 1722B
+    size_t header_size = 46U; // 14 Ethernet + 12 avtpdu + 12 gisf + 8 coe
+    if (vlan_enabled) {
+        header_size += 4U; // 4 VLAN header
+    }
     configure_common(frame_size, header_size);
     const uint32_t enable_1722B = 1;
     uint32_t line_threshold_log2 = 0;
@@ -262,8 +268,8 @@ void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pix
 
 void DataChannel::unconfigure()
 {
-    if (fpga_uuid_ != LEOPARD_EAGLE_UUID) {  // for all boards that are not leopard eagle
-            
+    if (fpga_uuid_ != LEOPARD_EAGLE_UUID) { // for all boards that are not leopard eagle
+
         // This stops transmission.
         hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
         // Let any in-transit data flush out.
@@ -281,10 +287,9 @@ void DataChannel::unconfigure()
         hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
-        } else  {
-            // skip for now as this causes to lose ping on vb1940-aio
-        }
-    
+    } else {
+        // skip for now as this causes to lose ping on vb1940-aio
+    }
 }
 
 void DataChannel::configure_socket(int socket_fd)
@@ -366,40 +371,16 @@ void DataChannel::configure_socket(int socket_fd)
 
 /* static */ void DataChannel::use_data_plane_configuration(Metadata& metadata, int64_t data_plane)
 {
-    auto configuration = data_plane_map.find(data_plane);
-    if (configuration == data_plane_map.cend()) {
-        throw std::runtime_error(fmt::format("use_data_plane failed, data_plane={} is out-of-range.", data_plane));
-    }
-    HSB_LOG_TRACE(fmt::format("data_plane={}", data_plane));
-    metadata["data_plane"] = data_plane;
-    metadata["hif_address"] = static_cast<int64_t>(configuration->second.hif_address);
+    auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
+    EnumerationStrategy& enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
+    enumeration_strategy.use_data_plane_configuration(metadata, data_plane);
 }
 
 /* static */ void DataChannel::use_sensor(Metadata& metadata, int64_t sensor_number)
 {
-    const std::map<int, SensorConfiguration>* sensor_map;
-    const auto uuid = metadata.get<std::string>("fpga_uuid");
-    if (uuid == HOLOLINK_LITE_UUID
-        || uuid == HOLOLINK_NANO_UUID
-        || uuid == HOLOLINK_100G_UUID
-        || uuid == MICROCHIP_POLARFIRE_UUID) {
-        sensor_map = &sensor_map_default;
-    } else if (uuid == LEOPARD_EAGLE_UUID) {
-        sensor_map = &sensor_map_leopard_eagle;
-    } else {
-        throw std::runtime_error("Unsupported board");
-    }
-
-    auto configuration = sensor_map->find(sensor_number);
-    if (configuration == sensor_map->cend()) {
-        throw std::runtime_error(fmt::format("use_sensor failed, sensor_number={} is out-of-range.", sensor_number));
-    }
-    HSB_LOG_TRACE(fmt::format("sensor_number={}", sensor_number));
-    metadata["sensor"] = configuration->second.sensor_interface;
-    metadata["vp_mask"] = configuration->second.vp_mask;
-    metadata["frame_end_event"] = static_cast<int64_t>(configuration->second.frame_end_event);
-    metadata["sif_address"] = static_cast<int64_t>(configuration->second.sif_address);
-    metadata["vp_address"] = static_cast<int64_t>(configuration->second.vp_address);
+    auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
+    EnumerationStrategy& enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
+    enumeration_strategy.use_sensor(metadata, sensor_number);
 }
 
 void DataChannel::disable_packetizer()
@@ -960,6 +941,9 @@ public:
 
 std::shared_ptr<Hololink::Sequencer> DataChannel::frame_end_sequencer()
 {
+    if (!frame_end_event_valid_) {
+        throw std::runtime_error(fmt::format("frame_end_sequencer isn't available for sensor={}.", sensor_));
+    }
     auto r = std::make_shared<FrameEndSequencer>(hololink_, frame_end_event_);
     return r;
 }

@@ -24,25 +24,32 @@ import time
 import cupy as cp
 import holoscan
 from cuda import cuda
-from tools.program_lattice_cpnx100 import ClnxFlash
 
 import hololink as hololink_module
 
 
 def write_lmmi_register(camera_idx, data, addr, hololink):
-    clnx_flash = ClnxFlash("CLNX", hololink, hololink_module.CLNX_SPI_CTRL)
+    slow_spi = hololink.get_spi(
+        hololink_module.CLNX_SPI_BUS,
+        chip_select=0,
+        cpol=0,
+        cpha=1,
+        width=1,
+        prescaler=0xF,
+    )
     request = [0x11, 0x0C]
     while 1:  # Check Ready
-        rdval = clnx_flash._slow_spi.spi_transaction(bytearray(), bytearray(request), 1)
+        rdval = slow_spi.spi_transaction(bytearray(), bytearray(request), 1)
         rdval_int = int.from_bytes(bytes(rdval), byteorder="little")
-        if not (rdval_int & 0x4):
+        if rdval_int & 0x4:
             break
-    request = [clnx_flash.CLNX_WRITE, 0x0D, data]
-    clnx_flash._slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
-    request = [clnx_flash.CLNX_WRITE, 0x0F, addr]
-    clnx_flash._slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
-    request = [clnx_flash.CLNX_WRITE, 0x0C, (camera_idx << 4) + 0x1]
-    clnx_flash._slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
+    LMMI_WRITE = 1
+    request = [LMMI_WRITE, 0x0D, data]
+    slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
+    request = [LMMI_WRITE, 0x0F, addr]
+    slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
+    request = [LMMI_WRITE, 0x0C, (camera_idx << 4) + 0x1]
+    slow_spi.spi_transaction(bytearray(), bytearray(request), 0)
 
 
 def reconfigurable_mipi(
@@ -379,26 +386,24 @@ def main():
     if not args.skip_reset:
         hololink.reset()
     if args.ptp_sync:
-        ptp_sync_timeout_s = 10
-        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
         logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize(ptp_sync_timeout):
-            logging.error(
-                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-            )
+        if not hololink.ptp_synchronize():
+            logging.error("Failed to synchronize PTP; ignoring.")
         else:
             logging.debug("PTP synchronized.")
 
     program_mipi_phy(0, 2, 270, hololink)
     program_mipi_phy(1, 2, 270, hololink)
 
-    camera.cam_reset()
+    camera.setup_clock()
     time.sleep(1)
     camera.configure(camera_mode)
     if args.pattern is not None:
         camera.test_pattern(args.pattern)
+
     logging.info("Calling run")
     application.run()
+
     hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)

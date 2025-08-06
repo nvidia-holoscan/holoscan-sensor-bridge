@@ -31472,7 +31472,6 @@ TCA9535_Configure = [
     0x02,
 ]
 
-
 # from_chuck_20241119
 vb1940_mode_2560X1984_30fps = [
     # MIPI_DATA_RATE(570MHz)
@@ -31524,11 +31523,114 @@ vb1940_mode_2560X1984_30fps = [
     (0xCA2, 0xF4),  # INTEGRATION_TIME_PRIMARY
     (0xCA3, 0x01),
 ]
+vb1940_mode_1920X1080_30fps = [
+    # MIPI_DATA_RATE(570MHz)
+    (0x738, 0x80),
+    (0x739, 0x82),
+    (0x73A, 0xF9),
+    (0x73B, 0x21),
+    # ROI_B
+    (0x916, 0x40),
+    (0x917, 0x01),  # width offset
+    (0x918, 0xC4),
+    (0x919, 0x01),  # height offset
+    (0x91A, 0x80),
+    (0x91B, 0x07),  # width:1920
+    (0x91C, 0x38),
+    (0x91D, 0x04),  # height:1080
+    (0x91E, 0x2B),  # data type
+    # master mode
+    (0xAC6, 0x00),  # master mode
+    (0xAD4, 0x05),  # GPIO0 FSYNC_IN
+    (0xAD6, 0x00),  # GPIO2 strobe
+    (0xAD7, 0x00),  # GPIO3 strobe
+    # context switch configuration
+    (0xADC, 0x01),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_0
+    (0xADD, 0x00),
+    (0xADE, 0x00),
+    (0xADF, 0x00),
+    (0xAE0, 0x00),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_1
+    (0xAE1, 0x00),
+    (0xAE2, 0x00),
+    (0xAE3, 0x00),
+    (0xAE4, 0x00),  # CONTEXT_SWITCH_LOOP_ELEMENT
+    # stream static global
+    (0x934, 0x48),  # LINE_LENGTH 0x2B48 = 11080d, line time = 11080/372 = 29.785us
+    (0x935, 0x2B),
+    (0x937, 0x00),  # ORIENTATION (0=normal)
+    # stream static ctx1
+    (
+        0xB88,
+        0x06,
+    ),  # CONFIG6_GS_OP_RGB_PWLOFF_SINGLE_EXP_VTSS1_DESCSS1_CFA_BAYER_RAW10_31
+    (0xB8E, 0x68),  # FRAME_LENGTH(frame time = 1128*29.785=33.597ms)
+    (0xB8F, 0x04),
+    (0xB8C, 0x00),  # vc0
+    (0xB90, 0x02),  # roi selection(2= Enable ROI_B)
+    (0xB91, 0x30),  # disable GPIO0-3
+    # stream dynamic ctx1
+    (0xCA1, 0x00),  # analog gain(1)
+    (0xCA2, 0xF4),  # INTEGRATION_TIME_PRIMARY
+    (0xCA3, 0x01),
+]
+
+vb1940_mode_2560X1984_30fps_8bit = [
+    # MIPI_DATA_RATE(570MHz)
+    (0x738, 0x80),
+    (0x739, 0x82),
+    (0x73A, 0xF9),
+    (0x73B, 0x21),
+    # ROI_B
+    (0x916, 0x00),
+    (0x917, 0x00),  # width offset
+    (0x918, 0x00),
+    (0x919, 0x00),  # height offset
+    (0x91A, 0x00),
+    (0x91B, 0x0A),  # width:2560
+    (0x91C, 0xC0),
+    (0x91D, 0x07),  # height:1984
+    (0x91E, 0x2A),  # data type
+    # master mode
+    (0xAC6, 0x00),  # master mode
+    (0xAD4, 0x05),  # GPIO0 FSYNC_IN
+    (0xAD6, 0x00),  # GPIO2 strobe
+    (0xAD7, 0x00),  # GPIO3 strobe
+    # context switch configuration
+    (0xADC, 0x01),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_0
+    (0xADD, 0x00),
+    (0xADE, 0x00),
+    (0xADF, 0x00),
+    (0xAE0, 0x00),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_1
+    (0xAE1, 0x00),
+    (0xAE2, 0x00),
+    (0xAE3, 0x00),
+    (0xAE4, 0x00),  # CONTEXT_SWITCH_LOOP_ELEMENT
+    # stream static global
+    (0x934, 0x48),  # LINE_LENGTH 0x2B48 = 11080d, line time = 11080/372 = 29.785us
+    (0x935, 0x2B),
+    (0x937, 0x00),  # ORIENTATION (0=normal)
+    # stream static ctx1
+    (
+        0xB88,
+        0x05,
+    ),  # CONFIG5_GS_OP_RGB_PWL10T8_SINGLE_EXP_VTSS1_DESCSS1_CFA_BAYER_RAW8_30
+    (0xB8E, 0x68),  # FRAME_LENGTH(frame time = 1128*29.785=33.597ms)
+    (0xB8F, 0x04),
+    (0xB8C, 0x00),  # vc0
+    (0xB90, 0x02),  # roi selection(2= Enable ROI_B)
+    (0xB91, 0x30),  # disable GPIO0-3
+    # stream dynamic ctx1
+    (0xCA1, 0x00),  # analog gain(1)
+    (0xCA2, 0xF4),  # INTEGRATION_TIME_PRIMARY
+    (0xCA3, 0x01),
+]
 
 
 class Vb1940_Mode(Enum):
     VB1940_MODE_2560X1984_30FPS = 0
-    Unknown = 1
+    VB1940_MODE_1920X1080_30FPS = 1
+    VB1940_MODE_2560X1984_30FPS_8BIT = 2
+    Unknown = 3
 
 
 frame_format = namedtuple(
@@ -31539,4 +31641,12 @@ vb1940_frame_format = []
 vb1940_frame_format.insert(
     Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
     frame_format(2560, 1984, 30, hololink.sensors.csi.PixelFormat.RAW_10),
+)
+vb1940_frame_format.insert(
+    Vb1940_Mode.VB1940_MODE_1920X1080_30FPS.value,
+    frame_format(1920, 1080, 30, hololink.sensors.csi.PixelFormat.RAW_10),
+)
+vb1940_frame_format.insert(
+    Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT.value,
+    frame_format(2560, 1984, 30, hololink.sensors.csi.PixelFormat.RAW_8),
 )

@@ -43,6 +43,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         self._coe_interface = coe_interface
         self._pixel_width = pixel_width
         self._coe_channel = coe_channel
+        self._vlan_enabled = False
         if self._receiver_affinity is None:
             # By default, run us on the third core in the system;
             # run with HOLOLINK_AFFINITY=<n> to use a different core or
@@ -57,6 +58,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
             "frame_packets_received"
         )
         self._frame_bytes_received_metadata = rename_metadata("frame_bytes_received")
+        self._received_frame_number_metadata = rename_metadata("received_frame_number")
         self._frame_number_metadata = rename_metadata("frame_number")
         self._frame_start_s_metadata = rename_metadata("frame_start_s")
         self._frame_start_ns_metadata = rename_metadata("frame_start_ns")
@@ -84,7 +86,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         logging.info(f"frame_size={self._frame_size} frame={self._frame_memory}")
         self._start_receiver()
         self._hololink_channel.configure_coe(
-            self._coe_channel, self._frame_size, self._pixel_width
+            self._coe_channel, self._frame_size, self._pixel_width, self._vlan_enabled
         )
         self._frame_ready_condition.event_state = (
             holoscan.conditions.AsynchronousEventState.EVENT_WAITING
@@ -132,6 +134,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         application_metadata = {
             self._frame_packets_received_metadata: receiver_metadata.frame_packets_received,
             self._frame_bytes_received_metadata: receiver_metadata.frame_bytes_received,
+            self._received_frame_number_metadata: receiver_metadata.received_frame_number,
             self._frame_number_metadata: receiver_metadata.frame_number,
             self._frame_start_s_metadata: receiver_metadata.frame_start_s,
             self._frame_start_ns_metadata: receiver_metadata.frame_start_ns,

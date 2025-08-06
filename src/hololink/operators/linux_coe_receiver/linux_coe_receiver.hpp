@@ -33,17 +33,18 @@ namespace hololink::operators {
 class LinuxCoeReceiverMetadata {
 public:
     // Data accumulated just in this frame
-    unsigned frame_packets_received;
-    unsigned frame_bytes_received;
-    unsigned frame_number;
-    uint64_t frame_start_s;
-    uint64_t frame_start_ns;
-    uint64_t frame_end_s;
-    uint64_t frame_end_ns;
-    int64_t received_s;
-    int64_t received_ns;
+    unsigned frame_packets_received = 0;
+    unsigned frame_bytes_received = 0;
+    unsigned received_frame_number = 0;
+    uint64_t frame_start_s = 0;
+    uint64_t frame_start_ns = 0;
+    uint64_t frame_end_s = 0;
+    uint64_t frame_end_ns = 0;
+    int64_t received_s = 0;
+    int64_t received_ns = 0;
     // Data received directly from HSB.
     Hololink::FrameMetadata frame_metadata;
+    uint32_t frame_number = 0; // 32-bit extended version of the 16-bit frame_metadata.frame_number
 };
 
 class LinuxCoeReceiverDescriptor;
@@ -178,6 +179,9 @@ protected:
      * with the foreground thread.
      */
     std::function<void(const LinuxCoeReceiver&)> frame_ready_;
+
+    /** Sign-extended frame_number value. */
+    ExtendedCounter<uint32_t, uint16_t> frame_number_;
 };
 
 } // namespace hololink::operators

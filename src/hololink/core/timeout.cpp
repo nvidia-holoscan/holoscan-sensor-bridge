@@ -38,7 +38,7 @@ Timeout::Timeout(float timeout_s, float retry_s)
     const std::shared_ptr<Timeout>& timeout)
 {
     if (!timeout) {
-        return std::make_shared<Timeout>(DEFAULT_TIMEOUT_S);
+        return std::make_shared<Timeout>(DEFAULT_TIMEOUT_S, DEFAULT_RETRY_S);
     }
     return timeout;
 }

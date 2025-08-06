@@ -37,16 +37,17 @@ namespace hololink::operators {
 
 class RoceReceiverMetadata {
 public:
-    uint64_t rx_write_requests; // over all of time
-    uint64_t frame_number;
-    uint32_t imm_data;
-    uint64_t received_s;
-    uint64_t received_ns;
-    CUdeviceptr frame_memory;
-    CUdeviceptr metadata_memory;
-    uint32_t dropped;
+    uint64_t rx_write_requests = 0; // over all of time
+    uint64_t received_frame_number = 0;
+    uint32_t imm_data = 0;
+    uint64_t received_s = 0;
+    uint64_t received_ns = 0;
+    CUdeviceptr frame_memory = 0;
+    CUdeviceptr metadata_memory = 0;
+    uint32_t dropped = 0;
     // Data received directly from HSB.
     Hololink::FrameMetadata frame_metadata;
+    uint32_t frame_number = 0; // 32-bit extended version of the 16-bit frame_metadata.frame_number
 };
 
 /**
@@ -126,7 +127,7 @@ protected:
     pthread_cond_t ready_condition_;
     bool volatile done_;
     int control_r_, control_w_;
-    uint64_t frame_number_;
+    uint64_t received_frame_number_;
     int rx_write_requests_fd_;
     uint64_t volatile rx_write_requests_; // over all of time
     uint32_t volatile imm_data_;
@@ -139,6 +140,8 @@ protected:
     uint32_t volatile received_psn_;
     unsigned volatile received_page_;
     std::function<void(const RoceReceiver&)> frame_ready_;
+    /** Sign-extended frame_number value. */
+    ExtendedCounter<uint32_t, uint16_t> frame_number_;
 
     std::mutex& get_lock(); // Ensures reentrency protection for ibv calls.
 };

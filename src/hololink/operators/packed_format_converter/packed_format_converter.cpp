@@ -189,8 +189,6 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
         throw std::runtime_error("Tensor must be one dimensional");
     }
 
-    const int32_t size = input_tensor->shape().dimension(0);
-
     // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
     auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
         fragment()->executor().context(), allocator_->gxf_cid());

@@ -52,6 +52,8 @@ void SpiDaemonThread::stop()
 
 void SpiDaemonThread::thread_func()
 {
+    constexpr int SPI_DAEMON_SERVER_PORT = 8400;
+    constexpr size_t MAX_SPI_DEVICES = 2;
     uint8_t buffer[300];
 
     struct sockaddr_in address;

@@ -281,13 +281,9 @@ def main():
     if not args.skip_reset:
         hololink.reset()
     if args.ptp_sync:
-        ptp_sync_timeout_s = 10
-        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
         logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize(ptp_sync_timeout):
-            logging.error(
-                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-            )
+        if not hololink.ptp_synchronize():
+            logging.error("Failed to synchronize PTP; ignoring.")
         else:
             logging.debug("PTP synchronized.")
     if not args.skip_reset:

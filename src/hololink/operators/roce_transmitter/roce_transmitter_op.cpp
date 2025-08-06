@@ -169,7 +169,7 @@ public:
         if (tensor == input_tensor_)
             return;
 
-        if (tensor->nbytes() > output_buffer_size_)
+        if (static_cast<size_t>(tensor->nbytes()) > output_buffer_size_)
             THROW_ERROR("Received payload size (" << tensor->nbytes() << ") is larger than the allowed size (" << output_buffer_size_ << ")");
 
         input_tensor_ = tensor;

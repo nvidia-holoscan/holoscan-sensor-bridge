@@ -55,7 +55,7 @@ PYBIND11_MODULE(_linux_coe_receiver, m)
     py::class_<LinuxCoeReceiverMetadata>(m, "LinuxCoeReceiverMetadata")
         .def_readonly("frame_packets_received", &LinuxCoeReceiverMetadata::frame_packets_received)
         .def_readonly("frame_bytes_received", &LinuxCoeReceiverMetadata::frame_bytes_received)
-        .def_readonly("frame_number", &LinuxCoeReceiverMetadata::frame_number)
+        .def_readonly("received_frame_number", &LinuxCoeReceiverMetadata::received_frame_number)
         .def_readonly("frame_start_s", &LinuxCoeReceiverMetadata::frame_start_s)
         .def_readonly("frame_start_ns", &LinuxCoeReceiverMetadata::frame_start_ns)
         .def_readonly("frame_end_s", &LinuxCoeReceiverMetadata::frame_end_s)
@@ -79,6 +79,9 @@ PYBIND11_MODULE(_linux_coe_receiver, m)
         })
         .def_property_readonly("psn", [](LinuxCoeReceiverMetadata& me) {
             return me.frame_metadata.psn;
+        })
+        .def_property_readonly("frame_number", [](LinuxCoeReceiverMetadata& me) {
+            return me.frame_number;
         });
 
 } // PYBIND11_MODULE

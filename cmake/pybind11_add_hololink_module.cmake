@@ -33,6 +33,7 @@ function(pybind11_add_hololink_module)
     target_link_libraries(${target_name}
         PRIVATE
             holoscan::core
+            holoscan::pybind11
             ${MODULE_CPP_CMAKE_TARGET}
     )
 

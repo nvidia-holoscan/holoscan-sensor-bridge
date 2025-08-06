@@ -13,5 +13,6 @@ register_interface
 ptp
 ip_integration
 simulation
+hardware_debug
 known_limitations
 ```

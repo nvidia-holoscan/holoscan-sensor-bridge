@@ -4,20 +4,22 @@ Simulation bring up allows users to check the HOLOLINK IP instantiation and port
 connections. Modifications listed below are needed to bring up the HOLOLINK IP in a
 configured state to stream sensor data out of the Host TX interface.
 
-1. Comment out "define ENUM_EEPROM" in "HOLOLINK_def.svh" In hardware, when ENUM_EEPROM
-   is defined, the HOLOLINK IP reads the external EEPROM via I2C to fetch the unique MAC
-   address and meta data. But because this will require a Bus Functional Model of the
-   EEPROM in the simulation testbench, users can comment out "define ENUM_EEPROM". When
-   "ENUM_EEPROM" is not defined, the HOLOLINK IP will use the "MAC_ADDR" and other
-   defines in the "HOLOLINK_def.svh" as hardcoded values for the ethernet interface.
+1. Comment out `define ENUM_EEPROM` in "HOLOLINK_def.svh" In hardware, when
+   `ENUM_EEPROM` is defined, the Holoscan Sensor Bridge IP reads the external EEPROM via
+   I2C to fetch the unique MAC address and meta data. But because this will require a
+   Bus Functional Model of the EEPROM in the simulation testbench, users can comment out
+   `define ENUM_EEPROM`. When `ENUM_EEPROM` is not defined, the Holoscan Sensor Bridge
+   IP will use the `MAC_ADDR` and other defines in the "HOLOLINK_def.svh" as hardcoded
+   values for the ethernet interface.
 
-1. Initialize the HOLOLINK IP In hardware, the software APIs configure the HOLOLINK IP
-   for dataplane stream on Host TX interface. In simulation, users can use the
-   "init_reg" in "HOLOLINK_def.svh" to configure the HOLOLINK IP out of reset.
+1. Initialize the Holoscan Sensor Bridge IP. In hardware, the software APIs configure
+   the Holoscan Sensor Bridge IP for dataplane stream on Host TX interface. In
+   simulation, users can use the "init_reg" in "HOLOLINK_def.svh" to configure the
+   Holoscan Sensor Bridge IP out of reset.
 
 Below is a list of registers that can be added to "init_reg" to initialize ethernet port
-0\. Once the Sensor RX AXI-S interface is driven with 1408 bytes or more, the HOLOLINK IP
-will drive the dataplane stream on the Host TX interface.
+0\. Once the Sensor RX AXI-S interface is driven with 1408 bytes or more, the Holoscan
+Sensor Bridge IP will drive the dataplane stream on the Host TX interface.
 
 ```
     //Address       Data
@@ -40,5 +42,6 @@ Above example is for 1 data path, for additional data paths
 
 1. Add offset "0x0001_0000" to the dp_pkt register addresses and add offset
    "0x0000_0040" to the sif register addresses.
-1. Instantiate 2nd or more data paths in HOLOLINK IP HIF TX/RX Interface ports.
+1. Instantiate 2nd or more data paths in Holoscan Sensor Bridge IP HIF TX/RX Interface
+   ports.
 1. Increase N_INIT_REG by number of registers added to initialize.

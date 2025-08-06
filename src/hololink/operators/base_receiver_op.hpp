@@ -41,12 +41,11 @@ namespace hololink::operators {
 class ReceiverMemoryDescriptor {
 public:
     /**
-     * Allocate a region of GPU memory which will be freed
-     * on destruction.
+     * Allocate a region of GPU memory which will be page
+     * aligned and freed on destruction.
      */
-    explicit ReceiverMemoryDescriptor(CUcontext context, size_t size, uint32_t flags = 0);
+    explicit ReceiverMemoryDescriptor(CUcontext context, size_t size);
     ReceiverMemoryDescriptor() = delete;
-    //~ReceiverMemoryDescriptor() = default;
     ~ReceiverMemoryDescriptor();
 
     CUdeviceptr get() { return mem_; };

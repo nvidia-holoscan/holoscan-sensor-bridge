@@ -98,9 +98,9 @@ class HoloscanApplication(holoscan.core.Application):
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera_left._width
+            block_size=self._camera_left.width()
             * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left._height,
+            * self._camera_left.height(),
             num_blocks=6,
         )
         csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
@@ -171,10 +171,10 @@ class HoloscanApplication(holoscan.core.Application):
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera_left._width
+            block_size=self._camera_left.width()
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left._height,
+            * self._camera_left.height(),
             num_blocks=6,
         )
         demosaic_left = holoscan.operators.BayerDemosaicOp(
@@ -254,9 +254,10 @@ def main():
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
+        default=hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
         help="VB1940 mode",
     )
+
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--frame-limit",
@@ -299,6 +300,29 @@ def main():
         "--title",
         help="Set the window title",
     )
+    parser.add_argument(
+        "--trigger",
+        action="store_true",
+        help="Run in trigger mode",
+    )
+    parser.add_argument(
+        "--exp",
+        type=int,
+        default=256,
+        help="set EXPOSURE duration in lines, RANGE(4 to 65535). Default line value is 29.70usec",
+    )
+    parser.add_argument(
+        "--gain",
+        type=int,
+        default=0,
+        help="Set Analog Gain, RANGE(0 to 12). Default is 0. Equation is (16/(16-gain)",
+    )
+    parser.add_argument(
+        "--frequency",
+        type=int,
+        default=30,
+        help="VSYNC frequency in Hz (10, 30, 60, 90, 120). Default is 30Hz",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -325,16 +349,19 @@ def main():
     #
     hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
+    hololink = hololink_channel_left.hololink()
+    assert hololink is hololink_channel_right.hololink()
     # Get a handle to the camera
-    camera_left = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel_left, expander_configuration=0
+    vsync = hololink_module.Synchronizer.null_synchronizer()
+    if args.trigger:
+        vsync = hololink.ptp_pps_output(args.frequency)
+    camera_left = hololink_module.sensors.vb1940.Vb1940Cam(
+        hololink_channel_left, vsync=vsync
     )
-    camera_right = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel_right, expander_configuration=1
+    camera_right = hololink_module.sensors.vb1940.Vb1940Cam(
+        hololink_channel_right, vsync=vsync
     )
-    camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
-        args.camera_mode
-    )
+    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode(args.camera_mode)
     # What title should we use?
     window_title = f"Holoviz - {args.hololink}"
     if args.title is not None:
@@ -356,8 +383,6 @@ def main():
     )
     application.config(args.configuration)
     # Run it.
-    hololink = hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
     hololink.start()
     hololink.reset()
     hololink.write_uint32(0x8, 0x0)
@@ -367,11 +392,19 @@ def main():
     camera_left.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
     camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
     camera_left.configure(camera_mode)
+    camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
+    camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
     camera_right.get_register_32(
         0x0000
     )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
     camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
     camera_right.configure(camera_mode)
+    camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
+    camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
+
+    # READ CAMERA EEPROM
+    cal_eeprom = camera_left.get_calibration_data(0)
+    print(cal_eeprom)
 
     application.run()
     hololink.stop()

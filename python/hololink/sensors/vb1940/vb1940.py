@@ -16,13 +16,14 @@ limitations under the License.
 """
 
 import logging
+import struct
 import time
 from collections import OrderedDict
 from enum import Enum
 
 import hololink as hololink_module
 
-from . import li_i2c_expander, vb1940_mode
+from . import vb1940_mode
 
 # Camera info
 DRIVER_NAME = "VB1940"
@@ -30,6 +31,13 @@ VERSION = 1
 
 # Camera I2C address.
 CAM_I2C_ADDRESS = 0x10
+EEPROM_I2C_ADDRESS = 0x51
+EEPROM_MAX_PAGE_NUM = 256
+EEPROM_PAGE_SIZE = 64
+CALIB_SIZE = 256
+VCL_EN_I2C_ADDRESS_1 = 0x70
+VCL_EN_I2C_ADDRESS_2 = 0x71
+VCL_PWM_I2C_ADDRESS = 0x21
 
 # register map
 DEVICE_REVISION_REG = 0x0004
@@ -86,27 +94,225 @@ class boot_fsm_state(Enum):
     BOOT_COMPLETED = 0xBC
 
 
-class Vb1940Cam:
+class Vb1940Cam(hololink_module.Synchronizable):
     def __init__(
         self,
         hololink_channel,
-        i2c_bus=hololink_module.CAM_I2C_BUS,
-        expander_configuration=0,
+        vsync=hololink_module.Synchronizer.null_synchronizer(),
     ):
+        super().__init__()
         self._hololink = hololink_channel.hololink()
-        i2c_bus = hololink_module.CAM_I2C_BUS + expander_configuration
+        enumeration_metadata = hololink_channel.enumeration_metadata()
+        i2c_bus = enumeration_metadata["i2c_bus"]
         self._i2c = self._hololink.get_i2c(i2c_bus)
         self._mode = vb1940_mode.Vb1940_Mode.Unknown
-        # Configure i2c expander on the Leopard board
-        self._i2c_expander = li_i2c_expander.LII2CExpander(self._hololink, i2c_bus)
-        if expander_configuration == 1:
-            self._i2c_expander_configuration = (
-                li_i2c_expander.I2C_Expander_Output_EN.OUTPUT_2
+        self._vsync = vsync
+        self._width = None
+        self._height = None
+
+    def parse_calibration_data_dict(self, data):
+        if len(data) < 32:
+            logging.error(
+                "Incomplete calibration block ‑ expected 32 doubles, got %d", len(data)
             )
-        else:
-            self._i2c_expander_configuration = (
-                li_i2c_expander.I2C_Expander_Output_EN.OUTPUT_1
+            return {}
+
+        data_parsed_dict = {}
+        left_intrinsic_parameter = [
+            [data[0], 0, data[2]],
+            [0, data[1], data[3]],
+            [0, 0, 1],
+        ]
+        data_parsed_dict.update({"left_intrinsic_parameter": left_intrinsic_parameter})
+        left_distortion_parameters = data[4 : 4 + 8] + list([0] * 6)
+        data_parsed_dict.update(
+            {"left_distortion_parameters": left_distortion_parameters}
+        )
+        right_intrinsic_parameter = [
+            [data[12], 0, data[14]],
+            [0, data[13], data[15]],
+            [0, 0, 1],
+        ]
+        data_parsed_dict.update(
+            {"right_intrinsic_parameter": right_intrinsic_parameter}
+        )
+        right_distortion_parameters = data[16 : 16 + 8] + list([0] * 6)
+        data_parsed_dict.update(
+            {"right_distortion_parameters": right_distortion_parameters}
+        )
+        R = data[24 : 24 + 3]
+        data_parsed_dict.update({"R": R})
+        T = data[27 : 27 + 3]
+        data_parsed_dict.update({"T": T})
+        sn = data[31]
+        data_parsed_dict.update({"sn": sn})
+        return data_parsed_dict
+
+    def get_calibration_data(self, part=0):
+        """
+        Read the calibration data from EEPROM.
+
+        Following is EEPROM layout of every part of
+        calibration data. Each part occupies 256 bytes.
+        The prefixs 'L' and 'R' denote left and right,
+        respectively.
+        |-8----8-----8-----8-----8-----8-----8-----8-|
+        L_fx  L_fy  L_cx  L_cy  L_k1  L_k2  L_p1  L_p2
+        L_k3  L_k4  L_k5  L_k6  R_fx  R_fy  R_cx  R_cy
+        R_k1  R_k2  R_p1  R_p2  R_k3  R_k4  R_k5  R_k6
+        Rx    Ry    Rz    Tx    Ty    Tz    sn
+
+        part(int): indicates which part to be read.
+                   0: data only for RGB mode
+                   1: data onlyfor IR mode
+                   2: both data for RGB and IR mode
+        """
+        calib_data_dict = {"RGB": {}, "IR": {}}
+        calib_pages = CALIB_SIZE // EEPROM_PAGE_SIZE
+        step = 8
+        # RGB
+        if part == 0 or part == 2:
+            # get raw data
+            rgb_pages = range(calib_pages)
+            rgb_calib_data = []
+            for page in rgb_pages:
+                data = self.get_eeprom_page(page)
+                rgb_calib_data.extend(data)
+            # convert into double
+            rgb_calib_data_parsed = []
+            for i in range(CALIB_SIZE // step):
+                try:
+                    parsed_data = struct.unpack(
+                        "!d", bytearray(rgb_calib_data[i * step : (i + 1) * step])
+                    )[0]
+                    rgb_calib_data_parsed.append(parsed_data)
+                except Exception as exception:
+                    logging.error(
+                        f"Error in parsing RGB calibration data, {exception=}"
+                    )
+            #
+            rgb_calib_data_dict = self.parse_calibration_data_dict(
+                rgb_calib_data_parsed
             )
+            calib_data_dict["RGB"] = rgb_calib_data_dict
+        # IR
+        if part == 1 or part == 2:
+            # get raw data
+            ir_pages = range(calib_pages, calib_pages * 2)
+            ir_calib_data = []
+            for page in ir_pages:
+                data = self.get_eeprom_page(page)
+                ir_calib_data.extend(data)
+            # convert into double
+            ir_calib_data_parsed = []
+            for i in range(CALIB_SIZE // step):
+                try:
+                    parsed_data = struct.unpack(
+                        "!d", bytearray(ir_calib_data[i * step : (i + 1) * step])
+                    )[0]
+                    ir_calib_data_parsed.append(parsed_data)
+                except Exception as exception:
+                    logging.error(f"Error in parsing IR calibration data, {exception=}")
+            #
+            ir_calib_data_dict = self.parse_calibration_data_dict(ir_calib_data_parsed)
+            calib_data_dict["IR"] = ir_calib_data_dict
+        return calib_data_dict
+
+    def set_eeprom_register(self, register, value, timeout=None):
+        logging.debug(
+            "set_eeprom_register(register=%d(0x%X), value=%d(0x%X))"
+            % (register, register, value, value)
+        )
+        write_bytes = bytearray(100)
+        serializer = hololink_module.Serializer(write_bytes)
+        serializer.append_uint16_be(register)
+        serializer.append_uint8(value)
+        read_byte_count = 0
+        self._i2c.i2c_transaction(
+            EEPROM_I2C_ADDRESS,
+            write_bytes[: serializer.length()],
+            read_byte_count,
+            timeout=timeout,
+        )
+
+    def set_eeprom_page(self, page_num, page_offset, data_buffer, timeout=None):
+        """
+        Page write of EEPROM.
+        Up to 64 bytes can be written in one Write cycle. The internal byte address counter is
+        automatically incremented after each data byte is loaded. If more than 64 data bytes
+        to be transmitted, then earlier bytes within the selected page will be overwritten by
+        later bytes. To avoid this "wrap−around", check the size of 'data_buffer' to be written
+        firstly.
+
+        page_num: the number of page to be written, range from 0 to 255.
+        page_offset: the first byte to be written in the selected page, range from 0 to 63
+        data_buffer: the buffer of data to be written
+        """
+        logging.debug(
+            "set_eeprom_page(page_num=%d(0x%X), page_offset=%d(0x%X), data_len=%d)"
+            % (page_num, page_num, page_offset, page_offset, len(data_buffer))
+        )
+        assert (
+            page_num < EEPROM_MAX_PAGE_NUM
+        ), "The number of page should be in a range from 0 to 255."
+        assert (
+            page_offset + len(data_buffer) <= EEPROM_PAGE_SIZE
+        ), "page_offset(%d) + data_len(%d) should not be greater than 64." % (
+            page_offset,
+            len(data_buffer),
+        )
+        register = (page_num << 6) + page_offset
+        write_bytes = bytearray(66)
+        serializer = hololink_module.Serializer(write_bytes)
+        serializer.append_uint16_be(register)
+        serializer.append_buffer(bytearray(data_buffer))
+        read_byte_count = 0
+        self._i2c.i2c_transaction(
+            EEPROM_I2C_ADDRESS,
+            write_bytes[: serializer.length()],
+            read_byte_count,
+            timeout=timeout,
+        )
+
+    def get_eeprom_register(self, register):
+        write_bytes = bytearray(100)
+        serializer = hololink_module.Serializer(write_bytes)
+        serializer.append_uint16_be(register)
+        read_byte_count = 1
+        reply = self._i2c.i2c_transaction(
+            EEPROM_I2C_ADDRESS, write_bytes[: serializer.length()], read_byte_count
+        )
+        deserializer = hololink_module.Deserializer(reply)
+        r = deserializer.next_uint8()
+        logging.debug(
+            "get_eeprom_register(register=%d(0x%X),value=%d(0x%X))"
+            % (register, register, r, r)
+        )
+        return r
+
+    def get_eeprom_page(self, page_num=0, page_offset=0, data_len=64):
+        assert (
+            page_num < EEPROM_MAX_PAGE_NUM
+        ), "The number of page should be in a range from 0 to 255."
+        assert (
+            page_offset + data_len
+        ) <= EEPROM_PAGE_SIZE, f"{page_offset=} + {data_len=} should not be greater than {EEPROM_PAGE_SIZE=}."
+        register = (page_num << 6) + page_offset
+        write_bytes = bytearray(100)
+        serializer = hololink_module.Serializer(write_bytes)
+        serializer.append_uint16_be(register)
+        read_byte_count = data_len
+        reply = self._i2c.i2c_transaction(
+            EEPROM_I2C_ADDRESS, write_bytes[: serializer.length()], read_byte_count
+        )
+        deserializer = hololink_module.Deserializer(reply)
+        r = deserializer.next_buffer(read_byte_count)
+        assert len(r) == read_byte_count, "read %d != %d" % (len(r), read_byte_count)
+        logging.debug(
+            "get_eeprom_page(register=%d(0x%X),buffer=%s)"
+            % (register, register, bytearray(r))
+        )
+        return list(bytearray(r))
 
     def get_device_id(self):
         ret = self.get_register_32(DEVICE_REVISION_REG)
@@ -367,6 +573,7 @@ class Vb1940Cam:
     def start(self):
         """Start Streaming"""
         self._running = True
+        self._vsync.attach(self)
         #
         # Setting these register is time-consuming.
         for reg, val in vb1940_mode.vb1940_start:
@@ -398,6 +605,7 @@ class Vb1940Cam:
 
     def stop(self):
         """Stop Streaming"""
+        self._vsync.detach(self)
         for reg, val in vb1940_mode.vb1940_stop:
             if reg == vb1940_mode.VB1940_TABLE_WAIT_MS:
                 time.sleep(val / 1000)  # the val is in ms
@@ -432,7 +640,6 @@ class Vb1940Cam:
 
     def get_register(self, register):
         logging.debug("get_register(register=%d(0x%X))" % (register, register))
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -449,7 +656,6 @@ class Vb1940Cam:
 
     def get_register_32(self, register):
         logging.debug("get_register(register=%d(0x%X))" % (register, register))
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -469,7 +675,6 @@ class Vb1940Cam:
             "set_register_8(register=%d(0x%X), value=%d(0x%X))"
             % (register, register, value, value)
         )
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -487,7 +692,6 @@ class Vb1940Cam:
             "set_register_16(register=%d(0x%X), value=%d(0x%X))"
             % (register, register, value, value)
         )
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -505,7 +709,6 @@ class Vb1940Cam:
             "set_register_16(register=%d(0x%X), value=%d(0x%X))"
             % (register, register, value, value)
         )
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -523,7 +726,6 @@ class Vb1940Cam:
             "set_register_buffer(register=%d(0x%X), data size=%d)"
             % (register, register, len(data_buffer))
         )
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(256)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -543,6 +745,15 @@ class Vb1940Cam:
 
         if mode_set.value == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value:
             mode_list = vb1940_mode.vb1940_mode_2560X1984_30fps
+        elif (
+            mode_set.value == vb1940_mode.Vb1940_Mode.VB1940_MODE_1920X1080_30FPS.value
+        ):
+            mode_list = vb1940_mode.vb1940_mode_1920X1080_30fps
+        elif (
+            mode_set.value
+            == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT.value
+        ):
+            mode_list = vb1940_mode.vb1940_mode_2560X1984_30fps_8bit
         else:
             logging.error(f"{mode_set} mode is not present.")
 
@@ -551,12 +762,13 @@ class Vb1940Cam:
                 logging.debug(f"sleep {val} ms")
                 time.sleep(val / 1000)  # the val is in ms
             else:
+                if reg == 0xAC6 and (self._vsync.is_enabled()):
+                    val = 0x01
                 self.set_register_8(reg, val)
 
     def set_exposure_reg(self, value=0x0014):
-        """
-        The minimum integration time is 30us(4lines).
-        """
+        # The minimum integration time is 30us(4lines).
+        # value: integration time in lines, in little endian.
         if value < 0x0004:
             logging.warn(f"Exposure value {value} is lower than the minimum.")
             value = 0x0004
@@ -564,7 +776,9 @@ class Vb1940Cam:
         if value > 0xFFFF:
             logging.warn(f"Exposure value {value} is higher than the maximum.")
             value = 0xFFFF
-        self.set_register_16(vb1940_mode.REG_EXP, value)
+        # if set_register_16 is used to set exposure, change the value passed in into big endian
+        self.set_register_8(vb1940_mode.REG_EXP, value & 0xFF)
+        self.set_register_8(vb1940_mode.REG_EXP + 1, (value >> 8) & 0xFF)
         time.sleep(vb1940_mode.VB1940_WAIT_MS / 1000)
 
     def set_analog_gain_reg(self, value=0x00):
@@ -597,7 +811,6 @@ class Vb1940Cam:
             self._pixel_format, self._width
         )
         received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
-        assert self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10
         # sensor has 1 line of status before the real image data starts
         start_byte += received_line_bytes
         # sensor has 2 line of status after the real image data is complete
@@ -616,3 +829,17 @@ class Vb1940Cam:
 
     def bayer_format(self):
         return hololink_module.sensors.csi.BayerFormat.GBRG
+
+    def width(self):
+        if self._width is None:
+            raise RuntimeError(
+                "Image width is unavailable; call configure_camera first."
+            )
+        return self._width
+
+    def height(self):
+        if self._height is None:
+            raise RuntimeError(
+                "Image height is unavailable; call configure_camera first."
+            )
+        return self._height

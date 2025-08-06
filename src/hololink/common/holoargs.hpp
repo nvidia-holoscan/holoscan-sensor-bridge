@@ -57,6 +57,9 @@ namespace args {
     class TypedValue : public ValueSemantic {
     public:
         using Pointer = std::shared_ptr<TypedValue<T>>;
+
+        virtual ~TypedValue() = default;
+
         Pointer required()
         {
             required_ = true;

@@ -5,8 +5,7 @@
 HSB devices send a block of metadata following each received data frame. That metadata
 includes:
 
-- `frame_number` counts of the number of end-of-frame interrupts observed on this data
-  channel
+- `frame_number` counts of the number of data frames from this sensor sent by the FPGA
 - `timestamp_s` and `timestamp_ns` are the PTP timestamp when the first data for the
   current frame arrived at the FPGA.
 - `metadata_s` and `metadata_ns` are the PTP timestamp recorded when the metadata packet

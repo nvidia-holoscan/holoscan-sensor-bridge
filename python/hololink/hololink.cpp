@@ -107,6 +107,15 @@ public:
             request /* Argument(s) */
         );
     }
+
+    std::vector<uint8_t> receive_control(const std::shared_ptr<Timeout>& timeout) override
+    {
+        PYBIND11_OVERRIDE(std::vector<uint8_t>, /* Return type */
+            Hololink, /* Parent class */
+            receive_control, /* Name of function in C++ (must match Python name) */
+            timeout /* Argument(s) */
+        );
+    }
 };
 
 // This is only included here for flash memory programming on
@@ -177,8 +186,23 @@ PYBIND11_MODULE(_hololink, m)
         .def(
             "__iter__", [](const Metadata& me) { return py::make_iterator(me.begin(), me.end()); },
             py::keep_alive<0, 1>())
-        .def("__getitem__", [](Metadata& me, const char* name) { return me[name]; })
-        .def("get", &Metadata::get<Metadata::Element>, "name"_a)
+        .def("__getitem__", [](Metadata& me, const std::string& name) {
+            std::optional<const Metadata::Element> val = me.get<Metadata::Element>(name);
+            if (!val.has_value()) {
+                throw py::key_error(name);
+            }
+            return val;
+        })
+        .def(
+            "get", [](Metadata& me, const std::string& name) {
+                std::optional<const Metadata::Element> val = me.get<Metadata::Element>(name);
+                // pybind11 maps empty optional to None in Python
+                if (!val.has_value()) {
+                    return std::optional<const Metadata::Element>();
+                }
+                return val;
+            },
+            "name"_a)
         /**
          * @brief Get with default
          *
@@ -186,11 +210,11 @@ PYBIND11_MODULE(_hololink, m)
          * @param value
          */
         .def(
-            "get",
-            [](Metadata& me, const std::string& name, const std::string& value) {
-                std::optional<Metadata::Element> element = me.get<Metadata::Element>(name);
+            "get", [](Metadata& me, const std::string& name, const Metadata::Element& value) {
+                std::optional<const Metadata::Element> element = me.get<Metadata::Element>(name);
                 if (!element.has_value()) {
-                    element.value() = value;
+                    // return new optional value created from default 'value'. not inserted into Metadata
+                    return std::optional<const Metadata::Element>(value);
                 }
                 return element;
             },
@@ -216,7 +240,9 @@ PYBIND11_MODULE(_hololink, m)
         .def("enumeration_packets", &Enumerator::enumeration_packets, "call_back"_a,
             "timeout"_a = std::shared_ptr<Timeout>())
         .def("send_bootp_reply", &Enumerator::send_bootp_reply, "peer_address"_a, "reply_packet"_a,
-            "metadata"_a);
+            "metadata"_a)
+        .def_static("set_uuid_strategy", &Enumerator::set_uuid_strategy,
+            "uuid"_a, "enumeration_strategy"_a);
 
     m.attr("APB_RAM") = APB_RAM;
     m.attr("BL_I2C_BUS") = BL_I2C_BUS;
@@ -291,7 +317,7 @@ PYBIND11_MODULE(_hololink, m)
         .def("peer_ip", &DataChannel::peer_ip)
         .def("authenticate", &DataChannel::authenticate, "qp_number"_a, "rkey"_a)
         .def("configure_roce", &DataChannel::configure_roce, "frame_memory"_a, "frame_size"_a, "page_size"_a, "pages"_a, "local_data_port"_a)
-        .def("configure_coe", &DataChannel::configure_coe, "channel"_a, "frame_size"_a, "pixel_width"_a)
+        .def("configure_coe", &DataChannel::configure_coe, "channel"_a, "frame_size"_a, "pixel_width"_a, "vlan_enabled"_a = false)
         .def("disable_packetizer", &DataChannel::disable_packetizer)
         .def("enable_packetizer_10", &DataChannel::enable_packetizer_10)
         .def("unconfigure", &DataChannel::unconfigure)
@@ -300,7 +326,8 @@ PYBIND11_MODULE(_hololink, m)
         .def("configure_socket", &DataChannel::configure_socket, "socket_fd"_a)
         .def_static("use_sensor", &DataChannel::use_sensor, "metadata"_a, "sensor_number"_a)
         .def("frame_end_sequencer", &DataChannel::frame_end_sequencer)
-        .def_static("use_data_plane_configuration", &DataChannel::use_data_plane_configuration, "metadata"_a, "data_plane"_a);
+        .def_static("use_data_plane_configuration", &DataChannel::use_data_plane_configuration, "metadata"_a, "data_plane"_a)
+        .def("enumeration_metadata", &DataChannel::enumeration_metadata);
 
     py::register_exception<TimeoutError>(m, "TimeoutError");
     py::register_exception<UnsupportedVersion>(m, "UnsupportedVersion");
@@ -335,6 +362,7 @@ PYBIND11_MODULE(_hololink, m)
                                    "prescaler"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1, "spi_address"_a = SPI_CTRL)
                                .def("get_gpio", &Hololink::get_gpio, "metadata"_a)
                                .def("send_control", &Hololink::send_control)
+                               .def("receive_control", &Hololink::receive_control, "timeout"_a)
                                .def(
                                    "on_reset",
                                    [](Hololink& me, py::object py_reset_callback) {
@@ -418,7 +446,10 @@ PYBIND11_MODULE(_hololink, m)
                                        me.on_reset(reset_controller);
                                    },
                                    "reset_controller"_a)
-                               .def("ptp_synchronize", &Hololink::ptp_synchronize, "timeout_s"_a)
+                               .def(
+                                   "ptp_synchronize", [](Hololink& me, const std::shared_ptr<Timeout>& timeout) { return me.ptp_synchronize(timeout); }, "timeout_s"_a)
+                               .def("ptp_synchronize", [](Hololink& me) { return me.ptp_synchronize(); })
+                               .def("ptp_pps_output", &Hololink::ptp_pps_output, "frequency"_a = 0)
                                .def("configure_apb_event", &Hololink::configure_apb_event, "event"_a, "handler"_a, "rising_edge"_a = true)
                                .def("clear_apb_event", &Hololink::clear_apb_event, "event"_a);
 
@@ -494,6 +525,36 @@ PYBIND11_MODULE(_hololink, m)
         .value("POLL", Hololink::Sequencer::Op::POLL)
         .value("RD", Hololink::Sequencer::Op::RD)
         .value("WR", Hololink::Sequencer::Op::WR);
+
+    py::class_<EnumerationStrategy, std::shared_ptr<EnumerationStrategy>>(m, "EnumerationStrategy");
+
+    py::class_<BasicEnumerationStrategy, std::shared_ptr<BasicEnumerationStrategy>, EnumerationStrategy>(m, "BasicEnumerationStrategy")
+        .def(py::init<const Metadata&, unsigned, unsigned, unsigned>(),
+            "additional_metadata"_a, "total_sensors"_a = 2, "total_dataplanes"_a = 2, "sifs_per_sensor"_a = 2)
+        .def(py::init([](unsigned total_sensors, unsigned total_dataplanes, unsigned sifs_per_sensor) {
+            Metadata empty_metadata;
+            return std::make_shared<BasicEnumerationStrategy>(empty_metadata, total_sensors, total_dataplanes, sifs_per_sensor);
+        }),
+            "total_sensors"_a = 2, "total_dataplanes"_a = 2, "sifs_per_sensor"_a = 2);
+
+    // Trampoline class for Synchronizable to allow Python subclasses
+    class PySynchronizable : public Synchronizable {
+    public:
+        using Synchronizable::Synchronizable;
+    };
+
+    // Bind Synchronizable class
+    py::class_<Synchronizable, PySynchronizable, std::shared_ptr<Synchronizable>>(m, "Synchronizable")
+        .def(py::init<>());
+
+    // Bind Synchronizer class
+    py::class_<Synchronizer, std::shared_ptr<Synchronizer>>(m, "Synchronizer")
+        .def_static("null_synchronizer", &Synchronizer::null_synchronizer)
+        .def("attach", &Synchronizer::attach, "peer"_a)
+        .def("detach", &Synchronizer::detach, "peer"_a)
+        .def("setup", &Synchronizer::setup)
+        .def("shutdown", &Synchronizer::shutdown)
+        .def("is_enabled", &Synchronizer::is_enabled);
 
 } // PYBIND11_MODULE
 

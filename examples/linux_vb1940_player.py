@@ -151,7 +151,7 @@ def main():
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
+        default=hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
         help="VB1940 mode",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
@@ -183,13 +183,6 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    parser.add_argument(
-        "--expander-configuration",
-        type=int,
-        default=0,
-        choices=(0, 1),
-        help="I2C Expander configuration",
-    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -205,12 +198,8 @@ def main():
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
-    camera = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
-        args.camera_mode
-    )
+    camera = hololink_module.sensors.vb1940.Vb1940Cam(hololink_channel)
+    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode(args.camera_mode)
     # Set up the application
     application = HoloscanApplication(
         args.headless,

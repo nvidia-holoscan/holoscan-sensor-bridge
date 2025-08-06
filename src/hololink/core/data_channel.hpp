@@ -31,6 +31,7 @@ namespace hololink {
 
 // HIF: Packet metadata
 constexpr uint32_t DP_PACKET_SIZE = 0x04;
+constexpr uint32_t DP_PACKET_UDP_PORT = 0x08;
 constexpr uint32_t DP_VP_MASK = 0x0C;
 
 // VP: DMA descriptor registers.
@@ -55,10 +56,12 @@ constexpr uint32_t PACKETIZER_RAM = 0x04;
 constexpr uint32_t PACKETIZER_DATA = 0x08;
 
 class Enumerator;
+class Programmer;
 
 class DataChannel {
     // Enumerator calls our methods to reconfigure Metadata.
     friend class Enumerator;
+    friend class Programmer;
 
 public:
     /**
@@ -123,7 +126,7 @@ public:
     /**
      * Configure the data channel for 1722 COE packets.
      */
-    void configure_coe(uint8_t channel, size_t frame_size, uint32_t pixel_width);
+    void configure_coe(uint8_t channel, size_t frame_size, uint32_t pixel_width, bool vlan_enabled = false);
 
     /**
      * Clear the operating state set up by configure().
@@ -170,7 +173,19 @@ public:
      */
     static void use_data_plane_configuration(Metadata& metadata, int64_t data_plane);
 
+    Metadata& enumeration_metadata() { return enumeration_metadata_; }
+
 protected:
+    /**
+     * Programming tools can use this constructor to avoid version checking.
+     */
+    DataChannel(const Metadata& metadata, std::shared_ptr<Hololink> hololink);
+
+    /**
+     * Common routine for constructors
+     */
+    void initialize(const Metadata& metadata, std::shared_ptr<Hololink> hololink);
+
     /**
      * Write the common data channel configuration shared between RoCe and COE w/1722B.
      */
@@ -178,6 +193,7 @@ protected:
 
 private:
     std::shared_ptr<Hololink> hololink_;
+    Metadata enumeration_metadata_; // we keep a copy of what we were instantiated with
     std::string peer_ip_;
     uint32_t vp_mask_;
     uint32_t qp_number_;
@@ -187,6 +203,7 @@ private:
     std::string multicast_;
     uint16_t multicast_port_;
     uint16_t broadcast_port_;
+    bool frame_end_event_valid_;
     Hololink::Event frame_end_event_;
     uint32_t vp_address_;
     uint32_t hif_address_;

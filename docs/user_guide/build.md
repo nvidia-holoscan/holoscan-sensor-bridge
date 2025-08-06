@@ -30,11 +30,11 @@ container. This container is used to run all holoscan tests and examples.
 
    - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
      OS installed with appropriate dGPU support (e.g.
-     [IGX OS 1.1 Production Release](https://developer.nvidia.com/igx-downloads) with
+     [IGX OS 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads) with
      dGPU).
    - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX or IGX
      without a dGPU). This requires an OS installed with iGPU support (e.g. for AGX:
-     JetPack 6.0; for IGX: IGX OS with iGPU configuration).
+     JetPack 6.2.1; for IGX: IGX OS with iGPU configuration).
 
 ## Run tests in the demo container
 
@@ -78,7 +78,7 @@ For IGX configurations,
 then
 
 ```none
-sh ./test-igx-cpnx100.sh
+sh ./test-igx-cpnx100-imx274.sh
 ```
 
 For AGX configurations, only one camera is supported, so only
@@ -86,7 +86,7 @@ For AGX configurations, only one camera is supported, so only
 is to be connected. Run the device test on AGX this way:
 
 ```none
-sh ./test-agx-cpnx100.sh
+sh ./test-agx-cpnx100-imx274.sh
 ```
 
 If things are not working as expected, check the

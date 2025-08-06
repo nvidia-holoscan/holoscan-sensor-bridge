@@ -205,7 +205,7 @@ void SignalViewerOp::SignalView::draw(const std::shared_ptr<holoscan::Tensor>& t
         from = from_;
     if (to <= from)
         to = to_;
-    if (to != to_ || from != from)
+    if (to != to_ || from != from_)
         force_update_ = true;
     from_ = from;
     to_ = to;
@@ -218,7 +218,7 @@ const std::vector<std::pair<std::string, SignalViewerOp::SpectrumView::OutputTyp
 
 bool SignalViewerOp::SpectrumView::type_combo_handler(void* data, int idx, const char** out_text)
 {
-    auto self = static_cast<SpectrumView*>(data);
+    [[maybe_unused]] auto self = static_cast<SpectrumView*>(data);
     *out_text = output_types_[idx].first.c_str();
     return true;
 }

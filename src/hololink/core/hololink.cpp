@@ -42,7 +42,7 @@ namespace hololink {
 constexpr uint32_t SPI_START = 0b0000'0000'0000'0001;
 // SPI status flags
 constexpr uint32_t SPI_BUSY = 0b0000'0000'0000'0001;
-constexpr uint32_t SPI_FSM_ERR = 0b0000'0000'0000'0010;
+[[maybe_unused]] constexpr uint32_t SPI_FSM_ERR = 0b0000'0000'0000'0010;
 constexpr uint32_t SPI_DONE = 0b0000'0000'0001'0000;
 // SPI_CFG
 constexpr uint32_t SPI_CFG_CPOL = 0b0000'0000'0001'0000;
@@ -120,6 +120,7 @@ Hololink::Hololink(
     , null_sequence_location_(0)
     , skip_sequence_initialization_(skip_sequence_initialization)
     , started_(false)
+    , ptp_pps_output_(std::make_shared<PtpSynchronizer>(this[0]))
 {
 }
 
@@ -296,9 +297,9 @@ void Hololink::reset()
     }
 }
 
-uint32_t Hololink::get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout, bool check_sequence)
+uint32_t Hololink::get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout, bool sequence_check)
 {
-    const uint32_t version = read_uint32(HSB_IP_VERSION, timeout, check_sequence);
+    const uint32_t version = read_uint32(HSB_IP_VERSION, timeout, sequence_check);
     return version;
 }
 
@@ -314,10 +315,16 @@ bool Hololink::write_uint32(
     uint32_t count = 0;
     std::exception_ptr eptr;
     std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
+    bool current_sequence_check = sequence_check;
     try {
+        // HSB only supports a single command/response at a time--
+        // in other words we need to inhibit other threads from sending
+        // a command until we receive the response for the current one.
+        std::lock_guard lock(execute_mutex_);
+        const uint16_t sequence = next_sequence(lock);
         while (true) {
             count += 1;
-            bool status = write_uint32_(address, value, timeout, retry, sequence_check);
+            bool status = write_uint32_(address, value, timeout, retry, sequence, current_sequence_check, lock);
             if (status) {
                 return status;
             }
@@ -328,6 +335,7 @@ bool Hololink::write_uint32(
                 throw TimeoutError(
                     fmt::format("write_uint32 address={:#x} value={:#x}", address, value));
             }
+            current_sequence_check = false;
         }
     } catch (...) {
         eptr = std::current_exception();
@@ -344,7 +352,7 @@ bool Hololink::write_uint32(
 }
 
 bool Hololink::write_uint32_(uint32_t address, uint32_t value,
-    const std::shared_ptr<Timeout>& timeout, bool response_expected, bool sequence_check)
+    const std::shared_ptr<Timeout>& timeout, bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>& lock)
 {
     HSB_LOG_DEBUG("write_uint32(address={:#x}, value={:#x})", address, value);
     if ((address & 3) != 0) {
@@ -355,12 +363,6 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
     // This routine serializes a write_uint32 request
     // and forwards it to the device.
 
-    // HSB only supports a single command/response at a time--
-    // in other words we need to inhibit other threads from sending
-    // a command until we receive the response for the current one.
-    std::lock_guard lock(execute_mutex_);
-
-    const uint16_t sequence = next_sequence(lock);
     // Serialize
     std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
     core::Serializer serializer(request.data(), request.size());
@@ -398,21 +400,28 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
     return true;
 }
 
-uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool check_sequence)
+uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
 {
     uint32_t count = 0;
     std::exception_ptr eptr;
     std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
+    bool current_sequence_check = sequence_check;
     try {
+        // HSB only supports a single command/response at a time--
+        // in other words we need to inhibit other threads from sending
+        // a command until we receive the response for the current one.
+        std::lock_guard lock(execute_mutex_);
+        const uint16_t sequence = next_sequence(lock);
         while (true) {
             count += 1;
-            auto [status, value] = read_uint32_(address, timeout, check_sequence);
+            auto [status, value] = read_uint32_(address, timeout, sequence, current_sequence_check, lock);
             if (status) {
                 return value.value();
             }
             if (!timeout->retry()) {
                 throw TimeoutError(fmt::format("read_uint32 address={:#x}", address));
             }
+            current_sequence_check = false;
         }
     } catch (...) {
         eptr = std::current_exception();
@@ -429,7 +438,7 @@ uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>&
 }
 
 std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
-    uint32_t address, const std::shared_ptr<Timeout>& timeout, bool sequence_check)
+    uint32_t address, const std::shared_ptr<Timeout>& timeout, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>& lock)
 {
     HSB_LOG_DEBUG("read_uint32(address={:#x})", address);
     if ((address & 3) != 0) {
@@ -440,12 +449,6 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
     // This routine serializes a read_uint32 request
     // and forwards it to the device.
 
-    // HSB only supports a single command/response at a time--
-    // in other words we need to inhibit other threads from sending
-    // a command until we receive the response for the current one.
-    std::lock_guard lock(execute_mutex_);
-
-    uint16_t sequence = next_sequence(lock);
     // Serialize
     std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
     core::Serializer serializer(request.data(), request.size());
@@ -1329,37 +1332,104 @@ Hololink::ResetController::~ResetController()
 
 bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 {
-    // Wait for a non-zero time value
+    constexpr uint32_t SYNCHRONIZED = 0xF;
     while (true) {
-        std::shared_ptr<Timeout> read_timeout = Timeout::default_timeout();
-        auto [status, value] = read_uint32_(FPGA_PTP_SYNC_TS_0, read_timeout, sequence_number_checking_);
-        if (status) {
-            uint32_t ptp_count = value.value();
-            if (ptp_count != 0) {
-                break;
-            }
+        auto value = read_uint32(FPGA_PTP_SYNC_STAT);
+        if ((value & SYNCHRONIZED) == SYNCHRONIZED) {
+            break;
         }
         if (timeout->expired()) {
+            HSB_LOG_ERROR("ptp_synchronize timed out; value={:#X}.", value);
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-
     // Time is sync'd now.
     return true;
+}
+
+std::shared_ptr<Synchronizer> Hololink::ptp_pps_output(unsigned frequency)
+{
+    ptp_pps_output_->set_frequency(frequency);
+    return ptp_pps_output_;
+}
+
+void Synchronizer::attach(std::shared_ptr<Synchronizable> peer)
+{
+    bool was_empty = false;
+    { // lock scoping
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        // Don't attach more than once.
+        if (std::find(peers_.cbegin(), peers_.cend(), peer) != peers_.cend()) {
+            throw std::runtime_error("Synchronizer::attach called on the same Synchronizable more than once.");
+        }
+        was_empty = peers_.empty();
+        peers_.push_back(peer);
+    }
+    // Call setup when the first peer is attached
+    if (was_empty) {
+        setup();
+    }
+}
+
+void Synchronizer::detach(std::shared_ptr<Synchronizable> peer)
+{
+    bool now_empty = false;
+    { // lock scoping
+        std::lock_guard<std::mutex> lock(peers_mutex_);
+        auto it = std::find(peers_.begin(), peers_.end(), peer);
+        if (it != peers_.end()) {
+            peers_.erase(it);
+            now_empty = peers_.empty();
+        }
+    }
+    // Call shutdown when the last peer is detached
+    if (now_empty) {
+        shutdown();
+    }
+}
+
+class NullSynchronizer : public Synchronizer {
+public:
+    NullSynchronizer()
+    {
+    }
+
+    void setup() override
+    {
+        /* ignored */
+    }
+
+    void shutdown() override
+    {
+        /* ignored */
+    }
+
+    bool is_enabled() override
+    {
+        return false;
+    }
+};
+
+/* static */ std::shared_ptr<Synchronizer> Synchronizer::null_synchronizer()
+{
+    static auto null_synchronizer = std::make_shared<NullSynchronizer>();
+    return null_synchronizer;
 }
 
 Hololink::FrameMetadata Hololink::deserialize_metadata(const uint8_t* metadata_buffer, unsigned metadata_buffer_size)
 {
     hololink::core::Deserializer deserializer(metadata_buffer, metadata_buffer_size);
     FrameMetadata r = {}; // fill with 0s
+    uint16_t ignored = 0;
     if (!(deserializer.next_uint32_be(r.flags)
             && deserializer.next_uint32_be(r.psn)
             && deserializer.next_uint32_be(r.crc)
             && deserializer.next_uint64_be(r.timestamp_s)
             && deserializer.next_uint32_be(r.timestamp_ns)
             && deserializer.next_uint64_be(r.bytes_written)
-            && deserializer.next_uint32_be(r.frame_number)
+            && deserializer.next_uint16_be(ignored)
+            && deserializer.next_uint16_be(r.frame_number)
             && deserializer.next_uint64_be(r.metadata_s)
             && deserializer.next_uint32_be(r.metadata_ns))) {
         throw std::runtime_error(fmt::format("Buffer underflow in metadata"));
@@ -1420,10 +1490,26 @@ void Hololink::configure_hsb()
     // another program goes in and does any sort of control-plane transaction.
     // Note that when a control plane request triggers a fault, the actual
     // command is ignored.
-    bool check_sequence = false;
-    hsb_ip_version_ = get_hsb_ip_version(get_hsb_ip_version_timeout, check_sequence);
+    bool sequence_check = false;
+    hsb_ip_version_ = get_hsb_ip_version(get_hsb_ip_version_timeout, sequence_check);
     datecode_ = get_fpga_date();
     HSB_LOG_INFO("HSB IP version={:#x} datecode={:#x}", hsb_ip_version_, datecode_);
+
+    // Disable VSYNC
+    write_uint32(VSYNC_CONTROL, 0);
+
+    // Enable PTP.  This feature may not be instantiated
+    // within the FPGA, which would lead to an exception
+    // in the first write_uint32-- which we can ignore.
+    try {
+        write_uint32(FPGA_PTP_CTRL_DPLL_CFG1, 0x2);
+        write_uint32(FPGA_PTP_CTRL_DPLL_CFG2, 0x2);
+        write_uint32(FPGA_PTP_CTRL_DELAY_AVG_FACTOR, 0x3);
+        write_uint32(FPGA_PTP_DELAY_ASYMMETRY, 0x33);
+        write_uint32(FPGA_PTP_CTRL, 0x3); // dpll en
+    } catch (const std::exception& e) {
+        HSB_LOG_INFO("Ignoring error enabling PTP: {}.", e.what());
+    }
 
     // PLACATE device programming; if we're an older FPGA--which only
     // happens during programming-- then we'll get errors on these.  Programming
@@ -1520,21 +1606,38 @@ void Hololink::clear_apb_event(Hololink::Event event)
 void Hololink::async_event_thread()
 {
     HSB_LOG_TRACE("async_event_thread starting.");
+    int async_event_socket = async_event_socket_.get();
     while (true) {
         std::vector<uint8_t> received(hololink::core::UDP_PACKET_SIZE);
         sockaddr_in peer_address {};
         peer_address.sin_family = AF_UNSPEC;
         socklen_t peer_address_len = sizeof(peer_address);
         ssize_t received_bytes;
-        do {
-            received_bytes = recvfrom(async_event_socket_.get(), received.data(), received.size(), 0,
+        while (true) {
+            received_bytes = recvfrom(async_event_socket, received.data(), received.size(), 0,
                 (sockaddr*)&peer_address, &peer_address_len);
-            if (received_bytes == -1) {
+            if (received_bytes > 0) {
+                break;
+            }
+            if (received_bytes == 0) {
                 // Socket was closed.
-                HSB_LOG_TRACE("async_event_thread done.");
+                HSB_LOG_DEBUG("async_event_thread shutdown.");
                 return;
             }
-        } while (received_bytes <= 0);
+            if (received_bytes != -1) {
+                // This is outside specification for recvfrom
+                throw std::runtime_error(fmt::format("async_event_thread recvfrom received_bytes={} errno={}", received_bytes, errno));
+            }
+            // In this case, errno is set.
+            if (errno == EAGAIN) {
+                continue;
+            }
+            if (errno == EWOULDBLOCK) {
+                continue;
+            }
+            HSB_LOG_ERROR("async_event_thread errno={}.", errno);
+            throw std::runtime_error(fmt::format("async_event_thread recvfrom errno={}", errno));
+        }
 
         received.resize(received_bytes);
         char peer_ip[INET_ADDRSTRLEN];
@@ -1705,6 +1808,82 @@ uint32_t Hololink::Sequencer::location()
         throw std::runtime_error(fmt::format("Sequencer address must be set; see assign_location()."));
     }
     return address_;
+}
+
+Synchronizable::Synchronizable() = default;
+
+Hololink::PtpSynchronizer::PtpSynchronizer(Hololink& hololink)
+    : hololink_(hololink)
+    , frequency_(0)
+    , frequency_control_(0)
+{
+}
+
+void Hololink::PtpSynchronizer::set_frequency(unsigned frequency)
+{
+    // The first time we're set up, we require they provide
+    // a frequency value.
+    if (frequency_ == 0) {
+        // VSYNC Frequency: 0=10Hz, 1=30Hz, 2=60Hz, 3=90Hz, 4=120Hz
+        switch (frequency) {
+        case 10:
+            frequency_control_ = 0;
+            break;
+        case 30:
+            frequency_control_ = 1;
+            break;
+        case 60:
+            frequency_control_ = 2;
+            break;
+        case 90:
+            frequency_control_ = 3;
+            break;
+        case 120:
+            frequency_control_ = 4;
+            break;
+        default:
+            throw std::runtime_error(
+                fmt::format("Invalid PtpSynchronizer frequency={}.", frequency));
+        }
+        frequency_ = frequency;
+        return;
+    }
+
+    if (frequency == 0) {
+        return;
+    }
+
+    if (frequency != frequency_) {
+        throw std::runtime_error(
+            fmt::format("PtpSynchronizer frequency is already={}, can't change it to {}.", frequency_, frequency));
+    }
+}
+
+void Hololink::PtpSynchronizer::setup()
+{
+    HSB_LOG_INFO("PtpSynchronizer: Setting up PTP synchronization with frequency {} Hz", frequency_);
+
+    // Configure FPGA registers for VSYNC timing
+    hololink_.write_uint32(VSYNC_CONTROL, 0); // Disable VSYNC
+    hololink_.write_uint32(VSYNC_FREQUENCY, frequency_control_); // Set frequency control
+    hololink_.write_uint32(VSYNC_START, 0); // VSYNC Start Value (For Active Low, use 0x1)
+    hololink_.write_uint32(VSYNC_DELAY, 0); // VSYNC delay (ns)
+    hololink_.write_uint32(VSYNC_EXPOSURE, 0xF4240); // Exposure time (1ms)
+    hololink_.write_uint32(VSYNC_CONTROL, 1); // Enable VSYNC
+    hololink_.write_uint32(VSYNC_GPIO, 0xF); // Set GPIO as OUT
+}
+
+void Hololink::PtpSynchronizer::shutdown()
+{
+    HSB_LOG_INFO("PtpSynchronizer: Shutting down PTP synchronization");
+
+    // Disable VSYNC
+    hololink_.write_uint32(VSYNC_CONTROL, 0);
+}
+
+bool Hololink::PtpSynchronizer::is_enabled()
+{
+    return true;
 }
 
 } // namespace hololink

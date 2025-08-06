@@ -26,4 +26,4 @@ set -o errexit
 # This test only runs the non-network-accelerated tests and only works with
 # the first (192.168.0.2) HSB interface.
 #
-pytest --imx274 --unaccelerated-only --channel-ips=192.168.0.2 --schedulers=default
+pytest --imx274 --unaccelerated-only --channel-ips=192.168.0.2 --schedulers=default --ptp

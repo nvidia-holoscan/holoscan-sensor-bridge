@@ -93,8 +93,6 @@ __global__ void frameReconstruction12(unsigned short * out,
 
 namespace hololink::operators {
 
-static inline size_t align_8(size_t value) { return (value + 7) & ~7; }
-
 void CsiToBayerOp::setup(holoscan::OperatorSpec& spec)
 {
     spec.input<holoscan::gxf::Entity>("input");
@@ -177,8 +175,6 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     if (input_tensor->rank() != 1) {
         throw std::runtime_error("Tensor must be one dimensional");
     }
-
-    const int32_t size = input_tensor->shape().dimension(0);
 
     // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
     auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(

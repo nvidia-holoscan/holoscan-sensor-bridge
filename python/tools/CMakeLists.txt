@@ -18,4 +18,4 @@ install(FILES hololink.py
         imx274.py
         polarfire_esb.py
         DESTINATION tools
-        COMPONENT hololink-tools)
+        COMPONENT hololink-python_tools)

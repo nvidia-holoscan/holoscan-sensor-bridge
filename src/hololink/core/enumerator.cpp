@@ -105,7 +105,7 @@ namespace {
         }
         std::stringstream stream;
         for (unsigned i = 0; i < n; ++i) {
-            stream << std::setfill('0') << std::setw(2) << std::hex << int(buffer[i]);
+            stream << std::setfill('0') << std::setw(2) << std::hex << int(buffer[i]) << std::dec;
         }
         result = stream.str();
         return true;
@@ -128,7 +128,7 @@ namespace {
         std::stringstream stream;
         // Format: 8-4-4-4-12 characters
         for (unsigned i = 0; i < 16; ++i) {
-            stream << std::setfill('0') << std::setw(2) << std::hex << int(buffer[i]);
+            stream << std::setfill('0') << std::setw(2) << std::hex << int(buffer[i]) << std::dec;
             // Add dashes in the appropriate spots
             if (i == 3 || i == 5 || i == 7 || i == 9) {
                 stream << "-";
@@ -338,39 +338,16 @@ namespace {
         metadata["control_port"] = default_control_port;
         metadata["sequence_number_checking"] = 1;
 
+        metadata["fpga_uuid"] = std::string("N/A");
         if (enum_version == 1) {
             deserialize_bootp_v1(deserializer, metadata);
         } else if (enum_version == 2) {
             deserialize_bootp_v2(deserializer, metadata);
         }
 
-        // At this point, metadata["fpga_uuid"] can be used to update configurations.
-        // Note that for now, we're just accommodating the HSB enum-v2 BOOTP format;
-        // this will become an extensible framework in an upcoming
-        // release.
-        metadata["board_description"] = "N/A";
-        auto fpga_uuid_value = metadata.get<std::string>("fpga_uuid");
-        if (fpga_uuid_value) {
-            std::string fpga_uuid = fpga_uuid_value.value();
-            if (fpga_uuid == "889b7ce3-65a5-4247-8b05-4ff1904c3359") {
-                // HOLOLINK_LITE_BOARD_ID
-                metadata["board_description"] = "hololink-lite";
-                metadata["gpio_pin_count"] = 16;
-            } else if (fpga_uuid == "d0f015e0-93b6-4473-b7d1-7dbd01cbeab5") {
-                // HOLOLINK_NANO_BOARD_ID
-                metadata["board_description"] = "hololink-nano";
-                metadata["gpio_pin_count"] = 54;
-            } else if (fpga_uuid == "7a377bf7-76cb-4756-a4c5-7dddaed8354b") {
-                // HOLOLINK_100G_BOARD_ID
-                metadata["board_description"] = "hololink 100G";
-            } else if (fpga_uuid == "ed6a9292-debf-40ac-b603-a24e025309c1") {
-                // MICROCHIP_POLARFIRE_BOARD_ID
-                metadata["board_description"] = "Microchip Polarfire";
-            } else if (fpga_uuid == "f1627640-b4dc-48af-a360-c55b09b3d230") {
-                // LEOPARD_EAGLE_BOARD_ID
-                metadata["board_description"] = "Leopard Eagle";
-            }
-        }
+        auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
+        EnumerationStrategy& enumeration_strategy = Enumerator::get_uuid_strategy(fpga_uuid);
+        enumeration_strategy.update_metadata(metadata, deserializer);
     }
 
 } // anonymous namespace
@@ -381,6 +358,7 @@ Enumerator::Enumerator(const std::string& local_interface,
     , bootp_request_port_(bootp_request_port)
     , bootp_reply_port_(bootp_reply_port)
 {
+    configure_default_enumeration_strategies();
 }
 
 /*static*/ void Enumerator::enumerated(
@@ -612,6 +590,180 @@ void Enumerator::send_bootp_reply(
             first = false;
         }
     }
+}
+
+// Static variable definition
+std::map<std::string, std::shared_ptr<EnumerationStrategy>> Enumerator::uuid_strategies_;
+
+EnumerationStrategy::~EnumerationStrategy()
+{
+}
+
+void EnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer)
+{
+    // By default, don't do anything.
+}
+
+std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy)
+{
+    Enumerator::configure_default_enumeration_strategies();
+    std::shared_ptr<EnumerationStrategy> previous_strategy = nullptr;
+    auto previous = uuid_strategies_.find(uuid);
+    if (previous != uuid_strategies_.end()) {
+        previous_strategy = previous->second;
+    }
+    uuid_strategies_[uuid] = enumeration_strategy;
+    return previous_strategy;
+}
+
+EnumerationStrategy& Enumerator::get_uuid_strategy(std::string uuid)
+{
+    auto it = uuid_strategies_.find(uuid);
+    if (it != uuid_strategies_.end()) {
+        return *it->second;
+    }
+    Metadata empty;
+    static BasicEnumerationStrategy null_enumeration_strategy(empty);
+    return null_enumeration_strategy;
+}
+
+static void sensor_metadata(Metadata& metadata, int64_t sensor_number, int64_t sensor, int64_t vp_mask,
+    int64_t sif_address, int64_t vp_address)
+{
+    metadata["sensor_number"] = sensor_number;
+    metadata["sensor"] = sensor;
+    metadata["vp_mask"] = vp_mask;
+    metadata["sif_address"] = sif_address;
+    metadata["vp_address"] = vp_address;
+}
+
+static void dataplane_metadata(Metadata& metadata, int64_t data_plane, int64_t hif_address)
+{
+    metadata["data_plane"] = data_plane;
+    metadata["hif_address"] = hif_address;
+}
+
+BasicEnumerationStrategy::BasicEnumerationStrategy(const Metadata& additional_metadata, unsigned total_sensors, unsigned total_dataplanes, unsigned sifs_per_sensor)
+    : additional_metadata_(additional_metadata) // KEEP A COPY
+    , total_sensors_(total_sensors)
+    , total_dataplanes_(total_dataplanes)
+    , sifs_per_sensor_(sifs_per_sensor)
+{
+}
+
+void BasicEnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer)
+{
+    metadata.update(additional_metadata_);
+}
+
+void BasicEnumerationStrategy::use_sensor(Metadata& metadata, int64_t sensor_number)
+{
+    HSB_LOG_TRACE(fmt::format("sensor_number={}", sensor_number));
+    if ((sensor_number < 0) || (sensor_number >= total_sensors_)) {
+        throw std::runtime_error(fmt::format("use_sensor failed, sensor_number={} is out-of-range.", sensor_number));
+    }
+    int32_t sensor = sensor_number * sifs_per_sensor_;
+    int32_t vp_mask = 1 << sensor;
+    int32_t sif_address = 0x01000000 + 0x10000 * sensor_number; // yes, "sensor_number" not "sensor"
+    int32_t vp_address = 0x1000 + 0x40 * sensor;
+    sensor_metadata(
+        metadata,
+        sensor_number,
+        sensor,
+        vp_mask,
+        sif_address,
+        vp_address);
+
+    switch (sensor_number) {
+    case 0:
+        metadata["frame_end_event"] = Hololink::Event::SIF_0_FRAME_END;
+        break;
+    case 1:
+        metadata["frame_end_event"] = Hololink::Event::SIF_1_FRAME_END;
+        break;
+    default:
+        // Note that we only have frame end events for 0 and 1.
+        break;
+    }
+}
+
+void BasicEnumerationStrategy::use_data_plane_configuration(Metadata& metadata, int64_t data_plane)
+{
+    HSB_LOG_TRACE(fmt::format("data_plane={}", data_plane));
+    if ((data_plane < 0) || (data_plane >= total_dataplanes_)) {
+        throw std::runtime_error(fmt::format("use_data_plane_configuration failed, data_plane={} is out-of-range.", data_plane));
+    }
+    int32_t hif_address = 0x02000300 + 0x10000 * data_plane;
+    dataplane_metadata(
+        metadata,
+        data_plane,
+        hif_address);
+}
+
+/**
+ * Update the enumeration metadata for Leopard Eagle configurations
+ */
+class LeopardEagleEnumerationStrategy
+    : public BasicEnumerationStrategy {
+public:
+    LeopardEagleEnumerationStrategy()
+        : BasicEnumerationStrategy(leopard_eagle_metadata(),
+            3, // total_sensors
+            1, // total_dataplanes
+            1 // sifs_per_sensor
+        )
+    {
+    }
+    static Metadata leopard_eagle_metadata()
+    {
+        Metadata metadata;
+        metadata["board_description"] = "Leopard Eagle";
+        return metadata;
+    };
+    void use_sensor(Metadata& metadata, int64_t sensor_number) override
+    {
+        BasicEnumerationStrategy::use_sensor(metadata, sensor_number);
+        // BasicEnumerationStrategy::use_sensor throws an exception
+        // if sensor_number is out of range, so the following statement
+        // is always OK.
+        metadata["i2c_bus"] = CAM_I2C_BUS + sensor_number;
+    }
+};
+
+void Enumerator::configure_default_enumeration_strategies()
+{
+    static bool done = false;
+    if (done) {
+        return;
+    }
+
+    // For those bootp-v1 configurations, provide default strategies
+    Metadata hololink_lite_metadata;
+    hololink_lite_metadata["board_description"] = "hololink-lite";
+    hololink_lite_metadata["gpio_pin_count"] = 16;
+    auto hololink_lite_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_lite_metadata);
+    uuid_strategies_[HOLOLINK_LITE_UUID] = hololink_lite_enumeration_strategy;
+
+    Metadata hololink_nano_metadata;
+    hololink_nano_metadata["board_description"] = "hololink-nano";
+    hololink_nano_metadata["gpio_pin_count"] = 54;
+    auto hololink_nano_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_nano_metadata);
+    uuid_strategies_[HOLOLINK_NANO_UUID] = hololink_nano_enumeration_strategy;
+
+    Metadata hololink_100g_metadata;
+    hololink_100g_metadata["board_description"] = "hololink 100G";
+    auto hololink_100g_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_100g_metadata);
+    uuid_strategies_[HOLOLINK_100G_UUID] = hololink_100g_enumeration_strategy;
+
+    Metadata microchip_polarfire_metadata;
+    microchip_polarfire_metadata["board_description"] = "Microchip Polarfire";
+    auto microchip_polarfire_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(microchip_polarfire_metadata);
+    uuid_strategies_[MICROCHIP_POLARFIRE_UUID] = microchip_polarfire_enumeration_strategy;
+
+    auto leopard_eagle_enumeration_strategy = std::make_shared<LeopardEagleEnumerationStrategy>();
+    uuid_strategies_[LEOPARD_EAGLE_UUID] = leopard_eagle_enumeration_strategy;
+
+    done = true;
 }
 
 } // namespace hololink

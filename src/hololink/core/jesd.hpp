@@ -65,9 +65,6 @@ public:
     void stop();
 
 protected:
-    const int SPI_DAEMON_SERVER_PORT = 8400;
-    const size_t MAX_SPI_DEVICES = 2;
-
     // Message types and definition, must match SPI Daemon's definition.
     const int HSB_SPI_MSG_TYPE_SPI = 0;
     const int HSB_SPI_MSG_TYPE_JESD = 1;

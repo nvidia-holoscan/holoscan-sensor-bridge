@@ -277,8 +277,7 @@ def test_imx274_synchronized_i2c_settings(
     )
     with utils.Watchdog(
         "frame-reception",
-        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-        timeout=0.5,
+        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
     ) as watchdog:
         # Set up the application
         application = Imx274I2cTestApplication(
@@ -665,9 +664,8 @@ def test_stereo_imx274_synchronized_i2c_settings(
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
     with utils.Watchdog(
-        "frame-reception-left",
-        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-        timeout=0.5,
+        "frame-reception",
+        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
     ) as watchdog:
         ibv_port_left, ibv_port_right = 1, 1
         # Set up the application

@@ -34,7 +34,7 @@
 
 namespace hololink::core {
 
-uint32_t round_up(uint32_t value, uint32_t alignment)
+size_t round_up(size_t value, size_t alignment)
 {
     // This only works when alignment is a power of two.
     if (alignment & (alignment - 1)) {

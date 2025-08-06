@@ -90,6 +90,7 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     , busy_(NULL)
     , cu_stream_(0)
     , frame_ready_([](const LinuxReceiver&) {})
+    , frame_number_()
 {
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
@@ -153,7 +154,8 @@ void LinuxReceiver::run()
     // Received UDP message goes here.
     uint8_t received[hololink::core::UDP_PACKET_SIZE];
 
-    unsigned frame_count = 0, packet_count = 0;
+    unsigned frame_count = 0;
+    [[maybe_unused]] unsigned packet_count = 0;
     unsigned frame_packets_received = 0, frame_bytes_received = 0;
     struct timespec now = { 0 }, frame_start = { 0 };
     uint64_t packets_dropped = 0;
@@ -271,7 +273,7 @@ void LinuxReceiver::run()
                 LinuxReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
-                metadata.frame_number = frame_count;
+                metadata.received_frame_number = frame_count;
                 metadata.frame_start_s = frame_start.tv_sec;
                 metadata.frame_start_ns = frame_start.tv_nsec;
                 metadata.frame_end_s = now.tv_sec;
@@ -281,6 +283,7 @@ void LinuxReceiver::run()
                 metadata.received_s = now.tv_sec;
                 metadata.received_ns = now.tv_nsec;
                 metadata.frame_metadata = frame_metadata;
+                metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
 
                 receiving = available_.exchange(receiving);
                 signal();

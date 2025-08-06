@@ -25,7 +25,7 @@ auto fmt::formatter<hololink::Metadata::Element>::format(const hololink::Metadat
 {
     std::string buffer;
     std::visit(
-        [&ctx, &buffer](auto&& arg) {
+        [&buffer](auto&& arg) {
             using T = std::decay_t<decltype(arg)>;
             if constexpr (std::is_same_v<T, std::vector<uint8_t>>) {
                 std::stringstream content_stream;

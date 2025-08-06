@@ -37,6 +37,7 @@ _MODULES = {
     "RoceTransmitterOp": "roce_transmitter",
     "SignalGeneratorOp": "sig_gen",
     "SignalViewerOp": "sig_viewer",
+    "SIPLCaptureOp": "sipl_capture",
     "UdpTransmitterOp": "udp_transmitter",
 }
 

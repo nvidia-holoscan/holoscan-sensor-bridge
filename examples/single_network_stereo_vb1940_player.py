@@ -27,6 +27,31 @@ from cuda import cuda
 import hololink as hololink_module
 
 
+class TimestampPrinterOp(holoscan.core.Operator):
+    """Custom operator to print timestamps from tensor metadata."""
+
+    def __init__(self, fragment, *args, name="timestamp_printer", **kwargs):
+        self.camera_name = kwargs.pop("camera_name", "unknown")
+        super().__init__(fragment, *args, name=name, **kwargs)
+        self.frame_count = 0
+
+    def setup(self, spec):
+        spec.input("input")
+        spec.output("output")
+
+    def compute(self, op_input, op_output, context):
+        message = op_input.receive("input")
+        self.frame_count += 1
+        timestamp_s = self.metadata.get("timestamp_s", 0)
+        timestamp_ns = self.metadata.get("timestamp_ns", 0)
+        total_seconds = timestamp_s + timestamp_ns / 1_000_000_000.0
+        logging.info(
+            f"[{self.camera_name}] Frame {self.frame_count}: "
+            f"timestamp={total_seconds:.9f}"
+        )
+        op_output.emit(message, "output")
+
+
 class HoloscanApplication(holoscan.core.Application):
     def __init__(
         self,
@@ -44,6 +69,7 @@ class HoloscanApplication(holoscan.core.Application):
         window_height,
         window_width,
         window_title,
+        print_time,
     ):
         logging.info("__init__")
         super().__init__()
@@ -61,13 +87,14 @@ class HoloscanApplication(holoscan.core.Application):
         self._window_height = window_height
         self._window_width = window_width
         self._window_title = window_title
+        self._print_time = print_time
         # These are HSDK controls-- because we have stereo
         # camera paths going into the same visualizer, don't
         # raise an error when each path present metadata
         # with the same names.  Because we don't use that metadata,
         # it's easiest to just ignore new items with the same
         # names as existing items.
-        self.is_metadata_enabled = True
+        self.enable_metadata(True)
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
@@ -152,6 +179,15 @@ class HoloscanApplication(holoscan.core.Application):
             hololink_channel=self._hololink_channel_right,
             device=self._camera_right,
         )
+
+        if self._print_time:
+            timestamp_printer_left = TimestampPrinterOp(
+                self, name="timestamp_printer_left", camera_name="left"
+            )
+
+            timestamp_printer_right = TimestampPrinterOp(
+                self, name="timestamp_printer_right", camera_name="right"
+            )
 
         bayer_format = self._camera_left.bayer_format()
         assert bayer_format == self._camera_right.bayer_format()
@@ -239,13 +275,35 @@ class HoloscanApplication(holoscan.core.Application):
             width=self._window_width,
             window_title=self._window_title,
         )
-        #
-        self.add_flow(
-            receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
-        )
-        self.add_flow(
-            receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
-        )
+
+        if self._print_time:
+            self.add_flow(
+                receiver_operator_left, timestamp_printer_left, {("output", "input")}
+            )
+            self.add_flow(
+                timestamp_printer_left,
+                csi_to_bayer_operator_left,
+                {("output", "input")},
+            )
+            self.add_flow(
+                receiver_operator_right, timestamp_printer_right, {("output", "input")}
+            )
+            self.add_flow(
+                timestamp_printer_right,
+                csi_to_bayer_operator_right,
+                {("output", "input")},
+            )
+        else:
+            self.add_flow(
+                receiver_operator_left,
+                csi_to_bayer_operator_left,
+                {("output", "input")},
+            )
+            self.add_flow(
+                receiver_operator_right,
+                csi_to_bayer_operator_right,
+                {("output", "input")},
+            )
         self.add_flow(
             csi_to_bayer_operator_left, image_processor_left, {("output", "input")}
         )
@@ -263,8 +321,31 @@ def main():
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
+        default=hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
         help="VB1940 mode",
+    )
+    parser.add_argument(
+        "--trigger",
+        action="store_true",
+        help="Run in trigger mode",
+    )
+    parser.add_argument(
+        "--exp",
+        type=int,
+        default=256,
+        help="set EXPOSURE duration in lines, RANGE(4 to 65535). Default line value is 29.70usec",
+    )
+    parser.add_argument(
+        "--gain",
+        type=int,
+        default=0,
+        help="Set Analog Gain, RANGE(0 to 12). Default is 0. Equation is (16/(16-gain)",
+    )
+    parser.add_argument(
+        "--frequency",
+        type=int,
+        default=30,
+        help="VSYNC frequency in Hz (10, 30, 60, 90, 120). Default is 30Hz",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
@@ -320,6 +401,11 @@ def main():
         "--title",
         help="Set the window title",
     )
+    parser.add_argument(
+        "--print-time",
+        action="store_true",
+        help="Print timestamp information for received frames",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -346,16 +432,21 @@ def main():
     #
     hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
+    hololink = hololink_channel_left.hololink()
+    assert hololink is hololink_channel_right.hololink()
     # Get a handle to the camera
-    camera_left = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel_left, expander_configuration=0
+    vsync = hololink_module.Synchronizer.null_synchronizer()
+    if args.trigger:
+        vsync = hololink.ptp_pps_output(args.frequency)
+    camera_left = hololink_module.sensors.vb1940.Vb1940Cam(
+        hololink_channel_left,
+        vsync=vsync,
     )
-    camera_right = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(
-        hololink_channel_right, expander_configuration=1
+    camera_right = hololink_module.sensors.vb1940.Vb1940Cam(
+        hololink_channel_right,
+        vsync=vsync,
     )
-    camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
-        args.camera_mode
-    )
+    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode(args.camera_mode)
     # What title should we use?
     window_title = f"Holoviz - {args.hololink}"
     if args.title is not None:
@@ -376,25 +467,34 @@ def main():
         args.window_height,
         args.window_width,
         window_title,
+        args.print_time,
     )
     application.config(args.configuration)
     # Run it.
-    hololink = hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
     hololink.start()
     hololink.reset()
     hololink.write_uint32(0x8, 0x0)
     camera_left.setup_clock()  # this also sets camera_right's clock
     hololink.write_uint32(0x8, 0x3)
     time.sleep(100 / 1000)
+
     camera_left.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
     camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
     camera_left.configure(camera_mode)
+    camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
+    camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
+
     camera_right.get_register_32(
         0x0000
     )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
     camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
     camera_right.configure(camera_mode)
+    camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
+    camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
+
+    # READ CAMERA EEPROM
+    cal_eeprom = camera_left.get_calibration_data(0)
+    print("eeprom calibration data:", cal_eeprom)
 
     application.run()
     hololink.stop()

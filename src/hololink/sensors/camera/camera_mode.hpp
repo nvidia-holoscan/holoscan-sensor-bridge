@@ -28,12 +28,6 @@
 
 namespace hololink::sensors {
 
-// Camera Mode
-namespace camera_mode {
-    enum {
-        // mode identifiers ...
-    };
-} // namespace camera_mode
 using CameraMode = int;
 
 class CameraFrameFormat {

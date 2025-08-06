@@ -83,7 +83,7 @@ class TimingReportOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        complete_timestamp = datetime.datetime.utcnow()
+        complete_timestamp = datetime.datetime.now(datetime.UTC)
 
         #
         _ = op_input.receive("input")
@@ -356,13 +356,9 @@ def main():
     hololink.start()
     hololink.reset()
     # Sync PTP; otherwise the timestamps we get from HSB aren't synchronized with us.
-    ptp_sync_timeout_s = 10
-    ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
     logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize(ptp_sync_timeout):
-        raise ValueError(
-            f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-        )
+    if not hololink.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP.")
     else:
         logging.debug("PTP synchronized.")
     camera.setup_clock()

@@ -20,7 +20,7 @@
 #ifndef HOLOLINK_NVTX_TRACE_H
 #define HOLOLINK_NVTX_TRACE_H 1
 
-#include "nvToolsExt.h"
+#include <nvtx3/nvToolsExt.h>
 #include <pthread.h>
 
 namespace hololink::core {

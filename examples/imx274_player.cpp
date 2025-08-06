@@ -193,7 +193,6 @@ int main(int argc, char** argv)
         { "expander-configuration", required_argument, nullptr, 0 },
         { "pattern", required_argument, nullptr, 0 },
         { "log-level", required_argument, nullptr, 0 }, { 0, 0, nullptr, 0 } };
-    uint64_t count;
     while (true) {
         int option_index = 0;
         const int c = getopt_long(argc, argv, "h", long_options, &option_index);

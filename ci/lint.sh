@@ -58,10 +58,8 @@ SKIP=( \
     build*
 )
 
-# Codespell checks for spelling mistakes.  Project exemptions include
-# - "docs/user_guide/peripherals_interface.md" has signal names that don't meet spelling rules
-# - PDF files
-CODESPELL_FILES=( `git ls-files | grep -v '.pdf$' | egrep -v '^(docs/user_guide/peripheral_interface.md)'` )
+# Codespell checks for spelling mistakes.  Don't include PDF files.
+CODESPELL_FILES=( `git ls-files | grep -v '.pdf$'` )
 
 C_FILES=( `git ls-files | egrep '.(cpp|hpp)$' ` )
 DOCS_FILES=( `git ls-files | egrep '.md$' ` )
@@ -100,7 +98,7 @@ case "$1" in
         flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
         clang-format --style=file:${ROOT}/.clang-format -i ${C_FILES[*]}
         mdformat $MDFORMAT ${DOCS_FILES[*]}
-        codespell ${CODESPELL_FILES[*]}
+        codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
         exit 0
         ;;
     --do-lint)
@@ -111,7 +109,7 @@ case "$1" in
         flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
         clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror ${C_FILES[*]}
         mdformat --check $MDFORMAT ${DOCS_FILES[*]}
-        codespell ${CODESPELL_FILES[*]}
+        codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
         exit 0
         ;;
     --do-*)

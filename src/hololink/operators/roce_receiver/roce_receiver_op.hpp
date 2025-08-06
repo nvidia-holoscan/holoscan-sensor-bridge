@@ -19,6 +19,7 @@
 #ifndef SRC_HOLOLINK_OPERATORS_ROCE_RECEIVER_ROCE_RECEIVER_OP
 #define SRC_HOLOLINK_OPERATORS_ROCE_RECEIVER_ROCE_RECEIVER_OP
 
+#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
@@ -36,6 +37,7 @@ public:
     ~RoceReceiverOp() = default;
 
     // holoscan::Operator virtual functions
+    void initialize() override;
     void setup(holoscan::OperatorSpec& spec) override;
 
     // BaseReceiverOp virtual functions
@@ -44,9 +46,28 @@ public:
     std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms) override;
     std::tuple<std::string, uint32_t> local_ip_and_port() override;
 
+    // Setter for rename_metadata function
+    void set_rename_metadata(std::function<std::string(const std::string&)> rename_fn);
+
 private:
     holoscan::Parameter<std::string> ibv_name_;
     holoscan::Parameter<uint32_t> ibv_port_;
+    std::function<std::string(const std::string&)> rename_metadata_;
+
+    // Cached metadata key names
+    std::string received_frame_number_metadata_;
+    std::string rx_write_requests_metadata_;
+    std::string received_s_metadata_;
+    std::string received_ns_metadata_;
+    std::string imm_data_metadata_;
+    std::string frame_memory_metadata_;
+    std::string dropped_metadata_;
+    std::string frame_number_metadata_;
+    std::string timestamp_s_metadata_;
+    std::string timestamp_ns_metadata_;
+    std::string metadata_s_metadata_;
+    std::string metadata_ns_metadata_;
+    std::string crc_metadata_;
 
     std::shared_ptr<RoceReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;

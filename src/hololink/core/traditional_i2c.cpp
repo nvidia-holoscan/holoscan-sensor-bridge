@@ -43,7 +43,7 @@ public:
     {
     }
 
-    bool set_i2c_clock()
+    bool set_i2c_clock() override
     {
         // set the clock to 400KHz (fastmode) i2c speed once at init
         const uint32_t clock = 0b0000'0101;

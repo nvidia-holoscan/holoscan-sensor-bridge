@@ -59,28 +59,38 @@ public:
     // Define a constructor that fully initializes the object.
     PyRoceReceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
-        const std::string& ibv_name, uint32_t ibv_port, const std::string& name)
-        : device_(device)
-        , RoceReceiverOp(holoscan::ArgList {
-              holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
-              holoscan::Arg { "device_start", std::function<void()>([this]() {
-                                 py::gil_scoped_acquire guard;
-                                 device_.attr("start")();
-                             }) },
-              holoscan::Arg { "device_stop", std::function<void()>([this]() {
-                                 py::gil_scoped_acquire guard;
-                                 device_.attr("stop")();
-                             }) },
-              holoscan::Arg {
-                  "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
-              holoscan::Arg { "frame_size", frame_size },
-              holoscan::Arg { "ibv_name", ibv_name }, holoscan::Arg { "ibv_port", ibv_port } })
+        const std::string& ibv_name, uint32_t ibv_port, py::object rename_metadata, const std::string& name)
+        : RoceReceiverOp(holoscan::ArgList {
+            holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
+            holoscan::Arg { "device_start", std::function<void()>([this]() {
+                               py::gil_scoped_acquire guard;
+                               device_.attr("start")();
+                           }) },
+            holoscan::Arg { "device_stop", std::function<void()>([this]() {
+                               py::gil_scoped_acquire guard;
+                               device_.attr("stop")();
+                           }) },
+            holoscan::Arg {
+                "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
+            holoscan::Arg { "frame_size", frame_size },
+            holoscan::Arg { "ibv_name", ibv_name },
+            holoscan::Arg { "ibv_port", ibv_port } })
+        , device_(device)
     {
         add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
         setup(*spec_.get());
+
+        // Set the rename_metadata function if provided
+        if (!rename_metadata.is_none()) {
+            auto rename_fn = std::function<std::string(const std::string&)>([rename_metadata](const std::string& name) {
+                py::gil_scoped_acquire guard;
+                return rename_metadata(name).cast<std::string>();
+            });
+            set_rename_metadata(rename_fn);
+        }
     }
 
     // the `'start`, 'stop` and `get_next_frame` functions are overwritten by the
@@ -126,13 +136,14 @@ PYBIND11_MODULE(_roce_receiver, m)
     py::class_<RoceReceiverOp, PyRoceReceiverOp, holoscan::Operator,
         std::shared_ptr<RoceReceiverOp>>(m, "RoceReceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, const std::string&, uint32_t, const std::string&>(),
+                 size_t, const std::string&, uint32_t, py::object, const std::string&>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
-            "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "name"_a = "roce_receiver"s)
+            "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "rename_metadata"_a = py::none(), "name"_a = "roce_receiver"s)
         .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a)
         .def("setup", &RoceReceiverOp::setup, "spec"_a)
         .def("start", &RoceReceiverOp::start)
-        .def("stop", &RoceReceiverOp::stop);
+        .def("stop", &RoceReceiverOp::stop)
+        .def("set_rename_metadata", &RoceReceiverOp::set_rename_metadata, "rename_fn"_a);
 
 } // PYBIND11_MODULE
 

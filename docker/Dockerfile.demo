@@ -32,6 +32,19 @@ ARG INSTALL_ENVIRONMENT=""
 RUN cd /opt/hololink/python \
     && $INSTALL_ENVIRONMENT pip3 wheel -v .
 
+# Build C++ tools
+RUN apt-get update \
+    && apt-get install -y build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+
+# Build tools with CMake
+RUN cd /opt/hololink \
+    && mkdir -p build \
+    && cd build \
+    && cmake -DHOLOLINK_BUILD_ONLY_NATIVE=ON .. \
+    && make -j$(nproc) \
+    && make install DESTDIR=/opt/hololink/tools
+
 # demo container
 FROM base AS demo
 
@@ -52,3 +65,6 @@ RUN apt-get update \
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
 RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \
     && pip3 install ${WHEEL}
+
+# Install the C++ tools
+COPY --from=builder /opt/hololink/tools/usr/local/ /usr/local/

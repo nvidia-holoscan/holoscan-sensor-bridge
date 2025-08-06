@@ -526,3 +526,32 @@ The glass to display latency of the pipeline mentioned above on Jetson Orin AGX 
 for a resolution of 1920x1080 at 60 fps.
 
 Please reach out to NVIDIA for further questions on ISP capabilities and usage.
+
+## ECam0M30ToF Player
+
+The `ecam0m30tof_player.py` application demonstrates the use of ECam0M30ToF
+time-of-flight camera and showcasing handling of depth and IR data in the pipeline. This
+application uses RoCE for high-performance data transmission and supports multiple
+camera modes for different use cases.
+
+```{mermaid}
+:align: center
+:caption: ECam0M30ToF Player
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
+    c --> i[ImageShiftAndProcessingOperator]
+    i --> v[HolovizOp]
+```
+
+The `ImageShiftAndProcessingOperator` is a new operator designed to process depth and IR
+data. It does following operations:
+
+- Converts depth data to grayscale for visualization
+- Handles dual-plane data (depth + IR) when in combined mode
+- Performs data format conversion and normalization
+
+The `HolovizOp` provides rendering for both Active IR and depth data, with depth data
+visualized using the `DEPTH_MAP` option for 3D rendering.
