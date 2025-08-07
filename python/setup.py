@@ -79,8 +79,8 @@ setuptools.setup(
         "build_ext": cmake_build_extension.BuildExtension,
     },
     install_requires=[
-        "cuda-python",
-        "nvtx",
+        "cuda-python==12.9.0",
+        "nvtx==0.2.13",
     ],
     entry_points={
         "console_scripts": [
