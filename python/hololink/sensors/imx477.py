@@ -475,14 +475,17 @@ imx477_mode_3840X2160_60fps = [
 
 class Imx477:
     def __init__(self, hololink_channel, camera_id=0):
+        CAM_I2C_CTRL = 0x04000200
         if camera_id == 0:
-            self.i2c_con_address = hololink_module.CAM_I2C_CTRL
+            self.i2c_con_address = CAM_I2C_CTRL
         elif camera_id == 1:
-            self.i2c_con_address = hololink_module.CAM_I2C_CTRL + 0x200
+            self.i2c_con_address = CAM_I2C_CTRL + 0x200
         else:
             raise Exception(f"{camera_id=} isn't allowed, only camera_id=0 or 1.")
         self._hololink = hololink_channel.hololink()
-        self._i2c = self._hololink.get_i2c(self.i2c_con_address)
+        self._i2c = hololink_module.get_traditional_i2c(
+            self._hololink, self.i2c_con_address
+        )
         self.cam_id = camera_id
 
     def configure(self):
@@ -545,22 +548,18 @@ class Imx477:
         self._pixel_format = hololink_module.sensors.csi.PixelFormat.RAW_8
 
     def configure_converter(self, converter):
-        (
-            frame_start_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-        ) = self._hololink.csi_size()
-        assert self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_8
+        # where do we find the first received byte?
+        start_byte = converter.receiver_start_byte()
+        transmitted_line_bytes = converter.transmitted_line_bytes(
+            self._pixel_format, self._width
+        )
+        received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
         converter.configure(
+            start_byte,
+            received_line_bytes,
             self._width,
             self._height,
             self._pixel_format,
-            frame_start_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-            margin_top=0,
         )
 
     def pixel_format(self):

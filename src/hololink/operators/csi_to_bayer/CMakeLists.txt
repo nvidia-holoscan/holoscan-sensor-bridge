@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# we don't expose the C++ interface of the operator yet, therfore link
+# we don't expose the C++ interface of the operator yet, therefore link
 # statically
 add_library(csi_to_bayer STATIC
   csi_to_bayer.cpp
@@ -31,6 +31,15 @@ target_include_directories(csi_to_bayer
 
 target_link_libraries(csi_to_bayer
   PRIVATE
-    hololink::native
+    hololink
     holoscan::core
   )
+
+# Installation of the csi_to_bayer operator
+install(TARGETS csi_to_bayer
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/csi_to_bayer.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/csi_to_bayer
+        COMPONENT hololink-operators)

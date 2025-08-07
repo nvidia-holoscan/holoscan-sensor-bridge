@@ -50,6 +50,7 @@ done
 
 # enableRawReprocess needs to be set 1 if the frame capture is not \
 # done by Argus API and only ISP being used.
+# NOTE that we're currently testing with a value of 2 here.
 
 docker run \
     -it \
@@ -74,6 +75,6 @@ docker run \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
     -e NVIDIA_VISIBLE_DEVICES=all \
     -e DISPLAY=$DISPLAY \
-    -e enableRawReprocess=1 \
+    -e enableRawReprocess=2 \
     hololink-demo:$VERSION \
     $*

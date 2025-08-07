@@ -20,12 +20,13 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
 #include <holoscan/holoscan.hpp>
 #include <yaml-cpp/parser.h>
 
-#include <hololink/data_channel.hpp>
-#include <hololink/logging.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/logging_internal.hpp>
 
 /**
  * @brief This macro defining a YAML converter which throws for unsupported types.
@@ -198,36 +199,62 @@ std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
     return { local_ip, local_port };
 }
 
-ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size, uint32_t flags)
+ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size)
 {
     CudaCheck(cuInit(0));
     CudaCheck(cuCtxSetCurrent(cu_context));
     CUdevice device;
     CudaCheck(cuCtxGetDevice(&device));
     int integrated = 0;
+
+    // Add enough space to guarantee that the pointer we return
+    // can be page aligned.
+    size_t page_size = getpagesize();
+    size_t page_mask = page_size - 1;
+    // Make sure size isn't gonna overflow
+    if (size > std::numeric_limits<size_t>::max() - page_size) {
+        throw std::overflow_error(fmt::format("Requested buffer size={:#x} is too large for page-aligned allocation", size));
+    }
+    size_t allocation_size = size + page_size;
+
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
 
     HSB_LOG_TRACE("integrated={}", integrated);
     if (integrated == 0) {
         // We're a discrete GPU device; so allocate using cuMemAlloc/cuMemFree
-        deviceptr_.reset([size] {
+        deviceptr_.reset([allocation_size] {
             CUdeviceptr device_deviceptr;
-            CudaCheck(cuMemAlloc(&device_deviceptr, size));
+            CudaCheck(cuMemAlloc(&device_deviceptr, allocation_size));
             return device_deviceptr;
         }());
-        mem_ = deviceptr_.get();
+        CUdeviceptr mem = deviceptr_.get();
+        // Round up size to page boundary;
+        // Note deviceptr_ is what we'll free; don't try to free mem_.
+        size_t rem = mem & page_mask;
+        if (rem) {
+            mem += (page_size - rem);
+        }
+        mem_ = mem;
     } else {
         // We're an integrated device (e.g. Tegra) so we must allocate
         // using cuMemHostAlloc/cuMemFreeHost
-        host_deviceptr_.reset([size, flags] {
+        host_deviceptr_.reset([allocation_size] {
             void* host_deviceptr;
-            CudaCheck(cuMemHostAlloc(&host_deviceptr, size, flags));
+            unsigned int flags = CU_MEMHOSTALLOC_DEVICEMAP;
+            CudaCheck(cuMemHostAlloc(&host_deviceptr, allocation_size, flags));
             return host_deviceptr;
         }());
 
         CUdeviceptr device_deviceptr;
         CudaCheck(cuMemHostGetDevicePointer(&device_deviceptr, host_deviceptr_.get(), 0));
-        mem_ = device_deviceptr;
+        CUdeviceptr mem = device_deviceptr;
+        // Round up size to page boundary;
+        // Note: host_deviceptr_ is what we'll free; don't try to free mem_.
+        size_t rem = mem & page_mask;
+        if (rem) {
+            mem += (page_size - rem);
+        }
+        mem_ = mem;
     }
 }
 

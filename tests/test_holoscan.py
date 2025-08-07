@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,8 +18,9 @@
 import ctypes
 import logging
 
+import mock_camera
+import mock_server
 import pytest
-import udp_server
 import utils
 from cuda import cuda
 
@@ -63,6 +64,8 @@ class HoloscanApplication(holoscan.core.Application):
         camera_mode,
         frame_limit=10,
         headless=False,
+        ibv_name=None,  # None means use unaccelerated network
+        ibv_port=None,
     ):
         logging.info("__init__")
         super().__init__()
@@ -73,6 +76,8 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera_mode = camera_mode
         self._frame_limit = frame_limit
         self._headless = headless
+        self._ibv_name = ibv_name
+        self._ibv_port = ibv_port
 
     def compose(self):
         logging.info("compose")
@@ -85,9 +90,9 @@ class HoloscanApplication(holoscan.core.Application):
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera._width
+            block_size=self._camera.get_width()
             * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
+            * self._camera.get_height(),
             num_blocks=2,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
@@ -100,18 +105,31 @@ class HoloscanApplication(holoscan.core.Application):
 
         frame_size = csi_to_bayer_operator.get_csi_length()
         frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.LinuxReceiverOperator(
-            self,
-            holoscan.conditions.CountCondition(self, count=self._frame_limit),
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
-        )
+        if self._ibv_name is None:
+            receiver_operator = hololink_module.operators.LinuxReceiverOperator(
+                self,
+                holoscan.conditions.CountCondition(self, count=self._frame_limit),
+                name="receiver",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                hololink_channel=self._hololink_channel,
+                device=self._camera,
+            )
+        else:
+            receiver_operator = hololink_module.operators.RoceReceiverOp(
+                self,
+                holoscan.conditions.CountCondition(self, count=self._frame_limit),
+                name="receiver",
+                frame_size=frame_size,
+                frame_context=frame_context,
+                ibv_name=self._ibv_name,
+                ibv_port=self._ibv_port,
+                hololink_channel=self._hololink_channel,
+                device=self._camera,
+            )
 
-        bayer_format = self._camera.bayer_format()
-        pixel_format = self._camera.pixel_format()
+        bayer_format = self._camera.get_bayer_format()
+        pixel_format = self._camera.get_pixel_format()
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
@@ -125,10 +143,10 @@ class HoloscanApplication(holoscan.core.Application):
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera._width
+            block_size=self._camera.get_width()
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
+            * self._camera.get_height(),
             num_blocks=2,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
@@ -165,54 +183,55 @@ class HoloscanApplication(holoscan.core.Application):
 
 
 frame_rate_s = 0.1
+formats = [
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.RGGB,
+        hololink_module.sensors.csi.PixelFormat.RAW_8,
+        frame_rate_s,
+    ),
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.GBRG,
+        hololink_module.sensors.csi.PixelFormat.RAW_8,
+        frame_rate_s,
+    ),
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.RGGB,
+        hololink_module.sensors.csi.PixelFormat.RAW_12,
+        frame_rate_s,
+    ),
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.GBRG,
+        hololink_module.sensors.csi.PixelFormat.RAW_12,
+        frame_rate_s,
+    ),
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.RGGB,
+        hololink_module.sensors.csi.PixelFormat.RAW_10,
+        frame_rate_s,
+    ),
+    (
+        720,
+        1280,
+        hololink_module.sensors.csi.BayerFormat.GBRG,
+        hololink_module.sensors.csi.PixelFormat.RAW_10,
+        frame_rate_s,
+    ),
+]
 
 
 @pytest.mark.parametrize(
     "height, width, bayer_format, pixel_format, frame_rate_s",
-    [
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.RGGB,
-            hololink_module.sensors.csi.PixelFormat.RAW_8,
-            frame_rate_s,
-        ),
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.GBRG,
-            hololink_module.sensors.csi.PixelFormat.RAW_8,
-            frame_rate_s,
-        ),
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.RGGB,
-            hololink_module.sensors.csi.PixelFormat.RAW_12,
-            frame_rate_s,
-        ),
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.GBRG,
-            hololink_module.sensors.csi.PixelFormat.RAW_12,
-            frame_rate_s,
-        ),
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.RGGB,
-            hololink_module.sensors.csi.PixelFormat.RAW_10,
-            frame_rate_s,
-        ),
-        (
-            720,
-            1280,
-            hololink_module.sensors.csi.BayerFormat.GBRG,
-            hololink_module.sensors.csi.PixelFormat.RAW_10,
-            frame_rate_s,
-        ),
-    ],
+    formats,
 )
 def test_holoscan(
     height,
@@ -221,13 +240,13 @@ def test_holoscan(
     pixel_format,
     frame_rate_s,
     headless,
-    udpcam,
+    mock_camera_ip,
     frame_limit=10,
 ):
     #
     image, _ = utils.make_image(height, width, bayer_format, pixel_format)
 
-    with udp_server.TestServer(udpcam) as server:
+    with mock_server.TestServer(mock_camera_ip) as server:
         # Get a handle to the GPU
         (cu_result,) = cuda.cuInit(0)
         assert cu_result == cuda.CUresult.CUDA_SUCCESS
@@ -242,7 +261,7 @@ def test_holoscan(
         hololink_channel = hololink_module.DataChannel(channel_metadata)
 
         # Camera
-        camera = hololink_module.sensors.udp_cam.UdpCam(hololink_channel)
+        camera = mock_camera.MockCamera(hololink_channel)
         camera_mode = (height, width, bayer_format, pixel_format, frame_rate_s)
 
         # Here's our holoscan application
@@ -255,6 +274,64 @@ def test_holoscan(
             camera_mode,
             headless=headless,
             frame_limit=frame_limit,
+        )
+        hololink = hololink_channel.hololink()
+        hololink.start()
+        application.run()
+        hololink.stop()
+
+
+@pytest.mark.skip_unless_mock_camera
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "height, width, bayer_format, pixel_format, frame_rate_s",
+    formats,
+)
+def test_network_accelerated_holoscan(
+    height,
+    width,
+    bayer_format,
+    pixel_format,
+    frame_rate_s,
+    headless,
+    mock_camera_ip,
+    ibv_name,
+    ibv_port,
+    frame_limit=10,
+):
+    #
+    image, _ = utils.make_image(height, width, bayer_format, pixel_format)
+
+    with mock_server.TestServer(mock_camera_ip) as server:
+        # Get a handle to the GPU
+        (cu_result,) = cuda.cuInit(0)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        cu_device_ordinal = 0
+        cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+
+        # Get the data plane controller.
+        channel_metadata = server.channel_metadata()
+        hololink_channel = hololink_module.DataChannel(channel_metadata)
+
+        # Camera
+        camera = mock_camera.MockCamera(hololink_channel)
+        camera_mode = (height, width, bayer_format, pixel_format, frame_rate_s)
+
+        # Here's our holoscan application
+        logging.info("Initializing.")
+        application = HoloscanApplication(
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel,
+            camera,
+            camera_mode,
+            headless=headless,
+            frame_limit=frame_limit,
+            ibv_name=ibv_name,
+            ibv_port=ibv_port,
         )
         hololink = hololink_channel.hololink()
         hololink.start()

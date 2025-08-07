@@ -32,11 +32,12 @@
 
 #include <infiniband/opcode.h>
 
-#include <hololink/hololink.hpp>
-#include <hololink/logging.hpp>
-#include <hololink/native/deserializer.hpp>
-#include <hololink/native/networking.hpp>
-#include <hololink/native/nvtx_trace.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/deserializer.hpp>
+#include <hololink/core/hololink.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/core/networking.hpp>
+#include <hololink/core/nvtx_trace.hpp>
 
 #define NUM_OF(x) (sizeof(x) / sizeof(x[0]))
 
@@ -89,6 +90,7 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     , busy_(NULL)
     , cu_stream_(0)
     , frame_ready_([](const LinuxReceiver&) {})
+    , frame_number_()
 {
     int r = pthread_mutex_init(&ready_mutex_, NULL);
     if (r != 0) {
@@ -122,12 +124,13 @@ LinuxReceiver::~LinuxReceiver()
 {
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
+    cuStreamDestroy(cu_stream_);
 }
 
 void LinuxReceiver::run()
 {
     HSB_LOG_DEBUG("Starting.");
-    native::NvtxTrace::setThreadName("linux_receiver");
+    core::NvtxTrace::setThreadName("linux_receiver");
 
     // Round the buffer size up to 64k
 #define BUFFER_ALIGNMENT (0x10000)
@@ -149,9 +152,10 @@ void LinuxReceiver::run()
     available_.store(&d2);
 
     // Received UDP message goes here.
-    uint8_t received[hololink::native::UDP_PACKET_SIZE];
+    uint8_t received[hololink::core::UDP_PACKET_SIZE];
 
-    unsigned frame_count = 0, packet_count = 0;
+    unsigned frame_count = 0;
+    [[maybe_unused]] unsigned packet_count = 0;
     unsigned frame_packets_received = 0, frame_bytes_received = 0;
     struct timespec now = { 0 }, frame_start = { 0 };
     uint64_t packets_dropped = 0;
@@ -192,7 +196,7 @@ void LinuxReceiver::run()
         }
 
         do {
-            native::Deserializer deserializer(received, received_bytes);
+            core::Deserializer deserializer(received, received_bytes);
             uint8_t opcode = 0, flags = 0;
             uint16_t pkey = 0;
             uint8_t becn = 0, ack_request = 0;
@@ -211,8 +215,8 @@ void LinuxReceiver::run()
             // Note that 'psn' is only 24 bits.  Use that to determine
             // how many packets were dropped.  Note that this doesn't
             // account for out-of-order delivery.
-            native::NvtxTrace::event_u64("psn", psn);
-            native::NvtxTrace::event_u64("frame_packets_received", frame_packets_received);
+            core::NvtxTrace::event_u64("psn", psn);
+            core::NvtxTrace::event_u64("frame_packets_received", frame_packets_received);
             if (!first) {
                 uint32_t next_psn = (last_psn + 1) & 0xFFFFFF;
                 uint32_t diff = (psn - next_psn) & 0xFFFFFF;
@@ -248,7 +252,7 @@ void LinuxReceiver::run()
                 && deserializer.next_uint32_be(imm_data)
                 && deserializer.pointer(content, size)) {
                 frame_count++;
-                native::NvtxTrace::event_u64("frame_count", frame_count);
+                core::NvtxTrace::event_u64("frame_count", frame_count);
 
                 HSB_LOG_TRACE("opcode=2B address={:#x} size={:x}", address, size);
                 uint64_t target_address = address + received_address_offset_;
@@ -269,7 +273,7 @@ void LinuxReceiver::run()
                 LinuxReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
-                metadata.frame_number = frame_count;
+                metadata.received_frame_number = frame_count;
                 metadata.frame_start_s = frame_start.tv_sec;
                 metadata.frame_start_ns = frame_start.tv_nsec;
                 metadata.frame_end_s = now.tv_sec;
@@ -279,6 +283,7 @@ void LinuxReceiver::run()
                 metadata.received_s = now.tv_sec;
                 metadata.received_ns = now.tv_nsec;
                 metadata.frame_metadata = frame_metadata;
+                metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
 
                 receiving = available_.exchange(receiving);
                 signal();

@@ -14,3 +14,4 @@
 # limitations under the License.
 
 add_subdirectory(hololink)
+add_subdirectory(tools)

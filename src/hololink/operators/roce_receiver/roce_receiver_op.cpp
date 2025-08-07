@@ -18,16 +18,45 @@
 #include "roce_receiver_op.hpp"
 
 #include <chrono>
+#include <unistd.h>
 
 #include <netinet/in.h>
 
-#include <hololink/data_channel.hpp>
-#include <hololink/logging.hpp>
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/data_channel.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/core/networking.hpp>
 
 #include "roce_receiver.hpp"
 
 namespace hololink::operators {
+
+void RoceReceiverOp::initialize()
+{
+    // Set default identity function if rename_metadata is not set
+    if (!rename_metadata_) {
+        rename_metadata_ = [](const std::string& name) { return name; };
+    }
+
+    // Cache the metadata key names using the rename callback
+    const auto& rename_fn = rename_metadata_;
+    received_frame_number_metadata_ = rename_fn("received_frame_number");
+    rx_write_requests_metadata_ = rename_fn("rx_write_requests");
+    received_s_metadata_ = rename_fn("received_s");
+    received_ns_metadata_ = rename_fn("received_ns");
+    imm_data_metadata_ = rename_fn("imm_data");
+    frame_memory_metadata_ = rename_fn("frame_memory");
+    dropped_metadata_ = rename_fn("dropped");
+    frame_number_metadata_ = rename_fn("frame_number");
+    timestamp_s_metadata_ = rename_fn("timestamp_s");
+    timestamp_ns_metadata_ = rename_fn("timestamp_ns");
+    metadata_s_metadata_ = rename_fn("metadata_s");
+    metadata_ns_metadata_ = rename_fn("metadata_ns");
+    crc_metadata_ = rename_fn("crc");
+
+    // Call base class initialize
+    BaseReceiverOp::initialize();
+}
 
 void RoceReceiverOp::setup(holoscan::OperatorSpec& spec)
 {
@@ -37,18 +66,25 @@ void RoceReceiverOp::setup(holoscan::OperatorSpec& spec)
     // and add our own parameters
     spec.param(ibv_name_, "ibv_name", "IBVName", "IBV device to use", std::string("roceP5p3s0f0"));
     spec.param(ibv_port_, "ibv_port", "IBVPort", "Port number of IBV device", 1u);
+    // Note: rename_metadata is handled programmatically via set_rename_metadata() method
+    // to avoid YAML-CPP serialization issues with std::function
+}
+
+void RoceReceiverOp::set_rename_metadata(std::function<std::string(const std::string&)> rename_fn)
+{
+    rename_metadata_ = rename_fn;
 }
 
 void RoceReceiverOp::start_receiver()
 {
-    size_t metadata_address = hololink::native::round_up(frame_size_.get(), hololink::native::PAGE_SIZE);
-    // page_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
+    size_t metadata_address = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
+    // received_frame_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
     // Prove that PAGE_SIZE is a power of two
-    static_assert((hololink::native::PAGE_SIZE & (hololink::native::PAGE_SIZE - 1)) == 0);
+    static_assert((hololink::core::PAGE_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     // Prove that METADATA_SIZE is an even multiple of PAGE_SIZE
-    static_assert((hololink::METADATA_SIZE & (hololink::native::PAGE_SIZE - 1)) == 0);
-    size_t page_size = metadata_address + hololink::METADATA_SIZE;
-    size_t buffer_size = page_size * PAGES;
+    static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
+    size_t received_frame_size = metadata_address + hololink::METADATA_SIZE;
+    size_t buffer_size = hololink::core::round_up(received_frame_size * PAGES, getpagesize());
     frame_memory_.reset(new ReceiverMemoryDescriptor(frame_context_, buffer_size));
     HSB_LOG_INFO("frame_size={:#x} frame={:#x} buffer_size={:#x}", frame_size_.get(), frame_memory_->get(), buffer_size);
 
@@ -61,7 +97,7 @@ void RoceReceiverOp::start_receiver()
         frame_memory_->get(),
         buffer_size,
         frame_size_.get(),
-        page_size,
+        received_frame_size,
         PAGES,
         metadata_address,
         peer_ip.c_str()));
@@ -82,7 +118,7 @@ void RoceReceiverOp::start_receiver()
     auto [local_ip, local_port] = local_ip_and_port();
     HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
 
-    hololink_channel_->configure(receiver_->external_frame_memory(), frame_size_, page_size, PAGES, local_port);
+    hololink_channel_->configure_roce(receiver_->external_frame_memory(), frame_size_, received_frame_size, PAGES, local_port);
 }
 
 void RoceReceiverOp::run()
@@ -109,19 +145,20 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get
     }
 
     auto metadata = std::make_shared<Metadata>();
-    (*metadata)["frame_number"] = int64_t(roce_receiver_metadata.frame_number);
-    (*metadata)["rx_write_requests"] = int64_t(roce_receiver_metadata.rx_write_requests);
-    (*metadata)["received_s"] = int64_t(roce_receiver_metadata.received_s);
-    (*metadata)["received_ns"] = int64_t(roce_receiver_metadata.received_ns);
-    (*metadata)["imm_data"] = int64_t(roce_receiver_metadata.imm_data);
+    (*metadata)[received_frame_number_metadata_] = int64_t(roce_receiver_metadata.received_frame_number);
+    (*metadata)[rx_write_requests_metadata_] = int64_t(roce_receiver_metadata.rx_write_requests);
+    (*metadata)[received_s_metadata_] = int64_t(roce_receiver_metadata.received_s);
+    (*metadata)[received_ns_metadata_] = int64_t(roce_receiver_metadata.received_ns);
+    (*metadata)[imm_data_metadata_] = int64_t(roce_receiver_metadata.imm_data);
     CUdeviceptr frame_memory = roce_receiver_metadata.frame_memory;
-    (*metadata)["frame_memory"] = int64_t(frame_memory);
-    (*metadata)["dropped"] = int64_t(roce_receiver_metadata.dropped);
-    (*metadata)["timestamp_s"] = int64_t(roce_receiver_metadata.frame_metadata.timestamp_s);
-    (*metadata)["timestamp_ns"] = int64_t(roce_receiver_metadata.frame_metadata.timestamp_ns);
-    (*metadata)["metadata_s"] = int64_t(roce_receiver_metadata.frame_metadata.metadata_s);
-    (*metadata)["metadata_ns"] = int64_t(roce_receiver_metadata.frame_metadata.metadata_ns);
-    (*metadata)["crc"] = int64_t(roce_receiver_metadata.frame_metadata.crc);
+    (*metadata)[frame_memory_metadata_] = int64_t(frame_memory);
+    (*metadata)[dropped_metadata_] = int64_t(roce_receiver_metadata.dropped);
+    (*metadata)[frame_number_metadata_] = int64_t(roce_receiver_metadata.frame_number);
+    (*metadata)[timestamp_s_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.timestamp_s);
+    (*metadata)[timestamp_ns_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.timestamp_ns);
+    (*metadata)[metadata_s_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.metadata_s);
+    (*metadata)[metadata_ns_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.metadata_ns);
+    (*metadata)[crc_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.crc);
 
     return { frame_memory, metadata };
 }

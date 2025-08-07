@@ -22,7 +22,7 @@
 #include <holoscan/core/parameter.hpp>
 #include <holoscan/utils/cuda_stream_handler.hpp>
 
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
 
 #include "cuda.h"
 #include "cudaEGL.h"
@@ -61,6 +61,8 @@ private:
     holoscan::Parameter<float> analog_gain_;
     holoscan::Parameter<int> pixel_bit_depth_;
     holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> pool_;
+    holoscan::Parameter<std::string> out_tensor_name_;
+    holoscan::Parameter<uint32_t> camera_index_;
 
     std::unique_ptr<ArgusImpl> argus_impl_;
     std::unique_ptr<CameraProvider> camera_provider_;

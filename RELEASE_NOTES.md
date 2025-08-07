@@ -1,5 +1,108 @@
 # Release Notes
 
+## 2.2-GA, August 2025
+
+### Dependencies
+
+- IGX: [IGX-SW 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads)
+- AGX: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up JetPack
+  6.2.1.
+- Holoscan Sensor Bridge, 10G; FPGA v2507.
+
+Be sure and follow the installation instructions included with the release, including
+PTP configuration and HSB device firmware updates. To generate documentation, in the
+host system, run `sh docs/make_docs.sh`, then use your browser to look at
+`docs/user_guide/_build/html/index.html`.
+
+### Updates from 2.0-GA
+
+- **HSB 2.2-GA relies on FPGA IP version 2507.** Check the user guide for instructions
+  on how to update your configuration. Note that updating your FPGA is only supported
+  for configurations currently running the 2412 or newer version (included with 2.0-GA).
+  If your configuration is older, follow the instructions to update to 2.0 first.
+
+- **HSB is updated to work with Holoscan SDK 3.3.** See the
+  [release notes for HSDK 3.3 here.](https://github.com/nvidia-holoscan/holoscan-sdk/releases/tag/v3.3.0)
+
+- **Synchronized I2C transactions.** By default, the `i2c_transaction` API executes an
+  I2C bus transaction immediately. Imx274Cam now includes a demonstration method called
+  `synchronized_set_register`, which queues an I2C transaction to update a camera
+  configuration register in the blanking interval between video frames. You can see how
+  this works by following calls to `Imx274Cam.synchronized_test_pattern_update()` as
+  called in `tests/test_i2c.py`.
+
+- **C++ Tools and utilities, including FPGA programming.** Support for systems without
+  python is enhanced by moving some tools to a C++ implementation. This includes
+
+  - `program_lattice_cpnx100` for programming Lattice CPNX100 based HSB boards
+  - `hololink-reset` (which replaces the `hololink reset` command)
+  - `hololink-enumerate` (which replaces the `hololink enumerate` command)
+  - `hololink-set-ip` (which replaces the `hololink set-ip` command)
+  - `hololink-read` and `hololink-write` (replace the `hololink read` and
+    `hololink write` commands)
+
+  Run any of these scripts with `--help` to get a description of command-line options.
+  The `hololink` command (which is python based) will be deprecated in a future release.
+
+- **Support for Leopard Imaging VB1940.** This includes support for stereo imaging with
+  left and right synchronized operation with global shutter. HSB also provides support
+  for the on-board IMU: IMU data is sent to the host via a third data channel and (on
+  appropriately equipped systems) is written directly to GPU memory via RDMA. This
+  camera sends all data using a single network interface. For example code showing how
+  to configure and access this data, see `examples/vb1940_stereo_imu_player.py`.
+
+- **COE (P1722B) Support.** Software emulation is provided for another RDMA message
+  format specified by the upcoming P1722B COE ("camera over Ethernet") standard. Future
+  host systems will support RDMA of P1722B traffic; this release includes HSB FPGA
+  support for generating these messages and software handling of received data using CPU
+  and the Linux network stack.
+
+- **E-con IMX715 and E-con ECam0M30ToF depth sensors.** For examples using these
+  configurations, see `examples/imx715_player.py` and `examples/ecam0m30tof_player.py`.
+
+### FAQ
+
+- If your application, running in the demo container, halts with a "Failed to initialize
+  glfw" message, make sure to grant the application permission to connect with the
+  display via the "xhost +" command. This command is not remembered across reboots.
+
+- Reverting to FPGA 2412 on Lattice HSB units. If you need to revert a Lattice HSB unit
+  back to 2412, use the 2.2-GA tree and program with the 2412 manifest file. From within
+  the demo container:
+
+  ```sh
+  program_lattice_cpnx100 scripts/manifest-2412.yaml
+  ```
+
+  After programming and power cycling, you can update your tree, going back to the
+  2.0-GA release.
+
+- PTP configuration following boot-up is very touchy and error-prone. If you have
+  trouble with received PTP timestamps, make sure you follow the user guide
+  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html)
+  carefully.
+
+- Running tools like "nomachine" on non-RDMA capable systems--where CPU is used to
+  emulate RDMA functionality, e.g. AGX-- can frequently lead to packet drops for
+  high-speed sensor data. In camera applications, this can appear as momentary white
+  streaks on the display. In the current CPU-driven implementation, after a video frame
+  is delivered to the holoscan pipeline, we clear the receiver buffer to all 0xFF. If a
+  UDP packet with video data is dropped, then that 0xFF wouldn't be replaced with actual
+  video data-- and that's where the white streaks come from. Adjusting `rmem_max` (per
+  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html))
+  and adjusting core affinity for your application may help mitigate packet loss.
+
+### Known Anomalies
+
+- Rare observations of IMX274 producing images with distorted video, which seem to be
+  system specific. Investigation of this is underway.
+
+- Watchdog timeouts during `pytest --imx274 --ptp`. Testing sometimes terminates early
+  with a Watchdog exception, indicating that the host is not properly receiving frame
+  data. This happens occasionally during testing and in varying places, and only under
+  conditions where frequent reset and reinitialization of the HSB unit and sensor occur.
+  Investigation of this is underway.
+
 ## 2.0-GA, January 2025
 
 ### Dependencies
@@ -77,7 +180,7 @@ look at `docs/user_guide/_build/html/index.html`.
   manifest file. From within the demo container:
 
   ```sh
-  hololink program scripts/manifest-2407.yaml
+  program_lattice_cpnx100 scripts/manifest-2407.yaml
   ```
 
   After programming and power cycling, the board will no longer be visible to the 2.0-GA

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,28 +13,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_subdirectory(native)
+add_subdirectory(core)
+add_subdirectory(sensors)
+if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
+add_subdirectory(common)
+add_subdirectory(expr_eval)
 add_subdirectory(operators)
-
-add_library(hololink STATIC
-  data_channel.cpp
-  enumerator.cpp
-  hololink.cpp
-  logging.cpp
-  metadata.cpp
-  timeout.cpp
-  )
-
-set_property(TARGET hololink PROPERTY POSITION_INDEPENDENT_CODE ON)
-
-target_include_directories(hololink
-  INTERFACE
-    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/..>
-    $<INSTALL_INTERFACE:src>
-  )
-
-target_link_libraries(hololink
-  PRIVATE
-    hololink::native
-    holoscan::core
-  )
+add_subdirectory(emulation)
+endif()

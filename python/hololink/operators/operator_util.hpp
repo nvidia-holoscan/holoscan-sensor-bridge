@@ -22,7 +22,7 @@
 
 #include <memory>
 
-#include <hololink/logging.hpp>
+#include <hololink/core/logging_internal.hpp>
 #include <holoscan/core/condition.hpp>
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/resource.hpp>

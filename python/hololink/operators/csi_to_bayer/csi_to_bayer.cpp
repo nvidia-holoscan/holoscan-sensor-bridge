@@ -77,25 +77,18 @@ PYBIND11_MODULE(_csi_to_bayer, m)
     m.attr("__version__") = "dev";
 #endif
 
-    auto op = py::class_<CsiToBayerOp, PyCsiToBayerOp, holoscan::Operator,
+    py::module_ hololink_module = py::module_::import("hololink");
+
+    auto op = py::class_<CsiToBayerOp, PyCsiToBayerOp, holoscan::Operator, hololink::csi::CsiConverter,
         std::shared_ptr<CsiToBayerOp>>(m, "CsiToBayerOp")
                   .def(py::init<holoscan::Fragment*, const std::shared_ptr<holoscan::Allocator>&,
                            int, const std::string&, const std::string&>(),
                       "fragment"_a, "allocator"_a, "cuda_device_ordinal"_a = 0,
                       "name"_a = "csi_to_bayer"s, "out_tensor_name"_a = ""s)
                   .def("setup", &CsiToBayerOp::setup, "spec"_a)
-                  .def("configure", &CsiToBayerOp::configure, "width"_a, "height"_a,
-                      "pixel_format"_a, "frame_start_size"_a, "frame_end_size"_a,
-                      "line_start_size"_a, "line_end_size"_a, "margin_left"_a = 0,
-                      "margin_top"_a = 0, "margin_right"_a = 0, "margin_bottom"_a = 0)
+                  .def("configure", &CsiToBayerOp::configure, "start_byte"_a, "bytes_per_line"_a, "pixel_width"_a, "pixel_height"_a,
+                      "pixel_format"_a, "trailing_bytes"_a = 0)
                   .def("get_csi_length", &CsiToBayerOp::get_csi_length);
-
-    py::enum_<CsiToBayerOp::PixelFormat>(op, "PixelFormat")
-        .value("RAW_8", CsiToBayerOp::PixelFormat::RAW_8, R"pbdoc(RAW 8-bit)pbdoc")
-        .value("RAW_10", CsiToBayerOp::PixelFormat::RAW_10, R"pbdoc(RAW 10-bit)pbdoc")
-        .value("RAW_12", CsiToBayerOp::PixelFormat::RAW_12, R"pbdoc(RAW 12-bit)pbdoc")
-        .export_values();
-
 } // PYBIND11_MODULE
 
 } // namespace hololink::operators

@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# we don't expose the C++ interface of the operator yet, therfore link
+# we don't expose the C++ interface of the operator yet, therefore link
 # statically
 add_library(image_processor STATIC
   image_processor.cpp
@@ -31,8 +31,18 @@ target_include_directories(image_processor
 
 target_link_libraries(image_processor
   PUBLIC
-    hololink::native
+    hololink::core
     hololink::operators::csi_to_bayer
   PRIVATE
     holoscan::core
   )
+
+# Installation of the image_processor operator
+install(TARGETS image_processor
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/image_processor.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/image_processor
+        COMPONENT hololink-operators)
+

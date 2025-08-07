@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +17,8 @@
 
 #include "image_processor.hpp"
 
-#include <hololink/logging.hpp>
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/logging_internal.hpp>
 #include <holoscan/holoscan.hpp>
 
 namespace {
@@ -40,7 +40,7 @@ __inline__ __device__ unsigned int getBayerOffset(unsigned int x, unsigned int y
  * Apply black level correction.
  *
  * @param image [in] pointer to input image
- * @param components_per_line [in] componets per input image line (width * 3 for RGB)
+ * @param components_per_line [in] components per input image line (width * 3 for RGB)
  * @param height [in] height of the input image
  */
 __global__ void applyBlackLevel(unsigned short *image,
@@ -159,7 +159,7 @@ __global__ void calcWBGains(const unsigned int *histogram,
         if (channel == 1)
         {
             // there are two green channels in the image which both are counted
-            // in one histogram therfore divide green channel by 2
+            // in one histogram therefore divide green channel by 2
             value /= 2;
         }
         max_gain = max(max_gain, value);
@@ -223,8 +223,8 @@ void ImageProcessorOp::setup(holoscan::OperatorSpec& spec)
     spec.input<holoscan::gxf::Entity>("input");
     spec.output<holoscan::gxf::Entity>("output");
 
-    spec.param(bayer_format_, "bayer_format", "BayerFormat", "Bayer format (one of hololink::operators::ImageProcessorOp::BayerFormat)");
-    spec.param(pixel_format_, "pixel_format", "PixelFormat", "Pixel format (one of hololink::operators::CsiToBayerOp::PixelFormat)");
+    spec.param(bayer_format_, "bayer_format", "BayerFormat", "Bayer format (one of hololink::csi::BayerFormat)");
+    spec.param(pixel_format_, "pixel_format", "PixelFormat", "Pixel format (one of hololink::csi::PixelFormat)");
     spec.param(optical_black_, "optical_black", "Optical Black", "optical black value", 0);
     spec.param(
         cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal", "Device to use for CUDA operations", 0);
@@ -234,22 +234,21 @@ void ImageProcessorOp::setup(holoscan::OperatorSpec& spec)
 void ImageProcessorOp::start()
 {
     CudaCheck(cuInit(0));
-    CUdevice device;
     CudaCheck(cuDeviceGet(&cuda_device_, cuda_device_ordinal_.get()));
     CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
     int integrated = 0;
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_device_));
     is_integrated_ = (integrated != 0);
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     // histogram setup
     const auto log2_warp_size = 5;
     const auto warp_size = 1 << log2_warp_size;
 
     // size of histogram memory
-    const auto histogram_warp_memory = HISTOGRAM_BIN_COUNT * sizeof(uint32_t) * CHANNELS;
-    histogram_memory_.reset([histogram_warp_memory] {
+    constexpr auto histogram_warp_memory = HISTOGRAM_BIN_COUNT * sizeof(uint32_t) * CHANNELS;
+    histogram_memory_.reset([] {
         CUdeviceptr mem = 0;
         CudaCheck(cuMemAlloc(&mem, histogram_warp_memory));
         return mem;
@@ -271,15 +270,15 @@ void ImageProcessorOp::start()
     histogram_threadblock_size_ = histogram_warp_count * warp_size;
 
     uint32_t least_significant_bit;
-    switch (hololink::operators::CsiToBayerOp::PixelFormat(pixel_format_.get())) {
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_8:
+    switch (hololink::csi::PixelFormat(pixel_format_.get())) {
+    case hololink::csi::PixelFormat::RAW_8:
         least_significant_bit = 0;
         break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_10:
+    case hololink::csi::PixelFormat::RAW_10:
         // data is stored in the upper 10 bits of a 16 bit value
         least_significant_bit = 16 - 10;
         break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_12:
+    case hololink::csi::PixelFormat::RAW_12:
         // data is stored in the upper 12 bits of a 16 bit value
         least_significant_bit = 16 - 12;
         break;
@@ -288,14 +287,14 @@ void ImageProcessorOp::start()
     }
 
     uint32_t x0y0_offset, x1y0_offset, x0y1_offset, x1y1_offset;
-    switch (BayerFormat(bayer_format_.get())) {
-    case BayerFormat::RGGB:
+    switch (hololink::csi::BayerFormat(bayer_format_.get())) {
+    case hololink::csi::BayerFormat::RGGB:
         x0y0_offset = 0; // R
         x1y0_offset = 1; // G
         x0y1_offset = 1; // G
         x1y1_offset = 2; // B
         break;
-    case BayerFormat::GBRG:
+    case hololink::csi::BayerFormat::GBRG:
         x0y0_offset = 1; // G
         x1y0_offset = 2; // B
         x0y1_offset = 0; // R
@@ -305,7 +304,7 @@ void ImageProcessorOp::start()
         throw std::runtime_error(fmt::format("Camera bayer format {} not supported.", int(bayer_format_.get())));
     }
 
-    cuda_function_launcher_.reset(new hololink::native::CudaFunctionLauncher(
+    cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "applyBlackLevel", "histogram", "calcWBGains", "applyOperations" },
         { fmt::format("-D CHANNELS={}", CHANNELS),
             fmt::format("-D X0Y0_OFFSET={}", x0y0_offset),
@@ -328,7 +327,7 @@ void ImageProcessorOp::start()
 
 void ImageProcessorOp::stop()
 {
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     cuda_function_launcher_.reset();
     histogram_memory_.reset();
@@ -385,7 +384,7 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
         throw std::runtime_error(fmt::format("Unexpected component count {}, expected '1'", components));
     }
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
     const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
 
     // apply optical black if set

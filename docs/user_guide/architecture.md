@@ -183,9 +183,9 @@ To instantiate a camera object, application code will typically
   until a whole data frame is received into the memory block it was initialized with.
 
 Our camera object works with device registers by reads and writes on an I2C bus present
-in the sensor bridge device. Suppose our camera is connected to a sensor bridge I2C
-controller at local bus address 0x04000200. (We'll store that address in the constant
-`hololink_module.CAM_I2C_CTRL`.) The camera object can fetch a handle to an
+in the sensor bridge device. Suppose our camera is connected to the sensor bridge I2C
+controller when bus enable==0. (We'll store that address in the constant
+`hololink_module.CAM_I2C_BUS`.) The camera object can fetch a handle to an
 `Hololink.I2c` object, with APIs for generating I2C transactions, by calling
 `hololink.get_i2c`. If the camera itself responds to an I2C bus address of 0x34 (which
 we'll call `CAM_I2C_ADDRESS`), then it can support a `camera.set_register` method this
@@ -196,11 +196,11 @@ class Imx274Cam:
     def __init__(
         self,
         hololink_channel,
-        i2c_controller_address=hololink_module.CAM_I2C_CTRL,
+        i2c_bus=hololink_module.CAM_I2C_BUS,
         ...
     ):
         self._hololink = hololink_channel.hololink()
-        self._i2c = self._hololink.get_i2c(i2c_controller_address)
+        self._i2c = self._hololink.get_i2c(i2c_bus)
     ...
     def set_register(self, register, value):
         ...
@@ -236,7 +236,7 @@ container includes a command line tool called `hololink` that can be used to ass
 IP addresses to sensor bridge devices:
 
 ```none
-$ hololink set-ip b0:4f:13:e0:20:4c 192.168.100.250
+$ hololink-set-ip b0:4f:13:e0:20:4c 192.168.100.250
 ```
 
 Your MAC-ID and IP addresses will be different; a list with any number of mac-id and
@@ -249,7 +249,7 @@ a daemon is important when resetting the sensor bridge device:
 - Application executes `hololink.reset`
 - The device resets and reverts back to the default IP address
 - Application code sees enumeration with the default IP address--which it ignores
-- When `hololink set-ip` sees the enumeration packet with something besides the new IP
+- When `hololink-set-ip` sees the enumeration packet with something besides the new IP
   address, it'll send a reply with the new IP address configuration
 - Holoscan sensor bridge updates its IP address. Enumeration data will now be sent using
   that new address

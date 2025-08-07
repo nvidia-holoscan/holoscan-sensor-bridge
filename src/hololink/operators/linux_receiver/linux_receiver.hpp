@@ -26,27 +26,28 @@
 
 #include <cuda.h>
 
-#include <hololink/hololink.hpp>
+#include <hololink/core/hololink.hpp>
 
 namespace hololink::operators {
 
 class LinuxReceiverMetadata {
 public:
     // Data accumulated just in this frame
-    unsigned frame_packets_received;
-    unsigned frame_bytes_received;
-    unsigned frame_number;
-    uint64_t frame_start_s;
-    uint64_t frame_start_ns;
-    uint64_t frame_end_s;
-    uint64_t frame_end_ns;
-    uint32_t imm_data;
-    int64_t received_s;
-    int64_t received_ns;
+    unsigned frame_packets_received = 0;
+    unsigned frame_bytes_received = 0;
+    unsigned received_frame_number = 0;
+    uint64_t frame_start_s = 0;
+    uint64_t frame_start_ns = 0;
+    uint64_t frame_end_s = 0;
+    uint64_t frame_end_ns = 0;
+    uint32_t imm_data = 0;
+    int64_t received_s = 0;
+    int64_t received_ns = 0;
     // Data accumulated over the life of the application
-    uint64_t packets_dropped;
+    uint64_t packets_dropped = 0;
     // Data received directly from HSB.
     Hololink::FrameMetadata frame_metadata;
+    uint32_t frame_number = 0; // 32-bit extended version of the 16-bit frame_metadata.frame_number
 };
 
 class LinuxReceiverDescriptor;
@@ -116,6 +117,8 @@ protected:
     LinuxReceiverDescriptor* busy_;
     CUstream cu_stream_; // Used to control cuMemcpyHtoDAsync.
     std::function<void(const LinuxReceiver&)> frame_ready_;
+    /** Sign-extended frame_number value. */
+    ExtendedCounter<uint32_t, uint16_t> frame_number_;
 };
 
 } // namespace hololink::operators

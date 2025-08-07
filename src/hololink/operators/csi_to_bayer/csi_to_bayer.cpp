@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,8 +17,9 @@
 
 #include "csi_to_bayer.hpp"
 
-#include <hololink/logging.hpp>
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/core/networking.hpp>
 #include <holoscan/holoscan.hpp>
 
 namespace {
@@ -92,8 +93,6 @@ __global__ void frameReconstruction12(unsigned short * out,
 
 namespace hololink::operators {
 
-static inline size_t align_8(size_t value) { return (value + 7) & ~7; }
-
 void CsiToBayerOp::setup(holoscan::OperatorSpec& spec)
 {
     spec.input<holoscan::gxf::Entity>("input");
@@ -110,7 +109,7 @@ void CsiToBayerOp::setup(holoscan::OperatorSpec& spec)
 
 void CsiToBayerOp::start()
 {
-    if (pixel_format_ == PixelFormat::INVALID) {
+    if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");
     }
 
@@ -121,15 +120,15 @@ void CsiToBayerOp::start()
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_device_));
     is_integrated_ = (integrated != 0);
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
-    cuda_function_launcher_.reset(new hololink::native::CudaFunctionLauncher(
+    cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "frameReconstruction8", "frameReconstruction10", "frameReconstruction12" }));
 }
 
 void CsiToBayerOp::stop()
 {
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     cuda_function_launcher_.reset();
 
@@ -177,14 +176,12 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
         throw std::runtime_error("Tensor must be one dimensional");
     }
 
-    const int32_t size = input_tensor->shape().dimension(0);
-
     // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
     auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
         fragment()->executor().context(), allocator_->gxf_cid());
 
     // create the output
-    nvidia::gxf::Shape shape { int(height_), int(width_), 1 };
+    nvidia::gxf::Shape shape { int(pixel_height_), int(pixel_width_), 1 };
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
         = CreateTensorMap(context.context(), allocator.value(),
             { { out_tensor_name_.get(), nvidia::gxf::MemoryStorageType::kDevice, shape,
@@ -202,32 +199,31 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
             fmt::format("failed to create out_tensor with name \"{}\"", out_tensor_name_.get()));
     }
 
-    hololink::native::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
     const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
 
-    const uint32_t per_line_size = line_start_size_ + bytes_per_line_ + line_end_size_;
     switch (pixel_format_) {
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_8:
-        cuda_function_launcher_->launch("frameReconstruction8", { width_, height_, 1 }, cuda_stream,
+    case hololink::csi::PixelFormat::RAW_8:
+        cuda_function_launcher_->launch("frameReconstruction8", { pixel_width_, pixel_height_, 1 }, cuda_stream,
             tensor.value()->pointer(),
-            input_tensor->pointer() + frame_start_size_ + line_start_size_, per_line_size, width_,
-            height_);
+            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
+            pixel_height_);
         break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_10:
+    case hololink::csi::PixelFormat::RAW_10:
         cuda_function_launcher_->launch("frameReconstruction10",
-            { width_ / 4, // outputs 4 pixels per shader invocation
-                height_, 1 },
+            { pixel_width_ / 4, // outputs 4 pixels per shader invocation
+                pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + frame_start_size_ + line_start_size_, per_line_size, width_,
-            height_);
+            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
+            pixel_height_);
         break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_12:
+    case hololink::csi::PixelFormat::RAW_12:
         cuda_function_launcher_->launch("frameReconstruction12",
-            { width_ / 2, // outputs 2 pixels per shader invocation
-                height_, 1 },
+            { pixel_width_ / 2, // outputs 2 pixels per shader invocation
+                pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + frame_start_size_ + line_start_size_, per_line_size, width_,
-            height_);
+            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
+            pixel_height_);
         break;
     default:
         throw std::runtime_error("Unsupported bits per pixel value");
@@ -244,52 +240,48 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     output.emit(result);
 }
 
-void CsiToBayerOp::configure(uint32_t width, uint32_t height, PixelFormat pixel_format,
-    uint32_t frame_start_size, uint32_t frame_end_size, uint32_t line_start_size,
-    uint32_t line_end_size, uint32_t margin_left, uint32_t margin_top, uint32_t margin_right,
-    uint32_t margin_bottom)
+uint32_t CsiToBayerOp::receiver_start_byte()
 {
-    width_ = width;
-    height_ = height;
-    pixel_format_ = pixel_format;
-    frame_start_size_ = frame_start_size;
-    frame_end_size_ = frame_end_size;
-    line_start_size_ = line_start_size;
-    line_end_size_ = line_end_size;
+    // HSB, in this mode, doesn't insert any stuff in the front of received data.
+    return 0;
+}
 
-    switch (pixel_format_) {
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_8:
-        bytes_per_line_ = width_;
-        line_start_size_ += margin_left;
-        line_end_size_ += margin_right;
-        break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_10:
-        bytes_per_line_ = width_ * 5 / 4;
-        line_start_size_ += margin_left * 5 / 4;
-        line_end_size_ += margin_right * 5 / 4;
-        break;
-    case hololink::operators::CsiToBayerOp::PixelFormat::RAW_12:
-        bytes_per_line_ = width_ * 3 / 2;
-        line_start_size_ += margin_left * 3 / 2;
-        line_end_size_ += margin_right * 3 / 2;
-        break;
+uint32_t CsiToBayerOp::received_line_bytes(uint32_t transmitted_line_bytes)
+{
+    // Bytes are padded to 8.
+    return hololink::core::round_up(transmitted_line_bytes, 8);
+}
+
+uint32_t CsiToBayerOp::transmitted_line_bytes(hololink::csi::PixelFormat pixel_format, uint32_t pixel_width)
+{
+    switch (pixel_format) {
+    case hololink::csi::PixelFormat::RAW_8:
+        return pixel_width;
+    case hololink::csi::PixelFormat::RAW_10:
+        return pixel_width * 5 / 4;
+    case hololink::csi::PixelFormat::RAW_12:
+        return pixel_width * 3 / 2;
     default:
-        throw std::runtime_error(fmt::format("Unsupported pixel format {}", int(pixel_format_)));
+        throw std::runtime_error(fmt::format("Unsupported pixel format {}", int(pixel_format)));
     }
+}
 
-    const uint32_t line_size = line_start_size + bytes_per_line_ + line_end_size;
-    frame_start_size_ += margin_top * line_size;
-    frame_end_size_ += margin_bottom * line_size;
-    // NOTE that this align_8 is not a CSI specification; instead it comes
-    // from the Sensor Bridge FPGA implementation.  When we convert Hololink
-    // to C++, let's change this to a callback to that object, per
-    // https://jirasw.nvidia.com/browse/BAJQ0XTT-137.
-    csi_length_ = align_8(frame_start_size_ + line_size * height_ + frame_end_size_);
+void CsiToBayerOp::configure(uint32_t start_byte, uint32_t bytes_per_line, uint32_t pixel_width, uint32_t pixel_height, hololink::csi::PixelFormat pixel_format, uint32_t trailing_bytes)
+{
+    HSB_LOG_INFO("start_byte={}, bytes_per_line={}, pixel_width={}, pixel_height={}, pixel_format={}, trailing_bytes={}.",
+        start_byte, bytes_per_line, pixel_width, pixel_height, static_cast<int>(pixel_format), trailing_bytes);
+    start_byte_ = start_byte;
+    bytes_per_line_ = bytes_per_line;
+    pixel_width_ = pixel_width;
+    pixel_height_ = pixel_height;
+    pixel_format_ = pixel_format;
+    csi_length_ = start_byte + bytes_per_line * pixel_height + trailing_bytes;
+    configured_ = true;
 }
 
 size_t CsiToBayerOp::get_csi_length()
 {
-    if (pixel_format_ == PixelFormat::INVALID) {
+    if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");
     }
 

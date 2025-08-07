@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,16 +15,10 @@
 
 # See README.md for detailed information.
 
-import hololink
+import hololink  # noqa: F401
 
+# alias of the hololink.BayerFormat as hololink.sensors.csi.BayerFormat
+BayerFormat = hololink.BayerFormat
 
-def align_64(n):
-    return (n + 7) & ~7
-
-
-# alias of the ImageProcessorOp PixelFormat as hololink.sensors.csi.PixelFormat
-BayerFormat = hololink.operators.ImageProcessorOp.BayerFormat
-
-
-# alias of the CsiToBayerOp PixelFormat as hololink.sensors.csi.PixelFormat
-PixelFormat = hololink.operators.CsiToBayerOp.PixelFormat
+# alias of the hololink.PixelFormat as hololink.sensors.csi.PixelFormat
+PixelFormat = hololink.PixelFormat

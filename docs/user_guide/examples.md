@@ -63,7 +63,23 @@ Documentation breaking down the source code for the IMX274 player application is
 sensor bridge workflow which is described in the
 [architecture documentation](architecture.md). Press Control/C to stop the video player.
 
-## Running the TAO PeopleNet example
+## Leopard imaging VB1940 Eagle player example
+
+This example is similar to the IMX274 player example above, using an Li VB1940 Eagle
+camera instead of IMX274. To run the high-speed video player with Li VB1940 Eagle, in
+the demo container with a ConnectX accelerated network controller,
+
+```sh
+$ python3 examples/vb1940_player.py
+```
+
+or, for unaccelerated configurations (e.g. AGX),
+
+```sh
+$ python3 examples/linux_vb1940_player.py
+```
+
+## Running the IMX274 TAO PeopleNet example
 
 The tao-peoplenet example demonstrates running inference on a live video feed.
 [Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
@@ -94,7 +110,7 @@ the IMX274 device as well as red/green box overlays when a person image is captu
 Press Ctrl/C to exit. More information about this application can be found
 [here](applications.md#tao_peoplenet).
 
-## Running the body pose example
+## Running the IMX274 body pose example
 
 **Prerequisite**: Download the YOLOv8 ONNX model from the YOLOv8 website and generate
 the body pose ONNX model. Within the Holoscan sensor bridge demo container:
@@ -136,7 +152,7 @@ net model. For more information about this application, look
 
 Press Ctrl/C to exit.
 
-## Running the Stereo IMX274 example
+## Running the Stereo IMX274 and Leopard imaging VB1940 Eagle examples
 
 For IGX, `examples/stereo_imx274_player.py` shows an example with two independent
 pipelines, one for each camera on the dual-camera module. Accelerated networking is used
@@ -151,10 +167,31 @@ $ python3 examples/stereo_imx274_player.py
 This brings up a visualizer display with two frames, one for the left channel and the
 other for the right.
 
-For AGX configurations, you can observe both cameras using a single network port:
+For the purpose of aggregating lower bandwidth streams, you can observe the following
+examples aggregating both cameras to a single network port:
+
+IGX Orin with IMX274:
+
+```sh
+$ python3 examples/single_network_stereo_imx274_player.py
+```
+
+AGX Orin with IMX274:
 
 ```sh
 $ python3 examples/linux_single_network_stereo_imx274_player.py
+```
+
+IGX Orin with Li VB1940 Eagle:
+
+```sh
+$ python3 examples/single_network_stereo_vb1940_player.py
+```
+
+AGX Orin with Li VB1940 Eagle:
+
+```sh
+$ python3 examples/linux_single_network_stereo_vb1940_player.py
 ```
 
 Applications wishing to map sensors to specific data channels can do so using the
@@ -165,7 +202,7 @@ limited to 10Gbps so support is only provided for observing stereo video in 1080
 
 `examples/gpio_example_app.py` is a simple example of using the GPIO interface of the
 sensor bridge to set GPIO directions, read input values from GPIO pins and write output
-values to GPIO pins. To run the appliction:
+values to GPIO pins. To run the application:
 
 ```sh
 $ python3 examples/gpio_example_app.py
@@ -203,8 +240,8 @@ $ python3 examples/linux_hwisp_player.py
 
 This will run the application with visualizer display showing the live capture.
 
-Note if user wishes to undo running the `nvargus-daemon` with
-flag`enableRawReprocessing=1`, then please execute following command.
+Note if user wishes to undo running the `nvargus-daemon` with flag
+`enableRawReprocessing=1`, then please execute the following command.
 
 ```sh
 sudo su
@@ -229,3 +266,63 @@ use the following commands to run the example.
 ```sh
 $ python3 examples/imx274_latency.py
 ```
+
+Running the latency example application on AGX Orin systems:
+
+```sh
+$ python3 examples/linux_imx274_latency.py
+```
+
+## Running the ECam0M30ToF Player Application
+
+The `ecam0m30tof_player.py` application demonstrates how to capture and display depth
+and/or IR data from the ECam0M30ToF time-of-flight camera using RoCE (RDMA over
+Converged Ethernet) for high-performance data transmission, utilizing Holoviz operator's
+`DEPTH_MAP` rendering for enhanced depth visualization. This application can be modified
+to run on Jetson AGX by changing the receiver operator from `RoceReceiverOp` to
+`LinuxReceiverOperator`.
+
+**Prerequisites**: ECam0M30ToF camera connected to the Hololink device
+
+To run the application use following command.
+
+```bash
+python3 examples/ecam0m30tof_player.py --hololink 192.168.0.2 --camera-mode=<0|1|2>
+```
+
+**Camera Configuration**:
+
+- `--camera-mode`: Select camera mode (0: `DEPTH_IR`, 1: `DEPTH`, 2: `IR`)
+
+## Running the frame validation example for IMX274
+
+For AGX systems, `examples/linux_imx274_frame_validation.py` shows an example of how to
+access frame metadata in order to detect missing frames, frame timestamp misalignment
+and frame CRC errors. This example demonstrates recording timestamps, frame numbers and
+CRC32 received from the FPGA when data is acquired. During the run, missing frames,
+timestamp misalignment and CRC32 errors are detected and prompted out to the console. At
+the end of the run, the application will provide a duration and latency report with
+average, minimum, and maximum values same as the Latency example application. These
+values are collected during the application run to assess the impact of various
+detection mechanisms on the latency of the pipeline.
+
+Before running the app, enable PTP sync on your setup, then use the following commands
+to run the example. Running the frame validation example on AGX Orin systems:
+
+```sh
+$ python3 examples/linux_imx274_frame_validation.py
+```
+
+Since the CRC32 calculation in this example is done by CPU, trying to detect CRC32 error
+using the example as is will trigger frame loss errors. For that reason CRC32 error
+detection is not enabled by default. To enable CRC32 detection every N frames use the
+`--crc-frame-check` option:
+
+```sh
+$ python3 examples/linux_imx274_frame_validation.py --crc-frame-check 50
+```
+
+In this example, the application will check for CRC32 frame errors every 50 frames.
+
+While there is no equivalent example for IGX systems, this example can be quickly
+adapted by users for IGX.

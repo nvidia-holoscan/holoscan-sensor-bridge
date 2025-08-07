@@ -18,10 +18,10 @@
 ARG CONTAINER_TYPE=invalid
 
 # dgpu specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.7.0-dgpu AS build_dgpu
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.3.0-dgpu AS build_dgpu
 
 # igpu specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v2.7.0-igpu AS build_igpu
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.3.0-igpu AS build_igpu
 RUN \
     # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
     apt-get update && \
@@ -67,6 +67,9 @@ RUN apt-get update \
     libibverbs-dev \
     libnuma-dev \
     libelf-dev \
+    libfmt-dev \
+    libyaml-cpp-dev \
+    libcurlpp-dev \
   && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install meson ninja pyelftools

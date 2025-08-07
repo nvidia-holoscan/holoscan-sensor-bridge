@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,30 +20,25 @@
 
 #include <memory>
 
+#include <hololink/core/csi_controller.hpp>
+#include <hololink/core/csi_formats.hpp>
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/parameter.hpp>
 #include <holoscan/utils/cuda_stream_handler.hpp>
 
 #include <cuda.h>
 
-namespace hololink::native {
+namespace hololink::common {
 
 class CudaFunctionLauncher;
 
-} // namespace hololink::native
+} // namespace hololink::common
 
 namespace hololink::operators {
 
-class CsiToBayerOp : public holoscan::Operator {
+class CsiToBayerOp : public holoscan::Operator, public hololink::csi::CsiConverter {
 public:
     HOLOSCAN_OPERATOR_FORWARD_ARGS(CsiToBayerOp);
-
-    enum class PixelFormat {
-        INVALID = -1,
-        RAW_8 = 0,
-        RAW_10 = 1,
-        RAW_12 = 2,
-    };
 
     void start() override;
     void stop() override;
@@ -51,10 +46,10 @@ public:
     void compute(holoscan::InputContext&, holoscan::OutputContext& op_output,
         holoscan::ExecutionContext&) override;
 
-    void configure(uint32_t width, uint32_t height, PixelFormat pixel_format,
-        uint32_t frame_start_size, uint32_t frame_end_size, uint32_t line_start_size,
-        uint32_t line_end_size, uint32_t margin_left = 0, uint32_t margin_top = 0,
-        uint32_t margin_right = 0, uint32_t margin_bottom = 0);
+    uint32_t receiver_start_byte() override;
+    uint32_t received_line_bytes(uint32_t line_bytes) override;
+    uint32_t transmitted_line_bytes(hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) override;
+    void configure(uint32_t start_byte, uint32_t bytes_per_line, uint32_t pixel_width, uint32_t pixel_height, hololink::csi::PixelFormat pixel_format, uint32_t trailing_bytes) override;
     size_t get_csi_length();
 
 private:
@@ -69,18 +64,14 @@ private:
 
     holoscan::CudaStreamHandler cuda_stream_handler_;
 
-    std::shared_ptr<hololink::native::CudaFunctionLauncher> cuda_function_launcher_;
-
-    uint32_t width_ = 0;
-    uint32_t height_ = 0;
-    PixelFormat pixel_format_ = PixelFormat::INVALID;
-    uint32_t frame_start_size_ = 0;
-    uint32_t frame_end_size_ = 0;
-    uint32_t line_start_size_ = 0;
-    uint32_t line_end_size_ = 0;
-
+    std::shared_ptr<hololink::common::CudaFunctionLauncher> cuda_function_launcher_;
+    uint32_t pixel_width_ = 0;
+    uint32_t pixel_height_ = 0;
+    hololink::csi::PixelFormat pixel_format_ = hololink::csi::PixelFormat::RAW_8;
+    uint32_t start_byte_ = 0;
     uint32_t bytes_per_line_ = 0;
     size_t csi_length_ = 0;
+    bool configured_ = false;
 };
 
 } // namespace hololink::operators

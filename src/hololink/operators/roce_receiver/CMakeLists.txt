@@ -33,8 +33,17 @@ target_include_directories(roce_receiver
 
 target_link_libraries(roce_receiver
   PRIVATE
-    hololink::native
+    hololink::core
     hololink::operators::base_receiver_op
     CUDA::cuda_driver
     ${ibverbs_LIBRARIES}
   )
+
+# Installation of the roce_receiver operator
+install(TARGETS roce_receiver
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-roce-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/roce_receiver_op.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/roce_receiver
+        COMPONENT hololink-roce-operators)

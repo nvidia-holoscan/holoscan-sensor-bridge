@@ -20,7 +20,7 @@
 
 #include <memory>
 
-#include <hololink/native/cuda_helper.hpp>
+#include <hololink/common/cuda_helper.hpp>
 #include <holoscan/core/operator.hpp>
 
 #include <Argus/Argus.h>
@@ -44,6 +44,7 @@ class ArgusImpl {
 public:
     // Member functions
     std::vector<Argus::CameraDevice*> camera_devices_;
+    uint32_t camera_index_ = 0;
     std::vector<Argus::SensorMode*> sensor_modes_;
 
     Argus::ICameraProvider* i_camera_provider_ = nullptr;
@@ -75,7 +76,7 @@ public:
     ArgusImpl(std::shared_ptr<Argus::CameraProvider> cameraProvider);
 
     // Helper functions
-    void setup_camera_devices();
+    void setup_camera_devices(uint32_t cameraIndex);
     void set_sensor_mode_info(uint32_t sensorModeIndex);
     void set_reprocess_info(int bayerFormat, int pixelBitDepth);
     void setup_output_streams(const uint8_t sensorModeIndex);

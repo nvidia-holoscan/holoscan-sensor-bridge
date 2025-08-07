@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -85,14 +85,6 @@ PYBIND11_MODULE(_image_processor, m)
                       "cuda_device_ordinal"_a = 0,
                       "name"_a = "image_processor"s)
                   .def("setup", &ImageProcessorOp::setup, "spec"_a);
-
-    py::enum_<ImageProcessorOp::BayerFormat>(op, "BayerFormat")
-        .value("RGGB", ImageProcessorOp::BayerFormat::RGGB,
-            R"pbdoc(RGGB)pbdoc")
-        .value("GBRG", ImageProcessorOp::BayerFormat::GBRG,
-            R"pbdoc(GBRG)pbdoc")
-        .export_values();
-
 } // PYBIND11_MODULE
 
 } // namespace hololink::operators

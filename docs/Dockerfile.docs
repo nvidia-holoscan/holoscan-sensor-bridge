@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Install up to date doxygen for better C++ parsing with a few cases like
-#previous configiuration fails build - removed per wendell's instructions
+#previous configuration fails build - removed per wendell's instructions
 RUN apt-get update && apt-get -y install doxygen
 
 # Install Python dependencies

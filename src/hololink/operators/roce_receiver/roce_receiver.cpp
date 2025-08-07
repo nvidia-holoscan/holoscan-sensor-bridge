@@ -26,8 +26,9 @@
 #include <stdio.h>
 #include <unistd.h>
 
-#include <hololink/logging.hpp>
-#include <hololink/native/nvtx_trace.hpp>
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/core/nvtx_trace.hpp>
 
 #undef PERIODIC_STATUS
 
@@ -66,18 +67,22 @@ RoceReceiver::RoceReceiver(
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
     , ready_condition_(PTHREAD_COND_INITIALIZER)
     , done_(false)
-    , frame_number_(0)
+    , control_r_(-1)
+    , control_w_(-1)
+    , received_frame_number_(0)
     , rx_write_requests_fd_(-1)
     , rx_write_requests_(0)
-    , received_ {}
     , imm_data_(0)
     , event_time_ {}
+    , received_ {}
     , current_buffer_(0)
     , metadata_stream_(0)
     , dropped_(0)
+    , metadata_buffer_(nullptr)
     , received_psn_(0)
     , received_page_(0)
     , frame_ready_([](const RoceReceiver&) {})
+    , frame_number_()
 {
     HSB_LOG_DEBUG("cu_buffer={:#x} cu_frame_size={:#x} cu_page_size={} pages={}",
         cu_buffer, cu_frame_size, cu_page_size, pages);
@@ -154,6 +159,19 @@ bool RoceReceiver::start()
     // EventBasedScheduler.
     std::lock_guard lock(get_lock());
 
+    // ibverbs has some reentrancy problems with programs
+    // that use fork, which may happen in applications we're
+    // used in.
+    static bool ibv_fork_init_done = false;
+    if (!ibv_fork_init_done) {
+        int r = ibv_fork_init();
+        if (r != 0) {
+            HSB_LOG_ERROR("ibv_fork_init failed; errno={}.", errno);
+            return false;
+        }
+        ibv_fork_init_done = true;
+    }
+
     // Find the IB controller
     int num_devices = 0;
     struct ibv_device** ib_devices = ibv_get_device_list(&num_devices);
@@ -176,7 +194,7 @@ bool RoceReceiver::start()
         break;
     }
     if (ib_device == NULL) {
-        HSB_LOG_ERROR("ibv_get_device_list didnt find a device named \"{}\".", ibv_name_);
+        HSB_LOG_ERROR("ibv_get_device_list didn't find a device named \"{}\".", ibv_name_);
         ibv_free_device_list(ib_devices);
         return false;
     }
@@ -201,7 +219,7 @@ bool RoceReceiver::start()
     }
 
     //
-    struct ibv_device_attr ib_device_attr = { 0 }; // C fills the rest with 0s
+    struct ibv_device_attr ib_device_attr { };
     if (ibv_query_device(ib_context_, &ib_device_attr)) {
         HSB_LOG_ERROR("ibv_query_device failed, errno={}.", errno);
         free_ib_resources();
@@ -217,7 +235,7 @@ bool RoceReceiver::start()
 
     // Fetch the GID
     bool ok = false;
-    struct ibv_gid_entry ib_gid_entry = { 0 }; // C fills the rest with 0s
+    struct ibv_gid_entry ib_gid_entry { };
     int gid_index = 0;
     for (gid_index = 0; 1; gid_index++) {
         uint32_t flags = 0;
@@ -437,7 +455,7 @@ static inline bool before(struct timespec& a, struct timespec& b)
 
 void RoceReceiver::blocking_monitor()
 {
-    native::NvtxTrace::setThreadName("RoceReceiver::run");
+    core::NvtxTrace::setThreadName("RoceReceiver::run");
     HSB_LOG_DEBUG("Running.");
 
     struct ibv_wc ib_wc = { 0 };
@@ -557,16 +575,16 @@ void RoceReceiver::blocking_monitor()
                     throw std::runtime_error(fmt::format("cmMemcpyDtoHAsync failed, cu_result={}.", cu_result));
                 }
                 current_buffer_ = cu_buffer_ + cu_page_size_ * page;
-                frame_number_++;
-                native::NvtxTrace::event_u64("frame_number", frame_number_);
-                HSB_LOG_TRACE("frame_number={}", frame_number_);
+                received_frame_number_++;
+                core::NvtxTrace::event_u64("received_frame_number", received_frame_number_);
+                HSB_LOG_TRACE("received_frame_number={}", received_frame_number_);
                 received_.tv_sec = event_time_.tv_sec;
                 received_.tv_nsec = event_time_.tv_nsec;
-                HSB_LOG_TRACE("frame_number={} imm_data={:#x} received.tv_sec={:#x} received.tv_nsec={:#x}",
-                    frame_number_, imm_data_, received_.tv_sec, received_.tv_nsec);
+                HSB_LOG_TRACE("received_frame_number={} imm_data={:#x} received.tv_sec={:#x} received.tv_nsec={:#x}",
+                    received_frame_number_, imm_data_, received_.tv_sec, received_.tv_nsec);
                 // Send it
                 ready_ = true;
-                native::NvtxTrace::event_u64("signal", 1);
+                core::NvtxTrace::event_u64("signal", 1);
                 r = pthread_cond_signal(&ready_condition_);
                 if (r != 0) {
                     throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
@@ -681,7 +699,7 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
     }
     bool r = ready_;
     ready_ = false;
-    metadata.frame_number = frame_number_;
+    metadata.received_frame_number = received_frame_number_;
     metadata.dropped = dropped_;
     if (r) {
         CUresult cu_result = cuStreamSynchronize(metadata_stream_);
@@ -700,6 +718,7 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         metadata.frame_memory = current_buffer_;
         metadata.metadata_memory = current_buffer_ + metadata_offset_;
         metadata.frame_metadata = frame_metadata;
+        metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
     } else {
         metadata.rx_write_requests = 0;
         metadata.imm_data = 0;
@@ -708,6 +727,7 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         metadata.frame_memory = 0;
         metadata.metadata_memory = 0;
         metadata.frame_metadata = {}; // All 0s
+        metadata.frame_number = 0;
     }
     status = pthread_mutex_unlock(&ready_mutex_);
     if (status != 0) {

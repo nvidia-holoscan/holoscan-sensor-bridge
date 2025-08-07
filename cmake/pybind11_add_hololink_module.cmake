@@ -33,6 +33,7 @@ function(pybind11_add_hololink_module)
     target_link_libraries(${target_name}
         PRIVATE
             holoscan::core
+            holoscan::pybind11
             ${MODULE_CPP_CMAKE_TARGET}
     )
 
@@ -66,6 +67,11 @@ function(pybind11_add_hololink_module)
             ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pybind11/__init__.py
             ${module_out_dir}/__init__.py
         )
+    else()
+       configure_file(
+        "${CMAKE_CURRENT_LIST_DIR}/__init__.py"
+        ${module_out_dir}/__init__.py
+       )
     endif()
 
     # Note: OUTPUT_NAME filename (_${MODULE_NAME}) must match the module name in the PYBIND11_MODULE macro

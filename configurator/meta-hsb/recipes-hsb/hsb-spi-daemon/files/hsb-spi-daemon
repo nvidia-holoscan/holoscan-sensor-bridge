@@ -1,0 +1,45 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+### BEGIN INIT INFO
+# Provides:          hsb-spi-daemon
+# Required-Start:    $local_fs $remote_fs $syslog
+# Required-Stop:     $local_fs $remote_fs $syslog
+# Default-Start:     2 3 4 5
+# Default-Stop:      0 1 6
+# Short-Description: HSB SPI Daemon
+### END INIT INFO
+
+case "$1" in
+  start)
+    echo "Starting HSB SPI Daemon"
+    python3 /opt/nvidia/hsb-spi-daemon.py --devices 0 1 --names ad9986 hmc7044 --drivers ad9081_drv hmc7044 &
+    ;;
+  stop)
+    echo "Stopping HSB SPI Daemon"
+    ps aux | grep hsb-spi-daemon.py | grep -v grep | awk '{print $2}' | xargs kill
+    ;;
+  restart)
+    $0 stop
+    $0 start
+    ;;
+  *)
+    echo "Usage: /etc/init.d/hsb-spi-daemon {start|stop|restart}"
+    exit 1
+    ;;
+esac
+
+exit 0

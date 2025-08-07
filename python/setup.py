@@ -45,10 +45,16 @@ setuptools.setup(
     version=VERSION,
     packages=[
         "hololink",
-        "hololink/native",
+        "hololink/hololink_core",
+        "hololink/emulation",
         "hololink/operators",
         "hololink/sensors",
+        "hololink/sensors/camera",
+        "hololink/sensors/camera/imx274",
         "hololink/sensors/imx274",
+        "hololink/sensors/imx715",
+        "hololink/sensors/vb1940",
+        "hololink/sensors/ecam0m30tof",
         "tools",
     ],
     ext_modules=[
@@ -73,8 +79,8 @@ setuptools.setup(
         "build_ext": cmake_build_extension.BuildExtension,
     },
     install_requires=[
-        "cuda-python",
-        "nvtx",
+        "cuda-python==12.9.0",
+        "nvtx==0.2.13",
     ],
     entry_points={
         "console_scripts": [

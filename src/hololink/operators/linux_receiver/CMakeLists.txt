@@ -29,7 +29,12 @@ target_include_directories(linux_receiver
 
 target_link_libraries(linux_receiver
   PRIVATE
-    hololink::native
+    hololink::core
     hololink::operators::base_receiver_op
     CUDA::cuda_driver
   )
+
+# Installation of the linux_receiver operator
+install(TARGETS linux_receiver
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)

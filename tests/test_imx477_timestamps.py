@@ -19,6 +19,7 @@ import ctypes
 import datetime
 import logging
 import sys
+import threading
 from unittest import mock
 
 import holoscan
@@ -59,22 +60,15 @@ class TimestampTestApplication(holoscan.core.Application):
         self._ibv_port = ibv_port
         self._camera = camera
         self._frame_limit = frame_limit
-        self.is_metadata_enabled = True
+        self._lock = threading.Lock()
+        self._timestamps = []
+        self.enable_metadata(True)
 
     def compose(self):
         logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
+        self._condition = holoscan.conditions.BooleanCondition(
+            self, name="ok", enable_tick=True
+        )
 
         csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
             self,
@@ -102,7 +96,7 @@ class TimestampTestApplication(holoscan.core.Application):
         if network_mode == roce_network_mode:
             receiver_operator = hololink_module.operators.RoceReceiverOp(
                 self,
-                condition,
+                self._condition,
                 name="receiver",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -114,7 +108,7 @@ class TimestampTestApplication(holoscan.core.Application):
         elif network_mode == linux_network_mode:
             receiver_operator = hololink_module.operators.LinuxReceiverOperator(
                 self,
-                condition,
+                self._condition,
                 name="receiver",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -149,24 +143,60 @@ class TimestampTestApplication(holoscan.core.Application):
         profiler = operators.TimeProfiler(
             self,
             name="profiler",
-            callback=lambda timestamps: self._terminate(timestamps),
+            callback=self.time_profile,
         )
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
             fullscreen=self._fullscreen,
             headless=self._headless,
+            enable_camera_pose_output=True,
+            camera_pose_output_type="extrinsics_model",
+        )
+        initial_timeout = utils.timeout_sequence(
+            [(30, 20), (0.5, self._frame_limit - 40), (30, 1)]
+        )
+        self._watchdog = utils.Watchdog(
+            name="watchdog",
+            initial_timeout=initial_timeout,
+        )
+        watchdog_operator = operators.WatchdogOp(
+            self,
+            name="watchdog_operator",
+            watchdog=self._watchdog,
         )
         #
         self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
         self.add_flow(csi_to_bayer_operator, demosaic, {("output", "receiver")})
         self.add_flow(demosaic, profiler, {("transmitter", "input")})
         self.add_flow(profiler, visualizer, {("output", "receivers")})
+        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
+        #
+        self._watchdog.start()
 
-    def _terminate(self, recorded_timestamps):
-        self._ok.disable_tick()
-        global timestamps
-        timestamps = recorded_timestamps
+    def time_profile(
+        self,
+        image_timestamp_s,
+        metadata_timestamp_s,
+        received_timestamp_s,
+        pipeline_timestamp_s,
+        frame_number,
+    ):
+        with self._lock:
+            self._timestamps.append(
+                (
+                    image_timestamp_s,
+                    metadata_timestamp_s,
+                    received_timestamp_s,
+                    pipeline_timestamp_s,
+                    frame_number,
+                )
+            )
+            if len(self._timestamps) >= self._frame_limit:
+                self._watchdog.stop()
+                self._condition.disable_tick()
+                global timestamps
+                timestamps = self._timestamps
 
 
 # frame_time represents the constant time difference between when the
@@ -174,6 +204,7 @@ class TimestampTestApplication(holoscan.core.Application):
 # time_limit, the acceptable amount of time between when the frame was sent and
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
+@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2501 FPGAs YET")
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx477
 @pytest.mark.accelerated_networking
@@ -200,6 +231,7 @@ def test_imx477_timestamps(
     hololink_address,
     ibv_name,
     ibv_port,
+    frame_limit,
 ):
     arguments = [
         sys.argv[0],
@@ -211,6 +243,7 @@ def test_imx477_timestamps(
         str(ibv_port),
         "--pattern",
         "--ptp-sync",
+        f"--frame-limit={frame_limit}",
     ]
     if headless:
         arguments.extend(["--headless"])

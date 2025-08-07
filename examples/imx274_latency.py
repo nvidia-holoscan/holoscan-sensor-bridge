@@ -43,7 +43,7 @@ def get_timestamp(metadata, name):
 
 def record_times(recorder_queue, metadata):
     #
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     #
     frame_number = metadata.get("frame_number", 0)
 
@@ -116,7 +116,7 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        operator_timestamp = datetime.datetime.utcnow()
+        operator_timestamp = datetime.datetime.now(datetime.UTC)
 
         in_message = op_input.receive("input")
         cp_frame = cp.asarray(in_message.get(""))
@@ -143,7 +143,7 @@ class MonitorOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        complete_timestamp = datetime.datetime.utcnow()
+        complete_timestamp = datetime.datetime.now(datetime.UTC)
 
         _ = op_input.receive("input")
         #
@@ -418,13 +418,9 @@ def main():
     hololink.start()
     if not args.skip_reset:
         hololink.reset()
-    ptp_sync_timeout_s = 10
-    ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
     logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize(ptp_sync_timeout):
-        raise ValueError(
-            f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-        )
+    if not hololink.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP.")
     else:
         logging.debug("PTP synchronized.")
     if not args.skip_reset:

@@ -17,22 +17,23 @@
 
 import logging
 
-import udp_server
+import mock_camera
+import mock_server
 
 import hololink as hololink_module
 
 
-def test_udpcam_version(udpcam):
+def test_udpcam_version(mock_camera_ip):
     logging.info("Initializing.")
 
-    with udp_server.TestServer(udpcam) as server:
+    with mock_server.TestServer(mock_camera_ip) as server:
         channel_metadata = server.channel_metadata()
         hololink_channel = hololink_module.DataChannel(channel_metadata)
         hololink = hololink_channel.hololink()
         hololink.start()
 
         # Camera
-        camera = hololink_module.sensors.udp_cam.UdpCam(hololink_channel)
+        camera = mock_camera.MockCamera(hololink_channel)
         camera.reset()
 
         version = camera.get_version()

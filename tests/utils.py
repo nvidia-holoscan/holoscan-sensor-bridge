@@ -20,6 +20,7 @@ import os
 import queue
 import threading
 import time
+import traceback
 
 import numpy as np
 
@@ -197,6 +198,13 @@ def make_image(
     return image, bayer_image
 
 
+def caller(n=0):
+    stack = traceback.extract_stack(limit=3 + n)
+    full_filename, line, method, statement = stack[-(3 + n)]
+    filename = os.path.basename(full_filename)
+    return "%s:%u" % (filename, line)
+
+
 class Watchdog:
     """When used this way:
 
@@ -225,7 +233,7 @@ class Watchdog:
                 watchdog.tap()
                 do_something()
 
-      This accomodates workflows where initialization may make the first n iterations
+      This accommodates workflows where initialization may make the first n iterations
       take longer.
 
     - use a dynamic timeout by passing in a new limit each call to tap:
@@ -235,16 +243,22 @@ class Watchdog:
                 watchdog.tap(2)
                 do_something()
 
-      Watchdog always prefers to use the value passed to tap, and will fall back to
-      the next initial values (if any remain) or finally the value passed as timeout to
-      the constructor.
+      Watchdog always prefers to use the value passed to tap, and will fall
+      back to the next initial values (if any remain) or finally the value
+      passed as timeout to the constructor.  You can specify only the
+      initial_timeout, in which case the last value from the initial_timeout
+      will continue to be used as the tap value after the list is finished.
     """
 
-    def __init__(self, name, timeout, initial_timeout=None):
+    def __init__(self, name, timeout=None, initial_timeout=None):
         self._name = name
-        logging.trace(f'Creating watchdog@{id(self):#x} "{self._name}"')
+        self._caller = caller()
+        self._str_id = f'watchdog@{id(self):#x} ({self._caller}) "{self._name}"'
+        logging.trace(f"Creating {self._str_id}")
         if initial_timeout is None:
-            initial_timeout = [timeout]
+            # The dummy math here raises an exception if users didn't specify
+            # a timeout parameter.
+            initial_timeout = [timeout + 0]
         try:
             self._initial_timeout = iter(initial_timeout)
         except TypeError:
@@ -254,21 +268,34 @@ class Watchdog:
         self._count = 0
         self._lock = threading.Lock()
         self._tap_time = None
+        self._last_timeout = None
+        self._thread = None
+        self._thread_lock = threading.Lock()
 
     def __enter__(self):
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
+        self.start()
         return self
 
     def __exit__(self, *args):
-        self._q.put(None)
-        self._thread.join()
+        self.stop()
+
+    def start(self):
+        with self._thread_lock:
+            assert self._thread is None
+            self._thread = threading.Thread(target=self._run, daemon=True)
+            self._thread.start()
+
+    def stop(self):
+        with self._thread_lock:
+            if self._thread is None:
+                return
+            self._q.put(None)
+            self._thread.join()
+            self._thread = None
 
     def tap(self, timeout=None):
         self._count += 1
-        logging.trace(
-            f'tapping watchdog@{id(self):#x} "{self._name}" count={self._count} {timeout=}'
-        )
+        logging.trace(f"tapping {self._str_id} count={self._count} {timeout=}")
         self._tap_time = time.monotonic()
         self._q.put(self._get_next_timeout(timeout))
 
@@ -278,20 +305,23 @@ class Watchdog:
                 return user_value
             try:
                 timeout = next(self._initial_timeout)
+                self._last_timeout = timeout
                 return timeout
             except StopIteration:
                 pass
+            if self._next_timeout is None:
+                return self._last_timeout
             return self._next_timeout
 
     def _run(self):
         hololink_module.NvtxTrace.setThreadName(self._name)
-        logging.trace(f'running watchdog@{id(self):#x} "{self._name}".')
+        logging.trace(f"running {self._str_id}.")
         try:
             timeout = self._get_next_timeout()
             while True:
                 timeout = self._q.get(block=True, timeout=timeout)
                 if timeout is None:
-                    logging.trace(f'closing watchdog@{id(self):#x} "{self._name}".')
+                    logging.trace(f"closing {self._str_id}.")
                     return
         except queue.Empty:
             pass
@@ -299,14 +329,16 @@ class Watchdog:
         if self._tap_time is not None:
             now = time.monotonic()
             dt = now - self._tap_time
-        message = f'watchdog@{id(self):#x} "{self._name}" timed out, count={self._count}, {timeout=}, time since last tap={dt}.'
+        message = f"{self._str_id} timed out, count={self._count}, {timeout=}, time since last tap={dt}."
         logging.trace(message)
         raise Exception(message)
 
-    def update(self, timeout, initial_timeout=None, tap=True):
+    def update(self, timeout=None, initial_timeout=None, tap=True):
         """Reconfigure how the next tap() works."""
         if initial_timeout is None:
-            initial_timeout = [timeout]
+            # The dummy math here raises an exception if users didn't specify
+            # a timeout parameter.
+            initial_timeout = [timeout + 0]
         with self._lock:
             try:
                 self._initial_timeout = iter(initial_timeout)
@@ -315,6 +347,28 @@ class Watchdog:
             self._next_timeout = timeout
         if tap:
             self.tap()
+
+
+def timeout_sequence(profile):
+    # Given an input list of [(value,count),...], produce a list approproriate
+    # for use with Timeout's initial_timeout parameter.  For example, one test
+    # wants to have long timeouts for the first 10 loops (to allow for GPU startup
+    # times), short timeouts for the next 200 loops (when the actual test is
+    # running), then longer timeouts after that (while the loop shuts down).
+    # You can do that this way:
+    #
+    #   long_timeout = 30 # seconds
+    #   short_timeout = 0.5 # seconds
+    #   profile=[(long_timeout, 10), (short_timeout, 200), (long_timeout, 1)]
+    #   with Watchdog("watchdog-name", initial_timeout=profile):
+    #       ...
+    #
+    # Note that the Watchdog will continue to use the last element in initial_timeout
+    # as the tap value after it exhausts the list.
+    r = []
+    for value, count in profile:
+        r.extend([value] * count)
+    return r
 
 
 receiver_count = 0

@@ -2,8 +2,8 @@
 
 ## Clocking
 
-There are 3 main clocks in the system, host interface (hif), APB, and sensor interface
-(sif) clocks.
+There are 4 main clocks in the system, host interface (HIF), APB, sensor interface
+(SIF), and PTP interface clocks.
 
 The Host Interface signals connect to transmit or receive data from the Ethernet MAC.
 Therefore, the Host Interface bandwidth (clock frequency x data width) should support
@@ -49,5 +49,6 @@ Table 1 Reset Assertion and Deassertion
 | o_apb_rst    | Asynchronous             | Synchronous to i_apb_clk | Can be used to reset APB logic outside of IP                                                                                                          |
 | o_hif_rst    | Asynchronous             | Synchronous to i_hif_clk | Can be used to reset Host logic outside of IP<br />Reset is deasserted after o_apb_rst is deasserted.                                                 |
 | o_sif_rst    | Asynchronous             | Synchronous to i_sif_clk | Can be used to reset Sensor Interface logic outside of IP<br />Reset is deasserted after o_apb_rst is deasserted.                                     |
+| o_ptp_rst    | Asynchronous             | Synchronous to i_ptp_clk | Can be used to reset PTP logic outside of IP<br />Reset is deasserted after o_apb_rst is deasserted.                                                  |
 | o_sw_sen_rst | Synchronous to i_hif_clk | Synchronous to i_hif_clk | Register controlled sensor reset.<br />Can be connected to FPGA I/O to reset sensors on board.                                                        |
 | o_sw_sys_rst | Synchronous to i_hif_clk | Synchronous to i_hif_clk | Register controlled system reset. Can be used to reset system level logic.<br />This will also trigger reset for o_hif_rst, o_apb_rst, and o_sif_rst. |

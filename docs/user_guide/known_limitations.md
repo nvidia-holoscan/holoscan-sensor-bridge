@@ -10,3 +10,4 @@
    are valid when TVALID is high.
 1. The Host TX & RX AXI-stream supports TKEEP not equal to all 1’s only when TLAST is
    high. TKEEP must be all 1’s when TLAST is low.
+1. `DATAPATH_WIDTH` and `HOST_WIDTH` in "HOLOLINK_def.svh" must be equal in size.

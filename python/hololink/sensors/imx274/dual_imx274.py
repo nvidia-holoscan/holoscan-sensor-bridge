@@ -35,16 +35,17 @@ class Imx274Cam:
     def __init__(
         self,
         hololink_channel,
-        i2c_controller_address=hololink_module.CAM_I2C_CTRL,
+        i2c_bus=hololink_module.CAM_I2C_BUS,
         expander_configuration=0,
     ):
+        self._hololink_channel = hololink_channel
         self._hololink = hololink_channel.hololink()
-        self._i2c = self._hololink.get_i2c(i2c_controller_address)
+        self._i2c_bus = i2c_bus
+        self._i2c = self._hololink.get_i2c(i2c_bus)
         self._mode = imx274_mode.Imx274_Mode.Unknown
         # Configure i2c expander on the Leopard board for dual Imx274
-        self._i2c_expander = li_i2c_expander.LII2CExpander(
-            self._hololink, i2c_controller_address
-        )
+        self._i2c_expander = li_i2c_expander.LII2CExpander(self._hololink, i2c_bus)
+        self._instance = expander_configuration
         if expander_configuration == 1:
             self._i2c_expander_configuration = (
                 li_i2c_expander.I2C_Expander_Output_EN.OUTPUT_2
@@ -221,39 +222,29 @@ class Imx274Cam:
             self._mode = -1
 
     def configure_converter(self, converter):
-        (
-            frame_start_size,
-            frame_end_size,
-            line_start_size,
-            line_end_size,
-        ) = self._hololink.csi_size()
+        # where do we find the first received byte?
+        start_byte = converter.receiver_start_byte()
+        transmitted_line_bytes = converter.transmitted_line_bytes(
+            self._pixel_format, self._width
+        )
+        received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+        # We get 175 bytes of metadata preceding the image data.
+        start_byte += converter.received_line_bytes(175)
         if self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
-            # We get 175 bytes of metadata in RAW10 mode
-            metadata_size = line_start_size + 175 + line_end_size
-            converter.configure(
-                self._width,
-                self._height,
-                self._pixel_format,
-                frame_start_size + metadata_size,
-                frame_end_size,
-                line_start_size,
-                line_end_size,
-                margin_top=8,  # sensor has 8 lines of optical black before the real image data starts
-            )
+            # sensor has 8 lines of optical black before the real image data starts
+            start_byte += received_line_bytes * 8
         elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
-            metadata_size = line_start_size + 175 + line_end_size
-            converter.configure(
-                self._width,
-                self._height,
-                self._pixel_format,
-                frame_start_size + metadata_size,
-                frame_end_size,
-                line_start_size,
-                line_end_size,
-                margin_top=16,  # sensor has 16 lines of optical black before the real image data starts
-            )
+            # sensor has 16 lines of optical black before the real image data starts
+            start_byte += received_line_bytes * 16
         else:
-            logging.error("Incorrect pixel format for IMX274")
+            raise Exception(f"Incorrect pixel format={self._pixel_format} for IMX274.")
+        converter.configure(
+            start_byte,
+            received_line_bytes,
+            self._width,
+            self._height,
+            self._pixel_format,
+        )
 
     def pixel_format(self):
         return self._pixel_format
@@ -275,3 +266,28 @@ class Imx274Cam:
             self.set_register(0x3781, 0x01)
             self.set_register(0x370B, 0x11)
             self.set_register(0x303D, pattern)
+
+    def test_pattern_update(self, pattern):
+        self.set_register(0x303D, pattern)
+
+    def synchronized_test_pattern_update(self, pattern):
+        sequencer = self._hololink_channel.frame_end_sequencer()
+        self.synchronized_set_register(sequencer, 0x303D, pattern)
+        sequencer.enable()
+
+    def synchronized_set_register(self, sequencer, register, value):
+        # Set the I2C expander
+        self._i2c_expander.synchronized_configure(
+            sequencer, self._i2c_expander_configuration.value
+        )
+        # Set the command to write the register
+        write_bytes = bytearray(100)
+        serializer = hololink_module.Serializer(write_bytes)
+        serializer.append_uint16_be(register)
+        serializer.append_uint8(value)
+        _, _, status_index = self._i2c.encode_i2c_request(
+            sequencer,
+            peripheral_i2c_address=CAM_I2C_ADDRESS,  # only 7-bit for now
+            write_bytes=serializer.data(),
+            read_byte_count=0,
+        )
