@@ -33,7 +33,7 @@ RUN apt-get update \
 RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
   && dpkg -i cuda-keyring_1.1-1_all.deb
 
-RUN pip3 install holoscan cuda-python
+RUN pip3 install holoscan==3.3.0 cuda-python==12.9.0
 
 ARG HOLOLINK_VERSION=invalid
 ARG ARCH=invalid
