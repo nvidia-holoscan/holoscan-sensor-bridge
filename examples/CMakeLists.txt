@@ -78,6 +78,7 @@ install(FILES
         linux_imx477_player.py
         linux_imx715_player.py
         linux_single_network_stereo_imx274_player.py
+	linux_single_network_stereo_imx477_player.py
         linux_single_network_stereo_vb1940_player.py
         linux_tao_peoplenet_imx477.py
         linux_tao_peoplenet.py

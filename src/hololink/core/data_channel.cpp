@@ -381,10 +381,10 @@ void DataChannel::configure_socket(int socket_fd)
     const auto uuid = metadata.get<std::string>("fpga_uuid");
     if (uuid == HOLOLINK_LITE_UUID
         || uuid == HOLOLINK_NANO_UUID
-        || uuid == HOLOLINK_100G_UUID
-        || uuid == MICROCHIP_POLARFIRE_UUID) {
+        || uuid == HOLOLINK_100G_UUID) {
         sensor_map = &sensor_map_default;
-    } else if (uuid == LEOPARD_EAGLE_UUID) {
+    } else if (uuid == LEOPARD_EAGLE_UUID
+               || uuid == MICROCHIP_POLARFIRE_UUID) {
         sensor_map = &sensor_map_leopard_eagle;
     } else {
         throw std::runtime_error("Unsupported board");
