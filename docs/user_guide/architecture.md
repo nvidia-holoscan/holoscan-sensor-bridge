@@ -236,7 +236,7 @@ container includes a command line tool called `hololink` that can be used to ass
 IP addresses to sensor bridge devices:
 
 ```none
-$ hololink set-ip b0:4f:13:e0:20:4c 192.168.100.250
+$ hololink-set-ip b0:4f:13:e0:20:4c 192.168.100.250
 ```
 
 Your MAC-ID and IP addresses will be different; a list with any number of mac-id and
@@ -249,7 +249,7 @@ a daemon is important when resetting the sensor bridge device:
 - Application executes `hololink.reset`
 - The device resets and reverts back to the default IP address
 - Application code sees enumeration with the default IP address--which it ignores
-- When `hololink set-ip` sees the enumeration packet with something besides the new IP
+- When `hololink-set-ip` sees the enumeration packet with something besides the new IP
   address, it'll send a reply with the new IP address configuration
 - Holoscan sensor bridge updates its IP address. Enumeration data will now be sent using
   that new address

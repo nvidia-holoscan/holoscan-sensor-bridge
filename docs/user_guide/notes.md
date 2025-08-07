@@ -33,7 +33,7 @@ versions:
 ## Holoscan sensor bridge IP address configuration
 
 For systems where the 192.168.0.0/24 network is unavailable, you can use the
-`hololink set-ip` command to reconfigure sensor bridge IP addresses. Sensor bridge
+`hololink-set-ip` command to reconfigure sensor bridge IP addresses. Sensor bridge
 devices transmit enumeration messages based on the BOOTP protocol; the host can reply
 with a request to set the IP address to a specific value. Programs in the Holoscan
 sensor bridge host software all accept a `--hololink=<IP-address>` command line
@@ -41,50 +41,54 @@ parameter to look for the device with the given IP address instead of the defaul
 192.168.0.2.
 
 First, locate the MAC ID and local interface that the sensor bridge port is connected to
-with the `hololink enumerate` command. Within the
+with the `hololink-enumerate` command. Within the
 [demo container](setup.html#running-holoscan-sensor-bridge-demos-from-source):
 
 ```none
-$ hololink enumerate
-INFO:root:mac_id=48:B0:2D:EE:03:8E hsb_ip_version=0X2402 ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
-INFO:root:mac_id=48:B0:2D:EE:03:8F hsb_ip_version=0X2402 ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
-INFO:root:mac_id=48:B0:2D:EE:03:8E hsb_ip_version=0X2402 ip_address=192.168.0.2 serial_number=10040032828115 interface=eth0
-INFO:root:mac_id=48:B0:2D:EE:03:8F hsb_ip_version=0X2402 ip_address=192.168.0.3 serial_number=10040032828115 interface=eth1
+$ hololink-enumerate
+mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
 ```
 
-This configuration has two network ports, with MAC ID 48:B0:2D:EE:03:8E connected to the
-local eth0 device; 48:B0:2D:EE:03:8F is connected to eth1. These connect to the same
-sensor bridge device, as shown by the common serial number. Note that these messages
-will be observed by the local system regardless of the IP addresses of local network
-devices.
+This configuration has two network ports, with MAC ID 48:B0:2D:EE:84:DA connected to the
+local enP5p3s0f0np0 device; 48:B0:2D:EE:84:DB is connected to enP5p3s0f1np1. These
+connect to the same sensor bridge device, as shown by the common serial number. Note
+that these messages will be observed by the local system regardless of the IP addresses
+of local network devices.
 
 For our example, we'll set up this configuration:
 
 - Host eth0 will be configured to 192.168.200.101/24
 - Host eth1 will be configured to 192.168.200.102/24
-- Sensor bridge port 48:B0:2D:EE:03:8E will use IP address 192.168.200.2
-- Sensor bridge port 48:B0:2D:EE:03:8F will use IP address 192.168.200.3
-- Explicit routes are added with eth0 to 192.168.200.2 and eth1 to 192.168.200.3
+- Sensor bridge port 48:B0:2D:EE:84:DA will use IP address 192.168.200.2
+- Sensor bridge port 48:B0:2D:EE:84:DB will use IP address 192.168.200.3
+- Explicit routes are added with enP5p3s0f0np0 to 192.168.200.2 and enP5p3s0f1np1 to
+  192.168.200.3
 
 First, follow the [setup instructions](setup.md) to configure the host IP addresses and
 routes for your expected configuration-- replace the references to 192.168.0.x with the
-addresses you expect to use. Then, use the `hololink set-ip` command to reconfigure the
+addresses you expect to use. Then, use the `hololink-set-ip` command to reconfigure the
 sensor bridge device ports. To configure the target IP address examples above, in the
 demo container,
 
 ```none
-$ hololink set-ip 48:B0:2D:EE:03:8E 192.168.200.2 48:B0:2D:EE:03:8F 192.168.200.3
-INFO:root:Running in daemon mode; run with '--one-time' to exit after configuration.
-INFO:root:Updating mac_id='48:B0:2D:EE:03:8E' from peer_ip='192.168.0.2' to new_peer_ip='192.168.200.2'
-INFO:root:Updating mac_id='48:B0:2D:EE:03:8F' from peer_ip='192.168.0.3' to new_peer_ip='192.168.200.3'
-INFO:root:Found mac_id='48:B0:2D:EE:03:8E' found using peer_ip='192.168.200.2'
-INFO:root:Found mac_id='48:B0:2D:EE:03:8F' found using peer_ip='192.168.200.3'
+$ hololink-set-ip 48:B0:2D:EE:84:DA 192.168.200.2 48:B0:2D:EE:84:DB 192.168.200.3
+Setting the following addresses:
+  48:B0:2D:EE:84:DB to 192.168.200.3
+  48:B0:2D:EE:84:DA to 192.168.200.2
+Running in daemon mode; run with '--one-time' to exit after configuration.
+Updating mac=48:B0:2D:EE:84:DA from ip=192.168.0.2 to new_ip=192.168.200.2
+Updating mac=48:B0:2D:EE:84:DB from ip=192.168.0.3 to new_ip=192.168.200.3
+Found mac_id=48:B0:2D:EE:84:DA using peer_ip=192.168.200.2
+Found mac_id=48:B0:2D:EE:84:DB using peer_ip=192.168.200.3
 ```
 
-`hololink set-ip` accepts a list of MAC ID and IP address pairs. Because the sensor
-bridge IP address configuration is not stored in nonvolatile memory, `hololink set-ip`
+`hololink-set-ip` accepts a list of MAC ID and IP address pairs. Because the sensor
+bridge IP address configuration is not stored in nonvolatile memory, `hololink-set-ip`
 runs as a daemon, and must be running whenever this configuration is desired. When
-`hololink set-ip` sees an enumeration message from a device with a listed MAC ID but a
+`hololink-set-ip` sees an enumeration message from a device with a listed MAC ID but a
 different IP address, it will reply with a request to set the desired IP address-- this
 accommodates IP address reverting on power cycle or reset. Following this, pinging the
 target IP address now works:
@@ -106,7 +110,8 @@ PING 192.168.200.3 (192.168.200.3) 56(84) bytes of data.
 ```
 
 Note that the routing must be set up correctly for the ping commands to work as
-expected.
+expected; for examples on how to permanently configure routes, see the
+[Host setup](setup.md) page.
 [Here is more specific information on sensor bridge IP address reconfiguration](architecture.md#DataChannel-enumeration-and-ip-address-configuration).
 
 ## Network cables and adapters
