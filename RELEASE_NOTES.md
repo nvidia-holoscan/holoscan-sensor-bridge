@@ -97,6 +97,12 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 - Rare observations of IMX274 producing images with distorted video, which seem to be
   system specific. Investigation of this is underway.
 
+- Watchdog timeouts during `pytest --imx274 --ptp`. Testing sometimes terminates early
+  with a Watchdog exception, indicating that the host is not properly receiving frame
+  data. This happens occasionally during testing and in varying places, and only under
+  conditions where frequent reset and reinitialization of the HSB unit and sensor occur.
+  Investigation of this is underway.
+
 ## 2.0-GA, January 2025
 
 ### Dependencies
