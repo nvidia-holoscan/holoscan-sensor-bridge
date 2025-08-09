@@ -71,6 +71,7 @@ url_2506 = (
     + fname_2506
 )
 
+
 def download_extract(args):
     if args == "2412":
         r = requests.get(url_2412)
@@ -104,6 +105,7 @@ def download_extract(args):
             md5_returned = hashlib.md5(data).hexdigest()
         if md5_returned != expected_md5_2506:
             raise Exception("md5 Hash mismatch")
+
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
     in_spi.spi_transaction(command, w_data, read_count)
@@ -182,7 +184,7 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
             ]
             offset = addr - START_ADDR
             _spi_command(in_spi, command_bytes, content[offset : offset + BLOCK_SIZE])
-            print(f"writing to spi: {offset}/{tot_len}", end='\r')
+            print(f"writing to spi: {offset}/{tot_len}", end="\r")
             _wait_for_spi_ready(in_spi)
     _wait_for_spi_ready(in_spi)
     f.close()

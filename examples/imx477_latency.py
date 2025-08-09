@@ -20,7 +20,6 @@ import ctypes
 import datetime
 import logging
 import math
-import os
 
 import cupy as cp
 import holoscan
@@ -377,8 +376,9 @@ def main():
 
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
-    camera = hololink_module.sensors.imx477.Imx477(hololink_channel, args.cam, args.resolution)
-
+    camera = hololink_module.sensors.imx477.Imx477(
+        hololink_channel, args.cam, args.resolution
+    )
 
     recorder_queue = []
 
@@ -407,11 +407,9 @@ def main():
     if not hololink.ptp_synchronize(ptp_sync_timeout):
         raise ValueError(
             f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-
         )
     else:
         logging.debug("PTP synchronized.")
-
 
     # Configures the camera for 3840x2160, 60fps
     camera.configure()
@@ -424,8 +422,6 @@ def main():
         camera.set_pattern()
     application.run()
     hololink.stop()
-
-
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

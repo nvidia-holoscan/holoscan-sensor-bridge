@@ -909,10 +909,11 @@ imx477_mode_1920X1080_60fps = [
     (IMX477_TABLE_END, IMX477_WAIT_MS),
 ]
 
+
 class Imx477:
     def __init__(self, hololink_channel, camera_id=0, resolution="4k"):
         self._hololink = hololink_channel.hololink()
-        if camera_id==0:
+        if camera_id == 0:
             self._i2c = self._hololink.get_i2c(hololink_module.CAM_I2C_BUS)
         else:
             self._i2c = self._hololink.get_i2c(hololink_module.CAM_I2C_BUS + 1)

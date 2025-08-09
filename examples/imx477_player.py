@@ -227,7 +227,9 @@ def main():
 
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
-    camera = hololink_module.sensors.imx477.Imx477(hololink_channel, args.camera, args.resolution)
+    camera = hololink_module.sensors.imx477.Imx477(
+        hololink_channel, args.camera, args.resolution
+    )
 
     # Set up the application
     application = HoloscanApplication(

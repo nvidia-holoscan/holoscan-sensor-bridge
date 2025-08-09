@@ -199,7 +199,7 @@ class MicroApplication(holoscan.core.Application):
         right_spec_view.offset_x = 0.5
         right_spec_view.offset_y = 0
         right_spec_view.width = 0.5
-        right_spec_view.height = 1;
+        right_spec_view.height = 1
         right_spec.views = [right_spec_view]
 
         visualizer = holoscan.operators.HolovizOp(
@@ -213,19 +213,30 @@ class MicroApplication(holoscan.core.Application):
             width=1080,
         )
 
-        self.add_flow(receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")})
-        self.add_flow(receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")})
         self.add_flow(
-            csi_to_bayer_operator_left, image_processor_operator_left, {("output", "input")}
+            receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
         )
         self.add_flow(
-            csi_to_bayer_operator_right, image_processor_operator_right, {("output", "input")}
+            receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
         )
-        self.add_flow(image_processor_operator_left, demosaic_left, {("output", "receiver")})
-        self.add_flow(image_processor_operator_right, demosaic_right, {("output", "receiver")})
+        self.add_flow(
+            csi_to_bayer_operator_left,
+            image_processor_operator_left,
+            {("output", "input")},
+        )
+        self.add_flow(
+            csi_to_bayer_operator_right,
+            image_processor_operator_right,
+            {("output", "input")},
+        )
+        self.add_flow(
+            image_processor_operator_left, demosaic_left, {("output", "receiver")}
+        )
+        self.add_flow(
+            image_processor_operator_right, demosaic_right, {("output", "receiver")}
+        )
         self.add_flow(demosaic_left, visualizer, {("transmitter", "receivers")})
         self.add_flow(demosaic_right, visualizer, {("transmitter", "receivers")})
-
 
 
 def main():
@@ -275,7 +286,7 @@ def main():
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-#    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
+    #    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device
@@ -294,14 +305,17 @@ def main():
     hololink_module.DataChannel.use_sensor(channel_metadata_left, 0)
     hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
     # Get a handle to the camera
-    camera_left = hololink_module.sensors.imx477.Imx477(hololink_channel_left, camera_id=0, resolution="1080p")
+    camera_left = hololink_module.sensors.imx477.Imx477(
+        hololink_channel_left, camera_id=0, resolution="1080p"
+    )
 
     channel_metadata_right = hololink_module.Metadata(channel_metadata)
     hololink_module.DataChannel.use_sensor(channel_metadata_right, 1)
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     # Get a handle to the camera
-    camera_right = hololink_module.sensors.imx477.Imx477(hololink_channel_right, camera_id=1, resolution="1080p")
-
+    camera_right = hololink_module.sensors.imx477.Imx477(
+        hololink_channel_right, camera_id=1, resolution="1080p"
+    )
 
     # Set up the application
     application = MicroApplication(

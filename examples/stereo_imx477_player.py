@@ -358,9 +358,13 @@ def main():
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     # Get a handle to the camera
 
-    camera_left = hololink_module.sensors.imx477.Imx477(hololink_channel_left, 0, args.resolution)
+    camera_left = hololink_module.sensors.imx477.Imx477(
+        hololink_channel_left, 0, args.resolution
+    )
 
-    camera_right = hololink_module.sensors.imx477.Imx477(hololink_channel_right, 1, args.resolution)
+    camera_right = hololink_module.sensors.imx477.Imx477(
+        hololink_channel_right, 1, args.resolution
+    )
 
     # What title should we use?
     window_title = f"Holoviz - {args.hololink_left}"
