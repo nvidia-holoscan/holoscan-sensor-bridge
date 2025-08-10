@@ -107,7 +107,7 @@ namespace {
 } // anonymous namespace
 
 Hololink::Hololink(
-    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization)
+    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool vsync_enable)
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
@@ -121,6 +121,8 @@ Hololink::Hololink(
     , skip_sequence_initialization_(skip_sequence_initialization)
     , started_(false)
     , ptp_pps_output_(std::make_shared<PtpSynchronizer>(this[0]))
+    , ptp_enable_(ptp_enable)
+    , vsync_enable_(vsync_enable)
 {
 }
 
@@ -162,8 +164,18 @@ Hololink::~Hololink()
         if (board_id && (board_id.value() == HOLOLINK_100G_BOARD_ID)) {
             skip_sequence_initialization = true;
         }
+        bool ptp_enable = true;
+        auto opt_ptp_enable = metadata.get<int64_t>("ptp_enable");
+        if (opt_ptp_enable) {
+            ptp_enable = opt_ptp_enable.value() != 0;
+        }
+        bool vsync_enable = true;
+        auto opt_vsync_enable = metadata.get<int64_t>("vsync_enable");
+        if (opt_vsync_enable) {
+            vsync_enable = opt_vsync_enable.value() != 0;
+        }
         r = std::make_shared<Hololink>(
-            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization);
+            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, vsync_enable);
         hololink_by_serial_number[serial_number.value()] = r;
     } else {
         r = it->second;
@@ -1496,19 +1508,19 @@ void Hololink::configure_hsb()
     HSB_LOG_INFO("HSB IP version={:#x} datecode={:#x}", hsb_ip_version_, datecode_);
 
     // Disable VSYNC
-    write_uint32(VSYNC_CONTROL, 0);
+    if (vsync_enable_) {
+        write_uint32(VSYNC_CONTROL, 0);
+    }
 
     // Enable PTP.  This feature may not be instantiated
     // within the FPGA, which would lead to an exception
     // in the first write_uint32-- which we can ignore.
-    try {
+    if (ptp_enable_) {
         write_uint32(FPGA_PTP_CTRL_DPLL_CFG1, 0x2);
         write_uint32(FPGA_PTP_CTRL_DPLL_CFG2, 0x2);
         write_uint32(FPGA_PTP_CTRL_DELAY_AVG_FACTOR, 0x3);
         write_uint32(FPGA_PTP_DELAY_ASYMMETRY, 0x33);
         write_uint32(FPGA_PTP_CTRL, 0x3); // dpll en
-    } catch (const std::exception& e) {
-        HSB_LOG_INFO("Ignoring error enabling PTP: {}.", e.what());
     }
 
     // PLACATE device programming; if we're an older FPGA--which only

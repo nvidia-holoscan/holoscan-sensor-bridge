@@ -229,7 +229,7 @@ public:
      * @param serial_number
      */
     explicit Hololink(
-        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false);
+        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool vsync_enable = true);
     Hololink() = delete;
 
     virtual ~Hololink();
@@ -829,6 +829,8 @@ private:
     bool skip_sequence_initialization_; // workaround for programming antique devices
     bool started_;
     std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
+    bool ptp_enable_;
+    bool vsync_enable_;
 
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
         bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);

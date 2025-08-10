@@ -49,6 +49,8 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera = camera
         self._frame_limit = frame_limit
         self._engine = engine
+        self.is_metadata_enabled = True
+        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
         logging.info("compose")
@@ -227,6 +229,17 @@ def main():
         choices=(0, 1),
         help="which camera to stream: 0 to stream camera connected to j14 or 1 to stream camera connected to j17 (default is 0)",
     )
+    parser.add_argument(
+        "--resolution",
+        default="4k",
+        help="4k or 1080p",
+    )
+    parser.add_argument(
+        "--exposure",
+        type=int,
+        default=0x05,
+        help="Configure exposure.",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -253,7 +266,9 @@ def main():
 
     hololink_channel = hololink_module.DataChannel(channel_metadata)
 
-    camera = hololink_module.sensors.imx477.Imx477(hololink_channel, args.cam)
+    camera = hololink_module.sensors.imx477.Imx477(
+        hololink_channel, args.cam, args.resolution
+    )
 
     # Set up the application
     application = HoloscanApplication(
@@ -275,6 +290,7 @@ def main():
 
     # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
     camera.set_analog_gain(0x2FF)
+    camera.set_exposure_reg(args.exposure)
 
     application.run()
     hololink.stop()

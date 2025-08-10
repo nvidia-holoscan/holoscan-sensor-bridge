@@ -172,6 +172,17 @@ def main():
         action="store_true",
         help="Configure to display a test pattern.",
     )
+    parser.add_argument(
+        "--exposure",
+        type=int,
+        default=0x05,
+        help="Configure exposure.",
+    )
+    parser.add_argument(
+        "--resolution",
+        default="4k",
+        help="4k or 1080p",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -198,7 +209,9 @@ def main():
 
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
-    camera = hololink_module.sensors.imx477.Imx477(hololink_channel, args.cam)
+    camera = hololink_module.sensors.imx477.Imx477(
+        hololink_channel, args.cam, args.resolution
+    )
 
     # Set up the application
     application = MicroApplication(
@@ -220,6 +233,7 @@ def main():
 
     # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
     camera.set_analog_gain(0x2FF)
+    camera.set_exposure_reg(args.exposure)
 
     if args.pattern:
         camera.set_pattern()

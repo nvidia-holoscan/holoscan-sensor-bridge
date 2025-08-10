@@ -14,11 +14,11 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
 	a. 	xhost + <enter>
 	b.	sh docker/demo.sh <enter>
 			b.1:The above command runs holoscan-sensor-bridge docker container
-	c.	polarfire_esb flash --fpga-bit-version 2412
-			c.1 The above command flashes(Transfers to on board SPI flash) 2412 version bit file.
-	d.	polarfire_esb --force flash --fpga-bit-version 2412
-			d.1 The above command flashes(Transfers to on board SPI flash) 2412 version bit file. 
-			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407
+	c.	polarfire_esb flash --fpga-bit-version 2506
+			c.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
+	d.	polarfire_esb --force flash --fpga-bit-version 2506
+			d.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
+			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
 4. Step 3.c(or 3.d) downloads FPGA design file from internet and takes around 50 minutes to transfer the design file to on-board flash.
 5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker container
 	a.	polarfire_esb --program
@@ -99,11 +99,33 @@ Running imx477 application - stereo camera using AGX + connectX-6 dx
 	c. python examples/stereo_imx477_player.py
 		c.1 The above command display video from both camera 0 and camera 1.
 		
-		
+Running imx477 application - stereo camera using only AGX
+
+1. Run the docker container by changing directory to holoscan-sensor-bridge folder
+        a. cd <PATH/TO/hololink-sensor-bridge>
+2. Connect Ethernet cables from AGX + connectX-6 dx to  J6 and J3 connectors on  MPF200-ETH-SENSOR-BRIDGE. Connect the cameras to J14 and J17 MIPI connectors.  Run the below commands to run linux_single_network_stereo_imx477_player for camera 0 and camera 1
+        a. xhost +
+        b. sh docker/demo.sh <enter>
+                b.1: It runs holoscan-sensor-bridge docker container
+        c. python examples/linux_single_network_stereo_imx477_player.py
+                c.1 The above command display video from both camera 0 and camera 1 via single ethernet port.
+
+Running imx477 application - latency measurement using AGX + connectX-6 dx
+
+1. Run the docker container by changing directory to holoscan-sensor-bridge folder
+        a. cd <PATH/TO/hololink-sensor-bridge>
+2. Connect Ethernet cables from AGX + connectX-6 dx to  J6 and J3 connectors on  MPF200-ETH-SENSOR-BRIDGE. Connect the cameras to J14 and J17 MIPI connectors.  Run the below commands to run imx477_latency for camera 0 and camera 1
+        a. xhost +
+        b. sh docker/demo.sh <enter>
+                b.1: It runs holoscan-sensor-bridge docker container
+        c. python examples/imx477_latency.py
+                c.1 The above command gives a complete latency report.
 
 Imx477 sensor driver
 --------------------
 1. The driver supports streaming video from two cameras connected one at a time. Driver also supports stereo camera i.e two cameras simultaneously.
 2. Imx477 sensor driver currently supports RGB8 format, 4K resolution, 60 FPS. The constructor of Imx477 camera sensor is invoked as shown below
-	camera = hololink_module.sensors.imx477.imx477(hololink_channel, args.cam )
+	camera = hololink_module.sensors.imx477.imx477(hololink_channel, args.cam, args.resolution)
     a. cam arugument specifies which camera to select. By default cam 0 is selected
+    b. resolution argument specifies either "4k" or "1080p" default is 4k, resolution can be selected by passing --resolution=1080p flag while running demos
+         resolution for stereo camera using only AGX is fixed to 1080p

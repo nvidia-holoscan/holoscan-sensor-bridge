@@ -648,11 +648,25 @@ BasicEnumerationStrategy::BasicEnumerationStrategy(const Metadata& additional_me
     , total_sensors_(total_sensors)
     , total_dataplanes_(total_dataplanes)
     , sifs_per_sensor_(sifs_per_sensor)
+    , ptp_enable_(true)
+    , vsync_enable_(true)
 {
+}
+
+void BasicEnumerationStrategy::ptp_enable(bool enable)
+{
+    ptp_enable_ = enable;
+}
+
+void BasicEnumerationStrategy::vsync_enable(bool enable)
+{
+    vsync_enable_ = enable;
 }
 
 void BasicEnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer)
 {
+    metadata["ptp_enable"] = ptp_enable_ ? 1 : 0;
+    metadata["vsync_enable"] = vsync_enable_ ? 1 : 0;
     metadata.update(additional_metadata_);
 }
 
@@ -757,7 +771,12 @@ void Enumerator::configure_default_enumeration_strategies()
 
     Metadata microchip_polarfire_metadata;
     microchip_polarfire_metadata["board_description"] = "Microchip Polarfire";
-    auto microchip_polarfire_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(microchip_polarfire_metadata);
+    unsigned microchip_polarfire_total_sensors = 2;
+    unsigned microchip_polarfire_total_dataplanes = 2;
+    unsigned microchip_polarfire_sifs_per_sensor = 1;
+    auto microchip_polarfire_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(microchip_polarfire_metadata,
+        microchip_polarfire_total_sensors, microchip_polarfire_total_dataplanes, microchip_polarfire_sifs_per_sensor);
+    microchip_polarfire_enumeration_strategy->vsync_enable(false);
     uuid_strategies_[MICROCHIP_POLARFIRE_UUID] = microchip_polarfire_enumeration_strategy;
 
     auto leopard_eagle_enumeration_strategy = std::make_shared<LeopardEagleEnumerationStrategy>();

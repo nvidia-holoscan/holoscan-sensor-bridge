@@ -148,6 +148,11 @@ class BasicEnumerationStrategy
 public:
     BasicEnumerationStrategy(const Metadata& additional_metadata, unsigned total_sensors = 2, unsigned total_dataplanes = 2, unsigned sifs_per_sensor = 2);
 
+    // Changes whether ptp_enable is true or not.
+    void ptp_enable(bool enable);
+    // Changes whether vsync_enable is true or not.
+    void vsync_enable(bool enable);
+
     void update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer) override;
     void use_sensor(Metadata& metadata, int64_t sensor_number) override;
     void use_data_plane_configuration(Metadata& metadata, int64_t data_plane) override;
@@ -157,6 +162,8 @@ protected:
     unsigned total_sensors_;
     unsigned total_dataplanes_;
     unsigned sifs_per_sensor_;
+    bool ptp_enable_;
+    bool vsync_enable_;
 };
 
 } // namespace hololink
