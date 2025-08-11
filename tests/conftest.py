@@ -182,6 +182,12 @@ def pytest_addoption(parser):
         help="Include tests for IMX477.",
     )
     parser.addoption(
+        "--stereo-imx477",
+        action="store_true",
+        default=False,
+        help="Include tests for Stereo IMX477.",
+    )
+    parser.addoption(
         "--imx715",
         action="store_true",
         default=False,
@@ -265,11 +271,22 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_ptp" in item.keywords:
                 item.add_marker(skip_ptp)
-    if not config.getoption("--imx477"):
-        skip_imx477 = pytest.mark.skip(reason="Tests only run in --imx477 mode.")
+    # --stereo-imx477 implies --imx477; but not the other way around
+    if not config.getoption("--imx477") and not config.getoption("--stereo-imx477"):
+        skip_imx477 = pytest.mark.skip(
+            reason="Tests only run in --imx477 or --stereo-imx477 mode."
+        )
         for item in items:
             if "skip_unless_imx477" in item.keywords:
                 item.add_marker(skip_imx477)
+    # but --imx477 does not imply --stereo-imx477
+    if not config.getoption("--stereo-imx477"):
+        skip_stereo_imx477 = pytest.mark.skip(
+            reason="Tests only run in --stereo-imx477 mode."
+        )
+        for item in items:
+            if "skip_unless_stereo_imx477" in item.keywords:
+                item.add_marker(skip_stereo_imx477)
     if not config.getoption("--hsb") and not config.getoption("--imx274"):
         skip_hsb = pytest.mark.skip(reason="Tests only run in --hsb mode.")
         for item in items:

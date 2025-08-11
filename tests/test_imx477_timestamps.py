@@ -204,7 +204,6 @@ class TimestampTestApplication(holoscan.core.Application):
 # time_limit, the acceptable amount of time between when the frame was sent and
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
-@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2501 FPGAs YET")
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx477
 @pytest.mark.accelerated_networking
