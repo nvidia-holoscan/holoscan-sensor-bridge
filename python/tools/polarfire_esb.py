@@ -211,6 +211,8 @@ def manual_enumeration(args):
         "sequence_number_checking": 0,
         "serial_number": "100",
         "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
+        "vsync_enable": 0,
+        "ptp_enable": 0,
     }
     metadata = hololink_module.Metadata(m)
     hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
