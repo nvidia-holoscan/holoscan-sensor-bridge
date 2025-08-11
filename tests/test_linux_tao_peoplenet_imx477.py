@@ -25,7 +25,6 @@ import pytest
 from examples import linux_tao_peoplenet_imx477
 
 
-@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2501 FPGAs YET")
 @pytest.mark.skip_unless_imx477
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501

@@ -25,7 +25,7 @@ from examples import (
 )
 
 
-@pytest.mark.skip_unless_imx477
+@pytest.mark.skip_unless_stereo_imx477
 def test_single_network_linux_stereo_imx477_player(headless, frame_limit, capsys):
     arguments = [
         sys.argv[0],

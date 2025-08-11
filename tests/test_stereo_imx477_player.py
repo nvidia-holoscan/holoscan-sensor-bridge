@@ -23,8 +23,7 @@ import pytest
 from examples import stereo_imx477_player
 
 
-@pytest.mark.skip("IMX477 ISN'T SUPPORTED FOR 2501 FPGAs YET")
-@pytest.mark.skip_unless_imx477
+@pytest.mark.skip_unless_stereo_imx477
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501

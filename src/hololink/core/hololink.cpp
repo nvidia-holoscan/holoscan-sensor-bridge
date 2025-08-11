@@ -939,6 +939,8 @@ public:
         const std::shared_ptr<Timeout>& in_timeout,
         bool ignore_nak) override
     {
+        HSB_LOG_DEBUG("i2c_transaction(peripheral_i2c_address={:#x}, write_byte.size={}, read_byte_count={}.",
+            peripheral_i2c_address, write_bytes.size(), read_byte_count);
         auto sequencer = hololink_.software_sequencer();
         auto [write_indexes, read_indexes, status_index] = encode_i2c_request(
             *sequencer, peripheral_i2c_address, write_bytes, read_byte_count);
