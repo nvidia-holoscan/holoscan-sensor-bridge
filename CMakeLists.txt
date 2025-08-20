@@ -36,24 +36,12 @@ project(hololink
   LANGUAGES ${PROJECT_LANGUAGES}
   VERSION ${HOLOLINK_VERSION_NUM})
 
-if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
-  include(CTest)
+# To discover our custom CMake modules
+list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
+if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
   # Find Holoscan
   find_package(holoscan 3.3 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")
-
-  # We fetch googletest since we need the same version as the Holoscan SDK.
-  # As recommended by the user guide (https://google.github.io/googletest/quickstart-cmake.html),
-  # we use Git commit hash of the GoogleTest version to use the same version as the Holoscan SDK.
-  # (https://github.com/google/googletest/releases/tag/release-1.12.1)
-  FetchContent_Declare(
-    googletest
-    URL https://github.com/google/googletest/archive/58d77fa8070e8cec2dc1ed015d66b454c8d78850.zip
-  )
-  FetchContent_MakeAvailable(googletest)
-
-  # add CMAKE_MODULE_PATH for pybind11_add_hololink_module
-  list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
   # enabled trace and debug log messages in debug build only
   if(CMAKE_BUILD_TYPE STREQUAL "Release")
