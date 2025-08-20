@@ -54,6 +54,9 @@ endif()
 if(NOT CMAKE_INSTALL_LIBDIR)
   set(CMAKE_INSTALL_LIBDIR lib)
 endif()
+if(NOT CMAKE_INSTALL_BINDIR)
+  set(CMAKE_INSTALL_BINDIR bin)
+endif()
 
 # Add subdirectories based on the build options
 add_subdirectory(src)
