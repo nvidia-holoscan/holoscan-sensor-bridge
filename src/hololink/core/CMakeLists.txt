@@ -33,27 +33,10 @@ set_source_files_properties(networking.cpp PROPERTIES COMPILE_FLAGS "-g3")
 
 set_property(TARGET hololink_core PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
-  # If we're building all of the Hololink components, including those that depend on
-  # Holoscan, we link against holoscan::core. This is a workaround for the fact that
-  # Holoscan provides its own copy of the fmtlib includes and we need to ensure that
-  # this core library remains compatible with other Hololink libraries or applications
-  # which use the fmtlib formatting functions within hololink_core.
-  target_link_libraries(hololink_core
-    PRIVATE
-      holoscan::core
-    )
-else()
-  target_link_libraries(hololink_core
-    PRIVATE
-      fmt
-    )
-
-  target_compile_definitions(hololink_core
-    PRIVATE
-      FMT_HEADER_ONLY=1
-    )
-endif()
+target_link_libraries(hololink_core
+  PUBLIC
+    fmt::fmt-header-only
+)
 
 target_include_directories(hololink_core
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..

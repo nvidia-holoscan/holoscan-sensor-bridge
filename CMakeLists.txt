@@ -39,6 +39,9 @@ project(hololink
 # To discover our custom CMake modules
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
+# Find globally required dependencies
+include(hololink_deps/fmt)
+
 if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
   # Find Holoscan
   find_package(holoscan 3.3 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")

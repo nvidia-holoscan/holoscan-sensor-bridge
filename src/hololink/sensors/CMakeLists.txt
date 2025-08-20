@@ -32,13 +32,8 @@ target_include_directories(hololink_sensor
 
 target_link_libraries(hololink_sensor
   PUBLIC
-    fmt
+    fmt::fmt-header-only
     hololink::core
-)
-
-target_compile_definitions(hololink_sensor
-  PRIVATE
-    FMT_HEADER_ONLY=1
 )
 
 # ------------------------------------------------------------------------------

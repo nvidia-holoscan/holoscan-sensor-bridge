@@ -34,8 +34,7 @@ target_include_directories(hololink_camera_sensor
 target_link_libraries(hololink_camera_sensor
   PUBLIC
     hololink::sensor
-    hololink::sensors::native_imx274_camera_sensor
-    hololink::sensors::native_vb1940_camera_sensor
+    fmt::fmt-header-only
   )
 
 # Add camera implementation subdirectories

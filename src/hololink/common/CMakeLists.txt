@@ -46,6 +46,7 @@ target_link_libraries(hololink
     CUDA::cuda_driver
     CUDA::nvrtc
     ${CUDA_NVTX_TARGET}
+    fmt::fmt-header-only
   )
 
 # Installation of the hololink library
