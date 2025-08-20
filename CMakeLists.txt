@@ -42,19 +42,6 @@ if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
   # Find Holoscan
   find_package(holoscan 3.3 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")
 
-  # Find pybind11
-  find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-
-  # We fetch pybind11 since we need the same version as the Holoscan SDK
-  # and it's not necessarily available on all the platforms
-  include(FetchContent)
-  FetchContent_Declare(pybind11
-    GIT_REPOSITORY https://github.com/pybind/pybind11
-    GIT_TAG v2.13.6
-    GIT_SHALLOW TRUE
-  )
-  FetchContent_MakeAvailable(pybind11)
-
   # We fetch googletest since we need the same version as the Holoscan SDK.
   # As recommended by the user guide (https://google.github.io/googletest/quickstart-cmake.html),
   # we use Git commit hash of the GoogleTest version to use the same version as the Holoscan SDK.
