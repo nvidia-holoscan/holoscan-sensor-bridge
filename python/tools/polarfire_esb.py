@@ -63,7 +63,7 @@ url_2407 = (
     + fname_2407
 )
 
-filename_2506 = f"PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
+filename_2506 = "PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
 fname_2506 = "PF_ESB_HSB2507_v2025p1.zip"
 expected_md5_2506 = "e27289503290a3a0aa709830a50cf111"
 url_2506 = (
@@ -94,7 +94,7 @@ def download_extract(args):
             md5_returned = hashlib.md5(data).hexdigest()
         if md5_returned != expected_md5_2407:
             raise Exception("md5 Hash mismatch")
- 
+
     elif args == "2506":
         r = requests.get(url_2506)
         open(fname_2506, "wb").write(r.content)
@@ -105,6 +105,7 @@ def download_extract(args):
             md5_returned = hashlib.md5(data).hexdigest()
         if md5_returned != expected_md5_2506:
             raise Exception("md5 Hash mismatch")
+
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
     in_spi.spi_transaction(command, w_data, read_count)
