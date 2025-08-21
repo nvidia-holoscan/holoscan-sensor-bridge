@@ -63,9 +63,9 @@ url_2407 = (
     + fname_2407
 )
 
-filename_2506 = "PF_ESB_HSB2506_v2025p1.spi"
-fname_2506 = "PF_ESB_HSB2506_v2025p1.zip"
-expected_md5_2506 = "34c78006fedc447212e918059213f556"
+filename_2506 = "PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
+fname_2506 = "PF_ESB_HSB2507_v2025p1.zip"
+expected_md5_2506 = "e27289503290a3a0aa709830a50cf111"
 url_2506 = (
     "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
     + fname_2506
