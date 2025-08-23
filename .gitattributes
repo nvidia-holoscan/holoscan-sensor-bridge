@@ -4,3 +4,4 @@
 **/*.docx filter=lfs diff=lfs merge=lfs -text
 .gitlab-ci.yml export-ignore
 RELEASE.sh export-ignore
+PUBLISH.sh export-ignore

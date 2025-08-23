@@ -266,8 +266,12 @@ struct fmt::formatter<NvSciBufAttrValColorFmt> : fmt::formatter<fmt::string_view
             FMT(V10)
             FMT(V12)
             FMT(V16)
+            FMT(X2Rc10Rb10Ra10_Bayer10RGGB)
+            FMT(X2Rc10Rb10Ra10_Bayer10BGGR)
+            FMT(X2Rc10Rb10Ra10_Bayer10GRBG)
+            FMT(X2Rc10Rb10Ra10_Bayer10GBRG)
         default:
-            throw std::runtime_error("Unknown format");
+            throw std::runtime_error(fmt::format("Unknown format ({})", static_cast<int>(nvsci_fmt)));
         }
     }
 };

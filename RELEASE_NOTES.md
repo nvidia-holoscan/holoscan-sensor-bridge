@@ -1,5 +1,28 @@
 # Release Notes
 
+## 2.3-GA, August 2025
+
+### Dependencies
+
+- IGX: [IGX-SW 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads)
+- AGX: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up JetPack
+  6.2.1.
+- Thor: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up JetPack
+  7.0.
+- Holoscan Sensor Bridge, 10G; FPGA v2507.
+
+Be sure and follow the installation instructions included with the release, including
+PTP configuration and HSB device firmware updates. To generate documentation, in the
+host system, run `sh docs/make_docs.sh`, then use your browser to look at
+`docs/user_guide/_build/html/index.html`.
+
+### Updates from 2.2-GA
+
+- **Thor support with Leopard Eagle VB1940 cameras.** Documentation and device
+  programming support is included to support JP7.0 based Thor configurations with the
+  Leopard Eagle VB1940 camera. See
+  [Thor JP7 setup instructions here](https://docs.nvidia.com/holoscan/sensor-bridge/latest/thor-jp7-setup.md).
+
 ## 2.2-GA, August 2025
 
 ### Dependencies

@@ -72,6 +72,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         self._metadata_ns_metadata = rename_metadata("metadata_ns")
         self._crc_metadata = rename_metadata("crc")
         self._psn_metadata = rename_metadata("psn")
+        self._bytes_written_metadata = rename_metadata("bytes_written")
 
     def start(self):
         unowned_memory = cp.cuda.UnownedMemory(
@@ -148,5 +149,6 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
             self._metadata_ns_metadata: receiver_metadata.metadata_ns,
             self._crc_metadata: receiver_metadata.crc,
             self._psn_metadata: receiver_metadata.psn,
+            self._bytes_written_metadata: receiver_metadata.bytes_written,
         }
         return application_metadata

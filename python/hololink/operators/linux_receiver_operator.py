@@ -65,6 +65,7 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         self._packets_dropped_metadata = rename_metadata("packets_dropped")
         self._crc_metadata = rename_metadata("crc")
         self._psn_metadata = rename_metadata("psn")
+        self._bytes_written_metadata = rename_metadata("bytes_written")
 
     def _start_receiver(self):
         self._check_buffer_size(self._frame_size)
@@ -118,6 +119,7 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
             self._packets_dropped_metadata: receiver_metadata.packets_dropped,
             self._crc_metadata: receiver_metadata.crc,
             self._psn_metadata: receiver_metadata.psn,
+            self._bytes_written_metadata: receiver_metadata.bytes_written,
         }
         return application_metadata
 

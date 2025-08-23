@@ -68,6 +68,7 @@ private:
     std::string metadata_s_metadata_;
     std::string metadata_ns_metadata_;
     std::string crc_metadata_;
+    std::string bytes_written_;
 
     std::shared_ptr<RoceReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;

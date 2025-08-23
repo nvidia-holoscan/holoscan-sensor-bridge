@@ -53,6 +53,7 @@ void RoceReceiverOp::initialize()
     metadata_s_metadata_ = rename_fn("metadata_s");
     metadata_ns_metadata_ = rename_fn("metadata_ns");
     crc_metadata_ = rename_fn("crc");
+    bytes_written_ = rename_fn("bytes_written");
 
     // Call base class initialize
     BaseReceiverOp::initialize();
@@ -159,6 +160,7 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get
     (*metadata)[metadata_s_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.metadata_s);
     (*metadata)[metadata_ns_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.metadata_ns);
     (*metadata)[crc_metadata_] = int64_t(roce_receiver_metadata.frame_metadata.crc);
+    (*metadata)[bytes_written_] = int64_t(roce_receiver_metadata.frame_metadata.bytes_written);
 
     return { frame_memory, metadata };
 }

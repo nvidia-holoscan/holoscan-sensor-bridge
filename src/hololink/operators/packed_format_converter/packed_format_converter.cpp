@@ -58,9 +58,9 @@ __global__ void packed10bitTo16bit(unsigned short* output, const unsigned int* i
     int input_index = (idx_y * bytes_per_line / 4) + idx_x;
     int output_index = (idx_y * width) + (idx_x * 3);
 
-    output[output_index]     = (input[input_index] >> 14) & 0xFFC0;
+    output[output_index]     = (input[input_index] << 6) & 0xFFC0;
     output[output_index + 1] = (input[input_index] >> 4) & 0xFFC0;
-    output[output_index + 2] = (input[input_index] << 6) & 0xFFC0;
+    output[output_index + 2] = (input[input_index] >> 14) & 0xFFC0;
 }
 
 // Converts packed 12-bit data, where 2 pixels are stored in every 3 bytes.
@@ -98,6 +98,8 @@ void PackedFormatConverterOp::setup(holoscan::OperatorSpec& spec)
         "Allocator used to allocate the output image, defaults to BlockMemoryPool");
     spec.param(cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal",
         "Device to use for CUDA operations", 0);
+    spec.param(in_tensor_name_, "in_tensor_name", "InputTensorName",
+        "Name of the input tensor", std::string(""));
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
         "Name of the output tensor", std::string(""));
     spec.param(hololink_channel_, "hololink_channel", "HololinkChannel",
@@ -123,21 +125,25 @@ void PackedFormatConverterOp::start()
     cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "packed10bitTo16bit", "packed12bitTo16bit" }));
 
-    switch (pixel_format_) {
-    case hololink::csi::PixelFormat::RAW_10:
-        hololink_channel_.get()->enable_packetizer_10();
-        break;
-    case hololink::csi::PixelFormat::RAW_12:
-        hololink_channel_.get()->enable_packetizer_12();
-        break;
-    default:
-        throw std::runtime_error("Unsupported bits per pixel value");
+    if (hololink_channel_.has_value() && hololink_channel_.get()) {
+        switch (pixel_format_) {
+        case hololink::csi::PixelFormat::RAW_10:
+            hololink_channel_.get()->enable_packetizer_10();
+            break;
+        case hololink::csi::PixelFormat::RAW_12:
+            hololink_channel_.get()->enable_packetizer_12();
+            break;
+        default:
+            throw std::runtime_error("Unsupported bits per pixel value");
+        }
     }
 }
 
 void PackedFormatConverterOp::stop()
 {
-    hololink_channel_.get()->disable_packetizer();
+    if (hololink_channel_.has_value() && hololink_channel_.get()) {
+        hololink_channel_.get()->disable_packetizer();
+    }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
@@ -166,9 +172,9 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
             GxfResultStr(stream_handler_result)));
     }
 
-    const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
+    const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>(in_tensor_name_.get().c_str());
     if (!maybe_tensor) {
-        throw std::runtime_error("Tensor not found in message");
+        throw std::runtime_error(fmt::format("Tensor not found in message ({})", in_tensor_name_.get()));
     }
 
     const auto input_tensor = maybe_tensor.value();

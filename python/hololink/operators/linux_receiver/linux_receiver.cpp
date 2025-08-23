@@ -86,6 +86,9 @@ PYBIND11_MODULE(_linux_receiver, m)
         })
         .def_property_readonly("frame_number", [](LinuxReceiverMetadata& me) {
             return me.frame_number;
+        })
+        .def_property_readonly("bytes_written", [](LinuxReceiverMetadata& me) {
+            return me.frame_metadata.bytes_written;
         });
 
 } // PYBIND11_MODULE

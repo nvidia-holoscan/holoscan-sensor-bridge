@@ -49,6 +49,30 @@ Use the appropriate value where `roceP5p3s0f0` is shown here. When no data plane
 requests are received, be sure and check that the sensor is properly connected to the
 sensor bridge board.
 
+## v2.3.0 Thor Intermittent Random I2C errors when running SIPL sample applications
+
+When running SIPL applications, intermittent failures to ping cameras over Ethernet and
+random I2C errors can be seen because of driver header incompatibility. This applies
+only for SIPL applications and not for Holoscan Sensor Bridge applications. When you
+encounter an issue with running the SIPL CoE Camera sample, follow the steps below.
+
+After you install JetPack 7.0 GA, the following steps are required for running the
+nvsipl_coe_camera application:
+
+```none
+sudo cp /usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so /tmp/libnvuddf_eagle_library.so_orig
+cd /usr/src/jetson_sipl_api/sipl/
+sudo mkdir build 
+cd build
+sudo cmake ..
+sudo make nvsipl_coe_camera
+sudo cp ./samples/coe_camera/nvsipl_coe_camera ~/
+sudo cp /tmp/libnvuddf_eagle_library.so_orig /usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so
+Run the app nvsipl_coe_camera.
+```
+
+Please also refer to JetPack 7.0 GA release notes for more details.
+
 ## Sensor Bridge LED indications
 
 The Holoscan Sensor Bridge board has two leds that depending on their state have the

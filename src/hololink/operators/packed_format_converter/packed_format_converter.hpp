@@ -64,6 +64,7 @@ public:
 private:
     holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> allocator_;
     holoscan::Parameter<int> cuda_device_ordinal_;
+    holoscan::Parameter<std::string> in_tensor_name_;
     holoscan::Parameter<std::string> out_tensor_name_;
     holoscan::Parameter<DataChannel*> hololink_channel_;
 

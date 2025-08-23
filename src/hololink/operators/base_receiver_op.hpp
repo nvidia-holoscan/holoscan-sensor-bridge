@@ -74,6 +74,7 @@ protected:
     holoscan::Parameter<std::function<void()>> device_stop_;
     holoscan::Parameter<CUcontext> frame_context_;
     holoscan::Parameter<size_t> frame_size_;
+    holoscan::Parameter<bool> trim_;
     std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
     uint64_t frame_count_;
 

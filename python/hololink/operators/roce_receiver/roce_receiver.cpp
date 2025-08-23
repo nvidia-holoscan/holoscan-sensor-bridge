@@ -59,7 +59,7 @@ public:
     // Define a constructor that fully initializes the object.
     PyRoceReceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
-        const std::string& ibv_name, uint32_t ibv_port, py::object rename_metadata, const std::string& name)
+        const std::string& ibv_name, uint32_t ibv_port, py::object rename_metadata, const std::string& name, bool trim)
         : RoceReceiverOp(holoscan::ArgList {
             holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
             holoscan::Arg { "device_start", std::function<void()>([this]() {
@@ -74,7 +74,8 @@ public:
                 "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
             holoscan::Arg { "frame_size", frame_size },
             holoscan::Arg { "ibv_name", ibv_name },
-            holoscan::Arg { "ibv_port", ibv_port } })
+            holoscan::Arg { "ibv_port", ibv_port },
+            holoscan::Arg { "trim", trim } })
         , device_(device)
     {
         add_positional_condition_and_resource_args(this, args);
@@ -136,9 +137,9 @@ PYBIND11_MODULE(_roce_receiver, m)
     py::class_<RoceReceiverOp, PyRoceReceiverOp, holoscan::Operator,
         std::shared_ptr<RoceReceiverOp>>(m, "RoceReceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, const std::string&, uint32_t, py::object, const std::string&>(),
+                 size_t, const std::string&, uint32_t, py::object, const std::string&, bool>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
-            "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "rename_metadata"_a = py::none(), "name"_a = "roce_receiver"s)
+            "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "rename_metadata"_a = py::none(), "name"_a = "roce_receiver"s, "trim"_a = false)
         .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a)
         .def("setup", &RoceReceiverOp::setup, "spec"_a)
         .def("start", &RoceReceiverOp::start)

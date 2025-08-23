@@ -105,8 +105,11 @@ if(HOLOLINK_BUILD_SIPL)
   target_link_libraries(sipl_player
     PRIVATE
       hololink
+      hololink::operators::image_processor
+      hololink::operators::packed_format_converter
       hololink::operators::sipl_capture
       holoscan::core
+      holoscan::ops::bayer_demosaic
       holoscan::ops::holoviz
       gxf_multimedia
   )
