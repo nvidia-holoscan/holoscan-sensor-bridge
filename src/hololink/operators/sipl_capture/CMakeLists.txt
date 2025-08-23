@@ -42,7 +42,7 @@ target_link_libraries(sipl_capture
 
 target_include_directories(sipl_capture
   PUBLIC
-    /usr/src/jetson_multimedia_api/nvsci/include
-    /usr/src/jetson_multimedia_api/sipl/include
-    /usr/src/jetson_multimedia_api/sipl/query/include
+    /usr/src/jetson_sipl_api/sipl/include
+    /usr/src/jetson_sipl_api/sipl/include/nvsci
+    /usr/src/jetson_sipl_api/sipl/include/query/include
 )

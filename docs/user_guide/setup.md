@@ -9,6 +9,9 @@ Holoscan sensor bridge is supported on the following configurations:
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
+- Thor systems running [JP7.0.0](https://developer.nvidia.com/embedded/jetpack) with
+  MGBE SmartNIC device and CoE transport. JP7.0.0 release currently supports only the
+  [Leopard imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md).
 
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
 configure a few prerequisites in your host system. While holoscan sensor bridge
@@ -33,7 +36,11 @@ remembered across power cycles and therefore only need to be set up once.
 
   Reboot the computer to activate this setting.
 
-Next, follow the directions on the appropriate tab below to configure your host system.
+Next, follow the directions on the appropriate tab below to configure your Orin host
+system.
+
+**For Thor host setup, please follow the instructions on the
+[Thor Host Setup](thor-jp7-setup.md) page.**
 
 `````{tab-set}
 ````{tab-item} IGX

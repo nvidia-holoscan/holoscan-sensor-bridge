@@ -58,11 +58,12 @@ public:
     PySIPLCaptureOp(holoscan::Fragment* fragment, const py::args& args,
         const std::string& camera_config,
         const std::string& json_config,
+        bool raw_output,
         uint32_t capture_queue_depth,
         const std::string& nito_base_path,
         uint32_t timeout,
         const std::string& name = "sipl_capture")
-        : SIPLCaptureOp(camera_config, json_config,
+        : SIPLCaptureOp(camera_config, json_config, raw_output,
             holoscan::ArgList {
                 holoscan::Arg { "capture_queue_depth", capture_queue_depth },
                 holoscan::Arg { "nito_base_path", nito_base_path },
@@ -84,11 +85,21 @@ PYBIND11_MODULE(_sipl_capture, m)
     m.attr("__version__") = "dev";
 #endif
 
+    py::class_<SIPLCaptureOp::CameraInfo>(m, "CameraInfo")
+        .def_readwrite("output_name", &SIPLCaptureOp::CameraInfo::output_name)
+        .def_readwrite("offset", &SIPLCaptureOp::CameraInfo::offset)
+        .def_readwrite("width", &SIPLCaptureOp::CameraInfo::width)
+        .def_readwrite("height", &SIPLCaptureOp::CameraInfo::height)
+        .def_readwrite("bytes_per_line", &SIPLCaptureOp::CameraInfo::bytes_per_line)
+        .def_readwrite("pixel_format", &SIPLCaptureOp::CameraInfo::pixel_format)
+        .def_readwrite("bayer_format", &SIPLCaptureOp::CameraInfo::bayer_format);
+
     py::class_<SIPLCaptureOp, PySIPLCaptureOp, holoscan::Operator,
         std::shared_ptr<SIPLCaptureOp>>(m, "SIPLCaptureOp")
         .def(py::init<holoscan::Fragment*, const py::args&,
                  const std::string&,
                  const std::string&,
+                 bool,
                  uint32_t,
                  const std::string&,
                  uint32_t,
@@ -96,12 +107,13 @@ PYBIND11_MODULE(_sipl_capture, m)
             "fragment"_a,
             "camera_config"_a = "",
             "json_config"_a = "",
+            "raw_output"_a = false,
             "capture_queue_depth"_a = 4u,
             "nito_base_path"_a = "/var/nvidia/nvcam/settings/sipl",
             "timeout"_a = 1000000u,
             "name"_a = "sipl_capture"s)
         .def("list_available_configs", &SIPLCaptureOp::list_available_configs)
-        .def("get_output_names", &SIPLCaptureOp::get_output_names);
+        .def("get_camera_info", &SIPLCaptureOp::get_camera_info);
 } // PYBIND11_MODULE
 
 } // namespace hololink::operators

@@ -70,6 +70,7 @@ void BaseReceiverOp::setup(holoscan::OperatorSpec& spec)
         device_stop_, "device_stop", "DeviceStop", "Function to be called to stop the device");
     spec.param(frame_context_, "frame_context", "FrameContext", "CUDA context");
     spec.param(frame_size_, "frame_size", "FrameSize", "Size of one frame in bytes");
+    spec.param(trim_, "trim", "Trim", "Set output length to bytes_written (else frame_size)");
 
     auto frag = fragment();
     frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
@@ -129,7 +130,31 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
     if (frame_size_.get() > INT_MAX) {
         throw std::runtime_error(fmt::format("frame_size={} is above the maximum value of {}.", frame_size_.get(), INT_MAX));
     }
-    const nvidia::gxf::Shape shape { static_cast<int>(frame_size_.get()) };
+    // How many bytes should be included in our output tensor?
+    // If self._trim is true then use metadata["bytes_written"],
+    // otherwise pass all the receiver buffer.
+    int tensor_size = static_cast<int>(frame_size_.get());
+    do { // use "break" to get out
+        if (!trim_) {
+            break;
+        }
+        auto bytes_written_opt = frame_metadata->get<int64_t>("bytes_written");
+        if (!bytes_written_opt) {
+            break;
+        }
+        int bytes_written = static_cast<int>(*bytes_written_opt);
+        if (bytes_written > tensor_size) {
+            static unsigned flooding_control = 0;
+            if (flooding_control < 5) {
+                HSB_LOG_ERROR("Unexpected bytes_written={:#x} is larger than the buffer_size={:#x}, ignoring.",
+                    bytes_written, tensor_size);
+                flooding_control++;
+            }
+            break;
+        }
+        tensor_size = bytes_written;
+    } while (false);
+    const nvidia::gxf::Shape shape { tensor_size };
     const nvidia::gxf::PrimitiveType element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
     const uint64_t element_size = nvidia::gxf::PrimitiveTypeSize(element_type);
     if (!gxf_tensor.value()->wrapMemory(shape, element_type, element_size,

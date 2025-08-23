@@ -14,6 +14,8 @@ provided showing video processing and inference based on a Sony IMX274 camera. T
 configuration can be connected to an
 [IGX](https://www.nvidia.com/en-us/edge-computing/products/igx) or
 [Jetson AGX Orin](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html)
+or
+[Jetson AGX Thor](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/)
 edge compute system. Additionally:
 
 - Holoscan Sensor Bridge supports hosts with or without accelerated RDMA capable NICs.

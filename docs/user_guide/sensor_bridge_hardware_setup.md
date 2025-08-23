@@ -129,7 +129,7 @@ It features:
    <img src="vb1940-aio.jpg" alt="LI VB1940 Eagle Camera" width="80%"/>
 
 ## Connecting VB1940 Eagle Camera to the Host
-
+Make sure your VB1940 is flashed with the latest firmware, see [Holoscan Sensor Bridge FPGA firmware update](sensor_bridge_firmware_setup.md) page for more details.
 1. Connect the Ethernet cable from the VB1940 Eagle Camera to an available Ethernet port on your devkit
 
 2. For IGX Devkit, use a QSFP adapter to connect to the QSFP Ethernet port marked with a red arrow on the back panel

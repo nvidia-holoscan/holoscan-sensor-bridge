@@ -53,6 +53,7 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
         compile_options.push_back(option.c_str());
     }
     compile_options.push_back("--include-path=/usr/local/cuda/include");
+    compile_options.push_back("--include-path=/usr/local/cuda/include/cccl");
     if (nvrtcCompileProgram(prog, compile_options.size(), compile_options.data()) != NVRTC_SUCCESS) {
         // Obtain compilation log from the program.
         size_t logSize;

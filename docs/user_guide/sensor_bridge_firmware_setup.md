@@ -50,6 +50,15 @@ components are programmable and should be updated.
    program_lattice_cpnx100 --hololink=192.168.200.2 scripts/manifest.yaml
    ```
 
+1. For programming the Leopard imaging VB1940 Eagle Camera: make sure you cloned and
+   built the `holoscan-sensor-bridge repo` (for instructions please see
+   [Thor Host Setup](thor-jp7-setup.md) page).
+
+   ```sh
+   cd holoscan-sensor-bridge/build
+   sudo ./tools/program_leopard_cpnx100/program_leopard_cpnx100 ~/holoscan-sensor-bridge/scripts/manifest_leopard_cpnx100.yaml
+   ```
+
 1. When run this way, the manifest file directs the firmware tool to download the FPGA
    BIT files from
    [NVIDIA Artifactory](https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb)
@@ -57,8 +66,8 @@ components are programmable and should be updated.
    configuration, firmware updates can take up to 5 minutes; when run on AGX, expect a
    run time of as much as 30 minutes. **Do not interrupt the process in the middle.**
 
-1. Once flashing is complete, **power cycle** the device and watch that the sensor
-   bridge powers up with 2 green LEDs on
+1. For the Lattice CPNX100-ETH-SENSOR-BRIDGE, once flashing is complete, **power cycle**
+   the device and watch that the sensor bridge powers up with 2 green LEDs on
 
 1. Ping the sensor bridge device at its IP address (e.g. 192.168.0.2) and verify a valid
    ping response

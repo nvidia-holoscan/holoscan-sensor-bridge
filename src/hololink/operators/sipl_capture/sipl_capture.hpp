@@ -19,6 +19,7 @@
 
 #include <vector>
 
+#include <hololink/core/csi_controller.hpp>
 #include <holoscan/holoscan.hpp>
 
 #include <NvSIPLCamera.hpp>
@@ -36,10 +37,11 @@ public:
     // Constructor with camera and JSON config file parameters, since these are
     // required by methods called before holoscan::Parameter parsing.
     template <typename... ArgsT>
-    explicit SIPLCaptureOp(const std::string& camera_config, const std::string& json_config, ArgsT&&... args)
+    explicit SIPLCaptureOp(const std::string& camera_config, const std::string& json_config, bool raw_output, ArgsT&&... args)
         : holoscan::Operator(std::forward<ArgsT>(args)...)
         , camera_config_(camera_config)
         , json_config_(json_config)
+        , raw_output_(raw_output)
     {
     }
 
@@ -49,15 +51,29 @@ public:
     void compute(holoscan::InputContext& op_input,
         holoscan::OutputContext& op_output,
         holoscan::ExecutionContext& context) override;
-    std::vector<std::string> get_output_names();
+
+    // This structure provides camera details to an application that
+    // may be needed for image post-processing.
+    struct CameraInfo {
+        std::string output_name;
+        uint32_t offset;
+        uint32_t width;
+        uint32_t height;
+        uint32_t bytes_per_line;
+        hololink::csi::PixelFormat pixel_format;
+        hololink::csi::BayerFormat bayer_format;
+    };
+    const std::vector<CameraInfo>& get_camera_info();
 
     static void list_available_configs(const std::string& json_config = "");
 
     static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
 
 private:
-    void start_nvsipl();
-    void start_nvsci();
+    void init_cameras();
+    void init_nvsipl();
+    void init_nvsci();
+    void fill_camera_info();
     void allocate_buffers(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, std::vector<NvSciBufObj>& bufs);
     void free_buffers(std::vector<NvSciBufObj>& bufs);
     void allocate_sync(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, NvSciSyncObj& sync);
@@ -66,6 +82,7 @@ private:
 
     std::string camera_config_;
     std::string json_config_;
+    bool raw_output_;
 
     holoscan::Parameter<uint32_t> capture_queue_depth_;
     holoscan::Parameter<std::string> nito_base_path_;
@@ -87,6 +104,7 @@ private:
         NvSciSyncObj sci_sync_isp0_;
     };
     std::vector<PerCameraState> per_camera_state_;
+    std::vector<CameraInfo> camera_info_;
 
     struct CudaBufferMapping {
         cudaExternalMemory_t mem_;
@@ -94,6 +112,7 @@ private:
     };
     std::map<NvSciBufObj, CudaBufferMapping> cuda_mappings_;
 
+    bool initialized_ = false;
     bool streaming_ = false;
 
     // Pending buffer map is static since the callback only provides the buffer pointer.

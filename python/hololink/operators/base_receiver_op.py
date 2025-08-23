@@ -33,12 +33,14 @@ class BaseReceiverOp(holoscan.core.Operator):
         device=None,
         frame_size=None,
         frame_context=None,
+        trim=False,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._hololink_channel = hololink_channel
         self._device = device
         self._frame_context = frame_context
+        self._trim = trim
         self._ok = False
         self._count = 0
         self._frame_size = frame_size
@@ -118,7 +120,12 @@ class BaseReceiverOp(holoscan.core.Operator):
         # Publish the metadata from get_next_frame out to the pipeline.
         for key, value in metadata.items():
             self.metadata[key] = value
-        op_output.emit({"": self._cp_frame}, "output")
+        out = self._cp_frame
+        if self._trim:
+            bytes_written = metadata.get("bytes_written", self._frame_size)
+            if (bytes_written >= 0) and (bytes_written <= self._frame_size):
+                out = self._cp_frame[:bytes_written]
+        op_output.emit({"": out}, "output")
 
     def timeout(self, op_input, op_output, context):
         if self._ok:

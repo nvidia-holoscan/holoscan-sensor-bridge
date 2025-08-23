@@ -94,14 +94,18 @@ void SIPLCaptureOp::list_available_configs(const std::string& json_config)
     }
 }
 
-void SIPLCaptureOp::start_nvsipl()
+void SIPLCaptureOp::init_cameras()
 {
-    // Allow this to be called more than once, which will happen if get_output_names() is
-    // called during pipeline creation (i.e. prior to when the operator starts).
-    if (sipl_query_) {
-        return;
+    if (!initialized_) {
+        init_nvsipl();
+        init_nvsci();
+        fill_camera_info();
+        initialized_ = true;
     }
+}
 
+void SIPLCaptureOp::init_nvsipl()
+{
     sipl_query_ = nvsipl::INvSIPLCameraQuery::GetInstance();
     if (!sipl_query_) {
         throw std::runtime_error("Failed to get NvSIPLCameraQuery instance");
@@ -164,10 +168,10 @@ void SIPLCaptureOp::start_nvsipl()
     // Allocate the per-camera state.
     per_camera_state_.resize(sipl_config_.cameras.size());
 
-    // Set the pipeline configs to capture from ISP0.
+    // Set the pipeline configs to capture either RAW or ISP-processed images.
     nvsipl::NvSIPLPipelineConfiguration sipl_pipeline_config = {
-        .captureOutputRequested = false,
-        .isp0OutputRequested = true,
+        .captureOutputRequested = raw_output_,
+        .isp0OutputRequested = !raw_output_,
         .isp1OutputRequested = false,
         .isp2OutputRequested = false,
         .disableSubframe = true
@@ -189,7 +193,7 @@ void SIPLCaptureOp::start_nvsipl()
     }
 }
 
-void SIPLCaptureOp::start_nvsci()
+void SIPLCaptureOp::init_nvsci()
 {
     NvSciError err;
 
@@ -206,6 +210,85 @@ void SIPLCaptureOp::start_nvsci()
     err = NvSciSyncCpuWaitContextAlloc(sci_sync_module_, &cpu_wait_context_);
     if (err != NvSciError_Success) {
         throw std::runtime_error("Failed to allocate NvSciCpuWaitContext");
+    }
+}
+
+void SIPLCaptureOp::fill_camera_info()
+{
+    camera_info_.resize(sipl_config_.cameras.size());
+    for (uint32_t camera_index = 0; camera_index < camera_info_.size(); ++camera_index) {
+        // Get and reconcile the buffer attributes for the given camera in order to
+        // determine the buffer pitch.
+        std::unique_ptr<NvSciBufAttrList> attr_list(new NvSciBufAttrList());
+        auto err = NvSciBufAttrListCreate(sci_buf_module_, attr_list.get());
+        if (err != NvSciError_Success) {
+            throw std::runtime_error("Failed to create NvSciBufAttrList");
+        }
+
+        const auto& camera = sipl_config_.cameras[camera_index];
+        auto status = sipl_camera_->GetImageAttributes(camera.sensorInfo.id,
+            nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP, *(attr_list.get()));
+        if (status != nvsipl::NVSIPL_STATUS_OK) {
+            throw std::runtime_error(fmt::format("Failed to get image attributes ({})", static_cast<int>(status)));
+        }
+
+        std::unique_ptr<NvSciBufAttrList> reconciled_attr_list(new NvSciBufAttrList());
+        std::unique_ptr<NvSciBufAttrList> conflict_attr_list(new NvSciBufAttrList());
+        err = NvSciBufAttrListReconcile(attr_list.get(),
+            1U,
+            reconciled_attr_list.get(),
+            conflict_attr_list.get());
+        if (err != NvSciError_Success) {
+            throw std::runtime_error("Failed to reconcile NvSciBuf attributes");
+        }
+
+        NvSciBufAttrKeyValuePair img_attrs[] = { { NvSciBufImageAttrKey_PlanePitch, NULL, 0 } };
+        err = NvSciBufAttrListGetAttrs(*reconciled_attr_list, img_attrs, 1);
+        if (err != NvSciError_Success) {
+            throw std::runtime_error("Failed to get buffer attributes");
+        }
+        const uint32_t plane_pitch = *(static_cast<const uint32_t*>(img_attrs[0].value));
+
+        // Fill in the camera information.
+        auto& info = camera_info_[camera_index];
+        info.output_name = per_camera_state_[camera_index].output_name_;
+        info.offset = 0;
+        info.width = camera.sensorInfo.vcInfo.resolution.width;
+        info.height = camera.sensorInfo.vcInfo.resolution.height;
+        info.bytes_per_line = plane_pitch;
+
+        // Pixel format
+        switch (camera.sensorInfo.vcInfo.inputFormat) {
+        case NVSIPL_CAP_INPUT_FORMAT_TYPE_RAW10:
+        case NVSIPL_CAP_INPUT_FORMAT_TYPE_RAW10TP:
+            info.pixel_format = hololink::csi::PixelFormat::RAW_10;
+            info.offset = ((info.width * 10) / 8) * camera.sensorInfo.vcInfo.embeddedTopLines;
+            break;
+        case NVSIPL_CAP_INPUT_FORMAT_TYPE_RAW12:
+            info.pixel_format = hololink::csi::PixelFormat::RAW_12;
+            info.offset = ((info.width * 12) / 8) * camera.sensorInfo.vcInfo.embeddedTopLines;
+            break;
+        default:
+            throw std::runtime_error("Unsupported input format");
+        }
+
+        // Bayer order
+        switch (camera.sensorInfo.vcInfo.cfa) {
+        case NVSIPL_PIXEL_ORDER_RGGB:
+            info.bayer_format = hololink::csi::BayerFormat::RGGB;
+            break;
+        case NVSIPL_PIXEL_ORDER_BGGR:
+            info.bayer_format = hololink::csi::BayerFormat::BGGR;
+            break;
+        case NVSIPL_PIXEL_ORDER_GRBG:
+            info.bayer_format = hololink::csi::BayerFormat::GRBG;
+            break;
+        case NVSIPL_PIXEL_ORDER_GBRG:
+            info.bayer_format = hololink::csi::BayerFormat::GBRG;
+            break;
+        default:
+            throw std::runtime_error("Unsupported color filter array");
+        }
     }
 }
 
@@ -236,6 +319,12 @@ void SIPLCaptureOp::allocate_buffers(uint32_t camera_index, nvsipl::INvSIPLClien
     constexpr NvSciBufType buf_type = NvSciBufType_Image;
     constexpr NvSciBufAttrValAccessPerm access_perm = NvSciBufAccessPerm_Readonly;
 
+    // Allow buffers to be mapped into the GPU for both ICP and ISP0 outputs.
+    CUuuid uuid;
+    cuDeviceGetUuid_v2(&uuid, 0);
+    NvSciRmGpuId gpu_id = { 0 };
+    memcpy(&gpu_id.bytes, uuid.bytes, sizeof(uuid.bytes));
+
     // Require CPU read access for ISP output.
     constexpr bool is_cpu_access_req = true;
     constexpr bool is_cpu_cache_enabled = true;
@@ -249,17 +338,11 @@ void SIPLCaptureOp::allocate_buffers(uint32_t camera_index, nvsipl::INvSIPLClien
     constexpr NvSciBufSurfComponentOrder surf_comp_order = NvSciSurfComponentOrder_YUV;
     constexpr NvSciBufAttrValColorStd surf_color_std[] = { NvSciColorStd_REC709_ER };
 
-    // Allow the buffer to be mapped into the GPU.
-    CUuuid uuid;
-    cuDeviceGetUuid_v2(&uuid, 0);
-    NvSciRmGpuId gpu_id = { 0 };
-    memcpy(&gpu_id.bytes, uuid.bytes, sizeof(uuid.bytes));
-
     NvSciBufAttrKeyValuePair attr_kvp[] = {
         { NvSciBufGeneralAttrKey_Types, &buf_type, sizeof(buf_type) },
         { NvSciBufGeneralAttrKey_RequiredPerm, &access_perm, sizeof(access_perm) },
-        // ISP-specific attributes:
         { NvSciBufGeneralAttrKey_GpuId, &gpu_id, sizeof(gpu_id) },
+        // ISP-specific attributes:
         { NvSciBufGeneralAttrKey_NeedCpuAccess, &is_cpu_access_req, sizeof(is_cpu_access_req) },
         { NvSciBufGeneralAttrKey_EnableCpuCache, &is_cpu_cache_enabled, sizeof(is_cpu_cache_enabled) },
         { NvSciBufImageAttrKey_Layout, &layout, sizeof(layout) },
@@ -272,7 +355,7 @@ void SIPLCaptureOp::allocate_buffers(uint32_t camera_index, nvsipl::INvSIPLClien
     };
 
     const size_t num_attrs = (output_type == nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP)
-        ? 2U
+        ? 3U
         : sizeof(attr_kvp) / sizeof(attr_kvp[0]);
     err = NvSciBufAttrListSetAttrs(*(attr_list.get()), attr_kvp, num_attrs);
     if (err != NvSciError_Success) {
@@ -428,15 +511,20 @@ void SIPLCaptureOp::register_autocontrol(uint32_t camera_index)
 
 void SIPLCaptureOp::start()
 {
-    start_nvsipl();
-    start_nvsci();
+    init_cameras();
 
     for (uint32_t camera_index = 0; camera_index < per_camera_state_.size(); ++camera_index) {
         auto& camera_state = per_camera_state_[camera_index];
+
+        // Allocate RAW capture buffers.
         allocate_buffers(camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ICP, camera_state.sci_bufs_icp_);
-        allocate_buffers(camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0, camera_state.sci_bufs_isp0_);
-        allocate_sync(camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0, camera_state.sci_sync_isp0_);
-        register_autocontrol(camera_index);
+
+        // Allocate ISP0 output buffers, sync object, and register autocontrol.
+        if (!raw_output_) {
+            allocate_buffers(camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0, camera_state.sci_bufs_isp0_);
+            allocate_sync(camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType::ISP0, camera_state.sci_sync_isp0_);
+            register_autocontrol(camera_index);
+        }
     }
 }
 
@@ -504,10 +592,15 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
 
     auto entity = holoscan::gxf::Entity::New(&context);
     for (auto& camera_state : per_camera_state_) {
+        // Get completion queue based on output type.
+        auto completion_queue = raw_output_
+            ? camera_state.queues_.captureCompletionQueue
+            : camera_state.queues_.isp0CompletionQueue;
+
         // Wait for a new frame.
         HSB_LOG_TRACE("Waiting for buffer for {} (timeout = {}us)...", camera_state.output_name_, timeout_.get());
         nvsipl::INvSIPLClient::INvSIPLBuffer* buffer = nullptr;
-        auto status = camera_state.queues_.isp0CompletionQueue->Get(buffer, timeout_.get());
+        auto status = completion_queue->Get(buffer, timeout_.get());
         if (status != nvsipl::NVSIPL_STATUS_OK || buffer == nullptr) {
             throw std::runtime_error(fmt::format("Failed to get buffer for {} (status = {})",
                 camera_state.output_name_, static_cast<int>(status)));
@@ -518,17 +611,15 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
             throw std::runtime_error("Failed to get INvSIPLNvMBuffer");
         }
 
-        // Get and wait for the EOF fence.
+        // Get and wait for the EOF fence (if there is one).
         NvSciSyncFence fence = NvSciSyncFenceInitializer;
         status = nvm_buffer->GetEOFNvSciSyncFence(&fence);
-        if (status != nvsipl::NVSIPL_STATUS_OK) {
-            throw std::runtime_error("Failed to get EOF fence");
-        }
-
-        auto err = NvSciSyncFenceWait(&fence, cpu_wait_context_, timeout_.get());
-        if (err != NvSciError_Success) {
-            NvSciSyncFenceClear(&fence);
-            throw std::runtime_error("Failed to wait for EOF fence");
+        if (status == nvsipl::NVSIPL_STATUS_OK) {
+            auto err = NvSciSyncFenceWait(&fence, cpu_wait_context_, timeout_.get());
+            if (err != NvSciError_Success) {
+                NvSciSyncFenceClear(&fence);
+                throw std::runtime_error("Failed to wait for EOF fence");
+            }
         }
         NvSciSyncFenceClear(&fence);
 
@@ -540,7 +631,7 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
 
         // Get the attributes of the buffer.
         NvSciBufAttrList buf_attr_list;
-        err = NvSciBufObjGetAttrList(buf_obj, &buf_attr_list);
+        auto err = NvSciBufObjGetAttrList(buf_obj, &buf_attr_list);
         if (err != NvSciError_Success) {
             throw std::runtime_error("Failed to get buffer attribute list");
         }
@@ -602,10 +693,6 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
             HSB_LOG_TRACE(ss.str());
         }
 
-        if (plane_color_format[0] != NvSciColor_Y8 || plane_color_format[1] != NvSciColor_V8U8) {
-            throw std::runtime_error("Buffer is not NV12");
-        }
-
         // Map the buffer into CUDA (if it hasn't already been mapped before).
         if (cuda_mappings_.find(buf_obj) == cuda_mappings_.end()) {
             CudaBufferMapping mapping;
@@ -638,22 +725,56 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
                 (void*)buf_obj, (void*)mapping.mem_, (void*)mapping.ptr_);
         }
 
-        // Create the output VideoBuffer to wrap the buffer.
-        auto name = camera_state.output_name_.c_str();
-        auto video_buffer = static_cast<nvidia::gxf::Entity&>(entity).add<nvidia::gxf::VideoBuffer>(name);
-        nvidia::gxf::VideoTypeTraits<nvidia::gxf::VideoFormat::GXF_VIDEO_FORMAT_NV12> video_type;
-        nvidia::gxf::VideoFormatSize<nvidia::gxf::VideoFormat::GXF_VIDEO_FORMAT_NV12> color_format;
-        auto color_planes = color_format.getDefaultColorPlanes(plane_width[0], plane_height[0]);
-        color_planes[1].offset = plane_offset[1];
-        nvidia::gxf::VideoBufferInfo info {
-            plane_width[0],
-            plane_height[0],
-            video_type.value,
-            std::move(color_planes),
-            nvidia::gxf::SurfaceLayout::GXF_SURFACE_LAYOUT_PITCH_LINEAR
-        };
-        video_buffer.value()->wrapMemory(info, size, nvidia::gxf::MemoryStorageType::kDevice,
-            cuda_mappings_[buf_obj].ptr_, buffer_release_callback);
+        const auto name = camera_state.output_name_.c_str();
+
+        const bool is_nv12 = plane_color_format[0] == NvSciColor_Y8 && plane_color_format[1] == NvSciColor_V8U8;
+        const bool is_raw10 = plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10RGGB
+            || plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10BGGR
+            || plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10GRBG
+            || plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG;
+
+        if (is_nv12) {
+            // Create the output VideoBuffer to wrap the buffer.
+            auto video_buffer = static_cast<nvidia::gxf::Entity&>(entity).add<nvidia::gxf::VideoBuffer>(name);
+            if (!video_buffer) {
+                throw std::runtime_error("Failed to add GXF VideoBuffer");
+            }
+            nvidia::gxf::VideoTypeTraits<nvidia::gxf::VideoFormat::GXF_VIDEO_FORMAT_NV12> video_type;
+            nvidia::gxf::VideoFormatSize<nvidia::gxf::VideoFormat::GXF_VIDEO_FORMAT_NV12> color_format;
+            auto color_planes = color_format.getDefaultColorPlanes(plane_width[0], plane_height[0]);
+            color_planes[1].offset = plane_offset[1];
+            nvidia::gxf::VideoBufferInfo info {
+                plane_width[0],
+                plane_height[0],
+                video_type.value,
+                std::move(color_planes),
+                nvidia::gxf::SurfaceLayout::GXF_SURFACE_LAYOUT_PITCH_LINEAR
+            };
+            if (!video_buffer.value()->wrapMemory(info, size, nvidia::gxf::MemoryStorageType::kDevice,
+                    cuda_mappings_[buf_obj].ptr_, buffer_release_callback)) {
+                throw std::runtime_error("Failed to add wrapped VideoBuffer memory");
+            }
+        } else if (is_raw10) {
+            // Create the output Tensor to wrap the buffer.
+            auto tensor = static_cast<nvidia::gxf::Entity&>(entity).add<nvidia::gxf::Tensor>(name);
+            if (!tensor) {
+                throw std::runtime_error("Failed to add GXF Tensor");
+            }
+
+            nvidia::gxf::Shape shape { static_cast<int>(size) };
+            const auto element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
+            const auto element_size = nvidia::gxf::PrimitiveTypeSize(element_type);
+
+            if (!tensor.value()->wrapMemory(shape, element_type, element_size,
+                    nvidia::gxf::ComputeTrivialStrides(shape, element_size),
+                    nvidia::gxf::MemoryStorageType::kDevice,
+                    cuda_mappings_[buf_obj].ptr_, buffer_release_callback)) {
+                throw std::runtime_error("Failed to add wrapped memory");
+            }
+        } else {
+            throw std::runtime_error(fmt::format("Buffer has unsupported color format: {}",
+                plane_color_format[0]));
+        }
 
         std::lock_guard<std::mutex> lock(pending_buffers_mutex_);
         pending_buffers_[cuda_mappings_[buf_obj].ptr_] = buffer;
@@ -663,15 +784,10 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
     op_output.emit(entity, "output");
 }
 
-std::vector<std::string> SIPLCaptureOp::get_output_names()
+const std::vector<SIPLCaptureOp::CameraInfo>& SIPLCaptureOp::get_camera_info()
 {
-    // SIPL needs to be initialized for the per-camera state to exist.
-    start_nvsipl();
-    std::vector<std::string> output_names;
-    for (auto& camera_state : per_camera_state_) {
-        output_names.push_back(camera_state.output_name_);
-    }
-    return output_names;
+    init_cameras();
+    return camera_info_;
 }
 
 bool SIPLCaptureOp::load_nito_file(std::string module_name, std::vector<uint8_t>& nito)
