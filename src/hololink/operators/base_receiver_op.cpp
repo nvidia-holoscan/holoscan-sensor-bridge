@@ -70,7 +70,7 @@ void BaseReceiverOp::setup(holoscan::OperatorSpec& spec)
         device_stop_, "device_stop", "DeviceStop", "Function to be called to stop the device");
     spec.param(frame_context_, "frame_context", "FrameContext", "CUDA context");
     spec.param(frame_size_, "frame_size", "FrameSize", "Size of one frame in bytes");
-    spec.param(trim_, "trim", "Trim", "Set output length to bytes_written (else frame_size)");
+    spec.param(trim_, "trim", "Trim", "Set output length to bytes_written (else frame_size)", false);
 
     auto frag = fragment();
     frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
