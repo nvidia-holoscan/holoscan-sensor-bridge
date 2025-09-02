@@ -63,12 +63,12 @@ url_2407 = (
     + fname_2407
 )
 
-filename_2506 = "PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
-fname_2506 = "PF_ESB_HSB2507_v2025p1.zip"
-expected_md5_2506 = "e27289503290a3a0aa709830a50cf111"
-url_2506 = (
+filename_2507 = "PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
+fname_2507 = "PF_ESB_HSB2507_v2025p1.zip"
+expected_md5_2507 = "e27289503290a3a0aa709830a50cf111"
+url_2507 = (
     "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
-    + fname_2506
+    + fname_2507
 )
 
 
@@ -95,15 +95,15 @@ def download_extract(args):
         if md5_returned != expected_md5_2407:
             raise Exception("md5 Hash mismatch")
 
-    elif args == "2506":
-        r = requests.get(url_2506)
-        open(fname_2506, "wb").write(r.content)
-        with zipfile.ZipFile(fname_2506) as zip_ref:
+    elif args == "2507":
+        r = requests.get(url_2507)
+        open(fname_2507, "wb").write(r.content)
+        with zipfile.ZipFile(fname_2507) as zip_ref:
             zip_ref.extractall(".")
-        with open(filename_2506, "rb") as file_to_check:
+        with open(filename_2507, "rb") as file_to_check:
             data = file_to_check.read()
             md5_returned = hashlib.md5(data).hexdigest()
-        if md5_returned != expected_md5_2506:
+        if md5_returned != expected_md5_2507:
             raise Exception("md5 Hash mismatch")
 
 
@@ -138,9 +138,9 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
     elif fpga_bit_version == "2407":
         lfilename = filename_2407
         lfname = fname_2407
-    elif fpga_bit_version == "2506":
-        lfilename = filename_2506
-        lfname = fname_2506
+    elif fpga_bit_version == "2507":
+        lfilename = filename_2507
+        lfname = fname_2507
     else:
         raise Exception("In correct FPGA bit version")
     download_extract(fpga_bit_version)
@@ -257,9 +257,9 @@ def main():
     flash.add_argument(
         "--fpga-bit-version",
         type=str,
-        help="FPAG bit file version to be flashed. Currently supported versions 2506, 2412 and 2407",
-        default="2506",
-        choices=("2412", "2407", "2506"),
+        help="FPGA bit file version to be flashed. Currently supported versions 2507, 2412 and 2407",
+        default="2507",
+        choices=("2412", "2407", "2507"),
         required=True,
     )
 
