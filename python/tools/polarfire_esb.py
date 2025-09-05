@@ -131,7 +131,7 @@ def _spi_program(hololink):
     hololink.write_uint32(PFSRV_ADDR + PFSRV_MBX_WDATA, IAP_IMG_START_ADDR)
 
 
-def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
+def _spi_flash(spi_con_addr, hololink, fpga_bit_version, channel_metadata):
     if fpga_bit_version == "2412":
         lfilename = filename_2412
         lfname = fname_2412
@@ -144,15 +144,26 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version):
     else:
         raise Exception("In correct FPGA bit version")
     download_extract(fpga_bit_version)
-    in_spi = hololink_module.get_traditional_spi(
-        hololink,
-        spi_con_addr,
-        chip_select=0,
-        cpol=1,
-        cpha=1,
-        width=1,
-        clock_divisor=0x4,
-    )
+    hsb_ip_version = channel_metadata["hsb_ip_version"]
+    if hsb_ip_version < 0x2506:
+        in_spi = hololink_module.get_traditional_spi(
+            hololink,
+            spi_con_addr,
+            chip_select=0,
+            cpol=1,
+            cpha=1,
+            width=1,
+            clock_divisor=0x4,
+        )
+    else:
+        in_spi = hololink.get_spi(
+            bus_number=0,
+            chip_select=0,
+            cpol=1,
+            cpha=1,
+            width=1,
+            prescaler=0x4,
+        )
     f = open(lfilename, "rb")
     content = list(f.read())
     con_len = len(content) + START_ADDR
@@ -289,7 +300,7 @@ def main():
     hololink.start()
 
     if args.flash:
-        _spi_flash(SPI_CONN_ADDR, hololink, args.fpga_bit_version)
+        _spi_flash(SPI_CONN_ADDR, hololink, args.fpga_bit_version, channel_metadata)
     elif args.program:
         _spi_program(hololink)
 

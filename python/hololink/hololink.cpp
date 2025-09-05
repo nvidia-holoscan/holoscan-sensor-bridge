@@ -358,7 +358,7 @@ PYBIND11_MODULE(_hololink, m)
                                    "address"_a, "timeout"_a = std::shared_ptr<Timeout>())
                                .def("setup_clock", &Hololink::setup_clock, "clock_profile"_a)
                                .def("get_i2c", &Hololink::get_i2c, "i2c_bus"_a, "i2c_address"_a = I2C_CTRL)
-                               .def("get_spi", &Hololink::get_spi, "bus_address"_a, "chip_select"_a,
+                               .def("get_spi", &Hololink::get_spi, "bus_number"_a, "chip_select"_a,
                                    "prescaler"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1, "spi_address"_a = SPI_CTRL)
                                .def("get_gpio", &Hololink::get_gpio, "metadata"_a)
                                .def("send_control", &Hololink::send_control)
