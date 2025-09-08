@@ -287,11 +287,13 @@ PYBIND11_MODULE(_hololink, m)
     m.attr("LEOPARD_EAGLE_BOARD_ID") = LEOPARD_EAGLE_BOARD_ID;
     m.attr("METADATA_SIZE") = METADATA_SIZE;
     m.attr("MICROCHIP_POLARFIRE_BOARD_ID") = MICROCHIP_POLARFIRE_BOARD_ID;
+    m.attr("RD_BLOCK") = RD_BLOCK;
     m.attr("RD_DWORD") = RD_DWORD;
     m.attr("REQUEST_FLAGS_ACK_REQUEST") = REQUEST_FLAGS_ACK_REQUEST;
     m.attr("RESPONSE_INVALID_CMD") = RESPONSE_INVALID_CMD;
     m.attr("RESPONSE_SUCCESS") = RESPONSE_SUCCESS;
     m.attr("SPI_CTRL") = SPI_CTRL;
+    m.attr("WR_BLOCK") = WR_BLOCK;
     m.attr("WR_DWORD") = WR_DWORD;
 
     // Bind PixelFormat enum
@@ -449,9 +451,7 @@ PYBIND11_MODULE(_hololink, m)
                                .def(
                                    "ptp_synchronize", [](Hololink& me, const std::shared_ptr<Timeout>& timeout) { return me.ptp_synchronize(timeout); }, "timeout_s"_a)
                                .def("ptp_synchronize", [](Hololink& me) { return me.ptp_synchronize(); })
-                               .def("ptp_pps_output", &Hololink::ptp_pps_output, "frequency"_a = 0)
-                               .def("configure_apb_event", &Hololink::configure_apb_event, "event"_a, "handler"_a, "rising_edge"_a = true)
-                               .def("clear_apb_event", &Hololink::clear_apb_event, "event"_a);
+                               .def("ptp_pps_output", &Hololink::ptp_pps_output, "frequency"_a = 0);
 
     py::class_<Hololink::I2c, std::shared_ptr<Hololink::I2c>>(m, "I2c")
         .def("i2c_transaction",

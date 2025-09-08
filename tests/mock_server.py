@@ -442,6 +442,26 @@ class MockServer:
                             serializer.append_uint32_be(address)
                             serializer.append_uint32_be(value)
                             serializer.append_uint32_be(latched_sequence)
+                        elif cmd_code == hololink_module.WR_BLOCK:
+                            here = deserializer.position()
+                            status = hololink_module.RESPONSE_SUCCESS
+                            count = 0
+                            while (deserializer.position() < length) and (
+                                status == hololink_module.RESPONSE_SUCCESS
+                            ):
+                                address = deserializer.next_uint32_be()
+                                value = deserializer.next_uint32_be()
+                                status = self.memory_write(address, value)
+                                count += 1
+                            serializer.append_uint8(status)
+                            serializer.append_uint8(0)  # reserved; aligns the next data
+                            deserializer.reset(here)
+                            for _ in range(count):
+                                address = deserializer.next_uint32_be()
+                                value = deserializer.next_uint32_be()
+                                serializer.append_uint32_be(address)
+                                serializer.append_uint32_be(0)
+                            serializer.append_uint32_be(latched_sequence)
                         elif cmd_code == hololink_module.RD_DWORD:
                             address = deserializer.next_uint32_be()
                             value = self.memory_read(address)

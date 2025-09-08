@@ -201,6 +201,15 @@ public:
 
     size_t position() { return position_; }
 
+    bool reset(size_t position = 0)
+    {
+        // NOTE that we always adopt this value, which
+        // will cause all subsequent fetches to fail
+        // if the position requested here is out-of-range.
+        position_ = position;
+        return true;
+    }
+
 protected:
     const uint8_t* buffer_;
     size_t limit_;
