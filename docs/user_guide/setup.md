@@ -42,6 +42,9 @@ system.
 **For Thor host setup, please follow the instructions on the
 [Thor Host Setup](thor-jp7-setup.md) page.**
 
+**Please note that the instructions below and the examples in the following pages are
+intended for Orin platforms (IGX/AGX) and will not work with Thor in this release.**
+
 `````{tab-set}
 ````{tab-item} IGX
 
