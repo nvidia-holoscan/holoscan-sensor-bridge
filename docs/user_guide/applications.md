@@ -107,7 +107,7 @@ int main(int argc, char** argv)
   CUdevice cu_device;
   cuDeviceGet(&cu_device, cu_device_ordinal);
   CUcontext cu_context;
-  cuCtxCreate(&cu_context, 0, cu_device);
+  cuDevicePrimaryCtxRetain(&cu_context, cu_device);
 
   // Look for sensor bridge enumeration messages; return only the one we're looking for
   hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);

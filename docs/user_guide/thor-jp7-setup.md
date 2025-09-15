@@ -3,6 +3,20 @@
 After installing JetPack 7.0.0 on the Thor devkit, please follow these steps to set up
 your Thor for running Holoscan sensor bridge examples.
 
+Please note that if JP7.0.0 was installed using an
+[ISO image](https://docs.nvidia.com/jetson/agx-thor-devkit/user-guide/latest/quick_start.html#download-iso-image)
+the following steps are required:
+
+```none
+  export PATH=/usr/local/cuda-13.0/bin:$PATH 
+  export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_SIPL_API_R38.2.0_aarch64.tbz2
+  sudo tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C /
+```
+
+**These steps are not required if JP7.0.0 was installed using
+[SDK manager](https://docs.nvidia.com/sdk-manager/install-with-sdkm-jetson/index.html).**
+
 - Install Holoscan SDK v3.5.1
 
 ```none
@@ -38,7 +52,6 @@ your Thor for running Holoscan sensor bridge examples.
   EN0=mgbe0_0
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
-  sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
   sudo nmcli connection up hololink-$EN0
 ```
 
