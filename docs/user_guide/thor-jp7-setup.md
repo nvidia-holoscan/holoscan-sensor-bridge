@@ -20,9 +20,8 @@ the following steps are required:
 - Install Holoscan SDK v3.5.1
 
 ```none
-  echo "deb https://repo.download.nvidia.com/jetson/jetson-4fed1671 r38.1 main" | sudo tee /etc/apt/sources.list.d/nvidia-l4t-apt-source-jpea.list
   sudo apt update
-  sudo apt install holoscan
+  sudo apt install holoscan=3.5.1
 ```
 
 - Install other Holoscan sensor bridge dependencies:
