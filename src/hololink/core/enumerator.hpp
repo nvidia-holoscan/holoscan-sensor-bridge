@@ -152,6 +152,8 @@ public:
     void ptp_enable(bool enable);
     // Changes whether vsync_enable is true or not.
     void vsync_enable(bool enable);
+    // Changes whether block_enable is true or not.
+    void block_enable(bool enable);
 
     void update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer) override;
     void use_sensor(Metadata& metadata, int64_t sensor_number) override;
@@ -164,6 +166,7 @@ protected:
     unsigned sifs_per_sensor_;
     bool ptp_enable_;
     bool vsync_enable_;
+    bool block_enable_;
 };
 
 } // namespace hololink

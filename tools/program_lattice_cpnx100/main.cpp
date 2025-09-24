@@ -35,6 +35,7 @@ hololink::Metadata manual_enumeration(const hololink::Programmer::Args& args)
     metadata["sequence_number_checking"] = 0;
     metadata["serial_number"] = "100";
     metadata["fpga_uuid"] = "889b7ce3-65a5-4247-8b05-4ff1904c3359";
+    metadata["block_enable"] = 0;
 
     hololink::DataChannel::use_data_plane_configuration(metadata, 0);
     hololink::DataChannel::use_sensor(metadata, 0);
