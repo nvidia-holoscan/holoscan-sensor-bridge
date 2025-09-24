@@ -17,11 +17,23 @@ add_library(linux_receiver STATIC
   linux_receiver.cpp
   )
 
+add_library(linux_receiver_op STATIC
+  linux_receiver_op.cpp
+  )
+
 set_property(TARGET linux_receiver PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET linux_receiver_op PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 add_library(hololink::operators::linux_receiver ALIAS linux_receiver)
+add_library(hololink::operators::linux_receiver_op ALIAS linux_receiver_op)
 
 target_include_directories(linux_receiver
+  INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
+    $<INSTALL_INTERFACE:src>
+  )
+
+target_include_directories(linux_receiver_op
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:src>
@@ -34,7 +46,19 @@ target_link_libraries(linux_receiver
     CUDA::cuda_driver
   )
 
+target_link_libraries(linux_receiver_op
+  PRIVATE
+    hololink::core
+    hololink::operators::base_receiver_op
+    linux_receiver
+    CUDA::cuda_driver
+  )
+
 # Installation of the linux_receiver operator
-install(TARGETS linux_receiver
+install(TARGETS linux_receiver linux_receiver_op
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_receiver_op.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/linux_receiver
         COMPONENT hololink-operators)

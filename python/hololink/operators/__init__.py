@@ -30,6 +30,7 @@ _MODULES = {
     "LinuxCoeReceiver": "linux_coe_receiver",
     "LinuxCoeReceiverOp": "linux_coe_receiver_operator",
     "LinuxReceiver": "linux_receiver",
+    "LinuxReceiverOp": "linux_receiver_op",
     "LinuxReceiverOperator": "linux_receiver_operator",
     "PackedFormatConverterOp": "packed_format_converter",
     "Rational": "sig_gen",
