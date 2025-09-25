@@ -40,6 +40,31 @@ target_link_libraries(imx274_player
 
 list(APPEND EXAMPLE_INSTALL_TARGETS imx274_player)
 
+add_executable(linux_imx274_player
+  linux_imx274_player.cpp
+  )
+
+add_test(NAME linux_imx274_player_test
+          COMMAND linux_imx274_player --frame-limit=10 --headless
+          WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+set_tests_properties(linux_imx274_player_test PROPERTIES
+                      FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+
+target_link_libraries(linux_imx274_player
+  PRIVATE
+    hololink
+    hololink::operators::csi_to_bayer
+    hololink::operators::image_processor
+    hololink::operators::linux_receiver_op
+    holoscan::core
+    holoscan::ops::bayer_demosaic
+    holoscan::ops::holoviz
+    holoscan::pybind11
+    pybind11::embed
+  )
+
+list(APPEND EXAMPLE_INSTALL_TARGETS linux_imx274_player)
+
 add_executable(vb1940_player
   vb1940_player.cpp
   )

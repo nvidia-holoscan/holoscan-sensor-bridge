@@ -160,7 +160,7 @@ class PatternTestApplication(holoscan.core.Application):
                 device=self._camera_left,
             )
         else:
-            receiver_operator_left = hololink_module.operators.LinuxReceiverOperator(
+            receiver_operator_left = hololink_module.operators.LinuxReceiverOp(
                 self,
                 self._ok_left,
                 name="receiver_left",
@@ -187,7 +187,7 @@ class PatternTestApplication(holoscan.core.Application):
                 device=self._camera_right,
             )
         else:
-            receiver_operator_right = hololink_module.operators.LinuxReceiverOperator(
+            receiver_operator_right = hololink_module.operators.LinuxReceiverOp(
                 self,
                 self._ok_right,
                 name="receiver_right",

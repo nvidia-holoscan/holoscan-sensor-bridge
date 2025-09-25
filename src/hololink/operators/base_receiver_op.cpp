@@ -219,7 +219,7 @@ std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
     }
 
     const std::string local_ip = inet_ntoa(ip.sin_addr);
-    const in_port_t local_port = ip.sin_port;
+    const in_port_t local_port = ntohs(ip.sin_port);
 
     return { local_ip, local_port };
 }

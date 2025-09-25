@@ -177,7 +177,7 @@ std::tuple<std::string, uint32_t> RoceReceiverOp::local_ip_and_port()
 
     const std::string local_ip = inet_ntoa(ip.sin_addr);
     // This is what you'd normally use
-    // const in_port_t local_port = ip.sin_port;
+    // const in_port_t local_port = ntohs(ip.sin_port);
     // But we're going to tell the other side that we're listening
     // to the ROCE receiver port at 4791.
     const in_port_t local_port = 4791;
