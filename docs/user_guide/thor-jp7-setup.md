@@ -14,8 +14,10 @@ the following steps are required:
   sudo tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C /
 ```
 
-**These steps are not required if JP7.0.0 was installed using
-[SDK manager](https://docs.nvidia.com/sdk-manager/install-with-sdkm-jetson/index.html).**
+The installation steps **above** are not required if JP7.0.0 was installed using
+[SDK manager](https://docs.nvidia.com/sdk-manager/install-with-sdkm-jetson/index.html).
+
+**To complete the Thor host setup, please follow the steps below:**
 
 - Install Holoscan SDK v3.5.1
 
