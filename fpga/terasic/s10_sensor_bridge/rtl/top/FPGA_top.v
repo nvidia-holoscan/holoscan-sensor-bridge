@@ -676,7 +676,7 @@ HOLOLINK_top
 //------------------------------------------------------------------------------
 // Peripheral IF
 //------------------------------------------------------------------------------
-  // SPI Interface, QSPI compatable
+  // SPI Interface, QSPI compatible
   .o_spi_csn                    (spi_csn              ),
   .o_spi_sck                    (spi_sck              ),
   .i_spi_sdio                   (spi_sdio_i           ),
