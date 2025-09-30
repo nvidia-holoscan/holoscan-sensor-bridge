@@ -68,7 +68,7 @@ assign avst_data        = axis_tdata_end_swap(axis_tdata);
 //axis_tready
 assign axis_tready      = avst_ready;
 
-//Swap endianess of AXIS tdata bus
+//Swap endianness of AXIS tdata bus
 function automatic [DWIDTH-1:0] axis_tdata_end_swap (input [DWIDTH-1:0] axis_tdata_in);
   begin
     for (int j = 0; j < (DWIDTH/8); j = j+1) begin

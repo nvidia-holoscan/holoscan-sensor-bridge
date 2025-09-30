@@ -57,7 +57,7 @@ always_ff @(posedge clk) begin
   end
 end
 
-//Swap endianess of AXIS tdata bus
+//Swap endianness of AXIS tdata bus
   function automatic [DWIDTH-1:0] axis_tdata_end_swap (input [DWIDTH-1:0] axis_tdata_in);
     begin
       for (int j = 0; j < (DWIDTH/8); j = j+1) begin
@@ -66,7 +66,7 @@ end
     end
   endfunction
   
-  //Swap endianess of AXIS tkeep bus
+  //Swap endianness of AXIS tkeep bus
   function automatic [(DWIDTH/8)-1:0] axis_tkeep_end_swap (input [(DWIDTH/8)-1:0] axis_tkeep_in);
     begin
       for (int i = 0; i < (DWIDTH/8); i=i+1) begin

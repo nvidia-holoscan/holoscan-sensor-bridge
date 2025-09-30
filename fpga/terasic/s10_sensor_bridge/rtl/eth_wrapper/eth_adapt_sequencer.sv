@@ -32,7 +32,7 @@ module eth_adapt_sequencer (
 //1) IDLE - Wait here until a rising edge is seen to start a sequence.
 //  - Start address and end address need to be valid at start.
 //  - XCVR channel needs to be valid at start.
-//  - If the cmd_data is to be overriden, then override data needs to be valid at start.
+//  - If the cmd_data is to be overridden, then override data needs to be valid at start.
 //  - Transition to READ_ROM at start. 
 //
 //2) READ_ROM - grab data at ROM address
@@ -42,7 +42,7 @@ module eth_adapt_sequencer (
 //  - Transition to SEND_CMD
 //
 //4) SEND_CMD - Issue the read or write command to the selected XCVR. 
-//  - If the write data is to be overriden, then send the override data with write command.
+//  - If the write data is to be overridden, then send the override data with write command.
 //  - Wait until command is completed and transition as appropriate.
 //    - If POLL or READ-AND-VALIDATE then transition to CHECK_DATA.
 //    - If READ-MODIFY-WRITE then transition to MOD_DATA.
