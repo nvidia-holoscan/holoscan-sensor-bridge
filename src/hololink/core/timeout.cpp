@@ -34,6 +34,15 @@ Timeout::Timeout(float timeout_s, float retry_s)
 {
 }
 
+Timeout::Timeout(const Timeout& source)
+    : start_(Clock::now())
+    , timeout_(source.timeout_)
+    , expiry_(start_ + timeout_)
+    , retry_(source.retry_)
+    , deadline_(start_ + ((retry_ == Clock::duration::zero()) ? timeout_ : retry_))
+{
+}
+
 /*static*/ std::shared_ptr<Timeout> Timeout::default_timeout(
     const std::shared_ptr<Timeout>& timeout)
 {

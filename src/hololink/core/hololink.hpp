@@ -60,7 +60,9 @@ constexpr uint32_t I2C_REG_DATA_BUFFER = 0x100;
 
 // packet command byte
 constexpr uint32_t WR_DWORD = 0x04;
+constexpr uint32_t WR_BLOCK = 0x09;
 constexpr uint32_t RD_DWORD = 0x14;
+constexpr uint32_t RD_BLOCK = 0x19;
 // request packet flag bits
 constexpr uint32_t REQUEST_FLAGS_ACK_REQUEST = 0b0000'0001;
 constexpr uint32_t REQUEST_FLAGS_SEQUENCE_CHECK = 0b0000'0010;
@@ -219,6 +221,8 @@ protected:
 class Hololink {
     /** DataChannel calls some methods we don't want to share. */
     friend class DataChannel;
+    friend class WriteRetryMonitor;
+    friend class ReadRetryMonitor;
 
 public:
     /**
@@ -229,7 +233,7 @@ public:
      * @param serial_number
      */
     explicit Hololink(
-        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool vsync_enable = true);
+        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool vsync_enable = true, bool block_enable = true);
     Hololink() = delete;
 
     virtual ~Hololink();
@@ -308,6 +312,36 @@ public:
         return write_uint32(address, value, timeout);
     }
 
+    class WriteData {
+        friend class Hololink;
+
+    public:
+        WriteData() {};
+        WriteData(uint32_t address, uint32_t data)
+        {
+            queue_write_uint32(address, data);
+        }
+        void queue_write_uint32(uint32_t address, uint32_t value)
+        {
+            data_.push_back({ address, value });
+        }
+        size_t size()
+        {
+            return data_.size();
+        }
+        std::string stringify();
+
+    protected:
+        std::vector<std::pair<uint32_t, uint32_t>> data_;
+    };
+
+    bool write_uint32(WriteData& data, const std::shared_ptr<Timeout> in_timeout, bool retry, bool sequence_check);
+
+    bool write_uint32(WriteData& data, const std::shared_ptr<Timeout> in_timeout = nullptr, bool retry = true)
+    {
+        return write_uint32(data, in_timeout, retry, sequence_number_checking_);
+    }
+
     /**
      * @brief Returns the value found at the location or calls hololink timeout if there's a
      * problem.
@@ -329,6 +363,8 @@ public:
         const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>();
         return read_uint32(address, timeout);
     }
+
+    std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
 
     /**
      * @brief Setup the clock
@@ -743,14 +779,29 @@ public:
 
     /**
      * Configure the given event to run this sequence.
-     * handler must point to a valid sequence.
+     * handler must point to a valid sequence or 0 (in which
+     * case we'll point it to the null event handler).
      */
-    void configure_apb_event(Event event, uint32_t handler = 0, bool rising_edge = true);
+    void configure_apb_event(WriteData&, Event event, uint32_t handler = 0, bool rising_edge = true);
+
+    void configure_apb_event(Event event, uint32_t handler = 0, bool rising_edge = true)
+    {
+        WriteData write_data;
+        configure_apb_event(write_data, event, handler, rising_edge);
+        write_uint32(write_data);
+    }
 
     /**
      * Clear handling for the given event.
      */
-    void clear_apb_event(Event event);
+    void clear_apb_event(WriteData&, Event event);
+
+    void clear_apb_event(Event event)
+    {
+        WriteData write_data;
+        clear_apb_event(write_data, event);
+        write_uint32(write_data);
+    }
 
 protected:
     /**
@@ -831,11 +882,16 @@ private:
     std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
     bool ptp_enable_;
     bool vsync_enable_;
+    bool block_enable_;
 
-    bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout,
+    bool write_uint32_block_(WriteData data, const std::shared_ptr<Timeout>& timeout,
         bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
+    bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout, bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
     std::tuple<bool, std::optional<uint32_t>> read_uint32_(
         uint32_t address, const std::shared_ptr<Timeout>& timeout, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
+    // Read a block of data using individual RD_DWORD commands
+    std::tuple<bool, std::vector<uint32_t>> read_uint32_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
+    std::tuple<bool, std::vector<uint32_t>> read_uint32_block_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
 
     void add_read_retries(uint32_t n);
     void add_write_retries(uint32_t n);

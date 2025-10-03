@@ -650,6 +650,7 @@ BasicEnumerationStrategy::BasicEnumerationStrategy(const Metadata& additional_me
     , sifs_per_sensor_(sifs_per_sensor)
     , ptp_enable_(true)
     , vsync_enable_(true)
+    , block_enable_(true)
 {
 }
 
@@ -663,10 +664,16 @@ void BasicEnumerationStrategy::vsync_enable(bool enable)
     vsync_enable_ = enable;
 }
 
+void BasicEnumerationStrategy::block_enable(bool enable)
+{
+    block_enable_ = enable;
+}
+
 void BasicEnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer)
 {
     metadata["ptp_enable"] = ptp_enable_ ? 1 : 0;
     metadata["vsync_enable"] = vsync_enable_ ? 1 : 0;
+    metadata["block_enable"] = block_enable_ ? 1 : 0;
     metadata.update(additional_metadata_);
 }
 

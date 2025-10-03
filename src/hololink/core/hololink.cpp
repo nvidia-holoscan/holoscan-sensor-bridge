@@ -102,12 +102,12 @@ namespace {
     // Allocate buffers for control plane requests and replies to this
     // size, which is guaranteed to be large enough for the largest
     // of any of those buffers.
-    constexpr uint32_t CONTROL_PACKET_SIZE = 20;
+    constexpr uint32_t CONTROL_PACKET_SIZE = 1472;
 
 } // anonymous namespace
 
 Hololink::Hololink(
-    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool vsync_enable)
+    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool vsync_enable, bool block_enable)
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
@@ -123,6 +123,7 @@ Hololink::Hololink(
     , ptp_pps_output_(std::make_shared<PtpSynchronizer>(this[0]))
     , ptp_enable_(ptp_enable)
     , vsync_enable_(vsync_enable)
+    , block_enable_(block_enable)
 {
 }
 
@@ -174,8 +175,13 @@ Hololink::~Hololink()
         if (opt_vsync_enable) {
             vsync_enable = opt_vsync_enable.value() != 0;
         }
+        bool block_enable = true;
+        auto opt_block_enable = metadata.get<int64_t>("block_enable");
+        if (opt_block_enable) {
+            block_enable = opt_block_enable.value() != 0;
+        }
         r = std::make_shared<Hololink>(
-            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, vsync_enable);
+            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, vsync_enable, block_enable);
         hololink_by_serial_number[serial_number.value()] = r;
     } else {
         r = it->second;
@@ -321,22 +327,47 @@ uint32_t Hololink::get_fpga_date()
     return date;
 }
 
+class WriteRetryMonitor {
+public:
+    WriteRetryMonitor(Hololink& hololink)
+        : hololink_(hololink)
+        , retries_(0)
+    {
+    }
+    ~WriteRetryMonitor()
+    {
+        hololink_.add_write_retries(retries_);
+    }
+    void increment()
+    {
+        retries_++;
+    }
+
+protected:
+    Hololink& hololink_;
+    uint32_t retries_;
+};
+
 bool Hololink::write_uint32(
     uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& in_timeout, bool retry, bool sequence_check)
 {
-    uint32_t count = 0;
-    std::exception_ptr eptr;
+    Hololink::WriteData data(address, value);
+    return write_uint32(data, in_timeout, retry, sequence_check);
+}
+
+bool Hololink::write_uint32(Hololink::WriteData& write_data, const std::shared_ptr<Timeout> in_timeout, bool retry, bool sequence_check)
+{
     std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
     bool current_sequence_check = sequence_check;
-    try {
-        // HSB only supports a single command/response at a time--
-        // in other words we need to inhibit other threads from sending
-        // a command until we receive the response for the current one.
-        std::lock_guard lock(execute_mutex_);
+    WriteRetryMonitor write_retries(*this);
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+    if (block_enable_) {
         const uint16_t sequence = next_sequence(lock);
         while (true) {
-            count += 1;
-            bool status = write_uint32_(address, value, timeout, retry, sequence, current_sequence_check, lock);
+            bool status = write_uint32_block_(write_data, timeout, retry, sequence, current_sequence_check, lock);
             if (status) {
                 return status;
             }
@@ -345,22 +376,100 @@ bool Hololink::write_uint32(
             }
             if (!timeout->retry()) {
                 throw TimeoutError(
-                    fmt::format("write_uint32 address={:#x} value={:#x}", address, value));
+                    fmt::format("write_uint32({})", write_data.stringify()));
             }
+            write_retries.increment();
             current_sequence_check = false;
         }
-    } catch (...) {
-        eptr = std::current_exception();
+        return false;
+    } else {
+        // Write single words at a time.
+        for (const auto& datum : write_data.data_) {
+            uint32_t address = datum.first;
+            uint32_t value = datum.second;
+            const uint16_t sequence = next_sequence(lock);
+            while (true) {
+                bool status = write_uint32_(address, value, timeout, retry, sequence, current_sequence_check, lock);
+                if (status) {
+                    // We're good; go on to the next one.
+                    break;
+                }
+                if (!retry) {
+                    // Without retry enabled, any failure stops here.
+                    return false;
+                }
+                if (!timeout->retry()) {
+                    // We ran out of time, raise an exception.
+                    throw TimeoutError(
+                        fmt::format("write_uint32({})", write_data.stringify()));
+                }
+                write_retries.increment();
+                current_sequence_check = false;
+            }
+        }
+        return true;
     }
+}
 
-    assert(count > 0);
-    add_write_retries(count - 1);
-
-    if (eptr) {
-        std::rethrow_exception(eptr);
+bool Hololink::write_uint32_block_(Hololink::WriteData write_data,
+    const std::shared_ptr<Timeout>& timeout, bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>& lock)
+{
+    // diagnostic
+    HSB_LOG_DEBUG("write_uint32({})", write_data.stringify());
+    if (write_data.size() < 1) {
+        return true;
     }
+    // BLOCKING on ack or timeout
+    // This routine serializes a write_uint32 request
+    // and forwards it to the device.
 
-    return false;
+    // Serialize
+    std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
+    core::Serializer serializer(request.data(), request.size());
+    uint8_t flags = REQUEST_FLAGS_ACK_REQUEST;
+    if (sequence_check) {
+        flags |= REQUEST_FLAGS_SEQUENCE_CHECK;
+    }
+    uint8_t reserved = 0;
+    uint8_t command = WR_BLOCK;
+    if (!(serializer.append_uint8(command) && serializer.append_uint8(flags)
+            && serializer.append_uint16_be(sequence) && serializer.append_uint8(reserved)
+            && serializer.append_uint8(reserved))) {
+        throw std::runtime_error("Unable to serialize");
+    }
+    for (const auto& datum : write_data.data_) {
+        uint32_t address = datum.first;
+        uint32_t value = datum.second;
+        if ((address & 3) != 0) {
+            throw std::runtime_error(
+                fmt::format("Invalid address \"{:#x}\", has to be a multiple of four", address));
+        }
+        if (!(serializer.append_uint32_be(address) && serializer.append_uint32_be(value))) {
+            throw std::runtime_error("Unable to serialize");
+        }
+    }
+    request.resize(serializer.length());
+
+    std::vector<uint8_t> reply(CONTROL_PACKET_SIZE);
+    auto [status, optional_response_code, deserializer] = execute(sequence, request, reply, timeout, lock);
+    if (!status) {
+        // timed out
+        return false;
+    }
+    if (optional_response_code != RESPONSE_SUCCESS) {
+        if (!optional_response_code.has_value()) {
+            if (response_expected) {
+                HSB_LOG_ERROR(
+                    "write_uint32({}) response_code=None", write_data.stringify());
+                return false;
+            }
+        }
+        uint32_t response_code = optional_response_code.value();
+        throw std::runtime_error(
+            fmt::format("write_uint32({}) response_code={:#X}({})", write_data.stringify(),
+                response_code, response_code_description(response_code)));
+    }
+    return true;
 }
 
 bool Hololink::write_uint32_(uint32_t address, uint32_t value,
@@ -412,40 +521,48 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
     return true;
 }
 
+class ReadRetryMonitor {
+public:
+    ReadRetryMonitor(Hololink& hololink)
+        : hololink_(hololink)
+        , retries_(0)
+    {
+    }
+    ~ReadRetryMonitor()
+    {
+        hololink_.add_read_retries(retries_);
+    }
+    void increment()
+    {
+        retries_++;
+    }
+
+protected:
+    Hololink& hololink_;
+    uint32_t retries_;
+};
+
 uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
 {
-    uint32_t count = 0;
-    std::exception_ptr eptr;
     std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
     bool current_sequence_check = sequence_check;
-    try {
-        // HSB only supports a single command/response at a time--
-        // in other words we need to inhibit other threads from sending
-        // a command until we receive the response for the current one.
-        std::lock_guard lock(execute_mutex_);
-        const uint16_t sequence = next_sequence(lock);
-        while (true) {
-            count += 1;
-            auto [status, value] = read_uint32_(address, timeout, sequence, current_sequence_check, lock);
-            if (status) {
-                return value.value();
-            }
-            if (!timeout->retry()) {
-                throw TimeoutError(fmt::format("read_uint32 address={:#x}", address));
-            }
-            current_sequence_check = false;
+    ReadRetryMonitor read_retries(*this);
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+    const uint16_t sequence = next_sequence(lock);
+    while (true) {
+        auto [status, value] = read_uint32_(address, timeout, sequence, current_sequence_check, lock);
+        if (status) {
+            return value.value();
         }
-    } catch (...) {
-        eptr = std::current_exception();
+        if (!timeout->retry()) {
+            throw TimeoutError(fmt::format("read_uint32 address={:#x}", address));
+        }
+        read_retries.increment();
+        current_sequence_check = false;
     }
-
-    assert(count > 0);
-    add_read_retries(count - 1);
-
-    if (eptr) {
-        std::rethrow_exception(eptr);
-    }
-
     return 0;
 }
 
@@ -501,6 +618,118 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
     assert(response_address == address);
     HSB_LOG_DEBUG("read_uint32(address={:#x})={:#x}", address, value);
     return { true, value };
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    if (block_enable_) {
+        return read_uint32_block_(address, count, in_timeout, sequence_check);
+    } else {
+        return read_uint32_(address, count, in_timeout, sequence_check);
+    }
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    std::vector<uint32_t> r(count);
+    bool current_sequence_check = sequence_check;
+    ReadRetryMonitor read_retries(*this);
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+    for (unsigned i = 0, n = 0; n < count; n++, i += 4) {
+        // Timeout has state that changes as it's used, so let's make a new
+        // copy each iteration.
+        std::shared_ptr<Timeout> in_timeout_copy = std::make_shared<Timeout>(*in_timeout);
+        std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout_copy);
+        const uint16_t sequence = next_sequence(lock);
+        while (true) {
+            auto [status, value] = read_uint32_(address + i, timeout, sequence, current_sequence_check, lock);
+            if (status) {
+                r[n] = value.value();
+                break;
+            }
+            if (!timeout->retry()) {
+                r.resize(n);
+                return { false, r };
+            }
+            read_retries.increment();
+            current_sequence_check = false;
+        }
+    }
+    return { true, r };
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_block_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    HSB_LOG_DEBUG("read_uint32_block(address={:#x}, count={:#x})", address, count);
+    if ((address & 3) != 0) {
+        throw std::runtime_error(
+            fmt::format("Invalid address \"{:#x}\", has to be a multiple of four", address));
+    }
+    std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
+    // Serialize
+    std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
+    core::Serializer serializer(request.data(), request.size());
+    uint8_t flags = REQUEST_FLAGS_ACK_REQUEST;
+    if (sequence_check) {
+        flags |= REQUEST_FLAGS_SEQUENCE_CHECK;
+    }
+    std::lock_guard lock(execute_mutex_);
+    const uint16_t sequence = next_sequence(lock);
+    if (!(serializer.append_uint8(RD_BLOCK) && serializer.append_uint8(flags)
+            && serializer.append_uint16_be(sequence) && serializer.append_uint8(0) // reserved
+            && serializer.append_uint8(0))) { // reserved
+        throw std::runtime_error("Unable to serialize");
+    }
+    for (unsigned i = 0; i < count; i++) {
+        if (!(serializer.append_uint32_be(address + i * 4)
+                && serializer.append_uint32_be(0))) {
+            throw std::runtime_error("Unable to serialize addresses");
+        }
+    }
+    request.resize(serializer.length());
+    HSB_LOG_TRACE("read_uint32_block: {}....{}", request, sequence);
+
+    std::vector<uint8_t> reply(CONTROL_PACKET_SIZE);
+    while (true) {
+        auto [status, optional_response_code, deserializer] = execute(sequence, request, reply, timeout, lock);
+        if (!status) {
+            if (!timeout->retry()) {
+                return { false, {} };
+            }
+            // Retry.
+            continue;
+        }
+        if (optional_response_code != RESPONSE_SUCCESS) {
+            uint32_t response_code = optional_response_code.value();
+            throw std::runtime_error(
+                fmt::format("read_uint32 response_code={}({})", response_code, response_code_description(response_code)));
+        }
+        uint8_t reserved;
+        if (!(deserializer->next_uint8(reserved))) { /* reserved */
+            throw std::runtime_error("Unable to deserialize");
+        }
+        std::vector<uint32_t> result(count);
+        for (unsigned i = 0; i < count; i++) {
+            uint32_t response_address;
+            uint32_t value;
+            if (!(deserializer->next_uint32_be(response_address)
+                    && deserializer->next_uint32_be(value))) {
+                throw std::runtime_error("Unable to deserialize block");
+            }
+            if (response_address != (address + i * 4)) {
+                throw std::runtime_error("Unexpected response address");
+            }
+            result[i] = value;
+        }
+        uint16_t latched_sequence;
+        if (!(deserializer->next_uint16_be(latched_sequence))) {
+            throw std::runtime_error("Unable to deserialize latched_sequence");
+        }
+        return { true, result };
+    }
 }
 
 uint16_t Hololink::next_sequence(std::lock_guard<std::mutex>&)
@@ -715,9 +944,22 @@ public:
         }
     }
 
+    void write_uint32(Hololink::WriteData& data, const std::shared_ptr<Timeout>& timeout = nullptr)
+    {
+        bool ok = hololink_.write_uint32(data, timeout);
+        if (!ok) {
+            throw std::runtime_error("SPI controller read failure");
+        }
+    }
+
     uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
     {
         return hololink_.read_uint32(address, timeout);
+    }
+
+    std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout)
+    {
+        return hololink_.read_uint32(address, count, in_timeout);
     }
 
     Hololink::NamedLock& spi_lock()
@@ -776,7 +1018,8 @@ public:
             throw std::runtime_error("Unexpected state; SPI port indicates invalid DONE.");
         }
         // Set the configuration
-        write_uint32(reg_spi_mode_, spi_mode_, timeout);
+        Hololink::WriteData write_data;
+        write_data.queue_write_uint32(reg_spi_mode_, spi_mode_);
         // Set the buffer
         const size_t remaining = write_bytes.size();
         for (size_t index = 0; index < remaining; index += 4) {
@@ -790,17 +1033,18 @@ public:
             if ((index + 3) < remaining) {
                 value |= (write_bytes[index + 3] << 24);
             }
-            write_uint32(reg_data_buffer_ + index, value, timeout);
+            write_data.queue_write_uint32(reg_data_buffer_ + index, value);
         }
         // write the num_bytes; note that these are 9-bit values that top
         // out at (buffer_size=256) (length checked above)
         const uint32_t num_bytes = (write_byte_count << 0) | (read_byte_count << 16);
-        write_uint32(reg_num_bytes_, num_bytes, timeout);
+        write_data.queue_write_uint32(reg_num_bytes_, num_bytes);
         const uint32_t num_cmd_bytes = turnaround_cycles_ | (write_command_count << 8);
-        write_uint32(reg_num_cmd_bytes_, num_cmd_bytes, timeout);
-        write_uint32(reg_bus_en_, bus_number_, timeout);
+        write_data.queue_write_uint32(reg_num_cmd_bytes_, num_cmd_bytes);
+        write_data.queue_write_uint32(reg_bus_en_, bus_number_);
         // start the SPI transaction.
-        write_uint32(reg_control_, SPI_START, timeout);
+        write_data.queue_write_uint32(reg_control_, SPI_START);
+        write_uint32(write_data, timeout);
         // wait until we see done, which may be immediately
         while (true) {
             value = read_uint32(reg_status_, timeout);
@@ -818,9 +1062,14 @@ public:
         hololink_.write_uint32(reg_control_, 0);
         // </WORKAROUND>
         // round up to get the whole next word
+        uint32_t read_words = (read_byte_total + 3) / 4;
+        auto [status, content] = read_uint32(reg_data_buffer_, read_words, timeout);
+        if (!status) {
+            throw std::runtime_error("Failed to read SPI data buffer");
+        }
         std::vector<uint8_t> r(read_byte_total + 3);
-        for (uint32_t i = 0; i < read_byte_total; i += 4) {
-            value = read_uint32(reg_data_buffer_ + i, timeout);
+        for (uint32_t i = 0, n = 0; i < read_byte_total; i += 4, n++) {
+            value = content[n];
             r[i + 0] = (value >> 0) & 0xFF;
             r[i + 1] = (value >> 8) & 0xFF;
             r[i + 2] = (value >> 16) & 0xFF;
@@ -897,7 +1146,7 @@ public:
     {
     }
 
-    void write_uint32(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout)
+    void write_uint32(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout = nullptr)
     {
         bool ok = hololink_.write_uint32(address, value, timeout);
         if (!ok) {
@@ -906,23 +1155,17 @@ public:
         }
     }
 
-    uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
+    void write_uint32(Hololink::WriteData& data, const std::shared_ptr<Timeout>& timeout = nullptr)
     {
-        return hololink_.read_uint32(address, timeout);
-    }
-
-    void write_uint32(uint32_t address, uint32_t value)
-    {
-        bool ok = hololink_.write_uint32(address, value);
+        bool ok = hololink_.write_uint32(data, timeout);
         if (!ok) {
-            throw std::runtime_error(
-                fmt::format("ACK failure writing I2C register {:#x}.", address));
+            throw std::runtime_error("I2C ACK failure");
         }
     }
 
-    uint32_t read_uint32(uint32_t address)
+    uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout = nullptr)
     {
-        return hololink_.read_uint32(address);
+        return hololink_.read_uint32(address, timeout);
     }
 
     bool set_i2c_clock() override
@@ -946,18 +1189,20 @@ public:
             *sequencer, peripheral_i2c_address, write_bytes, read_byte_count);
         std::lock_guard lock(i2c_lock());
         sequencer->enable();
-        hololink_.configure_apb_event(Hololink::Event::I2C_BUSY);
-        write_uint32(CTRL_EVT_SW_EVENT, 1);
-        write_uint32(CTRL_EVT_SW_EVENT, 0);
+        Hololink::WriteData write_data;
+        hololink_.configure_apb_event(write_data, Hololink::Event::I2C_BUSY);
+        write_data.queue_write_uint32(CTRL_EVT_SW_EVENT, 1);
+        write_data.queue_write_uint32(CTRL_EVT_SW_EVENT, 0);
         uint32_t status_cache = sequencer->location() + status_index * 4;
         std::shared_ptr<Timeout> timeout = Timeout::i2c_timeout(in_timeout);
         if (timeout->trigger_s() > APB_TIMEOUT_MAX) {
-            write_uint32(CTRL_EVT_APB_TIMEOUT,
+            write_data.queue_write_uint32(CTRL_EVT_APB_TIMEOUT,
                 static_cast<uint32_t>(APB_TIMEOUT_MAX * APB_TIMEOUT_SCALE));
         } else {
-            write_uint32(CTRL_EVT_APB_TIMEOUT,
+            write_data.queue_write_uint32(CTRL_EVT_APB_TIMEOUT,
                 static_cast<uint32_t>(timeout->trigger_s() * APB_TIMEOUT_SCALE));
         }
+        write_uint32(write_data);
         // Poll until done.  Future version will have an event packet too.
         uint32_t value;
         while (true) {
@@ -1574,47 +1819,47 @@ void Hololink::configure_hsb()
     }
 }
 
-void Hololink::configure_apb_event(Event event, uint32_t handler, bool rising_edge)
+void Hololink::configure_apb_event(WriteData& write_data, Event event, uint32_t handler, bool rising_edge)
 {
-    clear_apb_event(event);
+    clear_apb_event(write_data, event);
 
     // Set the pointer
     if (handler == 0) {
-        write_uint32(APB_RAM + event * 4, null_sequence_location_);
+        write_data.queue_write_uint32(APB_RAM + event * 4, null_sequence_location_);
     } else {
-        write_uint32(APB_RAM + event * 4, handler);
+        write_data.queue_write_uint32(APB_RAM + event * 4, handler);
     }
     // Trigger on the event
     uint32_t mask = 1 << event;
     if (rising_edge) {
         control_event_rising_cache_ |= mask;
-        write_uint32(CTRL_EVT_RISING, control_event_rising_cache_);
+        write_data.queue_write_uint32(CTRL_EVT_RISING, control_event_rising_cache_);
     } else {
         control_event_falling_cache_ |= mask;
-        write_uint32(CTRL_EVT_FALLING, control_event_falling_cache_);
+        write_data.queue_write_uint32(CTRL_EVT_FALLING, control_event_falling_cache_);
     }
     control_event_apb_interrupt_enable_cache_ |= mask;
-    write_uint32(CTRL_EVT_APB_INTERRUPT_EN, control_event_apb_interrupt_enable_cache_);
+    write_data.queue_write_uint32(CTRL_EVT_APB_INTERRUPT_EN, control_event_apb_interrupt_enable_cache_);
 }
 
-void Hololink::clear_apb_event(Hololink::Event event)
+void Hololink::clear_apb_event(WriteData& write_data, Hololink::Event event)
 {
     // Quiesce the event
     uint32_t mask = 1 << event;
     if (control_event_apb_interrupt_enable_cache_ & mask) {
         control_event_apb_interrupt_enable_cache_ &= ~mask;
-        write_uint32(CTRL_EVT_APB_INTERRUPT_EN, control_event_apb_interrupt_enable_cache_);
+        write_data.queue_write_uint32(CTRL_EVT_APB_INTERRUPT_EN, control_event_apb_interrupt_enable_cache_);
     }
     if (control_event_rising_cache_ & mask) {
         control_event_rising_cache_ &= ~mask;
-        write_uint32(CTRL_EVT_RISING, control_event_rising_cache_);
+        write_data.queue_write_uint32(CTRL_EVT_RISING, control_event_rising_cache_);
     }
     if (control_event_falling_cache_ & mask) {
         control_event_falling_cache_ &= ~mask;
-        write_uint32(CTRL_EVT_FALLING, control_event_falling_cache_);
+        write_data.queue_write_uint32(CTRL_EVT_FALLING, control_event_falling_cache_);
     }
-    write_uint32(CTRL_EVT_CLEAR, 1 << event);
-    write_uint32(CTRL_EVT_CLEAR, 0x0000'0000);
+    write_data.queue_write_uint32(CTRL_EVT_CLEAR, 1 << event);
+    write_data.queue_write_uint32(CTRL_EVT_CLEAR, 0x0000'0000);
 }
 
 void Hololink::async_event_thread()
@@ -1768,11 +2013,13 @@ void Hololink::Sequencer::write(Hololink& hololink)
     if (!address_set_) {
         throw std::runtime_error(fmt::format("Sequencer address not set; call assign_location() before calling write()."));
     }
+    Hololink::WriteData data;
     unsigned address = address_;
     for (const auto& item : buffer_) {
-        hololink.write_uint32(address, item);
+        data.queue_write_uint32(address, item);
         address += 4;
     }
+    hololink.write_uint32(data);
     written_ = true;
 }
 
@@ -1898,6 +2145,19 @@ void Hololink::PtpSynchronizer::shutdown()
 bool Hololink::PtpSynchronizer::is_enabled()
 {
     return true;
+}
+
+std::string Hololink::WriteData::stringify()
+{
+    std::string message;
+    unsigned count = 0;
+    for (const auto& datum : data_) {
+        uint32_t address = datum.first;
+        uint32_t value = datum.second;
+        message += (count ? "," : "") + fmt::format("({:#x},{:#x})", address, value);
+        count++;
+    }
+    return message;
 }
 
 } // namespace hololink

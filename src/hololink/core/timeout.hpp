@@ -39,6 +39,7 @@ public:
      * @param retry_s duration in seconds before retry, a value of 0.f means no retries
      */
     explicit Timeout(float timeout_s, float retry_s = 0.f);
+    explicit Timeout(const Timeout& source);
     Timeout() = delete;
 
     /**

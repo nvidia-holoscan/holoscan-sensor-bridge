@@ -162,7 +162,8 @@ PYBIND11_MODULE(_hololink_core, m)
                 return py::memoryview::from_memory(pointer, sizeof(uint8_t) * n);
             },
             "n"_a)
-        .def("position", &Deserializer::position);
+        .def("position", &Deserializer::position)
+        .def("reset", &Deserializer::reset, "position"_a = 0);
 
     py::class_<WrappedSerializer>(m, "Serializer")
         .def(py::init([](py::buffer buffer) {
