@@ -620,6 +620,118 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
     return { true, value };
 }
 
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    if (block_enable_) {
+        return read_uint32_block_(address, count, in_timeout, sequence_check);
+    } else {
+        return read_uint32_(address, count, in_timeout, sequence_check);
+    }
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    std::vector<uint32_t> r(count);
+    bool current_sequence_check = sequence_check;
+    ReadRetryMonitor read_retries(*this);
+    // HSB only supports a single command/response at a time--
+    // in other words we need to inhibit other threads from sending
+    // a command until we receive the response for the current one.
+    std::lock_guard lock(execute_mutex_);
+    for (unsigned i = 0, n = 0; n < count; n++, i += 4) {
+        // Timeout has state that changes as it's used, so let's make a new
+        // copy each iteration.
+        std::shared_ptr<Timeout> in_timeout_copy = std::make_shared<Timeout>(*in_timeout);
+        std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout_copy);
+        const uint16_t sequence = next_sequence(lock);
+        while (true) {
+            auto [status, value] = read_uint32_(address + i, timeout, sequence, current_sequence_check, lock);
+            if (status) {
+                r[n] = value.value();
+                break;
+            }
+            if (!timeout->retry()) {
+                r.resize(n);
+                return { false, r };
+            }
+            read_retries.increment();
+            current_sequence_check = false;
+        }
+    }
+    return { true, r };
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_block_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+{
+    HSB_LOG_DEBUG("read_uint32_block(address={:#x}, count={:#x})", address, count);
+    if ((address & 3) != 0) {
+        throw std::runtime_error(
+            fmt::format("Invalid address \"{:#x}\", has to be a multiple of four", address));
+    }
+    std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
+    // Serialize
+    std::vector<uint8_t> request(CONTROL_PACKET_SIZE);
+    core::Serializer serializer(request.data(), request.size());
+    uint8_t flags = REQUEST_FLAGS_ACK_REQUEST;
+    if (sequence_check) {
+        flags |= REQUEST_FLAGS_SEQUENCE_CHECK;
+    }
+    std::lock_guard lock(execute_mutex_);
+    const uint16_t sequence = next_sequence(lock);
+    if (!(serializer.append_uint8(RD_BLOCK) && serializer.append_uint8(flags)
+            && serializer.append_uint16_be(sequence) && serializer.append_uint8(0) // reserved
+            && serializer.append_uint8(0))) { // reserved
+        throw std::runtime_error("Unable to serialize");
+    }
+    for (unsigned i = 0; i < count; i++) {
+        if (!(serializer.append_uint32_be(address + i * 4)
+                && serializer.append_uint32_be(0))) {
+            throw std::runtime_error("Unable to serialize addresses");
+        }
+    }
+    request.resize(serializer.length());
+    HSB_LOG_TRACE("read_uint32_block: {}....{}", request, sequence);
+
+    std::vector<uint8_t> reply(CONTROL_PACKET_SIZE);
+    while (true) {
+        auto [status, optional_response_code, deserializer] = execute(sequence, request, reply, timeout, lock);
+        if (!status) {
+            if (!timeout->retry()) {
+                return { false, {} };
+            }
+            // Retry.
+            continue;
+        }
+        if (optional_response_code != RESPONSE_SUCCESS) {
+            uint32_t response_code = optional_response_code.value();
+            throw std::runtime_error(
+                fmt::format("read_uint32 response_code={}({})", response_code, response_code_description(response_code)));
+        }
+        uint8_t reserved;
+        if (!(deserializer->next_uint8(reserved))) { /* reserved */
+            throw std::runtime_error("Unable to deserialize");
+        }
+        std::vector<uint32_t> result(count);
+        for (unsigned i = 0; i < count; i++) {
+            uint32_t response_address;
+            uint32_t value;
+            if (!(deserializer->next_uint32_be(response_address)
+                    && deserializer->next_uint32_be(value))) {
+                throw std::runtime_error("Unable to deserialize block");
+            }
+            if (response_address != (address + i * 4)) {
+                throw std::runtime_error("Unexpected response address");
+            }
+            result[i] = value;
+        }
+        uint16_t latched_sequence;
+        if (!(deserializer->next_uint16_be(latched_sequence))) {
+            throw std::runtime_error("Unable to deserialize latched_sequence");
+        }
+        return { true, result };
+    }
+}
+
 uint16_t Hololink::next_sequence(std::lock_guard<std::mutex>&)
 {
     uint16_t r = sequence_;
@@ -832,9 +944,22 @@ public:
         }
     }
 
+    void write_uint32(Hololink::WriteData& data, const std::shared_ptr<Timeout>& timeout = nullptr)
+    {
+        bool ok = hololink_.write_uint32(data, timeout);
+        if (!ok) {
+            throw std::runtime_error("SPI controller read failure");
+        }
+    }
+
     uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
     {
         return hololink_.read_uint32(address, timeout);
+    }
+
+    std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout)
+    {
+        return hololink_.read_uint32(address, count, in_timeout);
     }
 
     Hololink::NamedLock& spi_lock()
@@ -893,7 +1018,8 @@ public:
             throw std::runtime_error("Unexpected state; SPI port indicates invalid DONE.");
         }
         // Set the configuration
-        write_uint32(reg_spi_mode_, spi_mode_, timeout);
+        Hololink::WriteData write_data;
+        write_data.queue_write_uint32(reg_spi_mode_, spi_mode_);
         // Set the buffer
         const size_t remaining = write_bytes.size();
         for (size_t index = 0; index < remaining; index += 4) {
@@ -907,17 +1033,18 @@ public:
             if ((index + 3) < remaining) {
                 value |= (write_bytes[index + 3] << 24);
             }
-            write_uint32(reg_data_buffer_ + index, value, timeout);
+            write_data.queue_write_uint32(reg_data_buffer_ + index, value);
         }
         // write the num_bytes; note that these are 9-bit values that top
         // out at (buffer_size=256) (length checked above)
         const uint32_t num_bytes = (write_byte_count << 0) | (read_byte_count << 16);
-        write_uint32(reg_num_bytes_, num_bytes, timeout);
+        write_data.queue_write_uint32(reg_num_bytes_, num_bytes);
         const uint32_t num_cmd_bytes = turnaround_cycles_ | (write_command_count << 8);
-        write_uint32(reg_num_cmd_bytes_, num_cmd_bytes, timeout);
-        write_uint32(reg_bus_en_, bus_number_, timeout);
+        write_data.queue_write_uint32(reg_num_cmd_bytes_, num_cmd_bytes);
+        write_data.queue_write_uint32(reg_bus_en_, bus_number_);
         // start the SPI transaction.
-        write_uint32(reg_control_, SPI_START, timeout);
+        write_data.queue_write_uint32(reg_control_, SPI_START);
+        write_uint32(write_data, timeout);
         // wait until we see done, which may be immediately
         while (true) {
             value = read_uint32(reg_status_, timeout);
@@ -935,9 +1062,14 @@ public:
         hololink_.write_uint32(reg_control_, 0);
         // </WORKAROUND>
         // round up to get the whole next word
+        uint32_t read_words = (read_byte_total + 3) / 4;
+        auto [status, content] = read_uint32(reg_data_buffer_, read_words, timeout);
+        if (!status) {
+            throw std::runtime_error("Failed to read SPI data buffer");
+        }
         std::vector<uint8_t> r(read_byte_total + 3);
-        for (uint32_t i = 0; i < read_byte_total; i += 4) {
-            value = read_uint32(reg_data_buffer_ + i, timeout);
+        for (uint32_t i = 0, n = 0; i < read_byte_total; i += 4, n++) {
+            value = content[n];
             r[i + 0] = (value >> 0) & 0xFF;
             r[i + 1] = (value >> 8) & 0xFF;
             r[i + 2] = (value >> 16) & 0xFF;

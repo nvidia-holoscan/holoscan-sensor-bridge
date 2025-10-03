@@ -364,6 +364,8 @@ public:
         return read_uint32(address, timeout);
     }
 
+    std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
+
     /**
      * @brief Setup the clock
      *
@@ -887,6 +889,9 @@ private:
     bool write_uint32_(uint32_t address, uint32_t value, const std::shared_ptr<Timeout>& timeout, bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
     std::tuple<bool, std::optional<uint32_t>> read_uint32_(
         uint32_t address, const std::shared_ptr<Timeout>& timeout, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);
+    // Read a block of data using individual RD_DWORD commands
+    std::tuple<bool, std::vector<uint32_t>> read_uint32_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
+    std::tuple<bool, std::vector<uint32_t>> read_uint32_block_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
 
     void add_read_retries(uint32_t n);
     void add_write_retries(uint32_t n);
