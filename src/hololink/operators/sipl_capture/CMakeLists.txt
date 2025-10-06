@@ -28,9 +28,10 @@ target_link_directories(sipl_capture
 
 target_link_libraries(sipl_capture
   PUBLIC
-    hololink
-  PRIVATE
+    hololink::core
     holoscan::core
+  PRIVATE
+    GXF::multimedia
     nvbufsurface
     nvfusacapinterface
     nvrm_surface
