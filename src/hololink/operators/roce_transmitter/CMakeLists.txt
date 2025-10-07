@@ -27,7 +27,7 @@ add_library(hololink::operators::roce_transmitter ALIAS roce_transmitter)
 target_include_directories(roce_transmitter
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     ${ibverbs_INCLUDE_DIRS}
 )
 
@@ -40,10 +40,12 @@ target_link_libraries(roce_transmitter
 )
 
 # Installation of the roce_transmitter operator
+set_target_properties(roce_transmitter PROPERTIES EXPORT_NAME operators::roce_transmitter)
 install(TARGETS roce_transmitter
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-roce-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/roce_transmitter_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/roce_transmitter
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/roce_transmitter
         COMPONENT hololink-roce-operators)

@@ -60,6 +60,9 @@ endif()
 if(NOT CMAKE_INSTALL_BINDIR)
   set(CMAKE_INSTALL_BINDIR bin)
 endif()
+if(NOT CMAKE_INSTALL_INCLUDEDIR)
+  set(CMAKE_INSTALL_INCLUDEDIR include)
+endif()
 
 # Add subdirectories based on the build options
 add_subdirectory(src)
@@ -81,3 +84,6 @@ endif()
 
 # Add packaging
 include(cmake/HololinkCPack.cmake)
+
+# Add export
+include(cmake/HololinkExport.cmake)

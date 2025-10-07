@@ -25,7 +25,7 @@ add_library(hololink::operators::iq_dec ALIAS iq_dec)
 target_include_directories(iq_dec
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(iq_dec
@@ -36,11 +36,12 @@ target_link_libraries(iq_dec
 )
 
 # Installation of the iq_dec operator
+set_target_properties(iq_dec PROPERTIES EXPORT_NAME operators::iq_dec)
 install(TARGETS iq_dec
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/iq_dec_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/iq_dec
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/iq_dec
         COMPONENT hololink-operators)
-

@@ -39,14 +39,15 @@ target_link_libraries(hololink_core
 )
 
 target_include_directories(hololink_core
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..
-  INTERFACE
+  PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
-    $<INSTALL_INTERFACE:src>
-  )
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 
 # Installation of the hololink_core library
+set_target_properties(hololink_core PROPERTIES EXPORT_NAME core)
 install(TARGETS hololink_core
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-core)
 

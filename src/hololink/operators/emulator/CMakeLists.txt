@@ -25,7 +25,7 @@ add_library(hololink::operators::emulator ALIAS emulator)
 target_include_directories(emulator
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(emulator
@@ -35,11 +35,12 @@ target_link_libraries(emulator
     holoscan::core
 )
 
+set_target_properties(emulator PROPERTIES EXPORT_NAME operators::emulator)
 install(TARGETS emulator
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_data_plane_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/emulator
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/emulator
         COMPONENT hololink-operators)
-

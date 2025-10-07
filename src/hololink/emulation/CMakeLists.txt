@@ -37,11 +37,10 @@ find_package(ZLIB REQUIRED)
 
 target_include_directories(emulation
   PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    ${CMAKE_CURRENT_SOURCE_DIR}
-  INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
-    $<INSTALL_INTERFACE:src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
 )
 
 target_link_libraries(emulation
@@ -52,6 +51,7 @@ target_link_libraries(emulation
 )
 
 install(TARGETS emulation
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-emulation)
 
@@ -64,5 +64,5 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/base_transmitter.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/mem_register.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/net.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/utils.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/emulation
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation
         COMPONENT hololink-emulation)

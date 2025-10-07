@@ -27,7 +27,7 @@ add_library(hololink::operators::roce_receiver ALIAS roce_receiver)
 target_include_directories(roce_receiver
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
     ${ibverbs_INCLUDE_DIRS}
   )
 
@@ -40,10 +40,14 @@ target_link_libraries(roce_receiver
   )
 
 # Installation of the roce_receiver operator
+set_target_properties(roce_receiver PROPERTIES EXPORT_NAME operators::roce_receiver)
 install(TARGETS roce_receiver
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-roce-operators)
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/roce_receiver_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/roce_receiver
+install(FILES
+          ${CMAKE_CURRENT_SOURCE_DIR}/roce_receiver.hpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/roce_receiver_op.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/roce_receiver
         COMPONENT hololink-roce-operators)
