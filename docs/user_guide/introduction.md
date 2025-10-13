@@ -5,18 +5,19 @@
 Holoscan Sensor Bridge provides an FPGA based interface for low-latency sensor data
 processing using GPUs. Peripheral device data is acquired by the Holoscan Sensor Bridge
 device FPGA and sent via UDP over Ethernet to the host system. In systems like
-[IGX Devkit](https://www.nvidia.com/en-us/edge-computing/products/igx),
+[IGX Devkit](https://www.nvidia.com/en-us/edge-computing/products/igx) or
+[DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/),
 [ConnectX SmartNIC](https://www.nvidia.com/content/dam/en-zz/Solutions/networking/ethernet-adapters/connectx-7-datasheet-Final.pdf)
 interfaces can greatly lower latency by writing that UDP data directly into GPU memory.
 Holoscan Sensor Bridge host software supports integrating received sensor data into
 [Holoscan](http://docs.nvidia.com/holoscan/sdk-user-guide) pipelines; examples are
 provided showing video processing and inference based on a Sony IMX274 camera. This
-configuration can be connected to an
-[IGX](https://www.nvidia.com/en-us/edge-computing/products/igx) or
-[Jetson AGX Orin](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html)
-or
-[Jetson AGX Thor](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/)
-edge compute system. Additionally:
+configuration can be connected to
+[IGX](https://www.nvidia.com/en-us/edge-computing/products/igx),
+[Jetson AGX Orin](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html),
+[Jetson AGX Thor](https://www.nvidia.com/en-us/autonomous-machines/embedded-systems/jetson-thor/),
+or [DGX Spark](https://www.nvidia.com/en-us/products/workstations/dgx-spark/) compute
+systems. Additionally:
 
 - Holoscan Sensor Bridge supports hosts with or without accelerated RDMA capable NICs.
   For unaccelerated configurations, like
@@ -24,7 +25,7 @@ edge compute system. Additionally:
   support is provided using Linux socket based Ethernet connections.
 - Appropriately enabled host systems can support high accuracy PTP timestamps; these can
   be used to record the time at which data was received, measure data and pipeline
-  latency, and synchronize sensor behavior. Both IGX and Orin AGX systems have hardware
+  latency, and synchronize sensor behavior. Both IGX and AGX Orin systems have hardware
   PTP support in on-board network interfaces.
 
 ## Software
@@ -84,8 +85,8 @@ do not include application specific behavior.
 Holoscan Sensor Bridge software can be run on any system that is supported by NVIDIA
 [Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_core.html). For the
 best performance, an [IGX](https://www.nvidia.com/en-us/edge-computing/products/igx)
-system, using
+system using
 [ConnectX SmartNICs](https://www.nvidia.com/content/dam/en-zz/Solutions/networking/ethernet-adapters/connectx-7-datasheet-Final.pdf)
-are recommended. In systems without ConnectX NICs, such as the
+is recommended. In systems without ConnectX NICs, such as the
 [Jetson AGX Orin](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html),
 performance is limited by the host OS network stack.

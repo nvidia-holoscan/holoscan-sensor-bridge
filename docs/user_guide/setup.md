@@ -9,9 +9,12 @@ Holoscan sensor bridge is supported on the following configurations:
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
-- Thor systems running [JP7.0.0](https://developer.nvidia.com/embedded/jetpack) with
+- AGX Thor systems running [JP7.0.0](https://developer.nvidia.com/embedded/jetpack) with
   MGBE SmartNIC device and CoE transport. JP7.0.0 release currently supports only the
   [Leopard imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md).
+- DGX Spark systems running
+  [DGX OS 7.2.3](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
+  CX7 SmartNIC devices.
 
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
 configure a few prerequisites in your host system. While holoscan sensor bridge
@@ -31,7 +34,7 @@ remembered across power cycles and therefore only need to be set up once.
 - Grant your user permission to the docker subsystem:
 
   ```none
-  $ sudo usermod -aG docker $USER
+  sudo usermod -aG docker $USER
   ```
 
   Reboot the computer to activate this setting.
@@ -39,11 +42,10 @@ remembered across power cycles and therefore only need to be set up once.
 Next, follow the directions on the appropriate tab below to configure your Orin host
 system.
 
-**For Thor host setup, please follow the instructions on the
+**For AGX Thor host setup and applications, please follow the instructions on the
 [Thor Host Setup](thor-jp7-setup.md) page.**
 
-**Please note that the instructions below and the examples in the following pages are
-intended for Orin platforms (IGX/AGX) and will not work with Thor in this release.**
+**For all other host systems' setup, continue with the appropriate tab.**
 
 `````{tab-set}
 ````{tab-item} IGX
@@ -54,7 +56,7 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   <img src="igx-rear-qsfp0.png" alt="IGX QSFP0" width="75%"/>
 
   ```none
-  $ ls /sys/class/infiniband
+  ls /sys/class/infiniband
   roceP5p3s0f0 roceP5p3s0f1
   ```
 
@@ -63,9 +65,9 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   that name to the variable `$IN0`.
 
   ```none
-  $ IN=(/sys/class/infiniband/*)
-  $ IN0=`basename ${IN[0]}`
-  $ echo $IN0
+  LC_COLLATE=C IN=(/sys/class/infiniband/*)
+  IN0=`basename ${IN[0]}`
+  echo $IN0
   roceP5p3s0f0
   ```
 
@@ -73,8 +75,8 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   that to the variable `$EN0`, which we'll use later during network configuration.
 
   ```none
-  $ EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
-  $ echo $EN0
+  EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
+  echo $EN0
   enP5p3s0f0np0
   ```
 
@@ -89,17 +91,17 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   way.)
 
   ```none
-  $ sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
-  $ sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
-  $ sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
-  $ sudo nmcli connection up hololink-$EN0
+  sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
+  sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
+  sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
+  sudo nmcli connection up hololink-$EN0
   ```
 
   Apply power to the sensor bridge device, ensure that it's properly connected, then
   `ping 192.168.0.2` to check connectivity:
 
   ```none
-  $ ping 192.168.0.2
+  ping 192.168.0.2
   PING 192.168.0.2 (192.168.0.2) 56(84) bytes of data.
   64 bytes from 192.168.0.2: icmp_seq=1 ttl=64 time=0.225 ms
   64 bytes from 192.168.0.2: icmp_seq=2 ttl=64 time=0.081 ms
@@ -123,11 +125,11 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   `$EN0` above,
 
   ```none
-  $ IN1=`basename ${IN[1]}`
-  $ echo $IN1
+  IN1=`basename ${IN[1]}`
+  echo $IN1
   roceP5p3s0f1
-  $ EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
-  $ echo $EN1
+  EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
+  echo $EN1
   enP5p3s0f1np1
   ```
 
@@ -135,16 +137,16 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   with an appropriate address and permanent route:
 
   ```none
-  $ sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
-  $ sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
-  $ sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
-  $ sudo nmcli connection up hololink-$EN1
+  sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
+  sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
+  sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
+  sudo nmcli connection up hololink-$EN1
   ```
 
   Now test the second connection with `ping 192.168.0.3`:
 
   ```none
-  $ ping 192.168.0.3
+  ping 192.168.0.3
   PING 192.168.0.3 (192.168.0.3) 56(84) bytes of data.
   64 bytes from 192.168.0.3: icmp_seq=1 ttl=64 time=0.210 ms
   64 bytes from 192.168.0.3: icmp_seq=2 ttl=64 time=0.271 ms
@@ -161,7 +163,7 @@ intended for Orin platforms (IGX/AGX) and will not work with Thor in this releas
   pings as appropriate.
 
 ````
-````{tab-item} AGX
+````{tab-item} AGX Orin
 
 Demos and examples in this package assume a sensor bridge device is connected to `eno1`,
 which is the RJ45 connector on the AGX Orin.
@@ -269,6 +271,119 @@ which is the RJ45 connector on the AGX Orin.
 
 
 ````
+````{tab-item} DGX Spark
+
+- Determine the name of the network device associated with the first CX7 port. This is
+  the leftmost QSFP port when looking at the back of the DGX Spark unit ("port 0" in the image below).
+
+  <img src="dgx_spark_backpanel_annotated.png" alt="DGX Spark CX7 QSFP Ports" width="75%"/>
+
+  ```none
+  ls /sys/class/infiniband
+  roceP5p3s0f0 roceP5p3s0f1
+  ```
+
+  This will produce a list of CX7 ports; your device names may vary. The lowest
+  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port.  Let's assign
+  that name to the variable `$IN0`.
+
+  ```none
+  LC_COLLATE=C IN=(/sys/class/infiniband/*)
+  IN0=`basename ${IN[0]}`
+  echo $IN0
+  roceP5p3s0f0
+  ```
+
+  Next, determine which host ethernet port is associated with that device, and assign
+  that to the variable `$EN0`, which we'll use later during network configuration.
+
+  ```none
+  EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
+  echo $EN0
+  enP5p3s0f0np0
+  ```
+
+  In summary, the host network interface associated with `$IN0` (`roceP5p3s0f0`) is
+  `$EN0` (`enP5p3s0f0np0`); your specific device names may vary.
+
+- DGX OS uses NetworkManager to configure network interfaces. By default, the sensor
+  bridge device uses the address 192.168.0.2 for the first port. Set up your first
+  ethernet device (`$EN0`) to use the address 192.168.0.101 with a permanent route
+  to 192.168.0.2: ([Here](notes.md#holoscan-sensor-bridge-ip-address-configuration) is more information
+  about configuring your system if you cannot use the 192.168.0.0/24 network in this
+  way.)
+
+  ```none
+  sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
+  sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
+  sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
+  sudo nmcli connection up hololink-$EN0
+  ```
+
+  Apply power to the sensor bridge device, ensure that it's properly connected, then
+  `ping 192.168.0.2` to check connectivity:
+
+  ```none
+  ping 192.168.0.2
+  PING 192.168.0.2 (192.168.0.2) 56(84) bytes of data.
+  64 bytes from 192.168.0.2: icmp_seq=1 ttl=64 time=0.225 ms
+  64 bytes from 192.168.0.2: icmp_seq=2 ttl=64 time=0.081 ms
+  64 bytes from 192.168.0.2: icmp_seq=3 ttl=64 time=0.088 ms
+  64 bytes from 192.168.0.2: icmp_seq=4 ttl=64 time=0.132 ms
+  ^C
+  --- 192.168.0.2 ping statistics ---
+  4 packets transmitted, 4 received, 0% packet loss, time 3057ms
+  rtt min/avg/max/mdev = 0.081/0.131/0.225/0.057 ms
+  ```
+
+- The second SFP+ connector on the sensor bridge device is used to transmit data
+  acquired from the second camera on a stereo camera module (like the IMX274). By
+  default, the sensor bridge device uses the address 192.168.0.3 for that second port.
+  Connect the second DGX Spark QSFP port ("port 1" in the image above) to the second
+  SFP+ port on the sensor bridge device.
+
+  Let's refer to these as `$IN1` and `$EN1`.  Given the commands to assign `$IN0` and
+  `$EN0` above,
+
+  ```none
+  IN1=`basename ${IN[1]}`
+  echo $IN1
+  roceP5p3s0f1
+  EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
+  echo $EN1
+  enP5p3s0f1np1
+  ```
+
+  As above, your device names may be different.  Configure the second QSFP network port
+  with an appropriate address and permanent route:
+
+  ```none
+  sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
+  sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
+  sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
+  sudo nmcli connection up hololink-$EN1
+  ```
+
+  Now test the second connection with `ping 192.168.0.3`:
+
+  ```none
+  ping 192.168.0.3
+  PING 192.168.0.3 (192.168.0.3) 56(84) bytes of data.
+  64 bytes from 192.168.0.3: icmp_seq=1 ttl=64 time=0.210 ms
+  64 bytes from 192.168.0.3: icmp_seq=2 ttl=64 time=0.271 ms
+  64 bytes from 192.168.0.3: icmp_seq=3 ttl=64 time=0.181 ms
+  64 bytes from 192.168.0.3: icmp_seq=4 ttl=64 time=0.310 ms
+  64 bytes from 192.168.0.3: icmp_seq=5 ttl=64 time=0.258 ms
+  ^C
+  --- 192.168.0.3 ping statistics ---
+  5 packets transmitted, 5 received, 0% packet loss, time 4102ms
+  rtt min/avg/max/mdev = 0.181/0.246/0.310/0.045 ms
+  ```
+
+  When the second port is configured, the first port should continue to respond to
+  pings as appropriate.
+
+````
 `````
 
 Now, for all configurations,
@@ -371,7 +486,7 @@ Now, for all configurations,
   - Use your API key to log in to nvcr.io:
 
     ```none
-    $ docker login nvcr.io
+    docker login nvcr.io
     Username: $oauthtoken
     Password: <Your token key to NGC>
     WARNING! Your password will be stored unencrypted in /home/<user>/.docker/config.json.

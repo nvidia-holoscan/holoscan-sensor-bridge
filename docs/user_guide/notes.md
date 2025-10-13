@@ -117,7 +117,7 @@ expected; for examples on how to permanently configure routes, see the
 ## Network cables and adapters
 
 Please use one of the following cables to connect the sensor bridge SPF+ to the **IGX
-devkit** QSFP port:
+devkit** or DGX Spark QSFP port:
 
 1. [Fiber optic cable](https://www.amazon.com/FLYPROFiber-10ft-4pack-Fiber-Length-Options/dp/B089K1J5GG)
    with

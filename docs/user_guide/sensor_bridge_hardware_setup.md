@@ -55,15 +55,20 @@ width="100%"/>
    For configurations using the second camera in the stereo camera pair, connect the SFP
    port labelled "SFP+ 1" to the unconnected QSFP port on the back of IGX.
 
-1. For AGX Orin Devkit, connect to the 10G Ethernet port (marked 'H' in the image
+2. For DGX Spark, connect the "SFP+ 0" port on the HSB to the "CX7 QSFP port 0" shown below. For configurations using the second camera in the stereo camera pair, connect the "SFP+ 1" port on the HSB to the "CX7 QSFP port 1".
+
+   <img src="dgx_spark_backpanel_annotated.png" alt="DGX Spark CX7 QSFP Ports" width="75%"/>
+
+3. For AGX Orin Devkit, connect to the 10G Ethernet port (marked 'H' in the image
    below).
 
    <img src="jetson_agx_ports.png" alt="Jetson AGX Orin Ports" width="90%"/>
 
-1. Connect a USB-C power supply with a minimum of 12V/2A to the USB-C power connector of
+4. Connect a USB-C power supply with a minimum of 12V/2A to the USB-C power connector of
    the sensor bridge device and wait for the green LEDs on the sensor bridge board to
    light up.
-4. For more details see the [Lattice CPNX100-ETH-SENSOR-BRIDGE](https://www.latticesemi.com/products/designsoftwareandip/intellectualproperty/referencedesigns/referencedesigns05/lattice-nvidia-edge-ai)
+
+5. For more details see the [Lattice CPNX100-ETH-SENSOR-BRIDGE](https://www.latticesemi.com/products/designsoftwareandip/intellectualproperty/referencedesigns/referencedesigns05/lattice-nvidia-edge-ai)
 
 Follow the instructions in the [setup page](setup.md) to configure your host system.
 
