@@ -28,15 +28,26 @@ add_library(hololink::sensors::camera_sensor ALIAS hololink_camera_sensor)
 target_include_directories(hololink_camera_sensor
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(hololink_camera_sensor
   PUBLIC
     hololink::sensor
-    hololink::sensors::native_imx274_camera_sensor
-    hololink::sensors::native_vb1940_camera_sensor
+    fmt::fmt-header-only
   )
+
+set_target_properties(hololink_camera_sensor PROPERTIES EXPORT_NAME sensors::camera_sensor)
+install(TARGETS hololink_camera_sensor
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-camera-sensor)
+
+install(FILES
+        camera_sensor.hpp
+        camera_mode.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/sensors/camera
+        COMPONENT hololink-camera-sensor)
 
 # Add camera implementation subdirectories
 add_subdirectory(imx274)

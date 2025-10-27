@@ -27,7 +27,7 @@ add_library(hololink::operators::audio_packetizer ALIAS audio_packetizer)
 target_include_directories(audio_packetizer
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(audio_packetizer
@@ -39,10 +39,12 @@ target_link_libraries(audio_packetizer
   )
 
 # Installation of the audio_packetizer operator
+set_target_properties(audio_packetizer PROPERTIES EXPORT_NAME operators::audio_packetizer)
 install(TARGETS audio_packetizer
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/audio_packetizer.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/audio_packetizer
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/audio_packetizer
         COMPONENT hololink-operators)

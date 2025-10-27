@@ -27,19 +27,27 @@ add_library(hololink::sensor ALIAS hololink_sensor)
 target_include_directories(hololink_sensor
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(hololink_sensor
   PUBLIC
-    fmt
+    fmt::fmt-header-only
     hololink::core
 )
 
-target_compile_definitions(hololink_sensor
-  PRIVATE
-    FMT_HEADER_ONLY=1
-)
+# Installation of the hololink_sensor aggregation library and public headers
+set_target_properties(hololink_sensor PROPERTIES EXPORT_NAME sensors)
+install(TARGETS hololink_sensor
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-sensors)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sensor.hpp
+              ${CMAKE_CURRENT_SOURCE_DIR}/li_i2c_expander.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/sensors
+        COMPONENT hololink-sensors)
+
 
 # ------------------------------------------------------------------------------
 

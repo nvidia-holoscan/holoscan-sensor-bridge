@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Find python-dev and pybind11
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+include(hololink_deps/pybind11)
+
 # Helper function to generate pybind11 operator modules
 function(pybind11_add_hololink_module)
     cmake_parse_arguments(MODULE                # PREFIX

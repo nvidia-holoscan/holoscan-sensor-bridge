@@ -24,7 +24,7 @@ add_library(hololink::operators::linux_coe_receiver ALIAS linux_coe_receiver)
 target_include_directories(linux_coe_receiver
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(linux_coe_receiver
@@ -35,11 +35,12 @@ target_link_libraries(linux_coe_receiver
   )
 
 # Installation of the linux_coe_receiver operator
+set_target_properties(linux_coe_receiver PROPERTIES EXPORT_NAME operators::linux_coe_receiver)
 install(TARGETS linux_coe_receiver
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_coe_receiver.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/linux_coe_receiver
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/linux_coe_receiver
         COMPONENT hololink-operators)
-

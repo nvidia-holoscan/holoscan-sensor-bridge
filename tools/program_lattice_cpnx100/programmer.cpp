@@ -96,7 +96,7 @@ Programmer::Programmer(const Args& args, const std::string& manifest_filename)
         auto err = curl_global_init(CURL_GLOBAL_ALL);
         if (err != CURLE_OK) {
             --instances; // Decrement on failure
-            throw std::runtime_error(fmt::format("curl_global_init failed: {}", err));
+            throw std::runtime_error(fmt::format("curl_global_init failed: {}", static_cast<int>(err)));
         }
     }
 }

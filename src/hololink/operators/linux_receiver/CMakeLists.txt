@@ -30,13 +30,14 @@ add_library(hololink::operators::linux_receiver_op ALIAS linux_receiver_op)
 target_include_directories(linux_receiver
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    ${ibverbs_INCLUDE_DIRS}
   )
 
 target_include_directories(linux_receiver_op
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(linux_receiver
@@ -55,10 +56,17 @@ target_link_libraries(linux_receiver_op
   )
 
 # Installation of the linux_receiver operator
-install(TARGETS linux_receiver linux_receiver_op
+set_target_properties(linux_receiver PROPERTIES EXPORT_NAME operators::linux_receiver)
+set_target_properties(linux_receiver_op PROPERTIES EXPORT_NAME operators::linux_receiver_op)
+install(TARGETS
+          linux_receiver
+          linux_receiver_op
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_receiver_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/linux_receiver
+install(FILES
+          ${CMAKE_CURRENT_SOURCE_DIR}/linux_receiver.hpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/linux_receiver_op.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/linux_receiver
         COMPONENT hololink-operators)

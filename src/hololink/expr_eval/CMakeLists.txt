@@ -24,7 +24,7 @@ add_library(hololink::expr_eval ALIAS expr_eval)
 target_include_directories(expr_eval
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 set_target_properties(expr_eval PROPERTIES
@@ -45,5 +45,10 @@ target_link_libraries(expr_eval
 
 # Installation of the expr_eval library
 install(TARGETS expr_eval
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/expr_eval.cuh
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/expr_eval
         COMPONENT hololink-operators)

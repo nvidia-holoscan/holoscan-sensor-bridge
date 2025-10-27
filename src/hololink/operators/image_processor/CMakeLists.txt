@@ -26,7 +26,7 @@ add_library(hololink::operators::image_processor ALIAS image_processor)
 target_include_directories(image_processor
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(image_processor
@@ -38,11 +38,12 @@ target_link_libraries(image_processor
   )
 
 # Installation of the image_processor operator
+set_target_properties(image_processor PROPERTIES EXPORT_NAME operators::image_processor)
 install(TARGETS image_processor
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/image_processor.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/image_processor
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/image_processor
         COMPONENT hololink-operators)
-

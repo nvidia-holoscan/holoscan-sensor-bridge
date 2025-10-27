@@ -26,7 +26,7 @@ add_library(hololink::operators::packed_format_converter ALIAS packed_format_con
 target_include_directories(packed_format_converter
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(packed_format_converter
@@ -36,10 +36,12 @@ target_link_libraries(packed_format_converter
   )
 
 # Installation of the packed_format_converter operator
+set_target_properties(packed_format_converter PROPERTIES EXPORT_NAME operators::packed_format_converter)
 install(TARGETS packed_format_converter
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/packed_format_converter.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/packed_format_converter
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/packed_format_converter
         COMPONENT hololink-operators)

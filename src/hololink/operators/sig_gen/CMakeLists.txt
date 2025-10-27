@@ -26,7 +26,7 @@ add_library(hololink::operators::sig_gen ALIAS sig_gen)
 target_include_directories(sig_gen
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 set_target_properties(sig_gen PROPERTIES CUDA_RESOLVE_DEVICE_SYMBOLS ON)
@@ -52,11 +52,13 @@ target_link_libraries(sig_gen
 )
 
 # Installation of the sig_gen operator
+set_target_properties(sig_gen PROPERTIES EXPORT_NAME operators::sig_gen)
 install(TARGETS sig_gen
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op_gui.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/sig_gen
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/sig_gen
         COMPONENT hololink-operators)

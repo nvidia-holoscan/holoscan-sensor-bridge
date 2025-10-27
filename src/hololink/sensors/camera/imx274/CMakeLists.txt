@@ -25,10 +25,21 @@ add_library(hololink::sensors::native_imx274_camera_sensor ALIAS native_imx274_c
 target_include_directories(native_imx274_camera_sensor
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(native_imx274_camera_sensor
   PUBLIC
     hololink_camera_sensor
   )
+
+set_target_properties(native_imx274_camera_sensor PROPERTIES EXPORT_NAME sensors::native_imx274_camera_sensor)
+install(TARGETS native_imx274_camera_sensor
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-sensors)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/native_imx274_sensor.hpp
+              ${CMAKE_CURRENT_SOURCE_DIR}/imx274_mode.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/sensors/camera/imx274
+        COMPONENT hololink-sensors)

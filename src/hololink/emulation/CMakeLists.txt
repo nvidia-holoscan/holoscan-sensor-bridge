@@ -13,10 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-file(MAKE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/dlpack")
-file(DOWNLOAD
-    https://raw.githubusercontent.com/dmlc/dlpack/main/include/dlpack/dlpack.h
-    "${CMAKE_CURRENT_SOURCE_DIR}/dlpack/dlpack.h" SHOW_PROGRESS)
+include(hololink_deps/dlpack)
 
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g3")
 
@@ -36,23 +33,25 @@ set_property(TARGET emulation PROPERTY POSITION_INDEPENDENT_CODE ON)
 add_library(hololink::emulation ALIAS emulation)
 
 find_package(CUDAToolkit REQUIRED)
+find_package(ZLIB REQUIRED)
 
 target_include_directories(emulation
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..
-    ${CUDAToolkit_INCLUDE_DIRS}
-    ${CMAKE_CURRENT_SOURCE_DIR}
-  INTERFACE
+  PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
-    $<INSTALL_INTERFACE:src>
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
 )
 
 target_link_libraries(emulation
   PUBLIC
     CUDA::cudart
-    holoscan::core
+    ZLIB::ZLIB
+    dlpack::dlpack
 )
 
 install(TARGETS emulation
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-emulation)
 
@@ -65,6 +64,5 @@ install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/base_transmitter.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/mem_register.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/net.hpp
           ${CMAKE_CURRENT_SOURCE_DIR}/utils.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/emulation
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation
         COMPONENT hololink-emulation)
-

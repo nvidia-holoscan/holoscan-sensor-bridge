@@ -25,6 +25,7 @@ add_test(NAME imx274_player_test
 set_tests_properties(imx274_player_test PROPERTIES
                       FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
 
+include(hololink_deps/pybind11)
 target_link_libraries(imx274_player
   PRIVATE
     hololink

@@ -25,7 +25,7 @@ add_library(hololink::operators::sig_viewer ALIAS sig_viewer)
 target_include_directories(sig_viewer
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(sig_viewer
@@ -37,10 +37,12 @@ target_link_libraries(sig_viewer
 )
 
 # Installation of the sig_viewer operator
+set_target_properties(sig_viewer PROPERTIES EXPORT_NAME operators::sig_viewer)
 install(TARGETS sig_viewer
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sig_viewer_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/sig_viewer
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/sig_viewer
         COMPONENT hololink-operators)
