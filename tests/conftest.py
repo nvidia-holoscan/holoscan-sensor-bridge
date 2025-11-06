@@ -47,7 +47,7 @@ if False:
     udp_writer = UdpWriter(sender_ip="127.0.0.1", destination_ip="127.0.0.1")
     handler = logging.StreamHandler(stream=udp_writer)
     formatter = logging.Formatter(
-        fmt="%(levelname)s %(relativeCreated)d %(funcName)s %(filename)s:%(lineno)d tid=%(threadName)s -- %(message)s"
+        fmt="%(levelname)s %(log_timestamp_s).4f %(funcName)s %(filename)s:%(lineno)d tid=0x%(tid)x -- %(message)s"
     )
     handler.setFormatter(formatter)
     handler.terminator = ""
@@ -241,6 +241,23 @@ def pytest_addoption(parser):
         default=False,
         help="Include tests for Audio.",
     )
+    parser.addoption(
+        "--emulator",
+        action="store_true",
+        default=False,
+        help="Include tests for HSBEmulator.",
+    )
+    parser.addoption(
+        "--hw-loopback",
+        nargs=2,
+        default=None,
+        help="hardware loopback interface names (2 required) First value is the interface that will be isolated within a network namespace if present.",
+    )
+    parser.addoption(
+        "--json-config",
+        default=None,
+        help="Path to the JSON configuration file to use, e.g. for SIPL capture.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -388,8 +405,93 @@ def ptp_enable(request):
 
 
 @pytest.fixture
+def json_config(request):
+    return request.config.getoption("--json-config")
+
+
+@pytest.fixture
 def audio_enable(request):
     return request.config.getoption("--audio")
+
+
+# given an interface name, return the current, first, IPv4 address in CIDR notation, if it has one or None if it does not.
+# the return is primarily used by the scripts/nsjoin.sh script to reset the interface to an address it had before being isolated, otherwise is can end up down or with no configuration.
+def get_if_ip(if_name):
+    command = ["ip", "-j", "addr", "sh", if_name]
+    try:
+        process = subprocess.run(command, capture_output=True, text=True)
+        addr_info = json.loads(process.stdout)[0]["addr_info"]
+        return addr_info[0]["local"] + "/" + str(addr_info[0]["prefixlen"])
+    except (
+        subprocess.CalledProcessError,
+        json.JSONDecodeError,
+        IndexError,
+        KeyError,
+    ) as e:
+        print(f"No ip address found for interface {if_name}: {e}")
+        return None
+
+
+# check to see if the interface name is present or not.
+# this is primarily used by the hw_loopback fixture to determine if the interface name
+# needs to be isolated (it is present) or not (not present).
+# This is only needed because AGX Thor MGBE, at least on TS test devices, needs external
+# management of the MGBE interface isolation (the interface would not be present), but
+# hw_loopback fixture still needs to "successfully"pass the interface name to the tests.
+def check_ifname(if_name):
+    command = ["ip", "addr", "sh", if_name]
+    try:
+        process = subprocess.run(command, capture_output=True, text=True)
+        return process.returncode == 0
+    except (subprocess.SubprocessError, OSError) as e:
+        print(f"Could not find interface {if_name}: {e}")
+        return False
+
+
+# session-scoped fixture to set environment for hardware loopback tests.
+# On non-AGX Thor platforms, the 2 interfaces provided by the --hw-loopback switch are
+# automatically isolated (the first is put in an network namespace) and the HSB Emulator
+# is launched on the first interface.
+# On AGX Thor platforms - the MGBE interface will go down on any connection breaks
+# including isolation and so must be managed externally. In this case, the user must
+# isolate the client interface and bring up the MGBE interface before running tests.
+@pytest.fixture(scope="session")
+def hw_loopback(request):
+    result = None
+    return_address = None
+    join = False
+    script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if request.config.getoption("--hw-loopback") is not None:
+        result = request.config.getoption("--hw-loopback")
+        if check_ifname(result[0]):
+            # only isolate the network namespace and join if the target interface exists.
+            # otherwise assume the network namespace was created externally
+            join = True
+            return_address = get_if_ip(result[0])
+            subprocess.run(
+                [
+                    os.path.join(script_dir, "scripts", "nsisolate.sh"),
+                    result[0],
+                    request.config.getoption("--hololink") + "/24",
+                ]
+            )  # /24 for proper subnet mask. without this, HSB Emulator won't broadcast correctly
+        else:
+            print(
+                f"Interface {result[0]} does not exist. Assuming the network namespace was created externally."
+            )
+
+    # end of "setup" phase
+    yield result
+
+    # "teardown" phase
+
+    if join:
+        command = [os.path.join(script_dir, "scripts", "nsjoin.sh"), result[0]]
+        if return_address is not None:
+            command.append(return_address)
+        subprocess.run(command)
+
+    return None
 
 
 def pytest_generate_tests(metafunc):

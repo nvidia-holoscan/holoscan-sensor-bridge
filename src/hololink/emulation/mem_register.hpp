@@ -30,13 +30,17 @@
 namespace hololink::emulation {
 
 /**
- * @brief Simple wrapper for a map of 32-bit registers to 32-bit values
- * but also presets and initializes based on HSBConfiguration
+ * @class MemRegister mem_register.hpp
+ * @brief Representation of the internal memory space of the HSBEmulator and its registers.
+ * @note This currently implemented as a simple map, but the underlying implementation should be expected to change, though the public methods should remain available.
  */
 class MemRegister {
 public:
-    MemRegister() = default;
-    MemRegister(HSBConfiguration* configuration);
+    /**
+     * @brief Construct a new MemRegister object
+     * @param configuration The configuration of the HSBEmulator.
+     */
+    MemRegister(const HSBConfiguration& configuration);
     ~MemRegister();
     /**
      * @brief Write a value to a register
@@ -70,6 +74,23 @@ public:
      */
     std::vector<uint32_t> read_many(const std::vector<uint32_t>& addresses);
     std::vector<uint32_t> read_many(const std::initializer_list<uint32_t>& addresses);
+
+    /**
+     * @brief Write a range of values to registers
+     *
+     * @param start_address The address of the first register to write
+     * @param values A vector of values to write to the registers
+     */
+    void write_range(uint32_t start_address, const std::vector<uint32_t>& values);
+
+    /**
+     * @brief Read a range of values from registers
+     *
+     * @param start_address The address of the first register to read
+     * @param num_addresses The number of registers to read
+     * @return A vector of values read from the registers
+     */
+    std::vector<uint32_t> read_range(uint32_t start_address, uint32_t num_addresses);
 
 private:
     std::unordered_map<uint32_t, uint32_t> registers_ {};

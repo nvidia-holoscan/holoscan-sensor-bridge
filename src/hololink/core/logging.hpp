@@ -49,6 +49,10 @@ extern HsbLogLevel hsb_log_level;
 // to visit the data with your own callback.
 extern HsbLogger hsb_logger;
 
+// Provide the current monotonic timestamp in seconds,
+// used with log messages-- for debugging use only.
+float log_timestamp_s();
+
 } // namespace hololink::logging
 
 #endif /* SRC_HOLOLINK_LOGGING */

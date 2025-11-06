@@ -29,7 +29,7 @@ add_library(hololink::operators::argus_isp ALIAS argus_isp)
 target_include_directories(argus_isp
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_include_directories(argus_isp
@@ -55,12 +55,14 @@ target_link_libraries(argus_isp
   )
 
 # Installation of the argus_isp operator
+set_target_properties(argus_isp PROPERTIES EXPORT_NAME operators::argus_isp)
 install(TARGETS argus_isp
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/argus_isp.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/camera_provider.hpp
         ${CMAKE_CURRENT_SOURCE_DIR}/argus_impl.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/argus_isp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/argus_isp
         COMPONENT hololink-operators)

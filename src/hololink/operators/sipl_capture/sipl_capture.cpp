@@ -18,6 +18,8 @@
 #include "sipl_capture.hpp"
 #include "sipl_fmt.hpp"
 
+#include <hololink/core/hololink.hpp>
+
 #include <cuda.h>
 
 namespace hololink::operators {
@@ -170,7 +172,7 @@ void SIPLCaptureOp::init_nvsipl()
 
     // Set the pipeline configs to capture either RAW or ISP-processed images.
     nvsipl::NvSIPLPipelineConfiguration sipl_pipeline_config = {
-        .captureOutputRequested = raw_output_,
+        .captureOutputRequested = true,
         .isp0OutputRequested = !raw_output_,
         .isp1OutputRequested = false,
         .isp2OutputRequested = false,
@@ -181,6 +183,20 @@ void SIPLCaptureOp::init_nvsipl()
         status = sipl_camera_->SetPipelineCfg(camera_index, sipl_pipeline_config, camera_state.queues_);
         if (status != nvsipl::NVSIPL_STATUS_OK) {
             throw std::runtime_error("Failed to set NvSIPLCamera pipeline config");
+        }
+
+        if (!raw_output_) {
+            // Use the pipeline interface provider to get the ISP stats interface.
+            nvsipl::IInterfaceProvider* interface_provider;
+            status = sipl_camera_->GetPipelineInterfaceProvider(camera_index, interface_provider);
+            if (status != nvsipl::NVSIPL_STATUS_OK || !interface_provider) {
+                throw std::runtime_error("Failed to get NvSIPLCamera pipeline interface provider");
+            }
+            camera_state.isp_stats_ = static_cast<nvsipl::INvSIPLISPStatCustomInterface*>(
+                interface_provider->GetInterface(nvsipl::INvSIPLISPStatCustomInterface::getClassInterfaceID()));
+            if (!camera_state.isp_stats_) {
+                throw std::runtime_error("Failed to get INvSIPLISPStatCustomInterface");
+            }
         }
 
         camera_state.output_name_ = fmt::format("{}_{}", sipl_config_.cameras[camera_index].name, camera_index);
@@ -533,6 +549,14 @@ void SIPLCaptureOp::stop()
     // Stop streaming.
     sipl_camera_->Stop();
 
+    // Stop the buffer acquisition threads.
+    for (auto& camera_state : per_camera_state_) {
+        if (camera_state.acquire_thread_.joinable()) {
+            camera_state.stop_thread_->store(true);
+            camera_state.acquire_thread_.join();
+        }
+    }
+
     // Clear CUDA mappings.
     for (auto mapping : cuda_mappings_) {
         cudaFree(mapping.second.ptr_);
@@ -583,6 +607,17 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
     // from filling due to the long initialization of some other operator.
     if (!streaming_) {
         HSB_LOG_DEBUG("Starting streaming");
+
+        // Create a thread to continuously acquire buffers from SIPL and offer them to the
+        // compute() thread as needed. This is done because SIPL does not gracefully handle
+        // a consumer that is slower than the camera frame rate and will lead to streaming
+        // failures if it runs out of buffers. This means that the compute() method may miss
+        // frames and the last known frame is always used.
+        for (auto& camera_state : per_camera_state_) {
+            camera_state.acquire_thread_ = std::thread(&SIPLCaptureOp::acquire_buffer_thread_func,
+                this, &camera_state, raw_output_);
+        }
+
         auto status = sipl_camera_->Start();
         if (status != nvsipl::NVSIPL_STATUS_OK) {
             throw std::runtime_error("Failed to start streaming");
@@ -592,20 +627,24 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
 
     auto entity = holoscan::gxf::Entity::New(&context);
     for (auto& camera_state : per_camera_state_) {
-        // Get completion queue based on output type.
-        auto completion_queue = raw_output_
-            ? camera_state.queues_.captureCompletionQueue
-            : camera_state.queues_.isp0CompletionQueue;
-
-        // Wait for a new frame.
-        HSB_LOG_TRACE("Waiting for buffer for {} (timeout = {}us)...", camera_state.output_name_, timeout_.get());
-        nvsipl::INvSIPLClient::INvSIPLBuffer* buffer = nullptr;
-        auto status = completion_queue->Get(buffer, timeout_.get());
-        if (status != nvsipl::NVSIPL_STATUS_OK || buffer == nullptr) {
-            throw std::runtime_error(fmt::format("Failed to get buffer for {} (status = {})",
-                camera_state.output_name_, static_cast<int>(status)));
+        // Wait for and take ownership of the next buffer(s) from the buffer acquire thread.
+        std::unique_lock<std::mutex> buffer_state_lock(*camera_state.buffer_mutex_.get());
+        while (camera_state.buffer_raw_ == nullptr) {
+            HSB_LOG_TRACE("Waiting for buffer for {} (timeout = {}us)...",
+                camera_state.output_name_, timeout_.get());
+            auto status = camera_state.buffer_available_->wait_for(buffer_state_lock,
+                std::chrono::microseconds(timeout_.get()));
+            if (status == std::cv_status::timeout) {
+                throw std::runtime_error(fmt::format("Failed to get buffer for {}", camera_state.output_name_));
+            }
         }
+        auto buffer_raw = camera_state.buffer_raw_;
+        auto buffer_isp = camera_state.buffer_isp_;
+        camera_state.buffer_raw_ = nullptr;
+        camera_state.buffer_isp_ = nullptr;
+        buffer_state_lock.unlock();
 
+        auto buffer = buffer_isp ? buffer_isp : buffer_raw;
         auto nvm_buffer = dynamic_cast<nvsipl::INvSIPLClient::INvSIPLNvMBuffer*>(buffer);
         if (nvm_buffer == nullptr) {
             throw std::runtime_error("Failed to get INvSIPLNvMBuffer");
@@ -613,7 +652,7 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
 
         // Get and wait for the EOF fence (if there is one).
         NvSciSyncFence fence = NvSciSyncFenceInitializer;
-        status = nvm_buffer->GetEOFNvSciSyncFence(&fence);
+        auto status = nvm_buffer->GetEOFNvSciSyncFence(&fence);
         if (status == nvsipl::NVSIPL_STATUS_OK) {
             auto err = NvSciSyncFenceWait(&fence, cpu_wait_context_, timeout_.get());
             if (err != NvSciError_Success) {
@@ -776,6 +815,91 @@ void SIPLCaptureOp::compute(holoscan::InputContext& op_input,
                 plane_color_format[0]));
         }
 
+        if (is_metadata_enabled()) {
+            // The HSB metadata is written to the RAW image.
+            const void* raw_ptr = nullptr;
+            size_t hsb_metadata_offset = 0;
+            if (buffer == buffer_raw) {
+                // If we're already processing the RAW buffer, just get the pointer and offset.
+                err = NvSciBufObjGetConstCpuPtr(buf_obj, &raw_ptr);
+                if (err != NvSciError_Success || raw_ptr == nullptr) {
+                    throw std::runtime_error("Failed to map buffer for metadata");
+                }
+                hsb_metadata_offset = plane_pitch[0] * plane_height[0];
+            } else {
+                // If we're not already processing the RAW buffer then we need to get the
+                // buffer, attributes, and mapping required to read HSB metadata from it.
+                auto nvm_buffer_raw = dynamic_cast<nvsipl::INvSIPLClient::INvSIPLNvMBuffer*>(buffer_raw);
+                if (nvm_buffer_raw == nullptr) {
+                    throw std::runtime_error("Failed to get INvSIPLNvMBuffer for metadata");
+                }
+
+                NvSciBufObj buf_obj_raw = nvm_buffer_raw->GetNvSciBufImage();
+                if (buf_obj_raw == nullptr) {
+                    throw std::runtime_error("Failed to get NvSciBufObj for metadata");
+                }
+
+                NvSciBufAttrList buf_attr_list_raw;
+                auto err = NvSciBufObjGetAttrList(buf_obj_raw, &buf_attr_list_raw);
+                if (err != NvSciError_Success) {
+                    throw std::runtime_error("Failed to get buffer attribute list for metadata");
+                }
+
+                NvSciBufAttrKeyValuePair img_attrs_raw[] = {
+                    { NvSciBufImageAttrKey_PlanePitch, NULL, 0 }, // 0
+                    { NvSciBufImageAttrKey_PlaneHeight, NULL, 0 }, // 1
+                };
+                size_t num_attrs_raw = sizeof(img_attrs_raw) / sizeof(img_attrs_raw[0]);
+
+                err = NvSciBufAttrListGetAttrs(buf_attr_list_raw, img_attrs_raw, num_attrs_raw);
+                if (err != NvSciError_Success) {
+                    throw std::runtime_error("Failed to get buffer attributes for metadata");
+                }
+
+                const uint32_t plane_pitch_raw = *static_cast<const uint32_t*>(img_attrs_raw[0].value);
+                const uint32_t plane_height_raw = *static_cast<const uint32_t*>(img_attrs_raw[1].value);
+
+                err = NvSciBufObjGetConstCpuPtr(buf_obj_raw, &raw_ptr);
+                if (err != NvSciError_Success || raw_ptr == nullptr) {
+                    throw std::runtime_error("Failed to map buffer");
+                }
+                hsb_metadata_offset = plane_pitch_raw * plane_height_raw;
+            }
+
+            // Deserialize and output the HSB metadata.
+            auto hsb_metadata_ptr = static_cast<const uint8_t*>(raw_ptr) + hsb_metadata_offset;
+            auto hsb_metadata = Hololink::deserialize_metadata(hsb_metadata_ptr, hololink::METADATA_SIZE);
+            metadata()->set(camera_state.output_name_ + "_frame_number", int64_t(hsb_metadata.frame_number));
+            metadata()->set(camera_state.output_name_ + "_timestamp_s", int64_t(hsb_metadata.timestamp_s));
+            metadata()->set(camera_state.output_name_ + "_timestamp_ns", int64_t(hsb_metadata.timestamp_ns));
+            metadata()->set(camera_state.output_name_ + "_metadata_s", int64_t(hsb_metadata.metadata_s));
+            metadata()->set(camera_state.output_name_ + "_metadata_ns", int64_t(hsb_metadata.metadata_ns));
+            metadata()->set(camera_state.output_name_ + "_crc", int64_t(hsb_metadata.crc));
+            metadata()->set(camera_state.output_name_ + "_bytes_written", int64_t(hsb_metadata.bytes_written));
+
+            // Output the SIPL ImageMetaData (e.g. frame timestamps and info).
+            auto image_metadata = std::make_shared<holoscan::MetadataObject>();
+            image_metadata->set_value<nvsipl::INvSIPLClient::ImageMetaData>(
+                nvsipl::INvSIPLClient::ImageMetaData(nvm_buffer->GetImageData()));
+            metadata()->set(camera_state.output_name_ + "_metadata", image_metadata);
+
+            // Output the ISP stats.
+            if (camera_state.isp_stats_) {
+                auto isp_stats_info = camera_state.isp_stats_->GetIspStatsInfo(nvm_buffer);
+                if (!isp_stats_info) {
+                    throw std::runtime_error("Failed to get IspStatsInfo");
+                }
+                auto isp_stats = std::make_shared<holoscan::MetadataObject>();
+                isp_stats->set_value<nvsipl::IspStatsInfo>(nvsipl::IspStatsInfo(*isp_stats_info));
+                metadata()->set(camera_state.output_name_ + "_isp_stats", isp_stats);
+            }
+        }
+
+        // If we aren't outputting the RAW buffer, release it now.
+        if (buffer != buffer_raw) {
+            buffer_raw->Release();
+        }
+
         std::lock_guard<std::mutex> lock(pending_buffers_mutex_);
         pending_buffers_[cuda_mappings_[buf_obj].ptr_] = buffer;
         HSB_LOG_TRACE("Output buffer {} ({} pending)", static_cast<void*>(buffer), pending_buffers_.size());
@@ -841,6 +965,71 @@ bool SIPLCaptureOp::load_nito_file(std::string module_name, std::vector<uint8_t>
     HSB_LOG_DEBUG("Data from NITO file loaded for module \"{}\"", module_name);
 
     return true;
+}
+
+void SIPLCaptureOp::acquire_buffer_thread_func(PerCameraState* state, bool raw_output)
+{
+    HSB_LOG_DEBUG("Starting acquire buffer thread for camera: {}", state->output_name_);
+
+    while (!state->stop_thread_->load()) {
+        // Use a reasonably short timeout here so that we don't block too
+        // long when thread termination is requested.
+        constexpr uint32_t timeout = 100000; // 100ms
+
+        // Wait for a new RAW frame.
+        nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_raw = nullptr;
+        auto status = state->queues_.captureCompletionQueue->Get(buffer_raw, timeout);
+        if (status != nvsipl::NVSIPL_STATUS_OK) {
+            if (status == nvsipl::NVSIPL_STATUS_TIMED_OUT) {
+                // Timeout is expected, continue loop to check stop condition.
+                HSB_LOG_WARN("Timeout getting RAW buffer for {}", state->output_name_);
+                continue;
+            }
+            HSB_LOG_ERROR("Failed to get RAW buffer for {} (status = {})",
+                state->output_name_, static_cast<int>(status));
+            continue;
+        }
+
+        // Wait for the corresponding ISP frame.
+        nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_isp = nullptr;
+        if (!raw_output) {
+            auto status = state->queues_.isp0CompletionQueue->Get(buffer_isp, timeout);
+            if (status != nvsipl::NVSIPL_STATUS_OK) {
+                if (status == nvsipl::NVSIPL_STATUS_TIMED_OUT) {
+                    // Timeout is expected, continue loop to check stop condition.
+                    HSB_LOG_WARN("Timeout getting ISP buffer for {}", state->output_name_);
+                    continue;
+                }
+                HSB_LOG_ERROR("Failed to get ISP buffer for {} (status = {})",
+                    state->output_name_, static_cast<int>(status));
+                continue;
+            }
+        }
+
+        // Notify compute thread of the new buffer.
+        std::lock_guard<std::mutex> lock(*state->buffer_mutex_.get());
+        // Release any unused buffers.
+        if (state->buffer_raw_) {
+            state->buffer_raw_->Release();
+        }
+        if (state->buffer_isp_) {
+            state->buffer_isp_->Release();
+        }
+        state->buffer_raw_ = buffer_raw;
+        state->buffer_isp_ = buffer_isp;
+        state->buffer_available_->notify_all();
+    }
+
+    // Release any unused buffers.
+    std::lock_guard<std::mutex> lock(*state->buffer_mutex_.get());
+    if (state->buffer_raw_) {
+        state->buffer_raw_->Release();
+    }
+    if (state->buffer_isp_) {
+        state->buffer_isp_->Release();
+    }
+
+    HSB_LOG_DEBUG("Stopped acquire buffer thread for camera: {}", state->output_name_);
 }
 
 } // namespace holoscan::ops

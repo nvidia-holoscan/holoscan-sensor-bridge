@@ -18,10 +18,10 @@
 ARG CONTAINER_TYPE=invalid
 
 # dgpu specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.3.0-dgpu AS build_dgpu
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda12-dgpu AS build_dgpu
 
-# igpu specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.3.0-igpu AS build_igpu
+# Orin specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda12-igpu AS build_igpu_orin
 RUN \
     # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
     apt-get update && \
@@ -40,12 +40,75 @@ RUN \
     rm -rf ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api && \
     rm -rf /var/lib/apt/lists/*
 
-COPY --from=argus-libs libnvargus.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus.so
-COPY --from=argus-libs libnvargus_socketclient.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketclient.so
-COPY --from=argus-libs libnvargus_socketserver.so /usr/lib/aarch64-linux-gnu/nvidia/libnvargus_socketserver.so
-COPY --from=argus-libs libnvfusacap.so /usr/lib/aarch64-linux-gnu/nvidia/libnvfusacap.so
-COPY --from=argus-libs libnvodm_imager.so /usr/lib/aarch64-linux-gnu/nvidia/libnvodm_imager.so
-COPY --from=argus-libs libnvscf.so /usr/lib/aarch64-linux-gnu/nvidia/libnvscf.so
+COPY --from=l4t-libs \
+    libnvargus.so \
+    libnvargus_socketclient.so \
+    libnvargus_socketserver.so \
+    libnvfusacap.so \
+    libnvodm_imager.so \
+    libnvscf.so \
+    /usr/lib/aarch64-linux-gnu/nvidia/
+ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
+
+# Thor specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda13 AS build_igpu_thor
+
+# Download and install the Jetson Multimedia API.
+RUN wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_Multimedia_API_R38.2.0_aarch64.tbz2 && \
+    tar xjf Jetson_Multimedia_API_R38.2.0_aarch64.tbz2 -C / && \
+    rm Jetson_Multimedia_API_R38.2.0_aarch64.tbz2
+
+# Download, build, and install the SIPL headers and UDDF drivers.
+RUN wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_SIPL_API_R38.2.0_aarch64.tbz2 && \
+    tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C / && \
+    rm Jetson_SIPL_API_R38.2.0_aarch64.tbz2 && \
+    cd /usr/src/jetson_sipl_api/sipl && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make -j && \
+    make install
+
+# EGL and libGLESv2 are needed by Argus api otherwise the library throws error.
+RUN apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev && \
+    rm -rf /var/lib/apt/lists/*
+
+# Copy the L4T libraries into the container.
+COPY --from=l4t-libs \
+    libgnat-24.so \
+    libnvargus.so \
+    libnvargus_socketclient.so \
+    libnvargus_socketserver.so \
+    libnvbufsurface.so \
+    libnvcamerahal.so \
+    libnvfusacapinterface.so \
+    libnvfusacap.so \
+    libnvisppg.so \
+    libnvisp.so \
+    libnvodm_imager.so \
+    libnvos.so \
+    libnvrm_chip.so \
+    libnvrm_gpu.so \
+    libnvrm_host1x.so \
+    libnvrm_mem.so \
+    libnvrm_surface.so \
+    libnvrm_sync.so \
+    libnvscf.so \
+    libnvscibuf.so \
+    libnvscicommon.so.1 \
+    libnvsciipc.so \
+    libnvscisync.so \
+    libnvsipl_control.so \
+    libnvsipl_devblk_cdi.so \
+    libnvsipl_devblk_crypto.so \
+    libnvsipl_devblk_ddi.so \
+    libnvsipl_devblk.so \
+    libnvsipl_pipeline.so \
+    libnvsipl_query.so \
+    libnvsipl.so \
+    libnvsocsys.so \
+    libnvtegrahv.so \
+    /usr/lib/aarch64-linux-gnu/nvidia/
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 
 # configuration for all GPU configurations start here.

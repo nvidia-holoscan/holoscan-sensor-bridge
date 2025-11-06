@@ -137,7 +137,7 @@ constexpr uint32_t LEOPARD_EAGLE_BOARD_ID = 7u;
 // Other constants
 constexpr uint32_t METADATA_SIZE = 128;
 constexpr double APB_TIMEOUT_SCALE = 1.0 / 51.2e-9;
-constexpr double APB_TIMEOUT_MAX = 0xFFFF / APB_TIMEOUT_SCALE;
+constexpr double APB_TIMEOUT_MAX = 0xFFFFFF / APB_TIMEOUT_SCALE;
 
 constexpr uint16_t DATA_SOURCE_UDP_PORT = 12288;
 
@@ -233,7 +233,7 @@ public:
      * @param serial_number
      */
     explicit Hololink(
-        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool vsync_enable = true, bool block_enable = true);
+        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool block_enable = true);
     Hololink() = delete;
 
     virtual ~Hololink();
@@ -881,7 +881,6 @@ private:
     bool started_;
     std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
     bool ptp_enable_;
-    bool vsync_enable_;
     bool block_enable_;
 
     bool write_uint32_block_(WriteData data, const std::shared_ptr<Timeout>& timeout,

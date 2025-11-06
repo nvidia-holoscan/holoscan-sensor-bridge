@@ -25,7 +25,7 @@ add_library(hololink::operators::iq_enc ALIAS iq_enc)
 target_include_directories(iq_enc
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(iq_enc
@@ -36,11 +36,12 @@ target_link_libraries(iq_enc
 )
 
 # Installation of the iq_enc operator
+set_target_properties(iq_enc PROPERTIES EXPORT_NAME operators::iq_enc)
 install(TARGETS iq_enc
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/iq_enc_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/iq_enc
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/iq_enc
         COMPONENT hololink-operators)
-

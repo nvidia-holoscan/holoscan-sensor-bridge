@@ -73,6 +73,14 @@ public:
 
     void blocking_monitor();
 
+    /**
+     * This virtual function is used to copy the frame metadata to the host.
+     * This is kept virtual as some implementations may skip copying the
+     * metadata to the host. In that case, the virtual function implementation should override
+     * this function to be a no-op (i.e., do nothing).
+     */
+    virtual void copy_metadata_to_host(unsigned current_page);
+
     bool start();
 
     void close(); // causes the run method to terminate
@@ -85,6 +93,14 @@ public:
      * collected with the video frame.
      */
     bool get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& metadata);
+
+    /**
+     * This virtual function is used to get the frame metadata.
+     * This is kept virtual as some implementations may skip copying the
+     * metadata to the host. In that case, the virtual function implementation should override
+     * this function to return empty frame metadata.
+     */
+    virtual const Hololink::FrameMetadata get_frame_metadata();
 
     uint32_t get_qp_number() { return qp_number_; };
 
@@ -142,6 +158,7 @@ protected:
     std::function<void(const RoceReceiver&)> frame_ready_;
     /** Sign-extended frame_number value. */
     ExtendedCounter<uint32_t, uint16_t> frame_number_;
+    std::mutex monitor_running_;
 
     std::mutex& get_lock(); // Ensures reentrency protection for ibv calls.
 };

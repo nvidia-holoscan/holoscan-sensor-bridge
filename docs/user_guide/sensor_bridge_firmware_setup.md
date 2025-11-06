@@ -1,9 +1,6 @@
 ## Holoscan Sensor Bridge FPGA firmware update
 
-Holoscan sensor bridge is implemented using a pair of FPGAs, where images for both
-components are programmable and should be updated.
-
-1. **Power cycle** the sensor bridge device and make sure 2 green LEDs are on
+The Holoscan Sensor Bridge FPGA firmware can be remotely flashed over Ethernet.
 
 1. Follow the [setup instructions](setup.md) to build and run the demo container. All
    the following commands are to be run from within the demo container.
@@ -36,6 +33,10 @@ components are programmable and should be updated.
    This command will display data received from HSB's bootp enumeration message, which
    includes the HSB IP version.
 
+### Lattice CPNX100-ETH-SENSOR-BRIDGE
+
+1. **Power cycle** the sensor bridge device and make sure 2 green LEDs are on
+
 1. For Lattice CPNX100-ETH-SENSOR-BRIDGE devices loaded with 0x2412 or newer firmware,
    `program_lattice_cpnx100` will reprogram it:
 
@@ -49,6 +50,23 @@ components are programmable and should be updated.
    ```sh
    program_lattice_cpnx100 --hololink=192.168.200.2 scripts/manifest.yaml
    ```
+
+### Microchip MPF200-ETH-SENSOR-BRIDGE
+
+1. For Microchip MPF200-ETH-SENSOR-BRIDGE devices
+
+   ```sh
+   polarfire_esb flash --fpga-bit-version <version>
+   ```
+
+   Use "--force" command switch when FPGA is running older version of bit file like 2407
+   or 2412.
+
+   ```sh
+   polarfire_esb --force flash --fpga-bit-version <version>
+   ```
+
+### Leopard imaging VB1940 Eagle Camera
 
 1. For programming the Leopard imaging VB1940 Eagle Camera: make sure you cloned and
    built the `holoscan-sensor-bridge repo` (for instructions please see
@@ -66,8 +84,10 @@ components are programmable and should be updated.
    configuration, firmware updates can take up to 5 minutes; when run on AGX, expect a
    run time of as much as 30 minutes. **Do not interrupt the process in the middle.**
 
-1. For the Lattice CPNX100-ETH-SENSOR-BRIDGE, once flashing is complete, **power cycle**
-   the device and watch that the sensor bridge powers up with 2 green LEDs on
+For all Holoscan sensor bridges, once flashing is complete, **power cycle** the device.
 
-1. Ping the sensor bridge device at its IP address (e.g. 192.168.0.2) and verify a valid
-   ping response
+For the Lattice CPNX100-ETH-SENSOR-BRIDGE, watch that the sensor bridge powers up with 2
+green LEDs on
+
+Ping the sensor bridge device at its IP address (e.g. 192.168.0.2) and verify a valid
+ping response

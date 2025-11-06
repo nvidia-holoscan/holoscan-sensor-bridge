@@ -63,7 +63,7 @@ def test_imx715_player(
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501
     [
-        hololink_module.sensors.imx715.IMX715_MODE_1220X1080_60FPS_12BPP,
+        hololink_module.sensors.imx715.IMX715_MODE_1920X1080_60FPS_12BPP,
     ],
 )
 def test_imx715_linux_player(

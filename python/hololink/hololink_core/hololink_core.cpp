@@ -18,9 +18,14 @@
 #include <hololink/core/arp_wrapper.hpp>
 #include <hololink/core/deserializer.hpp>
 #include <hololink/core/networking.hpp>
+#include <hololink/core/reactor.hpp>
 #include <hololink/core/serializer.hpp>
 #include <hololink/core/tools.hpp>
 
+#include <unistd.h>
+
+#include <ctime>
+#include <pybind11/functional.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -32,6 +37,22 @@ using pybind11::literals::operator""_a;
 namespace py = pybind11;
 
 namespace hololink::core {
+
+// Conversion utilities for timespec
+namespace {
+    double timespec_to_double(const struct timespec& ts)
+    {
+        return static_cast<double>(ts.tv_sec) + static_cast<double>(ts.tv_nsec) / 1000000000.0;
+    }
+
+    struct timespec double_to_timespec(double seconds)
+    {
+        struct timespec ts;
+        ts.tv_sec = static_cast<time_t>(seconds);
+        ts.tv_nsec = static_cast<long>((seconds - ts.tv_sec) * 1000000000);
+        return ts;
+    }
+}
 
 // Provide access to the buffer passed in
 class WrappedSerializer : public Serializer {
@@ -280,6 +301,43 @@ PYBIND11_MODULE(_hololink_core, m)
     m.def("round_up", &round_up, "value"_a, "alignment"_a);
 
     m.def("infiniband_devices", &infiniband_devices, "Return a sorted list of Infiniband devices.");
+
+    // Reactor bindings
+    py::class_<Reactor, std::shared_ptr<Reactor>>(m, "Reactor")
+        .def_static("get_reactor", &Reactor::get_reactor, "Get the singleton reactor instance")
+        .def(
+            "now", [](const Reactor& self) {
+                return timespec_to_double(self.now());
+            },
+            "Get current monotonic time in seconds")
+        .def("add_callback", &Reactor::add_callback, py::call_guard<py::gil_scoped_release>(), "callback"_a, "Add a callback to be executed immediately")
+        .def("add_fd_callback", &Reactor::add_fd_callback, "fd"_a, "callback"_a, "events"_a = 0x001, "Add a file descriptor callback for poll events")
+        .def("remove_fd_callback", &Reactor::remove_fd_callback, "fd"_a, "Remove a file descriptor callback")
+        .def(
+            "add_alarm_s", [](Reactor& self, float seconds, Reactor::Callback callback) {
+                return self.add_alarm_s(seconds, callback);
+            },
+            py::call_guard<py::gil_scoped_release>(), "seconds"_a, "callback"_a, "Add an alarm to fire after specified seconds from now")
+        .def(
+            "add_alarm", [](Reactor& self, double when, Reactor::Callback callback) {
+                return self.add_alarm(double_to_timespec(when), callback);
+            },
+            py::call_guard<py::gil_scoped_release>(), "when"_a, "callback"_a, "Add an alarm to fire at a specific time")
+        .def("cancel_alarm", &Reactor::cancel_alarm, "handle"_a, "Cancel a previously scheduled alarm")
+        .def("stop", &Reactor::stop, "Stop the reactor (gracefully)")
+        .def("is_current_thread", &Reactor::is_current_thread, "Check if the current thread is the reactor thread");
+
+    // AlarmHandle type (shared_ptr<AlarmEntry>)
+    py::class_<Reactor::AlarmEntry, std::shared_ptr<Reactor::AlarmEntry>>(m, "AlarmHandle")
+        .def_property_readonly(
+            "when", [](const Reactor::AlarmEntry& self) {
+                return timespec_to_double(self.when);
+            },
+            "Time when the alarm should fire")
+        .def_readonly("sequence", &Reactor::AlarmEntry::sequence, "Sequence number for ordering");
+
+    m.def("gettid", &gettid, "Provide the thread ID");
+
 } // PYBIND11_MODULE
 
 } // namespace hololink::core

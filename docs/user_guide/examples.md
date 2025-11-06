@@ -3,19 +3,23 @@
 Holoscan sensor bridge Python example applications are located under the `examples`
 directory.
 
-Below are instructions for running the applications on the DGX Spark, IGX and the Jetson
-AGX Orin platforms. For each IGX dGPU camera example, an appropriately configured DGX
-Spark may also be used.
+Below are instructions for running the applications on the AGX Thor, DGX Spark, IGX and
+the Jetson AGX Orin platforms. For each IGX dGPU camera example, an appropriately
+configured DGX Spark may also be used.
 
 - Examples starting with the word "linux\_" in the filename use the unaccelerated Linux
   Sockets API network receiver operator. These examples work on DGX Spark and both IGX
-  and AGX systems.
+  and AGX Orin/Thor systems.
 - Examples without "linux\_" in the filename use the accelerated network receiver
   operator and require ConnectX SmartNIC controllers, like those on IGX and DGX Spark.
-  AGX systems cannot run these examples.
+  AGX Orin and AGX Thor systems cannot run these examples.
 - These examples all work on both iGPU and dGPU configurations. If the underlying OS and
   Holoscan sensor bridge container are built with the appropriate iGPU or dGPU setting,
   the application code itself does not change.
+- Examples starting with "sipl\_" use the
+  [SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
+  accelerated network receiver operator and require MGBE SmartNIC controller and are
+  unique to AGX Thor.
 
 Most examples have both the accelerated and an unaccelerated Linux Sockets API version.
 
@@ -30,7 +34,7 @@ accelerated network controller,
 $ python3 examples/imx274_player.py
 ```
 
-or, for unaccelerated configurations (e.g. AGX),
+or, for unaccelerated configurations (e.g. AGX Orin, AGX Thor),
 
 ```sh
 $ python3 examples/linux_imx274_player.py
@@ -54,7 +58,8 @@ After examples are built, you can run the `imx274_player`:
 $ $BUILD_DIR/examples/imx274_player
 ```
 
-Note that only the C++ example is only supported with the accelerated network receiver.
+Note that only the C++ example is only supported with the accelerated network receiver 
+with ConnectX SmartNIC controllers.
 
 ````
 `````
@@ -74,13 +79,19 @@ the demo container with a ConnectX accelerated network controller,
 $ python3 examples/vb1940_player.py
 ```
 
-or, for unaccelerated configurations (e.g. AGX),
+for unaccelerated configurations (e.g. AGX Orin, AGX Thor),
 
 ```sh
 $ python3 examples/linux_vb1940_player.py
 ```
 
-## Running the IMX274 TAO PeopleNet example
+lastly, running SIPL accelerated network python example on AGX Thor:
+
+```sh
+$ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_single.json
+```
+
+## Running the TAO PeopleNet example
 
 The tao-peoplenet example demonstrates running inference on a live video feed.
 [Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
@@ -94,24 +105,32 @@ live video.
 wget --content-disposition 'https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/peoplenet/pruned_quantized_decrypted_v2.3.3/files?redirect=true&path=resnet34_peoplenet_int8.onnx' -O examples/resnet34_peoplenet_int8.onnx
 ```
 
-For systems with accelerated network interfaces,
+For systems with a ConnectX accelerated network controller interfaces with IMX274
+camera,
 
 ```sh
 $ python3 examples/tao_peoplenet.py
 ```
 
-or unaccelerated configurations,
+for unaccelerated configurations (e.g. AGX Orin, AGX Thor) with IMX274 camera,
 
 ```sh
 $ python3 examples/linux_tao_peoplenet.py
 ```
 
+lastly, running SIPL accelerated network python example on AGX Thor with LI VB1940
+camera:
+
+```sh
+$ python3 ./examples/sipl_tao_peoplenet.py --json-config ./examples/sipl_config/vb1940_single.json
+```
+
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
-the IMX274 device as well as red/green box overlays when a person image is captured.
-Press Ctrl/C to exit. More information about this application can be found
+the IMX274/Li VB1940 device as well as red/green box overlays when a person image is
+captured. Press Ctrl/C to exit. More information about this application can be found
 [here](applications.md#tao_peoplenet).
 
-## Running the IMX274 body pose example
+## Running the body pose example
 
 **Prerequisite**: Download the YOLOv8 ONNX model from the YOLOv8 website and generate
 the body pose ONNX model. Within the Holoscan sensor bridge demo container:
@@ -133,27 +152,34 @@ for the demo to run. The installed components will be forgotten when the contain
 exited; those do not need to be present in future runs of the demo.
 
 For systems with accelerated network interfaces, within the sensor bridge demo
-container, launch the Body Pose estimation:
+container, launch the Body Pose estimation with IMX274 camera:
 
 ```sh
 $ python3 examples/body_pose_estimation.py
 ```
 
-For unaccelerated configurations (e.g. AGX), launch the Body Pose estimation example
-within the demo container this way:
+for unaccelerated configurations (e.g. AGX Orin, AGX Thor), launch the Body Pose
+estimation example within the demo container this way:
 
 ```sh
 $ python3 examples/linux_body_pose_estimation.py
 ```
 
+lastly, running SIPL accelerated network python example on AGX Thor with Li VB1940
+camera:
+
+```sh
+$ python3 ./examples/sipl_body_pose_estimation.py --json-config ./examples/sipl_config/vb1940_single.json
+```
+
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
-the IMX274 device, along with a green overlay showing keypoints found by the body pose
-net model. For more information about this application, look
+the IMX274/Li VB1940 device, along with a green overlay showing keypoints found by the
+body pose net model. For more information about this application, look
 [here](applications.md#body_pose_estimation).
 
 Press Ctrl/C to exit.
 
-## Running the Stereo IMX274 and Leopard imaging VB1940 Eagle examples
+## Running the Stereo IMX274 and Leopard imaging Li VB1940 Eagle examples
 
 For IGX, `examples/stereo_imx274_player.py` shows an example with two independent
 pipelines, one for each camera on the dual-camera module. Accelerated networking is used
@@ -177,7 +203,7 @@ IGX Orin with IMX274:
 $ python3 examples/single_network_stereo_imx274_player.py
 ```
 
-AGX Orin with IMX274:
+AGX Orin or AGX Thor with IMX274:
 
 ```sh
 $ python3 examples/linux_single_network_stereo_imx274_player.py
@@ -189,10 +215,16 @@ IGX Orin with Li VB1940 Eagle:
 $ python3 examples/single_network_stereo_vb1940_player.py
 ```
 
-AGX Orin with Li VB1940 Eagle:
+AGX Orin or AGX Thor with Li VB1940 Eagle:
 
 ```sh
 $ python3 examples/linux_single_network_stereo_vb1940_player.py
+```
+
+SIPL accelerated network python example on AGX Thor with Li VB1940 camera:
+
+```sh
+$ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_dual.json
 ```
 
 Applications wishing to map sensors to specific data channels can do so using the
@@ -252,6 +284,8 @@ nvargus-daemon
 exit
 ```
 
+**This example will not run on AGX Thor**
+
 ## Running the Latency for IMX274 example
 
 For IGX systems, `examples/imx274_latency.py` shows an example of how to use timestamp
@@ -274,6 +308,8 @@ Running the latency example application on AGX Orin systems:
 $ python3 examples/linux_imx274_latency.py
 ```
 
+**This example will not run on AGX Thor**
+
 ## Running the ECam0M30ToF Player Application
 
 The `ecam0m30tof_player.py` application demonstrates how to capture and display depth
@@ -294,6 +330,8 @@ python3 examples/ecam0m30tof_player.py --hololink 192.168.0.2 --camera-mode=<0|1
 **Camera Configuration**:
 
 - `--camera-mode`: Select camera mode (0: `DEPTH_IR`, 1: `DEPTH`, 2: `IR`)
+
+**This example will not run on AGX Thor**
 
 ## Running the frame validation example for IMX274
 
@@ -327,3 +365,5 @@ In this example, the application will check for CRC32 frame errors every 50 fram
 
 While there is no equivalent example for IGX systems, this example can be quickly
 adapted by users for IGX.
+
+**This example will not run on AGX Thor**

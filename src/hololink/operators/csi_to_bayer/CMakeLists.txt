@@ -26,7 +26,7 @@ add_library(hololink::operators::csi_to_bayer ALIAS csi_to_bayer)
 target_include_directories(csi_to_bayer
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(csi_to_bayer
@@ -36,10 +36,12 @@ target_link_libraries(csi_to_bayer
   )
 
 # Installation of the csi_to_bayer operator
+set_target_properties(csi_to_bayer PROPERTIES EXPORT_NAME operators::csi_to_bayer)
 install(TARGETS csi_to_bayer
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/csi_to_bayer.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/csi_to_bayer
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/csi_to_bayer
         COMPONENT hololink-operators)

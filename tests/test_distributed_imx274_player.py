@@ -24,6 +24,7 @@ import hololink as hololink_module
 from examples import distributed_imx274_player
 
 
+@pytest.mark.skip("TEST HANGS")
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(

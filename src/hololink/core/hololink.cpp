@@ -107,7 +107,7 @@ namespace {
 } // anonymous namespace
 
 Hololink::Hololink(
-    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool vsync_enable, bool block_enable)
+    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool block_enable)
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
@@ -122,7 +122,6 @@ Hololink::Hololink(
     , started_(false)
     , ptp_pps_output_(std::make_shared<PtpSynchronizer>(this[0]))
     , ptp_enable_(ptp_enable)
-    , vsync_enable_(vsync_enable)
     , block_enable_(block_enable)
 {
 }
@@ -170,18 +169,13 @@ Hololink::~Hololink()
         if (opt_ptp_enable) {
             ptp_enable = opt_ptp_enable.value() != 0;
         }
-        bool vsync_enable = true;
-        auto opt_vsync_enable = metadata.get<int64_t>("vsync_enable");
-        if (opt_vsync_enable) {
-            vsync_enable = opt_vsync_enable.value() != 0;
-        }
         bool block_enable = true;
         auto opt_block_enable = metadata.get<int64_t>("block_enable");
         if (opt_block_enable) {
             block_enable = opt_block_enable.value() != 0;
         }
         r = std::make_shared<Hololink>(
-            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, vsync_enable, block_enable);
+            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, block_enable);
         hololink_by_serial_number[serial_number.value()] = r;
     } else {
         r = it->second;
@@ -1753,11 +1747,6 @@ void Hololink::configure_hsb()
     hsb_ip_version_ = get_hsb_ip_version(get_hsb_ip_version_timeout, sequence_check);
     datecode_ = get_fpga_date();
     HSB_LOG_INFO("HSB IP version={:#x} datecode={:#x}", hsb_ip_version_, datecode_);
-
-    // Disable VSYNC
-    if (vsync_enable_) {
-        write_uint32(VSYNC_CONTROL, 0);
-    }
 
     // Enable PTP.  This feature may not be instantiated
     // within the FPGA, which would lead to an exception

@@ -83,6 +83,7 @@ RoceReceiver::RoceReceiver(
     , received_page_(0)
     , frame_ready_([](const RoceReceiver&) {})
     , frame_number_()
+    , monitor_running_()
 {
     HSB_LOG_DEBUG("cu_buffer={:#x} cu_frame_size={:#x} cu_page_size={} pages={}",
         cu_buffer, cu_frame_size, cu_page_size, pages);
@@ -458,6 +459,8 @@ void RoceReceiver::blocking_monitor()
     core::NvtxTrace::setThreadName("RoceReceiver::run");
     HSB_LOG_DEBUG("Running.");
 
+    std::lock_guard monitor_lock(monitor_running_);
+
     struct ibv_wc ib_wc = { 0 };
 
 #ifdef PERIODIC_STATUS
@@ -564,16 +567,7 @@ void RoceReceiver::blocking_monitor()
                 // Start copying out the metadata chunk.  get_next_frame will synchronize on metadata_stream_.
                 // NOTE that we start this request while we hold ready_mutex_ -- this guarantees that we don't
                 // start another copy while the foreground is copying data out of this buffer.
-                CUdeviceptr page_start = page * cu_page_size_;
-                CUdeviceptr metadata_start = page_start + metadata_offset_;
-                if ((metadata_start + hololink::METADATA_SIZE) > cu_buffer_size_) {
-                    throw std::runtime_error(fmt::format("metadata_start={:#x}+metadata_size={:#x}(which is {:#x}) exceeds cu_buffer_size={:#x}.",
-                        metadata_start, hololink::METADATA_SIZE, metadata_start + hololink::METADATA_SIZE, cu_buffer_size_));
-                }
-                CUresult cu_result = cuMemcpyDtoHAsync(metadata_buffer_, cu_buffer_ + metadata_start, hololink::METADATA_SIZE, metadata_stream_);
-                if (cu_result != CUDA_SUCCESS) {
-                    throw std::runtime_error(fmt::format("cmMemcpyDtoHAsync failed, cu_result={}.", cu_result));
-                }
+                copy_metadata_to_host(page);
                 current_buffer_ = cu_buffer_ + cu_page_size_ * page;
                 received_frame_number_++;
                 core::NvtxTrace::event_u64("received_frame_number", received_frame_number_);
@@ -621,10 +615,26 @@ void RoceReceiver::blocking_monitor()
     HSB_LOG_DEBUG("Closed.");
 }
 
+void RoceReceiver::copy_metadata_to_host(unsigned current_page)
+{
+    CUdeviceptr page_start = current_page * cu_page_size_;
+    CUdeviceptr metadata_start = page_start + metadata_offset_;
+    if ((metadata_start + hololink::METADATA_SIZE) > cu_buffer_size_) {
+        throw std::runtime_error(fmt::format("metadata_start={:#x}+metadata_size={:#x}(which is {:#x}) exceeds cu_buffer_size={:#x}.",
+            metadata_start, hololink::METADATA_SIZE, metadata_start + hololink::METADATA_SIZE, cu_buffer_size_));
+    }
+    CUresult cu_result = cuMemcpyDtoHAsync(metadata_buffer_, cu_buffer_ + metadata_start, hololink::METADATA_SIZE, metadata_stream_);
+    if (cu_result != CUDA_SUCCESS) {
+        throw std::runtime_error(fmt::format("cuMemcpyDtoHAsync failed, cu_result={}.", cu_result));
+    }
+}
+
 void RoceReceiver::close()
 {
     done_ = true;
     ::close(control_w_);
+    // Wait here until the background thread closes.
+    std::lock_guard monitor_lock(monitor_running_);
 }
 
 void RoceReceiver::free_ib_resources()
@@ -702,15 +712,7 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
     metadata.received_frame_number = received_frame_number_;
     metadata.dropped = dropped_;
     if (r) {
-        CUresult cu_result = cuStreamSynchronize(metadata_stream_);
-        if (cu_result != CUDA_SUCCESS) {
-            throw std::runtime_error(fmt::format("cuStreamSynchronize failed, cu_result={}.", cu_result));
-        }
-        Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(metadata_buffer_, hololink::METADATA_SIZE);
-        if (frame_metadata.psn != received_psn_) {
-            // This indicates that the distal end rewrote the receiver buffer.
-            HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, received_psn_);
-        }
+        Hololink::FrameMetadata frame_metadata = get_frame_metadata();
         metadata.rx_write_requests = rx_write_requests_;
         metadata.imm_data = imm_data_;
         metadata.received_s = received_.tv_sec;
@@ -734,6 +736,20 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         HSB_LOG_ERROR("pthread_mutex_unlock returned status={}.", status);
     }
     return r;
+}
+
+const Hololink::FrameMetadata RoceReceiver::get_frame_metadata()
+{
+    CUresult cu_result = cuStreamSynchronize(metadata_stream_);
+    if (cu_result != CUDA_SUCCESS) {
+        throw std::runtime_error(fmt::format("cuStreamSynchronize failed, cu_result={}.", cu_result));
+    }
+    Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(metadata_buffer_, hololink::METADATA_SIZE);
+    if (frame_metadata.psn != received_psn_) {
+        // This indicates that the distal end rewrote the receiver buffer.
+        HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, received_psn_);
+    }
+    return frame_metadata;
 }
 
 bool RoceReceiver::check_async_events()

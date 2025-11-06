@@ -14,7 +14,7 @@
 # limitations under the License.
 
 # include the operators
-if(DEFINED ENV{CONTAINER_TYPE} AND "$ENV{CONTAINER_TYPE}" STREQUAL "igpu")
+if(HOLOLINK_BUILD_ARGUS_ISP)
   add_subdirectory(argus_isp)
 endif()
 add_subdirectory(audio_packetizer)

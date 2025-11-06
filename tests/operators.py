@@ -43,9 +43,6 @@ class ColorProfiler(holoscan.core.Operator):
         in_message = op_input.receive("input")
         cp_frame = cp.asarray(in_message.get(""))  # cp_frame.shape is (y,x,4)
         op_output.emit({self._out_tensor_name: cp_frame}, "output")
-        # Give it some time to settle
-        if self._count < COLOR_PROFILER_START_FRAME:
-            return
         # Compute the Y of YCrCb
         r = cp_frame[:, :, 0]
         g = cp_frame[:, :, 1]

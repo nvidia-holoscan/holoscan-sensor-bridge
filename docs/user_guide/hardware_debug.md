@@ -10,11 +10,11 @@ the Sensor RX Interface signals. Enabling the Sensor Data Generator tests from t
 internal Sensor RX to Host TX Dataplane path to verify correct RoCE/CoE configuration
 and Host TX path is integrated correctly. To enable Data Generator:
 
-1. Add **\`define SENSOR_RX_DATA_GEN** to "HOLOLINK_def.svh"
+1. Add **\`define SIF_RX_DATA_GEN** to "HOLOLINK_def.svh"
 1. Add the below code to the python script and call the function after setting up the
    receiver.
 
-```
+```python
 def data_gen(sif_index):
     sif_mask = 0x10000 * sif_index
     hololink.write_uint32(0x01000104 + sif_mask,0x00000000) # data_gen     , Disable
@@ -47,7 +47,7 @@ incrementally numbered. If this register is not incrementing, either no sensor d
 driven into Holoscan Sensor Bridge IP or the CoE/RoCE configuration is not set properly
 to transmit the data.
 
-```
+```python
 def read_psn(sif_index):
     sif_mask = 0x10000 * sif_index
     roce_mask = 0x00040 * sif_index
@@ -61,7 +61,9 @@ def read_psn(sif_index):
 The SPI and I2C controllers provide status registers to help debug communication issues.
 
 **Status Register Monitoring** Monitor the STATUS register (offset 0x0300_0080 for SPI
-and 0x0300_0280 for I2C) for both controllers:
+and 0x0300_0280 for I2C).
+
+For SPI and I2C controllers:
 
 - **BUSY (bit 0)**: 1 = transaction in progress, 0 = idle
 - **FSM_ERR (bit 1)**: Configuration errors (e.g., invalid byte counts)
@@ -92,4 +94,4 @@ and 0x0300_0280 for I2C) for both controllers:
    - **I2C NACK**: Verify device address and power
    - **I2C ARB_LOST**: Check for bus contention
    - **SPI Data Issues**: Verify SPI_MODE and clock frequency
-   - **Both**: Check signal integrity with oscilloscope
+   - **All**: Check signal integrity with oscilloscope

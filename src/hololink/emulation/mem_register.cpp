@@ -32,9 +32,9 @@ namespace hololink::emulation {
 
 #define HSB_EMULATOR_DATE 20250608
 
-MemRegister::MemRegister(HSBConfiguration* configuration)
+MemRegister::MemRegister(const HSBConfiguration& configuration)
 {
-    registers_[hololink::HSB_IP_VERSION] = configuration->hsb_ip_version;
+    registers_[hololink::HSB_IP_VERSION] = configuration.hsb_ip_version;
     registers_[hololink::FPGA_DATE] = HSB_EMULATOR_DATE;
 }
 
@@ -99,6 +99,26 @@ std::vector<uint32_t> MemRegister::read_many(const std::initializer_list<uint32_
         ++idx;
     }
 
+    return values;
+}
+
+void MemRegister::write_range(uint32_t start_address, const std::vector<uint32_t>& values)
+{
+    std::unique_lock<std::shared_mutex> lock(rwlock_);
+    for (const auto& value : values) {
+        registers_[start_address] = value;
+        start_address += sizeof(uint32_t);
+    }
+}
+
+std::vector<uint32_t> MemRegister::read_range(uint32_t start_address, uint32_t num_addresses)
+{
+    std::shared_lock<std::shared_mutex> lock(rwlock_);
+    std::vector<uint32_t> values(num_addresses);
+    for (uint32_t i = 0; i < num_addresses; i++) {
+        values[i] = registers_[start_address];
+        start_address += sizeof(uint32_t);
+    }
     return values;
 }
 

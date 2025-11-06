@@ -24,9 +24,26 @@
 
 #include "dlpack/dlpack.h"
 
+namespace hololink::emulation {
+
+#define UUID_SIZE 16
+
 // convenience functions/wrappings for DLPack.
 
 // Determine the total number of bytes in the tensor
 int64_t DLTensor_n_bytes(const DLTensor& tensor);
+
+typedef uint8_t uuid_t[UUID_SIZE];
+
+// interface and semantics to match standard uuid library
+// maps input null-terminated string in human-readable format to byte string
+// uuid_s must be 37 characters long (32 hex characters + 4 hyphens + null terminator)
+// returns 0 on success, 1 on failure. Failure puts uuid in indeterminate state with possibly partial writes.
+int uuid_parse(const char* uuid_s, uuid_t uuid);
+
+// out must be at least 37 characters long (32 hex characters + 4 hyphens + null terminator)
+void uuid_unparse_lower(uuid_t uu, char* out);
+
+} // namespace hololink::emulation
 
 #endif

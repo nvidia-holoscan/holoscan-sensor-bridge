@@ -25,6 +25,15 @@
 
 namespace hololink {
 
+// JESD register base addresses
+static constexpr uint32_t JESD_BASE_ADDR = 0x40000000;
+static constexpr uint32_t JESD_RX_CTRL = JESD_BASE_ADDR + 0x0;
+static constexpr uint32_t JESD_TX_CTRL = JESD_BASE_ADDR + 0x40000;
+static constexpr uint32_t JESD_XCVR_CTRL = JESD_BASE_ADDR + 0x100000;
+static constexpr uint32_t JESD_PLL_CTRL = JESD_BASE_ADDR + 0x200000;
+static constexpr uint32_t JESD_REG_CTRL = JESD_BASE_ADDR + 0x300000;
+static constexpr uint32_t JESD_XCVR_CHANNEL_STRIDE = 0x00010000;
+
 /**
  * Interface for an object that provides JESD configuration.
  */

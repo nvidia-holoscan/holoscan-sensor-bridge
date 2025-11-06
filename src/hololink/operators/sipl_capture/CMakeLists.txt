@@ -28,9 +28,10 @@ target_link_directories(sipl_capture
 
 target_link_libraries(sipl_capture
   PUBLIC
-    hololink
-  PRIVATE
+    hololink::core
     holoscan::core
+  PRIVATE
+    GXF::multimedia
     nvbufsurface
     nvfusacapinterface
     nvrm_surface
@@ -46,3 +47,16 @@ target_include_directories(sipl_capture
     /usr/src/jetson_sipl_api/sipl/include/nvsci
     /usr/src/jetson_sipl_api/sipl/include/query/include
 )
+
+# Installation of the sipl_capture operator
+set_target_properties(sipl_capture PROPERTIES EXPORT_NAME operators::sipl_capture)
+install(TARGETS sipl_capture
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES
+          ${CMAKE_CURRENT_SOURCE_DIR}/sipl_capture.hpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/sipl_fmt.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/sipl_capture
+        COMPONENT hololink-operators)

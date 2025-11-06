@@ -22,48 +22,31 @@ add_library(hololink_core STATIC
   logging.cpp
   metadata.cpp
   networking.cpp
+  reactor.cpp
   timeout.cpp
   tools.cpp
   traditional_spi.cpp
   traditional_i2c.cpp
   )
 add_library(hololink::core ALIAS hololink_core)
-set_source_files_properties(enumerator.cpp PROPERTIES COMPILE_FLAGS "-g3")
-set_source_files_properties(networking.cpp PROPERTIES COMPILE_FLAGS "-g3")
 
 set_property(TARGET hololink_core PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
-  # If we're building all of the Hololink components, including those that depend on
-  # Holoscan, we link against holoscan::core. This is a workaround for the fact that
-  # Holoscan provides its own copy of the fmtlib includes and we need to ensure that
-  # this core library remains compatible with other Hololink libraries or applications
-  # which use the fmtlib formatting functions within hololink_core.
-  target_link_libraries(hololink_core
-    PRIVATE
-      holoscan::core
-    )
-else()
-  target_link_libraries(hololink_core
-    PRIVATE
-      fmt
-    )
-
-  target_compile_definitions(hololink_core
-    PRIVATE
-      FMT_HEADER_ONLY=1
-    )
-endif()
+target_link_libraries(hololink_core
+  PUBLIC
+    fmt::fmt-header-only
+)
 
 target_include_directories(hololink_core
-  PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../..
-  INTERFACE
+  PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
-    $<INSTALL_INTERFACE:src>
-  )
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
 
 # Installation of the hololink_core library
+set_target_properties(hololink_core PROPERTIES EXPORT_NAME core)
 install(TARGETS hololink_core
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-core)
 
@@ -83,6 +66,7 @@ install(FILES
         networking.hpp
         nullable_pointer.hpp
         nvtx_trace.hpp
+        reactor.hpp
         serializer.hpp
         smart_object_pool.hpp
         timeout.hpp

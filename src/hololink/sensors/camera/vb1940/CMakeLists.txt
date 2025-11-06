@@ -25,10 +25,21 @@ add_library(hololink::sensors::native_vb1940_camera_sensor ALIAS native_vb1940_c
 target_include_directories(native_vb1940_camera_sensor
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(native_vb1940_camera_sensor
   PUBLIC
     hololink_camera_sensor
 )
+
+set_target_properties(native_vb1940_camera_sensor PROPERTIES EXPORT_NAME sensors::native_vb1940_camera_sensor)
+install(TARGETS native_vb1940_camera_sensor
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-sensors)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/native_vb1940_sensor.hpp
+              ${CMAKE_CURRENT_SOURCE_DIR}/vb1940_mode.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/sensors/camera/vb1940
+        COMPONENT hololink-sensors)

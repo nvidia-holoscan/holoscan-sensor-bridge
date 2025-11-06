@@ -15,7 +15,7 @@ module axis_to_avst
   input  logic                     axis_tvalid,
   input  logic   [DWIDTH-1:0]      axis_tdata,
   input  logic                     axis_tlast,
-  input  logic                     axis_tuser,
+  input  logic   [USER_WIDTH-1:0]     axis_tuser,
   input  logic   [KEEP_WIDTH-1:0]  axis_tkeep,
   output logic                     axis_tready,
   //AVST Output

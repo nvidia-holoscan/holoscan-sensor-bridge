@@ -18,15 +18,17 @@ Major functions of the Holoscan Sensor Bridge IP include:
 The block diagram of the Holoscan Sensor Bridge IP in the FPGA is depicted below. The
 Sensor Interface and Host (Ethernet) Interface blocks are FPGA vendor specific logic.
 
-![sensor_bridge_ip_block_diagram](sensor_bridge_ip_block_diagram.png) Figure 1. Holoscan
-Sensor Bridge IP in FPGA
+![sensor_bridge_ip_block_diagram](sensor_bridge_ip_block_diagram.png)
+
+Figure 1. Holoscan Sensor Bridge IP in FPGA
 
 ## Holoscan Sensor Bridge IP Architecture
 
 The architecture of the Holoscan Sensor Bridge IP is depicted below.
 
-![sensor_bridge_ip_architecture](sensor_bridge_ip_architecture.png) Figure 2. Holoscan
-Sensor Bridge IP Architecture
+![sensor_bridge_ip_architecture](sensor_bridge_ip_architecture.png)
+
+Figure 2. Holoscan Sensor Bridge IP Architecture
 
 There are 2 main planes of data bridging in the Holoscan Sensor Bridge IP, the Dataplane
 and the Controlplane. The Dataplane is data transfer relevant to sensor data as it gets

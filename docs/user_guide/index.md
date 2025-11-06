@@ -13,6 +13,7 @@ applications
 architecture
 latency
 new_sensors
+emulation
 fpga_index
 sensor_bridge_firmware_setup
 troubleshooting

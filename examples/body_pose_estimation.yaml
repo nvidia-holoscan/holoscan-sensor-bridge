@@ -29,7 +29,7 @@ inference:
   inference_map:
     "yolo_pose": ["inference_output"]
   input_on_cuda: true
-  is_engine_path: true
+  is_engine_path: false
 
 postprocessor:
   iou_threshold: 0.5

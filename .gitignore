@@ -23,9 +23,10 @@ configurator/meta-openembedded
 configurator/poky
 spi-vm.log
 spi-vm.pid
+*.so
 
 # Emulation files
-src/hololink/emulation/test_emulator_hsb
 *.o
-dlpack.h
-
+*.so
+src/hololink/emulation/dlpack
+src/hololink/emulation/build

@@ -13,20 +13,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from ._emulation import (
-    DataPlane,
-    DataPlaneID,
-    HSBEmulator,
-    IPAddress,
-    LinuxDataPlane,
-    SensorID,
-)
+# See README.md for detailed information.
+
+from . import emulation
+
+BL_I2C_BUS = 0
+CAM_I2C_BUS = 1
+I2C_CTRL = 0x03000200
 
 __all__ = [
-    "HSBEmulator",
-    "DataPlane",
-    "LinuxDataPlane",
-    "DataPlaneID",
-    "SensorID",
-    "IPAddress",
+    "BL_I2C_BUS",
+    "CAM_I2C_BUS",
+    "I2C_CTRL",
+    "emulation",
 ]

@@ -33,14 +33,8 @@ void LinuxDataPlaneOp::setup(holoscan::OperatorSpec& spec)
     spec.input<holoscan::Tensor>(LINUX_DATA_PLANE_INPUT_NAME);
     spec.param(hsb_emulator_, "hsb_emulator", "HSBEmulator", "HSBEmulator", std::make_shared<hololink::emulation::HSBEmulator>());
     spec.param(source_ip_address_, "source_ip_address", "IPAddress", "IPAddress", std::string("192.168.0.2"));
-    spec.param(subnet_bits_, "subnet_bits", "subnet ibts", "Number of Subnet bits", 24u);
-    spec.param(source_port_, "source_port", "source port", "Source port", 12888u);
-    spec.param(sensor_id_, "sensor_id", "SensorID", "SensorID", hololink::emulation::SensorID::SENSOR_0);
-    spec.param(data_plane_id_,
-        "data_plane_id",
-        "DataPlaneID",
-        "DataPlaneID",
-        hololink::emulation::DataPlaneID::DATA_PLANE_0);
+    spec.param(sensor_id_, "sensor_id", "uint8_t", "uint8_t", (uint8_t)0);
+    spec.param(data_plane_id_, "data_plane_id", "uint8_t", "uint8_t", (uint8_t)0);
 }
 
 void LinuxDataPlaneOp::initialize()
@@ -48,8 +42,7 @@ void LinuxDataPlaneOp::initialize()
     Operator::initialize(); // let holoscan bind parameters first
     data_plane_ = std::make_unique<hololink::emulation::LinuxDataPlane>(
         *hsb_emulator_.get(),
-        hololink::emulation::IPAddress_from_string(source_ip_address_.get(), subnet_bits_.get()),
-        source_port_.get(),
+        hololink::emulation::IPAddress_from_string(source_ip_address_.get()),
         data_plane_id_.get(),
         sensor_id_.get());
 }

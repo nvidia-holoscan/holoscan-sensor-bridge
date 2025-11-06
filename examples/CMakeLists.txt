@@ -25,6 +25,7 @@ add_test(NAME imx274_player_test
 set_tests_properties(imx274_player_test PROPERTIES
                       FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
 
+include(hololink_deps/pybind11)
 target_link_libraries(imx274_player
   PRIVATE
     hololink
@@ -141,6 +142,25 @@ if(HOLOLINK_BUILD_SIPL)
 
   list(APPEND EXAMPLE_INSTALL_TARGETS sipl_player)
 endif() # HOLOLINK_BUILD_SIPL
+
+add_executable(linux_single_network_stereo_imx274_player
+  linux_single_network_stereo_imx274_player.cpp
+  )
+
+target_link_libraries(linux_single_network_stereo_imx274_player
+  PRIVATE
+    hololink
+    hololink::operators::csi_to_bayer
+    hololink::operators::image_processor
+    hololink::operators::linux_receiver_op
+    hololink::sensors::native_imx274_camera_sensor
+    holoscan::core
+    holoscan::ops::bayer_demosaic
+    holoscan::ops::holoviz
+  )
+
+list(APPEND EXAMPLE_INSTALL_TARGETS linux_single_network_stereo_imx274_player)
+
 
 endif() # NOT HOLOLINK_BUILD_ONLY_NATIVE
 

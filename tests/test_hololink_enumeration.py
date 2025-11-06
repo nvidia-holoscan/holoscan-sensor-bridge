@@ -16,6 +16,7 @@
 # See README.md for detailed information.
 
 import logging
+import threading
 
 import pytest
 
@@ -63,3 +64,35 @@ def test_hololink_enumeration_supplemental(channel_ip, timeout_s=60):
     assert channel_metadata["test-parameter"] == "HELLO"
     hololink_module.DataChannel.use_sensor(channel_metadata, 2)
     hololink_module.DataChannel.use_data_plane_configuration(channel_metadata, 2)
+
+
+@pytest.mark.skip_unless_imx274
+def test_hololink_enumeration_via_reactor(channel_ip, timeout_s=5):
+    received_metadata = []
+    condition = threading.Condition()
+
+    def callback(metadata):
+        logging.debug(f"Received metadata: {metadata}")
+        with condition:
+            received_metadata.append(metadata)
+            condition.notify()
+
+    # Register the callback for the channel IP using C++ Enumerator static methods
+    callback_handle = hololink_module.Enumerator.register_ip(channel_ip, callback)
+
+    try:
+        # Wait for enumeration to happen
+        while True:
+            with condition:
+                assert condition.wait(timeout_s), "Timed out waiting for messages."
+                if len(received_metadata) > 5:
+                    break
+    finally:
+        # Unregister the callback
+        hololink_module.Enumerator.unregister_ip(callback_handle)
+
+    # Verify we received metadata
+    assert len(received_metadata) > 0, f"No metadata received for {channel_ip}"
+    logging.info(
+        f"Received {len(received_metadata)} metadata callbacks for {channel_ip}"
+    )

@@ -15,6 +15,9 @@
 
 # See README.md for detailed information.
 
+# Import hololink_core FIRST with RTLD_GLOBAL so its symbols are available to _hololink
+# This prevents duplicate copies of hololink_core code in memory
+from . import hololink_core  # noqa: F401
 from . import (
     emulation,
     operators,
@@ -49,6 +52,12 @@ from ._hololink import (
     HOLOLINK_LITE_BOARD_ID,
     HOLOLINK_NANO_BOARD_ID,
     HSB_IP_VERSION,
+    HSB_LOG_LEVEL_DEBUG,
+    HSB_LOG_LEVEL_ERROR,
+    HSB_LOG_LEVEL_INFO,
+    HSB_LOG_LEVEL_INVALID,
+    HSB_LOG_LEVEL_TRACE,
+    HSB_LOG_LEVEL_WARN,
     I2C_10B_ADDRESS,
     I2C_BUSY,
     I2C_CTRL,
@@ -82,6 +91,7 @@ from ._hololink import (
     EnumerationStrategy,
     Enumerator,
     Hololink,
+    HsbLogLevel,
     ImGuiRenderer,
     Metadata,
     NvtxTrace,
@@ -92,15 +102,25 @@ from ._hololink import (
     Timeout,
     TimeoutError,
     UnsupportedVersion,
+    get_hsb_log_level,
     get_traditional_i2c,
     get_traditional_spi,
+    hsb_log_debug,
+    hsb_log_error,
+    hsb_log_info,
+    hsb_log_trace,
+    hsb_log_warn,
+    log_timestamp_s,
+    set_hsb_log_level,
 )
 from .hololink_core import (
     PAGE_SIZE,
     UDP_PACKET_SIZE,
     ArpWrapper,
     Deserializer,
+    Reactor,
     Serializer,
+    gettid,
     infiniband_devices,
     local_ip_and_mac,
     local_ip_and_mac_from_socket,
@@ -145,6 +165,13 @@ __all__ = [
     "HOLOLINK_LITE_BOARD_ID",
     "HOLOLINK_NANO_BOARD_ID",
     "HSB_IP_VERSION",
+    "HSB_LOG_LEVEL_TRACE",
+    "HSB_LOG_LEVEL_DEBUG",
+    "HSB_LOG_LEVEL_INFO",
+    "HSB_LOG_LEVEL_WARN",
+    "HSB_LOG_LEVEL_ERROR",
+    "HSB_LOG_LEVEL_INVALID",
+    "HsbLogLevel",
     "Hololink",
     "I2C_10B_ADDRESS",
     "I2C_CTRL",
@@ -171,6 +198,7 @@ __all__ = [
     "PixelFormat",
     "RD_BLOCK",
     "RD_DWORD",
+    "Reactor",
     "REQUEST_FLAGS_ACK_REQUEST",
     "RESPONSE_INVALID_CMD",
     "RESPONSE_SUCCESS",
@@ -186,8 +214,15 @@ __all__ = [
     "WR_BLOCK",
     "WR_DWORD",
     "core",
+    "get_hsb_log_level",
     "get_traditional_i2c",
     "get_traditional_spi",
+    "hsb_log_trace",
+    "hsb_log_debug",
+    "hsb_log_info",
+    "hsb_log_warn",
+    "hsb_log_error",
+    "gettid",
     "infiniband_devices",
     "local_ip_and_mac",
     "local_ip_and_mac_from_socket",
@@ -197,6 +232,8 @@ __all__ = [
     "renesas_bajoran_lite_ts2",
     "round_up",
     "sensors",
+    "log_timestamp_s",
+    "set_hsb_log_level",
 ]
 
 import logging
@@ -205,6 +242,26 @@ trace_level = logging.DEBUG - 5
 trace_name = "TRACE"
 logging.addLevelName(trace_level, trace_name)
 setattr(logging, trace_name, trace_level)
+
+logger = logging.getLogger()
+
+
+class TidFilter(logging.Filter):
+    def filter(self, record):
+        record.tid = gettid()
+        return True
+
+
+logger.addFilter(TidFilter())
+
+
+class LogTimestampFilter(logging.Filter):
+    def filter(self, record):
+        record.log_timestamp_s = log_timestamp_s()
+        return True
+
+
+logger.addFilter(LogTimestampFilter())
 
 
 def log_trace(self, message, *args, **kwargs):
@@ -221,7 +278,7 @@ def log_trace_to_root(message, *args, **kwargs):
 
 setattr(logging, trace_name.lower(), log_trace_to_root)
 
-log_format = "%(levelname)s %(relativeCreated)d %(funcName)s %(filename)s:%(lineno)d tid=%(threadName)s -- %(message)s"
+log_format = "%(levelname)s %(log_timestamp_s).4f %(funcName)s %(filename)s:%(lineno)d tid=0x%(tid)x -- %(message)s"
 
 
 def logging_level(n):

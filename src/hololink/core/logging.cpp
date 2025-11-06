@@ -27,10 +27,8 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/types.h>
+#include <time.h>
 #include <unistd.h>
-
-#include <sys/syscall.h>
-#define gettid() syscall(SYS_gettid)
 
 #include <fmt/core.h>
 
@@ -47,6 +45,24 @@ static const char* log_level_environment_variable = "HOLOSCAN_LOG_LEVEL";
 // Socket to send our data to.
 static int logger_socket = -1;
 #endif /* SOCKET_LOG */
+
+float log_timestamp_s()
+{
+    struct timespec now = { 0, 0 };
+    float ts = 0;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) == 0) {
+#define MS_PER_SEC (1000.0)
+#define US_PER_SEC (1000.0 * MS_PER_SEC)
+#define NS_PER_SEC (1000.0 * US_PER_SEC)
+        ts = now.tv_sec;
+        ts += now.tv_nsec / NS_PER_SEC;
+    }
+    static float start_time = 0;
+    if (start_time < 1) {
+        start_time = ts;
+    }
+    return ts - start_time;
+}
 
 static void _hsb_logger(char const* file, unsigned line, const char* function, HsbLogLevel level, const char* message)
 {
@@ -78,7 +94,8 @@ static void _hsb_logger(char const* file, unsigned line, const char* function, H
         break;
     }
     pid_t thread_id = gettid();
-    std::string msg = fmt::format("{} {}:{} {} tid={:#x} -- {}", level_description, basename, line, function, thread_id, message);
+    float ts = log_timestamp_s();
+    std::string msg = fmt::format("{} {:.4f} {}:{} {} tid={:#x} -- {}", level_description, ts, basename, line, function, thread_id, message);
 
 #ifdef CONSOLE_LOG
     fprintf(stderr, "%s\n", msg.c_str());

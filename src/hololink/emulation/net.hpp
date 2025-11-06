@@ -24,64 +24,98 @@
 #include <string>
 #include <tuple>
 
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+
+#include <netinet/ip.h>
+#include <netinet/udp.h>
+#include <poll.h>
+#include <sys/ioctl.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include "hololink/core/networking.hpp"
+#include "hsb_config.hpp"
 
 namespace hololink::emulation {
 
 #define IP_ADDRESS_MAX_BITS 32u
 #define IP_ADDRESS_DEFAULT_BITS 24u
 
-#ifndef DEFAULT_TTL
-#define DEFAULT_TTL 0x40
-#endif
+constexpr uint8_t IPADDRESS_HAS_ADDR = 0x1;
+constexpr uint8_t IPADDRESS_HAS_NETMASK = 0x2;
+constexpr uint8_t IPADDRESS_HAS_BROADCAST = 0x4;
+constexpr uint8_t IPADDRESS_IS_PTP = 0x40;
+constexpr uint8_t IPADDRESS_HAS_MAC = 0x80;
 
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <netinet/in.h>
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <unistd.h>
+/**
+ * python (limited API):
+ *
+ * `def __init__(self: hemu.IPAddress, ip_address: str, /)`
+ *
+ * @brief Encapsulates all the relevant information for transmission from an Emulator device IP address
+ *
+ * This structure contains the network interface configuration required for the emulator to send
+ * packets, including interface name, IP address, MAC address, optional port and broadcast address
+ * (defaulting to 255.255.255.255 if on interface that does not have an explicit broadcast, e.g. loopback).
+ */
+typedef struct IPAddress {
+    std::string if_name; ///< Network interface name (e.g., "eth0", "lo")
+    in_addr_t ip_address { 0 }; ///< IP address in network byte order
+    in_addr_t subnet_mask { 0 }; ///< Subnet mask in network byte order
+    in_addr_t broadcast_address { 0 }; ///< Broadcast address in network byte order
+    hololink::core::MacAddress mac { 0 }; ///< MAC address of the interface
+    uint16_t port { hololink::DATA_SOURCE_UDP_PORT }; ///< UDP port number (defaults to DATA_SOURCE_UDP_PORT)
+    uint8_t flags { 0 }; ///< Configuration flags indicating which fields are valid
+    /**
+     * @brief Configuration flags bitfield:
+     * - 0x01 (IPADDRESS_HAS_ADDR): IP address is valid (and whole struct is valid)
+     * - 0x02 (IPADDRESS_HAS_NETMASK): netmask is valid
+     * - 0x04 (IPADDRESS_HAS_BROADCAST): broadcast address is valid
+     * - 0x40 (IPADDRESS_IS_PTP): indicates point-to-point (1) or broadcast (0) interface
+     * - 0x80 (IPADDRESS_HAS_MAC): MAC address is valid
+     */
+} IPAddress;
 
-std::tuple<std::string, std::string, hololink::core::MacAddress> local_ip_and_mac(
-    const std::string& destination_ip, uint32_t port);
+/**
+ * python (use IPAddress object constructor)
+ *
+ * @brief Construct an IPAddress object from a string representation of the IP address.
+ * @param ip_address The string representation of the IP address. Currently must be in format accepted by inet_addr().
+ * @return An IPAddress instance
+ */
+IPAddress IPAddress_from_string(const std::string& ip_address);
 
-// store in host byte order
-struct IPAddress {
-    uint32_t ip_address;
-    uint32_t subnet_mask;
-};
+/**
+ * python (use IPAddress object __str__() method)
+ *
+ * `def __str__(self: hemu.IPAddress) -> str`
+ *
+ * @brief Convert an IPAddress object to its string representation.
+ * @param ip_address The IPAddress object to convert
+ * @return String representation of the IP address
+ */
+std::string IPAddress_to_string(const IPAddress& ip_address);
 
-static inline struct IPAddress IPAddress_from_string(const std::string& ip_address, uint8_t subnet_bits = IP_ADDRESS_DEFAULT_BITS)
-{
-    if (!subnet_bits) {
-        uint32_t ip_address_int = inet_addr(ip_address.c_str());
-        if (!ip_address_int) {
-            return { 0, 0 };
-        }
-        throw std::invalid_argument("invalid IP address for subnet_bits=0. can only specify 0 subnet bits for 0.0.0.0");
-    } else if (subnet_bits > IP_ADDRESS_MAX_BITS) {
-        throw std::invalid_argument("subnet_bits must be in the range 0-32");
-    }
-    uint32_t ip_address_int = inet_addr(ip_address.c_str());
-    if (ip_address_int == INADDR_NONE) {
-        throw std::invalid_argument("invalid IP address");
-    }
-    return { ntohl(ip_address_int), ((uint32_t)0xFFFFFFFF) << (IP_ADDRESS_MAX_BITS - subnet_bits) };
-}
+/**
+ * @brief Get the broadcast address for a given IPAddress.
+ * @param ip_address The IPAddress object containing the network configuration
+ * @return The broadcast address as a 32-bit unsigned integer
+ */
+uint32_t get_broadcast_address(const IPAddress& ip_address);
 
-static inline std::string IPAddress_to_string(const IPAddress& ip_address)
-{
-    struct in_addr addr = {
-        .s_addr = htonl(ip_address.ip_address),
-    };
-    return std::string(inet_ntoa(addr));
-}
+/**
+ * @brief Disable broadcast configuration warning messages.
+ */
+void DISABLE_BROADCAST_CONFIG_WARNING();
 
-static inline uint32_t get_broadcast_address(const IPAddress& ip_address)
-{
-    return (ip_address.ip_address & ip_address.subnet_mask) | (0xFFFFFFFF & ~ip_address.subnet_mask);
-}
+/**
+ * @brief Retrieve and set the MAC address for a network interface.
+ * @param iface The IPAddress object to update with the MAC address
+ * @param if_name The name of the network interface to query
+ */
+void mac_from_if(IPAddress& iface, std::string const& if_name);
 
 } // namespace hololink::emulation
 

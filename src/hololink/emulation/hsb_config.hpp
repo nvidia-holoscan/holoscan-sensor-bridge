@@ -21,11 +21,8 @@
 #define HSB_CONFIG_HPP
 
 #include <cstdint>
-#include <map>
 
-#include "hololink/core/data_channel.hpp"
 #include "hololink/core/hololink.hpp"
-#include "hololink/core/serializer.hpp"
 
 namespace hololink::emulation {
 
@@ -48,82 +45,81 @@ namespace hololink::emulation {
 
 // I2C status flags
 #define I2C_IDLE 0
-#define I2C_STATUS (hololink::I2C_CTRL + 0x80)
+/*
+#define I2C_STATUS (hololink::I2C_CTRL + hololink::I2C_REG_STATUS)
+#define I2C_BUS_END (hololink::I2C_CTRL + hololink::I2C_REG_BUS_EN)
+#define I2C_NUM_BYTES (hololink::I2C_CTRL + hololink::I2C_REG_NUM_BYTES)
+#define I2C_CLK_CNT (hololink::I2C_CTRL + hololink::I2C_REG_CLK_CNT)
+#define I2C_DATA_BUFFER (hololink::I2C_CTRL + hololink::I2C_REG_DATA_BUFFER)
+*/
 
 // HSBConfiguration constants. Note currently in hololink::core, but might be useful/have to change if we have a unified HSBConfiguration class across HSB types and emulator.
 // size of the uuid member in HSBConfiguration. must >= UUID_SIZE
 #define BOARD_VERSION_SIZE 20
-// size of the UUID itself within the BOARD_VERSION_SIZE allocation
-#define UUID_SIZE 16
+#define UUID_STR_LEN 37
 #define BOARD_SERIAL_NUM_SIZE 7
 #define VENDOR_ID_SIZE 4
 
-/**
- * @brief DataPlaneID is used to identify the data plane on the HSB.
- * @note Currently, only 2 data planes are supported. Controlled in DataPlane() constructor.
- */
-enum DataPlaneID : uint8_t {
-    DATA_PLANE_0 = 0,
-    DATA_PLANE_1 = 1,
-};
+// HSBConfiguration constants
+#define MAX_SENSORS 32 // 5 bits of indices
+#define MAX_DATA_PLANES 256 // 8 bits of indices
+#define MAX_SIFS_PER_SENSOR 32 // 5 bits of indices
+#define MAX_SIFS 32 // 5 bits of indices
+#define HSB_DEFAULT_SENSOR_COUNT 2
+#define HSB_DEFAULT_DATA_PLANE_COUNT 2
+#define HSB_DEFAULT_SIFS_PER_SENSOR 2
 
+// HSBEmulator specific constants
+#define HSB_EMULATOR_DATE 20250608
+#define HSB_EMULATOR_TAG 0xE0
+#define HSB_EMULATOR_TAG_LENGTH 0x04
+#define HSB_EMULATOR_VENDOR_ID \
+    {                          \
+        'N', 'V', 'D', 'A'     \
+    }
+#define HSB_EMULATOR_ENUM_VERSION 2
+#define HSB_EMULATOR_BOARD_ID hololink::HOLOLINK_LITE_BOARD_ID
+#define HSB_EMULATOR_UUID                      \
+    {                                          \
+        0x16, 0xaf, 0x13, 0x9b,                \
+            0x9d, 0x14,                        \
+            0x48, 0x2f,                        \
+            0x98, 0x05,                        \
+            0x3f, 0xeb, 0x72, 0xae, 0x0c, 0xec \
+    }
+#define HSB_EMULATOR_SERIAL_NUM \
+    {                           \
+        3, 1, 4, 1, 5, 9, 3     \
+    }
+#define HSB_EMULATOR_HSB_IP_VERSION 0x2508
+#define HSB_EMULATOR_FPGA_CRC 0x5AA5
+
+// names should be stable, but ordering and field sizes may change.
 struct HSBConfiguration {
+    // BootP configuration parameters
     uint8_t tag; // 0xE0
     uint8_t tag_length; // 0x04
     uint8_t vendor_id[VENDOR_ID_SIZE]; // "NVDA"
-    DataPlaneID data_plane; // Eth Port
+    uint8_t data_plane; // Eth Port, set to 0. DataPlane fills this in
     uint8_t enum_version;
-    uint16_t board_id; // 2: HSB 10G, 3: HSB 100G // unused in enum_version = 2
+    uint8_t board_id_lo; // 0x00
+    uint8_t board_id_hi; // 0x00
     uint8_t uuid[BOARD_VERSION_SIZE];
     uint8_t serial_num[BOARD_SERIAL_NUM_SIZE];
     uint16_t hsb_ip_version;
     uint16_t fpga_crc;
+    // configuration parameters not part of BootP
+    uint8_t sensor_count; // must be able to mask vp in 32 bits so sensor_count < 32; 5 bits
+    uint8_t data_plane_count; // must be < 256 or 1 byte otherwise hif_address runs into I2C address space
+    uint8_t sifs_per_sensor; // sifs_per_sensor * sensor_count must be <= 32 otherwise vp_mask doesn't fit into 32 bits.
+                             // must be <= 64 otherwise vp_address runs into APB_RAM address space
 };
 
-// returns 0 on failure or the number of bytes written on success
-// Note that on failure, serializer and buffer contents are in indeterminate state.
-static inline size_t serialize_hsb_configuration(hololink::core::Serializer& serializer, HSBConfiguration& configuration)
-{
-    size_t start = serializer.length();
-    return serializer.append_uint8(configuration.tag)
-            && serializer.append_uint8(configuration.tag_length)
-            && serializer.append_buffer(configuration.vendor_id, sizeof(configuration.vendor_id))
-            && serializer.append_uint8(configuration.data_plane)
-            && serializer.append_uint8(configuration.enum_version)
-            && serializer.append_uint16_le(configuration.board_id)
-            && serializer.append_buffer(configuration.uuid, sizeof(configuration.uuid))
-            && serializer.append_buffer(configuration.serial_num, sizeof(configuration.serial_num))
-            && serializer.append_uint16_le(configuration.hsb_ip_version)
-            && serializer.append_uint16_le(configuration.fpga_crc)
-        ? serializer.length() - start
-        : 0;
-}
+extern const HSBConfiguration HSB_EMULATOR_CONFIG;
 
-/**
- * @brief SensorID is used to identify the sensor configuration on the HSB.
- * @note Currently, only 2 sensors are supported. Controlled in Sensor() constructor.
- */
-enum SensorID {
-    SENSOR_0 = 0,
-    SENSOR_1 = 1,
-};
+extern const HSBConfiguration HSB_LEOPARD_EAGLE_CONFIG;
 
-// straight copied from hololink/core/data_channel.cpp (before the changes for eagle.
-// Cannot make those changes here without updating uuid of HSBEmulator and registering
-// it in holoscan::core)
-struct DataPlaneConfiguration {
-    uint32_t hif_address;
-};
-extern std::map<DataPlaneID, DataPlaneConfiguration> data_plane_map;
-struct SensorConfiguration {
-    uint32_t sensor_interface;
-    uint32_t vp_mask;
-    hololink::Hololink::Event frame_end_event;
-    uint32_t sif_address;
-    uint32_t vp_address;
-};
-extern std::map<SensorID, SensorConfiguration> sensor_map;
-extern std::map<uint32_t, uint32_t> address_map;
+int hsb_config_set_uuid(HSBConfiguration& config, const char* uuid_str);
 
 } // namespace hololink::emulation
 

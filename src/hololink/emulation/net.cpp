@@ -16,107 +16,247 @@
  *
  * See README.md for detailed information.
  */
-
-#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
-#include <map>
-#include <stdexcept>
-#include <string>
-#include <tuple>
-#include <vector>
+#ifndef __linux__
+#include <sys/sysctl.h>
+// sockaddr_dl and link_ntoa (not really used)
+#include <net/if_dl.h>
+#endif
+#include <arpa/inet.h>
+#include <net/if.h>
+#include <netinet/in.h>
+// ETHER_ADDR_LEN is defined in net/ethernet.h on linux and netinet/if_ether.h on BSD
+#include <net/ethernet.h>
+// ether_aton
+#include <netinet/ether.h>
+// must come after net/if.h
+#include <ifaddrs.h>
 
 #include "net.hpp"
 
+#define MAC_HEX_DOT_LENGTH 17
+
 namespace hololink::emulation {
 
-// taken from hololink/core/networking.cpp with logging removed
-std::tuple<std::string, std::string, hololink::core::MacAddress> local_ip_and_mac(
-    const std::string& destination_ip, uint32_t port)
+void mac_from_if(IPAddress& iface, std::string const& if_name)
 {
-    // We need a port number for the connect call to work, but because it's
-    // SOCK_DGRAM, there's no actual traffic sent.
-    int s = socket(AF_INET, SOCK_DGRAM, 0);
-    if (s < 0) {
-        fprintf(stderr, "Failed to create socket: %d - %s\n", errno, strerror(errno));
-        throw std::runtime_error("Failed to create socket");
-    }
+    char* buf = NULL;
+    size_t len = 0;
+    size_t if_name_len = if_name.length();
+    len = if_name_len + strlen("/sys/class/net/") + strlen("/address") + 1; // +1 for null terminator
+    buf = new char[len];
 
-    // Start with a map of IP address to interfaces.
-    std::map<in_addr_t, std::string> interface_by_ip;
-    // First, find out how many interfaces there are.
-    ifconf ifconf_request {};
-    if (ioctl(s, SIOCGIFCONF, &ifconf_request) < 0) {
-        fprintf(stderr, "ioctl failed with errno=%d: \"%s\"\n", errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("ioctl failed");
+    snprintf(buf, len, "/sys/class/net/"
+                       "%.*s"
+                       "/address",
+        (int)if_name_len, if_name.c_str());
+    FILE* file = fopen(buf, "rb");
+    if (!file) {
+        delete[] buf;
+        throw std::runtime_error("failed to open file: " + std::string(buf));
     }
-    assert(ifconf_request.ifc_len > 0);
-    //
-    std::vector<ifreq> ifreq_buffer(ifconf_request.ifc_len / sizeof(ifreq));
-    ifconf_request.ifc_ifcu.ifcu_req = ifreq_buffer.data();
-    if (ioctl(s, SIOCGIFCONF, &ifconf_request) < 0) {
-        fprintf(stderr, "ioctl failed with errno=%d: \"%s\"\n", errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("ioctl failed");
+    size_t read_size = fread(buf, 1, len, file);
+    if (read_size < 3 * ETHER_ADDR_LEN) { // 2 bytes per octet + 1 ':' delimiter per ETHER_ADDR_LEN - 1 octets + 1 null terminator/LF minimum
+        fclose(file);
+        delete[] buf;
+        throw std::runtime_error("failed to read file: " + std::string(buf));
     }
-    assert(static_cast<size_t>(ifconf_request.ifc_len) == ifreq_buffer.size() * sizeof(ifreq));
-    assert(ifconf_request.ifc_ifcu.ifcu_req == ifreq_buffer.data());
-    for (auto&& req : ifreq_buffer) {
-        const std::string name(req.ifr_ifrn.ifrn_name);
-        const in_addr ip = ((struct sockaddr_in*)&req.ifr_ifru.ifru_addr)->sin_addr;
-        interface_by_ip[ip.s_addr] = name;
+    fclose(file);
+    buf[3 * ETHER_ADDR_LEN - 1] = '\0'; // null terminate the string
+    struct ether_addr* ether_addr = ether_aton(buf);
+    if (!ether_addr) {
+        delete[] buf;
+        throw std::runtime_error("failed to parse MAC address from file: " + std::string(buf));
     }
-
-    // datagram sockets, when connected, will only
-    // do I/O with the address they're connected to.
-    // Once it's connected, getsockname() will tell
-    // us the IP we're using on our side.
-    timeval timeout {};
-    if (setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout)) < 0) {
-        fprintf(stderr, "setsockopt failed with errno=%d: \"%s\"\n", errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("setsockopt failed");
-    }
-
-    sockaddr_in address {};
-    address.sin_family = AF_INET;
-    address.sin_port = htons(port);
-    if (inet_pton(AF_INET, destination_ip.c_str(), &address.sin_addr) == 0) {
-        fprintf(stderr, "Failed to convert address %s\n", destination_ip.c_str());
-        close(s);
-        throw std::runtime_error("Failed to convert address");
-    }
-    if (connect(s, (sockaddr*)&address, sizeof(address)) < 0) {
-        fprintf(stderr, "connection to %s failed with errno=%d: \"%s\"\n", destination_ip.c_str(), errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("connect failed");
-    }
-    sockaddr_in ip {};
-    ip.sin_family = AF_UNSPEC;
-    socklen_t ip_len = sizeof(ip);
-    if (getsockname(s, (sockaddr*)&ip, &ip_len) < 0) {
-        fprintf(stderr, "getsockname failed with errno=%d: \"%s\"\n", errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("getsockname failed");
-    }
-    const std::string binterface = interface_by_ip[ip.sin_addr.s_addr];
-
-    ifreq ifhwaddr_request {};
-    std::strncpy(ifhwaddr_request.ifr_ifrn.ifrn_name, binterface.c_str(),
-        sizeof(ifhwaddr_request.ifr_ifrn.ifrn_name));
-    if (ioctl(s, SIOCGIFHWADDR, &ifhwaddr_request) < 0) {
-        fprintf(stderr, "ioctl failed with errno=%d: \"%s\"\n", errno, strerror(errno));
-        close(s);
-        throw std::runtime_error("ioctl failed");
-    }
-    hololink::core::MacAddress mac;
-    static_assert(mac.max_size() <= sizeof(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data));
-    std::copy(ifhwaddr_request.ifr_ifru.ifru_addr.sa_data,
-        ifhwaddr_request.ifr_ifru.ifru_addr.sa_data + mac.max_size(),
-        mac.begin());
-    auto result = std::tuple<std::string, std::string, hololink::core::MacAddress> { inet_ntoa(ip.sin_addr), binterface, mac };
-    close(s);
-    return result;
+    memcpy(iface.mac.data(), ether_addr->ether_addr_octet, std::min((long unsigned int)ETHER_ADDR_LEN, iface.mac.size()));
+    iface.flags |= IPADDRESS_HAS_MAC;
+    delete[] buf;
 }
 
+// ipv4 in in_addr_t *
+int comp_ifaddrs_addr(struct ifaddrs* ifa, void* ipv4)
+{
+    in_addr_t ipv4_ = *(in_addr_t*)ipv4;
+
+    if (!ifa->ifa_addr) {
+        return 1;
+    }
+
+    if (AF_INET == ifa->ifa_addr->sa_family) {
+        struct sockaddr_in* ifa_in = (struct sockaddr_in*)ifa->ifa_addr;
+        if (ipv4_ == ifa_in->sin_addr.s_addr) {
+            return 0;
+        }
+        return 1;
+    }
+    return 1;
 }
+
+int comp_ifaddrs_iface(struct ifaddrs* ifa, void* iface)
+{
+    char const* iface_ = (char const*)iface;
+    size_t iface_len = strlen(iface_);
+
+    if (!strcmp(ifa->ifa_name, iface_)) {
+        return 0;
+    }
+    return 1;
+}
+
+struct ifaddrs* filter_ifaddrs(struct ifaddrs* ifa,
+    int (*comp)(struct ifaddrs*, void*),
+    void* data)
+{
+
+    while (ifa && comp(ifa, data)) {
+        ifa = ifa->ifa_next;
+    }
+    return ifa;
+}
+
+void ifaddrs_ipv4_addr(IPAddress& dest, const struct ifaddrs* ifa)
+{
+    if (!ifa->ifa_addr) {
+        return;
+    }
+    dest.ip_address = ((struct sockaddr_in*)(ifa->ifa_addr))->sin_addr.s_addr;
+    dest.flags |= IPADDRESS_HAS_ADDR;
+}
+
+void ifaddrs_name(IPAddress& dest, const struct ifaddrs* ifa)
+{
+    dest.if_name = ifa->ifa_name;
+}
+
+// returns 0 on success, else -1
+void ifaddrs_ipv4_netmask(IPAddress& dest, const struct ifaddrs* ifa)
+{
+    if (!ifa->ifa_netmask) {
+        return;
+    }
+    dest.subnet_mask = ((struct sockaddr_in*)(ifa->ifa_netmask))->sin_addr.s_addr;
+    dest.flags |= IPADDRESS_HAS_NETMASK;
+}
+
+void ifaddrs_ipv4_broadaddr(IPAddress& dest, const struct ifaddrs* ifa)
+{
+    if (!ifa->ifa_broadaddr) {
+        return;
+    }
+    // linux specific handling of PTP vs broadcast
+    if (!(ifa->ifa_flags & IFF_BROADCAST)) {
+        dest.flags |= IPADDRESS_IS_PTP;
+    }
+
+    dest.broadcast_address = ((struct sockaddr_in*)(ifa->ifa_broadaddr))->sin_addr.s_addr;
+    dest.flags |= IPADDRESS_HAS_BROADCAST;
+}
+
+// success is determined by checking the appropriate *HAS* flags in IPAddress->flags
+IPAddress IPAddress_from_string(const std::string& ip)
+{
+    IPAddress iface = {
+        .port = hololink::DATA_SOURCE_UDP_PORT,
+    };
+    in_addr_t addr = inet_addr(ip.c_str());
+    if (addr == INADDR_NONE) {
+        return iface;
+    }
+
+    struct ifaddrs* ifaddrs = NULL;
+    if (0 != getifaddrs(&ifaddrs)) {
+        fprintf(stderr, "failed to getifaddrs()\n");
+        return iface;
+    }
+
+    struct ifaddrs* ifa = filter_ifaddrs(ifaddrs, comp_ifaddrs_addr, &addr);
+    if (!ifa) {
+        fprintf(stderr, "failed to filter_ifaddrs\n");
+        goto cleanup;
+    }
+
+    ifaddrs_name(iface, ifa);
+    ifaddrs_ipv4_addr(iface, ifa);
+    ifaddrs_ipv4_netmask(iface, ifa);
+    ifaddrs_ipv4_broadaddr(iface, ifa);
+    mac_from_if(iface, iface.if_name.c_str());
+
+cleanup:
+    freeifaddrs(ifaddrs);
+    return iface;
+}
+
+std::string IPAddress_to_string(const IPAddress& ip_address)
+{
+    if (!(ip_address.flags & IPADDRESS_HAS_ADDR)) {
+        throw std::runtime_error("invalid IP address. ipv4 address not found");
+    }
+    struct in_addr addr = {
+        .s_addr = ip_address.ip_address,
+    };
+    return std::string(inet_ntoa(addr));
+}
+
+bool disable_broadcast_config_warning = false;
+void DISABLE_BROADCAST_CONFIG_WARNING()
+{
+    disable_broadcast_config_warning = true;
+}
+
+void issue_broadcast_address_warning(const std::string& if_name, uint32_t broadcast_address)
+{
+    fprintf(stderr, "WARNING: interface %s may be misconfigured. "
+                    "broadcast address %010x does not match expected format\n"
+                    "if interface was manually configured, check that broadcast was set, "
+                    "e.g. on Linux: "
+                    "\tip addr add <ip address>/<subnet_bits> <interface_name> brd +\n"
+                    "to disable this warning, call DISABLE_BROADCAST_CONFIG_WARNING()\n",
+        if_name.c_str(), broadcast_address);
+}
+
+uint32_t get_broadcast_address(const IPAddress& ip_address)
+{
+    if (ip_address.flags & IPADDRESS_IS_PTP) {
+        return INADDR_BROADCAST;
+    }
+    if (!(ip_address.flags & IPADDRESS_HAS_BROADCAST)) {
+        if (!((ip_address.flags & IPADDRESS_HAS_NETMASK) && (ip_address.flags & IPADDRESS_HAS_ADDR))) {
+            throw std::runtime_error("broadcast address cannot be determined: missing addr or netmask for interface " + ip_address.if_name);
+        }
+        return ip_address.ip_address | ~ip_address.subnet_mask;
+    }
+    in_addr_t broadcast_address = ip_address.broadcast_address;
+
+    // check for potential misconfiguration
+    if (!disable_broadcast_config_warning && (ip_address.flags & IPADDRESS_HAS_NETMASK)) {
+        if (ip_address.flags & IPADDRESS_HAS_ADDR) {
+            in_addr_t expected_broadcast_address = ip_address.ip_address | ~ip_address.subnet_mask;
+            if (ip_address.broadcast_address != expected_broadcast_address) {
+                issue_broadcast_address_warning(ip_address.if_name, ip_address.broadcast_address);
+                // even though expected broadcast address is probably correct, it cannot be guaranteed so leave warning as is.
+            }
+        } else {
+            // broadcast address should have 1s in last 0s of subnet mask. This is not strictly exact, but a good heuristic.
+            in_addr_t expected_broadcast_address = 0;
+            in_addr_t subnet_mask = ip_address.subnet_mask;
+            uint64_t bit_mask = 1;
+            while (bit_mask < subnet_mask) {
+                if (subnet_mask & bit_mask) {
+                    break;
+                }
+                expected_broadcast_address |= bit_mask;
+                bit_mask <<= 1;
+            }
+            if ((broadcast_address & expected_broadcast_address) != expected_broadcast_address) {
+                issue_broadcast_address_warning(ip_address.if_name, broadcast_address);
+            }
+        }
+    }
+    return broadcast_address;
+}
+
+} // namespace hololink::emulation

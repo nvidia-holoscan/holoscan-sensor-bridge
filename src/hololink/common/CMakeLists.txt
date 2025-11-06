@@ -25,7 +25,7 @@ set_property(TARGET hololink PROPERTY POSITION_INDEPENDENT_CODE ON)
 target_include_directories(hololink
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 if(TARGET CUDA::nvtx3)
@@ -46,10 +46,13 @@ target_link_libraries(hololink
     CUDA::cuda_driver
     CUDA::nvrtc
     ${CUDA_NVTX_TARGET}
+    fmt::fmt-header-only
   )
 
 # Installation of the hololink library
+set_target_properties(hololink PROPERTIES EXPORT_NAME common)
 install(TARGETS hololink
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-common)
 

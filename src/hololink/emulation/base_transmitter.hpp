@@ -23,8 +23,29 @@
 #include <cstdint>
 
 #include "dlpack/dlpack.h"
+#include "hololink/core/serializer.hpp"
+
+// Note that if monotonic times are critical downstream (accuracy, repeatability or conflict with other system process), this clock must be configurable
+#define FRAME_METADATA_CLOCK CLOCK_REALTIME
+#define FRAME_METADATA_SIZE 128u
 
 namespace hololink::emulation {
+
+// data should all be in host byte order
+struct FrameMetadata {
+    uint32_t flags;
+    uint32_t psn;
+    uint32_t crc;
+    // Time when the first sample data for the frame was received
+    uint64_t timestamp_s;
+    uint32_t timestamp_ns;
+    uint64_t bytes_written;
+    uint32_t frame_number;
+    // Time at which the metadata packet was sent
+    uint64_t metadata_s;
+    uint32_t metadata_ns;
+    uint8_t reserved[80];
+};
 
 /**
  * This is metadata that is associated with all Transmitters that implement the abstract BaseTransmitter class.
@@ -33,8 +54,20 @@ namespace hololink::emulation {
  * e.g., pre-PAGE_SIZE calculation for LinuxTransmitter
  */
 struct TransmissionMetadata {
-    uint16_t payload_size;
+    uint32_t dest_mac_low;
+    uint32_t dest_mac_high;
+    uint32_t dest_ip_address;
+    uint32_t frame_size;
+    uint32_t payload_size;
+    uint16_t dest_port;
+    uint16_t src_port;
 };
+
+typedef void* (*memcpy_func_t)(void* dst, const void* src, size_t n);
+
+// returns 0 on failure or the number of bytes written on success.
+// Note that on failure, serializer and buffer contents are in indeterminate state.
+size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata);
 
 /**
  * @brief Abstract base class for all transmitters
@@ -43,7 +76,13 @@ struct TransmissionMetadata {
  */
 class BaseTransmitter {
 public:
+    /**
+     * @brief Construct a new BaseTransmitter object
+     */
     BaseTransmitter() = default;
+    /**
+     * @brief Destroy the BaseTransmitter object
+     */
     virtual ~BaseTransmitter() { }
 
     /**

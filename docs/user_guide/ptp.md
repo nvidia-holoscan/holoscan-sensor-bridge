@@ -20,43 +20,40 @@ Synchronized PTP time can be used to:
 
 ## PTP Profile
 
-HSB IP supports modified version of the PTP-1588 default profile. Details of what is
-supported in the HSB IP is listed below.
+HSB IP supports the following PTP profiles
+
+1. 1588 profile with End to End Delay Mechanism
+1. gPTP profile
+1. 1588 profile with Peer to Peer Delay Mechanism
+
+PTP within HSB IP are limited to:
 
 1. Operates as PTP Receiver only
 1. Transmit and Receive PTP messages over Ethernet L2 Layer
-1. Receive Forwardable(0x011B19000000) Multicast MAC addresses
-1. Support One and Two-Step Sync messages
-1. Support End to End Delay Mechanism
-1. Transmit Delay Request Messages with Forwardable Multicast MAC address
-
-## PTP Limitations
-
-The HSB IP PTP currently has these limitations that can be added in future revisions.
-
-1. Announce messages are ignored.
-1. No Best Master Clock Algorithm. It assumes there is only 1 master in the network at a
-   given time.
+1. Does not support Announce messages.
+1. Does not support Best Master Clock Algorithm. It assumes there is only 1 master in
+   the network at a given time.
+1. PTP traffic can only occur on Host Interface 0.
 
 ## PTP Timer
 
 PTP block in HSB IP runs on "i_ptp_clk" domain. The PTP clock can be asynchronous to the
 "i_hif_clk" domain but for best performance, it is recommended to generate the PTP clock
-derived from the Ethernet PCS or MAC clock. For optimal performance, generate the PTP
-clock frequency in range 95MHz to 105MHz.
+derived from the Ethernet PCS or MAC clock. Use PTP clock frequency in range 95MHz to
+105MHz for optimal performance.
 
 HSB IP timer operates in the following manner:
 
-1. When the HSB IP comes out of reset, timer begins at 0 seconds and 0 nanoseconds. At
-   each rising clock edge, the timer increments by (1/`PTP_CLK_FREQ`) nanoseconds and
-   24-bit fractional nanoseconds, where `PTP_CLK_FREQ` is a parameter defined in
-   "HOLOLINK_def.svh" For example, if `PTP_CLK_FREQ=100446545` in 10G application, the
-   incremental value per rising clock edge is 9.955ns.
+1. Following reset, timer begins at 0 seconds and 0 nanoseconds. At each rising clock
+   edge, the timer increments by (1/`PTP_CLK_FREQ`) nanoseconds and 24-bit fractional
+   nanoseconds, where `PTP_CLK_FREQ` is a parameter defined in "HOLOLINK_def.svh" For
+   example in 10G application, `PTP_CLK_FREQ=100446545` and the incremental value per
+   rising clock edge is 9.955ns.
 1. When PTP frequency adjustment is enabled,the HSB IP latches the received host
-   timestamp in the SYNC (and FOLLOW-UP for 2-step) message and the timer and continues
-   to increment as before.
-1. In subsequently received SYNC messages, the HSB IP no longer latches it's internal
-   time to the received host timestamp and instead, uses the calculated offset to adjust
+   timestamp from the received SYNC message (and FOLLOW-UP message for 2-step) and the
+   timer and continues to increment as before.
+1. In subsequently received SYNC messages, the HSB IP no longer latches its internal
+   time to the received host timestamp. Instead, it uses the calculated offset to adjust
    its incremental value. Adjusting the incremental value (inverse of frequency)
    compensates for on-board oscillator drift and temperature variation.
 
@@ -65,45 +62,45 @@ HSB IP timer operates in the following manner:
 PTP registers can be configured to achieve high accuracy between host and HSB. Below are
 descriptions of PTP functionality and the configurable registers.
 
-Frequency Adjustment is calculated from the Offset Measurement (OFM) and applies to the
-clock period value. OFM is calculated by taking the time difference between the host
-SYNC timestamp and the HSB timestamp at the time SYNC message was received. 2
-configurable gain is applied to the OFM, first configurable gain is a coarse gain and
-the second configurable gain a fine gain. Both configurable gain values apply a right
-shift to the OFM value. The fine gain is accumulated per sample and the coarse gain is
-directly added to calculate the Frequency Adjustment value. New Frequency Adjustment
-value is calculated and applied per SYNC message. The higher number of SYNC messages per
-second, the greater the accuracy. The smaller the value of coarse and fine gain, the
-greater the accuracy but could potentially be unstable since the Frequency Adjustment
-can oscillate between a large positive and negative number. The greater the value of
-coarse and fine gain, the lesser the accuracy and increased settling time, but less
-potential to be unstable.
+Frequency Adjustment is calculated from the Offset Measurement (OFM) and applied to the
+clock period value. OFM is the time difference between the host SYNC timestamp and the
+HSB timestamp at the time SYNC message was received. 2 configurable gain is applied to
+the OFM, a coarse gain and a fine gain. Both configurable gain values apply a right
+shift to the OFM value. The coarse and fine gain implements a Digital PLL (DPLL) to
+calculate the Frequency Adjustment value. New Frequency Adjustment value is calculated
+and applied per SYNC message. The higher number of SYNC messages per second, higher the
+frequency adjustment and hence, higher accuracy. Lower coarse and fine gain values
+provide greater accuracy but may cause instability as the Frequency Adjustment can
+oscillate between large positive and negative values. Higher gain values reduce accuracy
+and increase settling time, but improve stability.
 
-Mean Delay is the averaged value of delay between host to HSB and HSB to host. Mean
-Delay is calculated per SYNC message. Mean Delay can be averaged in a moving average to
+Mean Delay Average Factor takes a moving average of mean delay between host and HSB to
 smooth out outliers.
 
-Delay Asymmetry accounts for asymmetry between the RX and TX path outside of HSB IP,
-these delay asymmetry can be vendor specific. For example, MAC RX can have a longer
-delay to process than MAC TX path. If these asymmetry values are known (via simulation,
-datasheet) it can achieve greater PTP accuracy. Delay Asymmetry register value is in
-nanosecond unit and is (RX delay - TX delay) meaning, positive number means RX has
-greater delay and negative number means TX has greater delay.
+Delay Asymmetry accounts for the vendor specific asymmetry between the RX and TX path
+outside of the HSB IP. For example, MAC RX can have a longer delay than the MAC TX path.
+If these asymmetry values are known (via simulation or datasheet) it can achieve greater
+PTP accuracy. Delay Asymmetry register value is in nanosecond unit and positive number
+means RX has a greater delay and negative number means TX has greater delay.
 
 Below lists the configurable PTP registers.
 
 | **Reg Name**          | **Reg Addr** | **Reg Value Range**     | **Notes**                                                         |
 | --------------------- | ------------ | ----------------------- | ----------------------------------------------------------------- |
 | Gain Enable           | 0x00000104   | 0x0 - 0x3               | Enable Frequency Adjustment Gain. [0]=Coarse Gain, [1]=Fine Gain  |
-| Delay Asymmetry       | 0x0000010C   | 0x00000000 - 0xFFFFFFFF | Unit is in nanoseconds.                                           |
+| PTP Profile           | 0x00000108   | 0x0 - 0x2               | PTP Profiles. [0]=1588 E2E, [1]=gPTP, [2]=1588 P2P                |
+| Delay Asymmetry       | 0x0000010C   | 0x00000000 - 0xFFFFFFFF | Ingress Asymmetry. Unit is in nanoseconds.                        |
 | Coarse Gain           | 0x00000110   | 0x0 - 0xF               | Frequency Adjustment Coarse Gain                                  |
 | Fine Gain             | 0x00000114   | 0x0 - 0xF               | Frequency Adjustment Fine Gain                                    |
 | Mean Delay Avg Factor | 0x00000118   | 0x0 - 0x3               | Averages by factor of 2. So 0x1 = 2 samples, 0x2 = 4 samples, etc |
 
-Example python script to enable PTP is below.
+An example python script to reconfigure PTP is shown below. The values used in the
+example is the default configuration after reset.
 
-```
+```python
   def ptp_enable(hololink)
+    hololink.write_uint32(0x00000108, 0x00000000)  # PTP Profile
+    hololink.write_uint32(0x0000010C, 0x00000033)  # Delay Asymmetry
     hololink.write_uint32(0x00000110, 0x00000002)  # DPLL CFG 1
     hololink.write_uint32(0x00000114, 0x00000002)  # DPLL CFG 2
     hololink.write_uint32(0x00000118, 0x00000003)  # Mean Delay
@@ -117,7 +114,7 @@ between the host and the HSB IP after frequency adjustment was enabled.
 
 | **Offset** | **End to End Standard Deviation** |
 | ---------- | --------------------------------- |
-| < 10 ns    | < 20 ns                           |
+| < 25 ns    | < 20 ns                           |
 
 The performance test was done using the following configuration.
 

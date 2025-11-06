@@ -18,18 +18,19 @@
  */
 
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
-
-#include <zlib.h>
+#include <stdexcept>
+#include <thread>
 
 #include "cuda_runtime.h"
 #include "dlpack/dlpack.h"
-
-#include "net.hpp"
+#include <zlib.h>
 
 #include "hololink/core/serializer.hpp"
 #include "linux_transmitter.hpp"
+#include "net.hpp"
 #include "utils.hpp"
 
 // payload is 1500 bytes (MTU), minus the IP header, UDP header, and CRC (4 bytes)
@@ -48,77 +49,84 @@
 #define IB_HEADER_SIZE (BT_HEADER_SIZE + RET_HEADER_SIZE)
 // this is specifically the payload offset for our opcode. Note that unreliable write/write immediate and other IB opcodes do not necessary have this offset
 #define IB_PAYLOAD_OFFSET (UDP_PAYLOAD_OFFSET + IB_HEADER_SIZE)
-#define FRAME_METADATA_SIZE 48
 
-// Note that if monotonic times are critical downstream (accuracy, repeatability or conflict with other system process), this clock must be configurable
-#define FRAME_METADATA_CLOCK CLOCK_REALTIME
+#define IB_PSN_MASK 0xFFFFFF
 
 namespace hololink::emulation {
 
-typedef void* (*memcpy_func_t)(void* dst, const void* src, size_t n) noexcept;
+static void* memcpy_gpu_to_host(void* dst, const void* src, size_t n)
+{
+    const auto error = cudaMemcpy(dst, src, n, cudaMemcpyDeviceToHost);
+    if (cudaSuccess != error) {
+        throw std::runtime_error(std::string("cudaMemcpy Device->Host failed.") + std::string(cudaGetErrorString(error)));
+    }
+    return dst;
+}
 
-// all of FrameMetadata is assumed to be in little endian
-struct FrameMetadata {
-    uint32_t flags;
-    uint32_t psn;
-    uint32_t crc;
-    // Time when the first sample data for the frame was received
-    uint64_t timestamp_s;
-    uint32_t timestamp_ns;
-    uint64_t bytes_written;
-    uint32_t frame_number;
-    // Time at which the metadata packet was sent
-    uint64_t metadata_s;
-    uint32_t metadata_ns;
+// reference values and magic numbers for headers.
+// explanations of which fields are overwritten and when
+const LinuxHeaders DEFAULT_LINUX_HEADERS = {
+    .ip_h = {
+        .ihl = 5, // 5 32-bit words
+        .version = IPVERSION, // IPv4
+        .tos = 0,
+        .tot_len = 0, // filled in on send based on payload size
+        .id = 0, // not used without fragmentation
+        .frag_off = IP_DF, // 0x4000 not used without fragmentation
+        .ttl = IPDEFTTL, // not used without fragmentation
+        .protocol = IPPROTO_UDP, // UDP
+        .check = 0,
+        .saddr = 0, // optionally written at construction
+        .daddr = 0, // filled in on send
+    },
+    .udp_h = {
+        .source = 0, // optionally written at construction
+        .dest = 0, // filled in on send from LinuxTransmitterMetadata
+        .len = 0, // filled in on send based on payload size
+        .check = 0,
+    },
+    .bt_h = {
+        .opcode = 0, // filled in on send
+        .flags = 0,
+        .p_key = 0xFFFF,
+        .qp = 0, // filled in on send from LinuxTransmitterMetadata
+        .psn = 0, // filled in on send based on payload size
+    },
+    .ret_h = {
+        .vaddress = 0, // filled in on send from LinuxTransmitterMetadata
+        .rkey = 0, // filled in on send from LinuxTransmitterMetadata
+        .content_size = 0, // filled in on send based on payload size
+    },
 };
 
-// returns 0 on failure or the number of bytes written on success.
-// Note that on failure, serializer and buffer contents are in indeterminate state.
-static inline size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata)
-{
-    size_t start = serializer.length();
-    return serializer.append_uint32_be(frame_metadata.flags)
-            && serializer.append_uint32_be(frame_metadata.psn)
-            && serializer.append_uint32_be(frame_metadata.crc)
-            && serializer.append_uint64_be(frame_metadata.timestamp_s)
-            && serializer.append_uint32_be(frame_metadata.timestamp_ns)
-            && serializer.append_uint64_be(frame_metadata.bytes_written)
-            && serializer.append_uint16_be(0)
-            && serializer.append_uint16_be(frame_metadata.frame_number & 0xFFFF)
-            && serializer.append_uint64_be(frame_metadata.metadata_s)
-            && serializer.append_uint32_be(frame_metadata.metadata_ns)
-        ? serializer.length() - start
-        : 0;
-}
-
 // returns 0 on failure or the number of bytes written on success
 // Note that on failure, serializer and buffer contents are in indeterminate state.
-static inline size_t serialize_ip_header(hololink::core::Serializer& serializer, IPHeader& header_ip)
+static inline size_t serialize_ip_header(hololink::core::Serializer& serializer, iphdr& header_ip)
 {
     size_t start = serializer.length();
-    return serializer.append_uint8(header_ip.version_and_header_length)
-            && serializer.append_uint8(header_ip.type_of_service)
-            && serializer.append_uint16_be(header_ip.length)
-            && serializer.append_uint16_be(header_ip.identification)
-            && serializer.append_uint16_be(header_ip.flags_and_fragment_offset)
-            && serializer.append_uint8(header_ip.time_to_live)
+    return serializer.append_uint8(header_ip.version << 4 | header_ip.ihl)
+            && serializer.append_uint8(header_ip.tos)
+            && serializer.append_uint16_be(header_ip.tot_len)
+            && serializer.append_uint16_be(header_ip.id)
+            && serializer.append_uint16_be(header_ip.frag_off)
+            && serializer.append_uint8(header_ip.ttl)
             && serializer.append_uint8(header_ip.protocol)
-            && serializer.append_uint16_be(header_ip.checksum)
-            && serializer.append_uint32_be(header_ip.source_ip_address)
-            && serializer.append_uint32_be(header_ip.destination_ip_address)
+            && serializer.append_uint16_be(header_ip.check)
+            && serializer.append_uint32_be(header_ip.saddr)
+            && serializer.append_uint32_be(header_ip.daddr)
         ? serializer.length() - start
         : 0;
 }
 
 // returns 0 on failure or the number of bytes written on success
 // Note that on failure, serializer and buffer contents are in indeterminate state.
-static inline size_t serialize_udp_header(hololink::core::Serializer& serializer, UDPHeader& header_udp)
+static inline size_t serialize_udp_header(hololink::core::Serializer& serializer, udphdr& header_udp)
 {
     size_t start = serializer.length();
-    return serializer.append_uint16_be(header_udp.source_port)
-            && serializer.append_uint16_be(header_udp.destination_port)
-            && serializer.append_uint16_be(header_udp.length)
-            && serializer.append_uint16_be(header_udp.checksum)
+    return serializer.append_uint16_be(header_udp.source)
+            && serializer.append_uint16_be(header_udp.dest)
+            && serializer.append_uint16_be(header_udp.len)
+            && serializer.append_uint16_be(header_udp.check)
         ? serializer.length() - start
         : 0;
 }
@@ -132,7 +140,7 @@ static inline size_t serialize_bt_header(hololink::core::Serializer& serializer,
             && serializer.append_uint8(bt_header.flags)
             && serializer.append_uint16_be(bt_header.p_key)
             && serializer.append_uint32_be(bt_header.qp)
-            && serializer.append_uint32_be(bt_header.psn & 0xFFFFFF)
+            && serializer.append_uint32_be(bt_header.psn)
         ? serializer.length() - start
         : 0;
 }
@@ -152,7 +160,7 @@ static inline size_t serialize_ret_header(hololink::core::Serializer& serializer
 // writes the crc for the buffer of size buffer_size with content of length content_size.
 // essentially the crc is written into buffer at location content_size
 // Per IB spec, content_size must include all headers unless we go outside of subnet
-bool update_crc(uint8_t* buffer, size_t buffer_size, size_t content_size)
+static bool update_crc(uint8_t* buffer, size_t buffer_size, size_t content_size)
 {
     if (buffer_size < content_size + sizeof(uint32_t)) {
         fprintf(stderr, "buffer size is too small to update crc\n");
@@ -167,7 +175,7 @@ bool update_crc(uint8_t* buffer, size_t buffer_size, size_t content_size)
 
 // assumes that the buffer size is large enough to hold the whole packet, else UB.
 // if any of content, headers.ret_h.content_size, or copy_func are 0/nullptr, the payload will not be copied and it is up to the caller to ensure payload is written to buffer
-size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content, memcpy_func_t copy_func)
+static size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content, memcpy_func_t copy_func)
 {
     // local copy of content_size.
     // NOTE: headers.ret_h.content_size is the single source of truth for the content_size
@@ -179,20 +187,21 @@ size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, siz
         fprintf(stderr, "buffer size is too small to hold the whole packet. found %zu expected %zu\n", buffer_size, message_size);
         return 0;
     }
+    assert(message_size <= UINT16_MAX); // ip header cannot accept values greater than 65535
 
     // ensure the header lengths are consistent
-    headers.ip_h.length = message_size;
-    headers.udp_h.length = message_size - IP_HEADER_SIZE;
+    headers.ip_h.tot_len = message_size;
+    headers.udp_h.len = message_size - IP_HEADER_SIZE;
 
-    hololink::core::Serializer serializer = hololink::core::Serializer(buffer, buffer_size);
+    hololink::core::Serializer serializer(buffer, buffer_size);
 
     // copy and use the magic values for CRC calculation
-    IPHeader ip_header = headers.ip_h;
-    ip_header.type_of_service = 0xFF;
-    ip_header.time_to_live = 0xFF;
-    ip_header.checksum = 0xFFFF;
-    UDPHeader udp_header = headers.udp_h;
-    udp_header.checksum = 0xFFFF;
+    iphdr ip_header = headers.ip_h;
+    ip_header.tos = 0xFF;
+    ip_header.ttl = 0xFF;
+    ip_header.check = 0xFFFF;
+    udphdr udp_header = headers.udp_h;
+    udp_header.check = 0xFFFF;
 
     // each header write is checked individually because otherwise the serializer will write to the wrong portion of the packet. Exit early.
     size_t ip_header_offset = serialize_ip_header(serializer, ip_header);
@@ -239,16 +248,16 @@ size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, siz
 }
 
 // returns 0 on failure or the number of bytes written to buffer on success
-size_t write_frame_metadata(uint8_t* __restrict__ buffer, size_t buffer_size, const struct timespec& frame_start_timestamp, size_t n_bytes_sent, uint32_t frame_number, uint32_t psn, uint8_t page)
+static size_t write_frame_metadata(uint8_t* __restrict__ buffer, size_t buffer_size, const struct timespec& frame_start_timestamp, size_t n_bytes_sent, uint32_t frame_number, uint32_t psn, uint8_t page)
 {
-    int32_t immediate_value = (page) | ((psn & 0xFFFFFF) << 8);
+    int32_t immediate_value = (page) | ((psn & IB_PSN_MASK) << 8);
     struct timespec meta_timestamp;
     clock_gettime(FRAME_METADATA_CLOCK, &meta_timestamp);
     FrameMetadata frame_metadata = {
         .flags = 0,
         .psn = psn,
         .crc = 0,
-        // Time when the first sample data for the frame was received
+        // Time when the first sample data for the frame was sent
         .timestamp_s = (uint64_t)frame_start_timestamp.tv_sec,
         .timestamp_ns = (uint32_t)frame_start_timestamp.tv_nsec,
         .bytes_written = n_bytes_sent,
@@ -268,14 +277,6 @@ size_t write_frame_metadata(uint8_t* __restrict__ buffer, size_t buffer_size, co
     return sizeof(uint32_t) + frame_metadata_size;
 }
 
-static inline void* memcpy_gpu(void* dst, const void* src, size_t n) noexcept
-{
-    if (cudaSuccess != cudaMemcpy(dst, src, n, cudaMemcpyDeviceToHost)) {
-        return nullptr;
-    }
-    return dst;
-}
-
 void LinuxTransmitter::init_socket()
 {
     data_socket_fd_ = socket(AF_INET, SOCK_RAW, IPPROTO_RAW);
@@ -291,7 +292,7 @@ void LinuxTransmitter::init_socket()
     // bind to the selected port
     struct sockaddr_in bind_addr {
         .sin_family = AF_INET,
-        .sin_port = htons(linux_headers_.udp_h.source_port),
+        .sin_port = htons(linux_headers_.udp_h.source),
         .sin_addr = {
             /* binds to any IP address, but will send out as if from linux_headers_.ip_h.source_ip_address */
             // TODO: test multiple HSBEmulators on same adapter. Might have to use source_ip here instead of INADDR_ANY
@@ -304,26 +305,31 @@ void LinuxTransmitter::init_socket()
     }
 }
 
-LinuxTransmitter::LinuxTransmitter(const LinuxHeaders* headers)
-    : linux_headers_(*headers)
+LinuxTransmitter::LinuxTransmitter(const LinuxHeaders& headers)
+    : linux_headers_(headers)
 {
     init_socket();
 }
 
 // Infiniband transmitter without using ib verbs apis
-LinuxTransmitter::LinuxTransmitter(const std::string& source_ip, uint16_t source_port)
+LinuxTransmitter::LinuxTransmitter(const IPAddress& source_ip)
     : linux_headers_(DEFAULT_LINUX_HEADERS)
 {
-    // assign constant source ip and port to headers. Need to undo network byte order of inet_addr
-    linux_headers_.ip_h.source_ip_address = ntohl(inet_addr(source_ip.c_str()));
-    linux_headers_.udp_h.source_port = source_port;
+    // assign constant source ip and port to headers. Since the headers go through the hololink::core::Serializer, the contents are in host byte order
+    linux_headers_.ip_h.saddr = ntohl(source_ip.ip_address);
+    linux_headers_.udp_h.source = source_ip.port;
 
     init_socket();
 }
 
 LinuxTransmitter::~LinuxTransmitter()
 {
-    close(data_socket_fd_);
+    if (data_socket_fd_ >= 0) {
+        close(data_socket_fd_);
+    }
+    free(double_buffer_);
+    double_buffer_ = nullptr;
+    double_buffer_size_ = 0;
 }
 
 // returns -1 on failure or the number of bytes successfully sent, which may be 0.
@@ -334,17 +340,17 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     // buffer for immediate value and frame metadata
     LinuxTransmissionMetadata* linux_metadata = (LinuxTransmissionMetadata*)metadata;
     // if no destination port or address, short circuit and return 0
-    if (!linux_metadata->dest_port) {
+    if (!metadata->dest_port) {
         return 0;
     }
-    if (!linux_metadata->dest_ip_address) {
+    if (!metadata->dest_ip_address) {
         return 0;
     }
 
     // copy metadata to linux_headers_ and local data
     const uint16_t udp_payload_size = metadata->payload_size;
-    linux_headers_.ip_h.destination_ip_address = linux_metadata->dest_ip_address;
-    linux_headers_.udp_h.destination_port = linux_metadata->dest_port;
+    linux_headers_.ip_h.daddr = metadata->dest_ip_address;
+    linux_headers_.udp_h.dest = metadata->dest_port;
     BTHeader* bt_header = (BTHeader*)&linux_headers_.bt_h;
     bt_header->opcode = IB_OPCODE_WRITE; // overwrite in immediate packet
     bt_header->qp = (0xFF << 24) | (linux_metadata->qp & 0xFFFFFF);
@@ -358,7 +364,7 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     int64_t offset = 0;
     int64_t n_bytes_sent = 0;
     uint8_t* content = (uint8_t*)tensor.data;
-    memcpy_func_t copy_func = nullptr;
+    memcpy_func_t copy_func = memcpy;
 
     struct timespec frame_start_timestamp;
     clock_gettime(FRAME_METADATA_CLOCK, &frame_start_timestamp);
@@ -366,9 +372,9 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     // set up the data socket destination address
     struct sockaddr_in dest_addr {
         .sin_family = AF_INET,
-        .sin_port = htons(linux_metadata->dest_port),
+        .sin_port = htons(metadata->dest_port),
         .sin_addr = {
-            .s_addr = htonl(linux_metadata->dest_ip_address),
+            .s_addr = htonl(metadata->dest_ip_address),
         },
     };
 
@@ -376,16 +382,30 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     switch (tensor.device.device_type) {
     case kDLCPU:
     case kDLCUDAHost:
-        copy_func = memcpy;
         break;
-    // For managed memory, assume it is on GPU.
+    // For managed memory, assume it is on GPU and use double buffering.
     // TODO: add support for using cudaMemcpyDefault determined at initialization time for managed
     //   memory as possible improvement (doesn't appear to guarantee performance improvement).
     //   Need to ensure Unified Addressing is enabled on device.
     case kDLCUDAManaged:
-    case kDLCUDA:
-        copy_func = memcpy_gpu;
+    case kDLCUDA: {
+        if (double_buffer_size_ < n_bytes) {
+            void* buffer = realloc(double_buffer_, n_bytes);
+            if (!buffer) {
+                fprintf(stderr, "failed to reallocate double buffer from %lld to %lld\n", (long long)double_buffer_size_, (long long)n_bytes);
+                throw std::runtime_error("failed to reallocate double buffer");
+            }
+            double_buffer_ = buffer;
+            double_buffer_size_ = n_bytes;
+        }
+        cudaError_t error = cudaMemcpy(double_buffer_, tensor.data, (size_t)n_bytes, cudaMemcpyDeviceToHost); // should change to asynchronous copy and sync on the stream
+        if (cudaSuccess != error) {
+            fprintf(stderr, "cudaMemcpy Device->Host failed: %s\n", cudaGetErrorString(error));
+            throw std::runtime_error("cudaMemcpy Device->Host failed");
+        }
+        content = (uint8_t*)double_buffer_;
         break;
+    }
     default:
         fprintf(stderr, "Unsupported device memory type: %d\n", (int)tensor.device.device_type);
         return -1;
@@ -402,7 +422,6 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
         ret_header->vaddress = linux_metadata->address + offset;
 
         size_t message_size = serialize_packet(linux_headers_, mesg, sizeof(mesg), content + offset, copy_func);
-        // sizeof(uin32_t) to account for crc
         if (message_size != IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t)) {
             fprintf(stderr, "error in writing packet psn %d. found %zu expected %zu\n", psn_, message_size, IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t));
         } else if (sendto(data_socket_fd_, &mesg, message_size, 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) <= 0) {
@@ -413,7 +432,7 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
         }
 
         offset += n_bytes_to_send;
-        psn_ = (psn_ + 1) & 0xFFFFFF;
+        psn_ = (psn_ + 1) & IB_PSN_MASK;
     }
 
     // write directly into the mesg packet buffer
@@ -442,7 +461,7 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     }
 
     // update LinuxTransmitter state and return number of bytes successfully sent
-    psn_ = (psn_ + 1) & 0xFFFFFF;
+    psn_ = (psn_ + 1) & IB_PSN_MASK;
     frame_number_++;
     return n_bytes_sent;
 }

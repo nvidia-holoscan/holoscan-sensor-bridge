@@ -24,7 +24,7 @@ add_library(hololink::operators::udp_transmitter ALIAS udp_transmitter)
 target_include_directories(udp_transmitter
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
 target_link_libraries(udp_transmitter
@@ -34,10 +34,12 @@ target_link_libraries(udp_transmitter
 )
 
 # Installation of the udp_transmitter operator
+set_target_properties(udp_transmitter PROPERTIES EXPORT_NAME operators::udp_transmitter)
 install(TARGETS udp_transmitter
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/udp_transmitter_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/udp_transmitter
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/udp_transmitter
         COMPONENT hololink-operators)

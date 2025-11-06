@@ -20,7 +20,7 @@ import os
 import socket
 import threading
 
-from cuda import cuda
+import cuda.bindings.driver as cuda
 
 import hololink as hololink_module
 

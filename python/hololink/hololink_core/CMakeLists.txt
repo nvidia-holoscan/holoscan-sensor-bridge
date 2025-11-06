@@ -17,6 +17,17 @@ include(pybind11_add_hololink_module)
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET hololink_core
-    CLASS_NAME "ArpWrapper,Deserializer,Serializer"
+    CLASS_NAME "ArpWrapper,Deserializer,Reactor,Serializer"
     SOURCES hololink_core.cpp
+)
+
+# Export symbols from _hololink_core.so so that _hololink.so can link against it
+# By default, pybind11 modules hide symbols, but we need to export C++ symbols
+# for use by other Python modules
+set_property(TARGET hololink_core_python PROPERTY CXX_VISIBILITY_PRESET default)
+set_property(TARGET hololink_core_python PROPERTY VISIBILITY_INLINES_HIDDEN OFF)
+
+# Mark this as a shared library that can be linked against by other modules
+target_link_options(hololink_core_python PRIVATE
+    "LINKER:--export-dynamic"
 )

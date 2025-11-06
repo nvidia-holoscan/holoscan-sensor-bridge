@@ -40,6 +40,7 @@ master_doc = "index"
 # ones.
 extensions = [
     "myst_parser",
+    "breathe",
     #   'numpydoc',
     "sphinx.ext.autosectionlabel",  # https://docs.readthedocs.io/en/stable/guides/cross-referencing-with-sphinx.html#automatically-label-sections
     "sphinx.ext.autodoc",  # needed for Python API docs (provides automodule)
@@ -47,6 +48,21 @@ extensions = [
     "sphinxcontrib.mermaid",  # https://sphinxcontrib-mermaid-demo.readthedocs.io/en/latest/
     "sphinx_design",  # https://sphinx-design.readthedocs.io/en/latest/
 ]
+
+source_suffix = {
+    '.rst': 'restructuredtext',
+    '.md': 'markdown',
+}
+
+breathe_projects = {
+    "holoscan-sensor-bridge": "_doxygen/xml",
+}
+breathe_default_project = "holoscan-sensor-bridge"
+
+# Breathe configuration options
+breathe_default_members = ('members', 'undoc-members')
+breathe_show_enumvalue_initializer = True
+breathe_show_include = True
 
 # Make sure the target is unique
 autosectionlabel_prefix_document = True

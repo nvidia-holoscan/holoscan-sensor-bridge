@@ -22,6 +22,8 @@
 
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -32,6 +34,7 @@ namespace hololink {
 
 namespace core {
     class Deserializer;
+    class Reactor;
 }
 
 // FPGA UUIDs for some legacy bootp-v1 configurations.  All newer devices,
@@ -67,6 +70,51 @@ public:
 class Enumerator {
 public:
     /**
+     * @brief Handle for managing registered callbacks
+     */
+    class CallbackHandle {
+    public:
+        CallbackHandle(uint64_t id, const std::string& ip, const std::function<void(Metadata&)>& callback)
+            : id_(id)
+            , ip_(ip)
+            , callback_(callback)
+        {
+        }
+        uint64_t id() const { return id_; }
+        const std::string& ip() const { return ip_; }
+        const std::function<void(Metadata&)>& callback() const { return callback_; }
+
+    private:
+        uint64_t id_;
+        std::string ip_;
+        std::function<void(Metadata&)> callback_;
+    };
+
+    /**
+     * @brief Inner ReactorEnumerator class for managing IP callbacks
+     */
+    class ReactorEnumerator {
+    public:
+        static std::shared_ptr<ReactorEnumerator> get_reactor_enumerator();
+
+        ReactorEnumerator();
+        ~ReactorEnumerator();
+
+        void start();
+        std::shared_ptr<CallbackHandle> register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback);
+        void unregister_ip(const std::shared_ptr<CallbackHandle>& handle);
+
+    private:
+        void fd_callback(int fd, int events);
+
+        std::map<std::string, std::vector<std::shared_ptr<CallbackHandle>>> ip_callback_map_;
+        std::recursive_mutex lock_;
+        int socket_fd_;
+        uint64_t next_callback_id_;
+        std::shared_ptr<core::Reactor> reactor_;
+    };
+
+    /**
      * @brief Construct a new Enumerator object
      *
      * @param local_interface blank for all local interfaces
@@ -100,6 +148,22 @@ public:
         const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(20.f));
 
     /**
+     * @brief Register a callback for a specific IP address
+     *
+     * @param ip IP address to monitor
+     * @param callback Function to call when enumeration packets are received from this IP
+     * @return CallbackHandle for unregistering
+     */
+    static std::shared_ptr<CallbackHandle> register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback);
+
+    /**
+     * @brief Unregister a callback
+     *
+     * @param handle The handle returned by register_ip
+     */
+    static void unregister_ip(const std::shared_ptr<CallbackHandle>& handle);
+
+    /**
      * @brief Calls the provided call back function a pair of (packet, metadata) about the
      * connection for each received enumeration or bootp request packet. This function terminates
      * after the given timeout; provide no timeout to run forever.
@@ -127,6 +191,15 @@ public:
 
     static EnumerationStrategy& get_uuid_strategy(std::string uuid);
 
+    /**
+     * Configure an AF_INET SOCK_DGRAM socket
+     * to listen to bootp on the given interface
+     * (or all if not specified)
+     */
+    static bool configure_socket(int fd, uint32_t port = 12267u, const std::string& local_interface = "");
+
+    static std::tuple<Metadata, std::vector<uint8_t>> handle_bootp_fd(int fd);
+
 protected:
     static void configure_default_enumeration_strategies();
 
@@ -137,6 +210,9 @@ private:
 
     // Static map to store UUID strategies
     static std::map<std::string, std::shared_ptr<EnumerationStrategy>> uuid_strategies_;
+
+    // Static ReactorEnumerator instance
+    static std::shared_ptr<ReactorEnumerator> reactor_enumerator_;
 };
 
 /**
@@ -150,8 +226,6 @@ public:
 
     // Changes whether ptp_enable is true or not.
     void ptp_enable(bool enable);
-    // Changes whether vsync_enable is true or not.
-    void vsync_enable(bool enable);
     // Changes whether block_enable is true or not.
     void block_enable(bool enable);
 
@@ -165,7 +239,6 @@ protected:
     unsigned total_dataplanes_;
     unsigned sifs_per_sensor_;
     bool ptp_enable_;
-    bool vsync_enable_;
     bool block_enable_;
 };
 

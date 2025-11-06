@@ -24,7 +24,7 @@ add_library(hololink::operators::base_receiver_op ALIAS base_receiver_op)
 target_include_directories(base_receiver_op
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(base_receiver_op
@@ -36,15 +36,17 @@ target_link_libraries(base_receiver_op
   )
 
 # Installation of the base_receiver_op operator
+set_target_properties(base_receiver_op PROPERTIES EXPORT_NAME operators::base_receiver)
 install(TARGETS base_receiver_op
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/base_receiver_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/base_receiver_op
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators
         COMPONENT hololink-operators)
 
-if(DEFINED ENV{CONTAINER_TYPE} AND "$ENV{CONTAINER_TYPE}" STREQUAL "igpu")
+if(HOLOLINK_BUILD_ARGUS_ISP)
   add_subdirectory(argus_isp)
 endif()
 add_subdirectory(audio_packetizer)

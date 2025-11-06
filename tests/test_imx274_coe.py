@@ -21,11 +21,11 @@ import os
 import sys
 from unittest import mock
 
+import cuda.bindings.driver as cuda
 import holoscan
 import operators
 import pytest
 import utils
-from cuda import cuda
 
 import hololink as hololink_module
 from examples import linux_coe_imx274_player
@@ -358,8 +358,10 @@ def run_dual_coe_test(
         hololink.start()
         hololink.reset()
         camera_left.setup_clock()  # this also sets camera_right's clock
+        hololink_channel_left.enable_packetizer_10()
         camera_left.configure(camera_mode_left)
         camera_left.test_pattern(pattern_left)
+        hololink_channel_right.enable_packetizer_10()
         camera_right.configure(camera_mode_right)
         camera_right.test_pattern(pattern_right)
         #
@@ -623,6 +625,7 @@ def test_imx274_pattern_coe(
         hololink.start()
         hololink.reset()
         camera.setup_clock()
+        hololink_channel.enable_packetizer_10()
         camera.configure(camera_mode)
         camera.test_pattern(pattern)
         #

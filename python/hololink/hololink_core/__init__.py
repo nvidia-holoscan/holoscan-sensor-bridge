@@ -15,12 +15,26 @@
 
 # See README.md for detailed information.
 
+import os
+
+# Load _hololink_core with RTLD_GLOBAL so its symbols are available to other modules
+# This prevents duplicate copies of hololink_core code across Python extensions
+import sys
+
+# Save the current dlopen flags
+if hasattr(sys, "getdlopenflags"):
+    old_flags = sys.getdlopenflags()
+    # Set RTLD_GLOBAL (0x00100 on Linux) so symbols are available globally
+    sys.setdlopenflags(os.RTLD_LAZY | os.RTLD_GLOBAL)
+
 from ._hololink_core import (
     PAGE_SIZE,
     UDP_PACKET_SIZE,
     ArpWrapper,
     Deserializer,
+    Reactor,
     Serializer,
+    gettid,
     infiniband_devices,
     local_ip_and_mac,
     local_ip_and_mac_from_socket,
@@ -28,15 +42,21 @@ from ._hololink_core import (
     round_up,
 )
 
+# Restore the original dlopen flags
+if hasattr(sys, "getdlopenflags"):
+    sys.setdlopenflags(old_flags)
+
 __all__ = [
     "ArpWrapper",
     "Deserializer",
     "PAGE_SIZE",
+    "Reactor",
     "Serializer",
     "UDP_PACKET_SIZE",
     "local_ip_and_mac",
     "local_ip_and_mac_from_socket",
     "local_mac",
     "round_up",
+    "gettid",
     "infiniband_devices",
 ]
