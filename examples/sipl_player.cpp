@@ -25,6 +25,62 @@
 #include <hololink/operators/packed_format_converter/packed_format_converter.hpp>
 #include <hololink/operators/sipl_capture/sipl_capture.hpp>
 
+class SIPLMetadataPrinterOp : public holoscan::Operator {
+public:
+    HOLOSCAN_OPERATOR_FORWARD_ARGS(SIPLMetadataPrinterOp)
+
+    SIPLMetadataPrinterOp(const std::vector<hololink::operators::SIPLCaptureOp::CameraInfo>& camera_info)
+        : camera_info_(camera_info)
+    {
+    }
+
+    void setup(holoscan::OperatorSpec& spec) override
+    {
+        spec.input<holoscan::gxf::Entity>("input");
+    }
+
+    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output, holoscan::ExecutionContext& context) override
+    {
+        auto entity = op_input.receive<holoscan::gxf::Entity>("input");
+        if (entity) {
+            for (const auto& camera : camera_info_) {
+                // Print out the HSB metadata.
+                HOLOSCAN_LOG_INFO("[{}] frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}, bytes={}",
+                    camera.output_name,
+                    metadata()->get<int64_t>(camera.output_name + "_frame_number"),
+                    metadata()->get<int64_t>(camera.output_name + "_timestamp_s"),
+                    metadata()->get<int64_t>(camera.output_name + "_timestamp_ns"),
+                    metadata()->get<int64_t>(camera.output_name + "_metadata_s"),
+                    metadata()->get<int64_t>(camera.output_name + "_metadata_ns"),
+                    metadata()->get<int64_t>(camera.output_name + "_crc"),
+                    metadata()->get<int64_t>(camera.output_name + "_bytes_written"));
+
+                // The SIPL image metadata is written to "{camera_name}_metadata"
+                // Print out the start/end timestamps as an example.
+                const auto& image_metadata = metadata()->get<nvsipl::INvSIPLClient::ImageMetaData>(camera.output_name + "_metadata");
+                HOLOSCAN_LOG_INFO("    SIPL Metadata: start time={}, end time={}",
+                    image_metadata.frameCaptureStartTSC,
+                    image_metadata.frameCaptureTSC);
+
+                // The ISP statistics, when using ISP, are written to "{camera_name}_isp_stats"
+                // Print out the average values for the first LAC region as an example.
+                if (metadata()->has_key(camera.output_name + "_isp_stats")) {
+                    const auto& isp_stats = metadata()->get<nvsipl::IspStatsInfo>(camera.output_name + "_isp_stats");
+                    const auto& lac_data = isp_stats.ispStatsData.lacStatsData[0].data[0];
+                    HOLOSCAN_LOG_INFO("    LAC Averages (window 0): ({:.4f}, {:.4f}, {:.4f}, {:.4f})",
+                        lac_data.average[0][0],
+                        lac_data.average[0][1],
+                        lac_data.average[0][2],
+                        lac_data.average[0][3]);
+                }
+            }
+        }
+    }
+
+private:
+    const std::vector<hololink::operators::SIPLCaptureOp::CameraInfo>& camera_info_;
+};
+
 class Application : public holoscan::Application {
 public:
     Application(
@@ -33,14 +89,25 @@ public:
         bool raw_output,
         bool headless,
         bool fullscreen,
-        int frame_limit)
+        int frame_limit,
+        bool print_metadata)
         : camera_config_(camera_config)
         , json_config_(json_config)
         , raw_output_(raw_output)
         , headless_(headless)
         , fullscreen_(fullscreen)
         , frame_limit_(frame_limit)
+        , print_metadata_(print_metadata)
     {
+        enable_metadata(print_metadata);
+
+        if (print_metadata && raw_output) {
+            // Since the application flow will split into two for the sake of image
+            // conversion/ISP for multiple sensors, Holoviz will end up receiving duplicate
+            // copies of the metadata from the two streams. We set the metadata policy to
+            // reject these duplicates instead of generating an error.
+            metadata_policy(holoscan::MetadataPolicy::kReject);
+        }
     }
 
     void compose() override
@@ -62,6 +129,14 @@ public:
             raw_output_,
             condition);
         const auto& camera_info = sipl_capture->get_camera_info();
+
+        if (print_metadata_) {
+            // Print out the metadata provided by NvSIPL.
+            auto sipl_metadata_printer = make_operator<SIPLMetadataPrinterOp>(
+                "sipl_metadata_printer",
+                camera_info);
+            add_flow(sipl_capture, sipl_metadata_printer, { { "output", "input" } });
+        }
 
         // Holoviz is used to render the image(s).
         const float view_width = 1.0f / camera_info.size();
@@ -151,6 +226,7 @@ private:
     bool headless_;
     bool fullscreen_;
     int frame_limit_;
+    bool print_metadata_;
 };
 
 int main(int argc, char** argv)
@@ -169,6 +245,7 @@ int main(int argc, char** argv)
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
+        ("metadata", bool_switch()->default_value(false), "Print frame metadata")
         ;
     // clang-format on
 
@@ -185,7 +262,8 @@ int main(int argc, char** argv)
                 variables_map["raw"].as<bool>(),
                 variables_map["headless"].as<bool>(),
                 variables_map["fullscreen"].as<bool>(),
-                variables_map["frame-limit"].as<int>());
+                variables_map["frame-limit"].as<int>(),
+                variables_map["metadata"].as<bool>());
             app->run();
         }
         return 0;

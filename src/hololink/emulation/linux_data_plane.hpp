@@ -25,12 +25,22 @@
 namespace hololink::emulation {
 
 /**
- * @brief LinuxDataPlane is a DataPlane that uses LinuxTransmitter to send data.
- *
+ * @brief The DataPlane implementation for RoCEv2 UDP transport.
  */
 class LinuxDataPlane : public DataPlane {
 public:
-    LinuxDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint16_t source_port, DataPlaneID data_plane_id, SensorID sensor_id);
+    /**
+     * python:
+     *
+     * `def __init__(self: hemu.LinuxDataPlane, hsb_emulator: hemu.HSBEmulator, source_ip: hemu.IPAddress, data_plane_id: int, sensor_id: int)`
+     *
+     * @brief Construct a new LinuxDataPlane object
+     * @param hsb_emulator The HSBEmulator object to attach to.
+     * @param source_ip The IP address of the DataPlane.
+     * @param data_plane_id The identifying index of the DataPlane.
+     * @param sensor_id The identifying index of the sensor interface associated with the DataPlane.
+     */
+    LinuxDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id);
     ~LinuxDataPlane();
 
 protected:

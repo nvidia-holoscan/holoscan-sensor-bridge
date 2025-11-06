@@ -30,29 +30,6 @@
 
 namespace hololink::emulation {
 
-// IP header from RFC 791
-struct IPHeader {
-    uint8_t version_and_header_length; // 4 bits version, 4 bits header length
-    uint8_t type_of_service;
-    uint16_t length;
-    uint16_t identification;
-    uint16_t flags_and_fragment_offset;
-    uint8_t time_to_live;
-    uint8_t protocol;
-    uint16_t checksum;
-    uint32_t source_ip_address;
-    uint32_t destination_ip_address;
-    // uint32_t options; // only in upper 24 bits not present in datagrams
-};
-
-// UDP header from RFC 768
-struct UDPHeader {
-    uint16_t source_port;
-    uint16_t destination_port;
-    uint16_t length; // length in bytes of header + payload
-    uint16_t checksum;
-};
-
 // from Infiniband specification
 struct BTHeader {
     uint8_t opcode; // opcode {= 0x2A for write, 0x2B for write immediate}
@@ -76,46 +53,14 @@ struct RETHeader {
 // all data is assumed to be in host byte order in this structure. Serialization will handle conversion to network byte order
 // see DEFAULT_LINUX_HEADERS in linux_transmitter.cpp for default values and comments on when elements are expected to be updated
 struct LinuxHeaders {
-    IPHeader ip_h;
-    UDPHeader udp_h;
+    iphdr ip_h;
+    udphdr udp_h;
     BTHeader bt_h;
     RETHeader ret_h;
 };
-
 // reference values and magic numbers for headers.
 // explanations of which fields are overwritten and when
-const struct LinuxHeaders DEFAULT_LINUX_HEADERS {
-    .ip_h = {
-        .version_and_header_length = 0x45, // IPv4
-        .type_of_service = 0,
-        .length = 0, // filled in on send based on payload size
-        .identification = 0, // not used without fragmentation
-        .flags_and_fragment_offset = 0x4000, // not used without fragmentation
-        .time_to_live = DEFAULT_TTL, // not used without fragmentation
-        .protocol = 17, // UDP
-        .checksum = 0,
-        .source_ip_address = 0, // optionally written at construction
-        .destination_ip_address = 0, // filled in on send
-    },
-    .udp_h = {
-        .source_port = 0, // optionally written at construction
-        .destination_port = 0, // filled in on send from LinuxTransmitterMetadata
-        .length = 0, // filled in on send based on payload size
-        .checksum = 0,
-    },
-    .bt_h = {
-        .opcode = 0, // filled in on send
-        .flags = 0,
-        .p_key = 0xFFFF,
-        .qp = 0, // filled in on send from LinuxTransmitterMetadata
-        .psn = 0, // filled in on send based on payload size
-    },
-    .ret_h = {
-        .vaddress = 0, // filled in on send from LinuxTransmitterMetadata
-        .rkey = 0, // filled in on send from LinuxTransmitterMetadata
-        .content_size = 0, // filled in on send based on payload size
-    },
-};
+extern const LinuxHeaders DEFAULT_LINUX_HEADERS;
 
 /**
  * Metadata for a transmission that is specific to the LinuxTransmitter.
@@ -131,19 +76,32 @@ struct LinuxTransmissionMetadata {
     uint32_t metadata_offset; // host side sends this to HSB to indicate where the metadata is in
                               // the frame, but it's unclear this is really necessary. payload_size
                               // and page size have enough information to define this, I think.
-    uint32_t dest_ip_address;
-    uint16_t dest_port;
+    uint32_t page_mask;
 };
 
-// RoCEv2 transmitter without using ib verbs apis
+/**
+ * @brief The LinuxTransmitter implements the BaseTransmitter interface and encapsulates the transport over RoCEv2
+ */
 class LinuxTransmitter : public BaseTransmitter {
 public:
-    LinuxTransmitter(const std::string& source_ip, uint16_t source_port);
-    LinuxTransmitter(const LinuxHeaders* headers = &DEFAULT_LINUX_HEADERS);
+    /**
+     * @brief Construct a new LinuxTransmitter object
+     * @param source_ip The IP address to be used as the source address of the transmitter.
+     * @note The MAC address is derived from the interface name using the mac_from_if function in net.hpp.
+     */
+    LinuxTransmitter(const IPAddress& source_ip);
+    /**
+     * @brief Construct a new LinuxTransmitter object
+     * @param headers The fully configurable headers to use. See source code for details
+     */
+    LinuxTransmitter(const LinuxHeaders& headers);
     ~LinuxTransmitter();
 
     /**
-     * @brief Send a tensor to the destination. Implementation of BaseTransmitter::send interface method.
+     * @brief Send a tensor to the destination using the TransmissionMetadata provided. Implementation of BaseTransmitter::send interface method.
+     * @param metadata The metadata for the transmission. This is always aliased from the appropriate type of metadata for the Transmitter instance.
+     * @param tensor The tensor to send. See dlpack.h for its contents and semantics.
+     * @return The number of bytes sent or < 0 on error
      */
     int64_t send(const TransmissionMetadata* metadata, const DLTensor& tensor) override;
 
@@ -155,6 +113,9 @@ private:
     LinuxHeaders linux_headers_;
     uint32_t psn_ { 0 };
     uint32_t frame_number_ { 0 };
+    // double buffering is for GPU inputs currently
+    void* double_buffer_ { nullptr };
+    int64_t double_buffer_size_ { 0 };
 };
 
 } // namespace hololink::emulation

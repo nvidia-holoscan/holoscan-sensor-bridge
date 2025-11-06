@@ -17,7 +17,7 @@
 install(FILES
         hsb-ptp.conf
         generate_manifest.py
-        manifest-2412.yaml
+        manifest-2507.yaml
         manifest.yaml
         DESTINATION scripts
         COMPONENT hololink-scripts)

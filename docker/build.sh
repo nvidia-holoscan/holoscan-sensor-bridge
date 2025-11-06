@@ -104,15 +104,19 @@ PROTOTYPE_OPTIONS=""
 CONTAINER_TYPE=dgpu
 if [ $igpu -ne 0 ]
 then
-CONTAINER_TYPE=igpu
-ARGUS_LIBRARIES_DIRECTORY=/usr/lib/aarch64-linux-gnu/nvidia
-if [ ! -d $ARGUS_LIBRARIES_DIRECTORY ]
+CONTAINER_TYPE=igpu_orin
+if [ $(nvidia-smi | grep -q "NVIDIA Thor"; echo $?) -eq 0 ]
+then
+CONTAINER_TYPE=igpu_thor
+fi
+L4T_LIBRARIES_DIRECTORY=/usr/lib/aarch64-linux-gnu/nvidia
+if [ ! -d $L4T_LIBRARIES_DIRECTORY ]
 then
 echo "Error: Required path and libs are missing. \
       Upgrade the development kit with Jetpack 6 or newer."
 exit 1
 fi
-PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context argus-libs=$ARGUS_LIBRARIES_DIRECTORY"
+PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context l4t-libs=$L4T_LIBRARIES_DIRECTORY"
 fi
 
 # For Jetson Nano devices, which have very limited memory,

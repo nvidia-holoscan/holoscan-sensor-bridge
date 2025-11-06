@@ -19,8 +19,8 @@ import argparse
 import ctypes
 import logging
 
+import cuda.bindings.driver as cuda
 import holoscan
-from cuda import cuda
 
 import hololink as hololink_module
 
@@ -183,6 +183,12 @@ def main():
         default="4k",
         help="4k or 1080p",
     )
+    parser.add_argument(
+        "--hololink",
+        default=["192.168.0.2", "192.168.0.3"],
+        nargs="+",
+        help="IP addresses of the IMX477 camera channels (separated by commas) of Hololink board",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -192,17 +198,17 @@ def main():
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
+    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device
     if args.cam == 0:
         channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.2"
+            channel_ip=args.hololink[0]
         )
     elif args.cam == 1:
         channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.3"
+            channel_ip=args.hololink[1]
         )
     else:
         raise Exception(f"Unexpected camera={args.cam}")

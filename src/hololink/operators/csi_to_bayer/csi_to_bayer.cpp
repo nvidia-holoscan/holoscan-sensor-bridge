@@ -48,17 +48,17 @@ __global__ void frameReconstruction8(unsigned short * out,
 __global__ void frameReconstruction10(unsigned short * out,
                                       const unsigned char * in,
                                       int per_line_size,
-                                      int width,
+                                      int quater_width,
                                       int height)
 {
     int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
     int idx_y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if ((idx_x >= width) || (idx_y >= height))
+    if ((idx_x >= quater_width) || (idx_y >= height))
         return;
 
     const int in_index = (per_line_size * idx_y) + idx_x * 5;
-    const int out_index = idx_y * width + idx_x * 4;
+    const int out_index = (idx_y * quater_width + idx_x) * 4;
 
     const unsigned short lsbs = in[in_index + 4];
     out[out_index + 0] = ((in[in_index + 0] << 2) | (lsbs & 0x03)) << 6;
@@ -70,17 +70,17 @@ __global__ void frameReconstruction10(unsigned short * out,
 __global__ void frameReconstruction12(unsigned short * out,
                                       const unsigned char * in,
                                       int per_line_size,
-                                      int width,
+                                      int half_width,
                                       int height)
 {
     int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
     int idx_y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if ((idx_x >= width) || (idx_y >= height))
+    if ((idx_x >= half_width) || (idx_y >= height))
         return;
 
     const int in_index = (per_line_size * idx_y) + idx_x * 3;
-    const int out_index = idx_y * width + idx_x * 2;
+    const int out_index = (idx_y * half_width + idx_x) * 2;
 
     const unsigned short lsbs = in[in_index + 2];
     out[out_index + 0] = ((in[in_index + 0] << 4) | (lsbs & 0x0F)) << 4;
@@ -214,7 +214,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
             { pixel_width_ / 4, // outputs 4 pixels per shader invocation
                 pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
+            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_ / 4,
             pixel_height_);
         break;
     case hololink::csi::PixelFormat::RAW_12:
@@ -222,7 +222,7 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
             { pixel_width_ / 2, // outputs 2 pixels per shader invocation
                 pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
+            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_ / 2,
             pixel_height_);
         break;
     default:

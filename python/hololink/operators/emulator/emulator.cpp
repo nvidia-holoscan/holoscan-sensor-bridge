@@ -43,12 +43,10 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyLinuxDataPlaneOp(holoscan::Fragment* fragment, const py::args& args, std::shared_ptr<hololink::emulation::HSBEmulator> hsb_emulator,
-        const std::string& source_ip_address, uint8_t subnet_bits, uint16_t source_port, hololink::emulation::DataPlaneID data_plane_id, hololink::emulation::SensorID sensor_id, const std::string& name)
+        const std::string& source_ip_address, uint8_t data_plane_id, uint8_t sensor_id, const std::string& name)
         : LinuxDataPlaneOp(holoscan::ArgList {
             holoscan::Arg { "hsb_emulator", hsb_emulator },
             holoscan::Arg { "source_ip_address", source_ip_address },
-            holoscan::Arg { "subnet_bits", subnet_bits },
-            holoscan::Arg { "source_port", source_port },
             holoscan::Arg { "data_plane_id", data_plane_id },
             holoscan::Arg { "sensor_id", sensor_id } })
     {
@@ -70,15 +68,13 @@ PYBIND11_MODULE(_emulator, m)
 
     py::class_<LinuxDataPlaneOp, PyLinuxDataPlaneOp, holoscan::Operator,
         std::shared_ptr<LinuxDataPlaneOp>>(m, "LinuxDataPlaneOp")
-        .def(py::init<holoscan::Fragment*, const py::args&, std::shared_ptr<hololink::emulation::HSBEmulator>, const std::string&, uint8_t, uint16_t, hololink::emulation::DataPlaneID, hololink::emulation::SensorID, const std::string&>(),
+        .def(py::init<holoscan::Fragment*, const py::args&, std::shared_ptr<hololink::emulation::HSBEmulator>, const std::string&, uint8_t, uint8_t, const std::string&>(),
             py::arg("fragment"),
             py::arg("args"),
             py::arg("hsb_emulator") = nullptr,
             py::arg("source_ip_address") = "192.168.0.2",
-            py::arg("subnet_bits") = 24,
-            py::arg("source_port") = 12888,
-            py::arg("data_plane_id") = hololink::emulation::DataPlaneID::DATA_PLANE_0,
-            py::arg("sensor_id") = hololink::emulation::SensorID::SENSOR_0,
+            py::arg("data_plane_id") = 0,
+            py::arg("sensor_id") = 0,
             py::arg("name") = "");
 
 } // PYBIND11_MODULE

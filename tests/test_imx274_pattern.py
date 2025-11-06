@@ -19,11 +19,11 @@ import ctypes
 import logging
 import os
 
+import cuda.bindings.driver as cuda
 import holoscan
 import operators
 import pytest
 import utils
-from cuda import cuda
 
 import hololink as hololink_module
 
@@ -64,6 +64,7 @@ class PatternTestApplication(holoscan.core.Application):
         camera_right,
         camera_mode_right,
         watchdog,
+        frame_limit,
     ):
         logging.info("__init__")
         super().__init__()
@@ -83,8 +84,7 @@ class PatternTestApplication(holoscan.core.Application):
         self._watchdog = watchdog
         self._bucket_count_left = 0
         self._bucket_count_right = 0
-        self._bucket_count_left_trigger = 10
-        self._bucket_count_right_trigger = 10
+        self._frame_limit = frame_limit
         # These are HSDK controls-- because we have stereo
         # camera paths going into the same visualizer, don't
         # raise an error when each path present metadata
@@ -96,11 +96,15 @@ class PatternTestApplication(holoscan.core.Application):
 
     def compose(self):
         logging.info("compose")
-        self._ok_left = holoscan.conditions.BooleanCondition(
-            self, name="ok_left", enable_tick=True
+        self._condition_left = holoscan.conditions.CountCondition(
+            self,
+            name="count_left",
+            count=self._frame_limit,
         )
-        self._ok_right = holoscan.conditions.BooleanCondition(
-            self, name="ok_right", enable_tick=True
+        self._condition_right = holoscan.conditions.CountCondition(
+            self,
+            name="count_right",
+            count=self._frame_limit,
         )
         self._camera_left.set_mode(self._camera_mode_left)
         self._camera_right.set_mode(self._camera_mode_right)
@@ -150,7 +154,7 @@ class PatternTestApplication(holoscan.core.Application):
         if self._ibv_name_left:
             receiver_operator_left = hololink_module.operators.RoceReceiverOp(
                 self,
-                self._ok_left,
+                self._condition_left,
                 name="receiver_left",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -162,7 +166,7 @@ class PatternTestApplication(holoscan.core.Application):
         else:
             receiver_operator_left = hololink_module.operators.LinuxReceiverOp(
                 self,
-                self._ok_left,
+                self._condition_left,
                 name="receiver_left",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -177,7 +181,7 @@ class PatternTestApplication(holoscan.core.Application):
         if self._ibv_name_right:
             receiver_operator_right = hololink_module.operators.RoceReceiverOp(
                 self,
-                self._ok_right,
+                self._condition_right,
                 name="receiver_right",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -189,7 +193,7 @@ class PatternTestApplication(holoscan.core.Application):
         else:
             receiver_operator_right = hololink_module.operators.LinuxReceiverOp(
                 self,
-                self._ok_right,
+                self._condition_right,
                 name="receiver_right",
                 frame_size=frame_size,
                 frame_context=frame_context,
@@ -317,22 +321,10 @@ class PatternTestApplication(holoscan.core.Application):
         self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
     def left_buckets(self, buckets):
-        self._bucket_count_left += 1
-        if self._bucket_count_left >= self._bucket_count_left_trigger:
-            # don't fail the watchdog while we're shutting down.
-            self._watchdog.update(timeout=30)
-            self._ok_left.disable_tick()
-            return
         global actual_left
         actual_left = buckets
 
     def right_buckets(self, buckets):
-        self._bucket_count_right += 1
-        if self._bucket_count_right >= self._bucket_count_right_trigger:
-            # don't fail the watchdog while we're shutting down.
-            self._watchdog.update(timeout=30)
-            self._ok_right.disable_tick()
-            return
         global actual_right
         actual_right = buckets
 
@@ -470,6 +462,7 @@ def run_test(
             camera_right,
             camera_mode_right,
             watchdog,
+            frame_limit=100,
         )
         default_configuration = os.path.join(
             os.path.dirname(__file__), "example_configuration.yaml"
@@ -525,6 +518,7 @@ def run_test(
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
+
     # Now check the buckets.
     global actual_left, actual_right
     #

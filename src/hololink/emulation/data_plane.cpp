@@ -21,6 +21,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
+#include <map>
 #include <time.h>
 
 #include "hololink/core/serializer.hpp"
@@ -28,7 +29,6 @@
 #include "base_transmitter.hpp"
 #include "data_plane.hpp"
 #include "hsb_emulator.hpp"
-#include "net.hpp"
 
 namespace hololink::emulation {
 
@@ -61,6 +61,33 @@ struct BootpPacket {
     uint8_t file[BOOTP_FILE_SIZE]; // boot file name
     uint8_t vend[BOOTP_VEND_SIZE]; // vendor specific
 };
+
+std::map<uint32_t, uint32_t> ADDRESS_MAP = {
+    { 0, hololink::DP_ADDRESS_0 },
+    { 1, hololink::DP_ADDRESS_1 },
+    { 2, hololink::DP_ADDRESS_2 },
+    { 3, hololink::DP_ADDRESS_3 },
+};
+
+// returns 0 on failure or the number of bytes written on success
+// Note that on failure, serializer and buffer contents are in indeterminate state.
+static inline size_t serialize_vendor_info(hololink::core::Serializer& serializer, HSBConfiguration& configuration)
+{
+    size_t start = serializer.length();
+    return serializer.append_uint8(configuration.tag)
+            && serializer.append_uint8(configuration.tag_length)
+            && serializer.append_buffer(configuration.vendor_id, sizeof(configuration.vendor_id))
+            && serializer.append_uint8(configuration.data_plane)
+            && serializer.append_uint8(configuration.enum_version)
+            && serializer.append_uint8(configuration.board_id_lo)
+            && serializer.append_uint8(configuration.board_id_hi)
+            && serializer.append_buffer(configuration.uuid, sizeof(configuration.uuid))
+            && serializer.append_buffer(configuration.serial_num, sizeof(configuration.serial_num))
+            && serializer.append_uint16_le(configuration.hsb_ip_version)
+            && serializer.append_uint16_le(configuration.fpga_crc)
+        ? serializer.length() - start
+        : 0;
+}
 
 static inline size_t serialize_chaddr(hololink::core::Serializer& serializer, hololink::core::MacAddress& mac_address)
 {
@@ -95,21 +122,46 @@ static inline size_t serialize_bootp_packet(hololink::core::Serializer& serializ
 
 // HSBEmulator must remain alive for as long as the longest-lived DataPlane object it was used to construct
 // IPAddress is both the source IP address and subnet mask to be able to set the appropriate broadcast address (!cannot use INADDR_BROADCAST!)
-DataPlane::DataPlane(HSBEmulator& hsb_emulator, const IPAddress& ip_address, DataPlaneID data_plane_id, SensorID sensor_id)
-    : hsb_emulator_(hsb_emulator)
-    , registers_(hsb_emulator.get_memory())
+DataPlane::DataPlane(HSBEmulator& hsb_emulator, const IPAddress& ip_address, uint8_t data_plane_id, uint8_t sensor_id)
+    : registers_(hsb_emulator.get_memory())
     , ip_address_(ip_address)
     , configuration_(hsb_emulator.get_config())
     , sensor_id_(sensor_id)
+    , hif_address_(0x02000300 + 0x10000 * data_plane_id)
+    , sif_address_(0x01000000 + 0x10000 * sensor_id)
 {
-    if (!data_plane_map.count(data_plane_id)) {
-        throw std::invalid_argument("Invalid data plane id");
+    // validate against configuration
+    if (data_plane_id >= configuration_.data_plane_count) {
+        throw std::invalid_argument("data_plane_id exceeds configured data_plane_count");
     }
-    if (!sensor_map.count(sensor_id)) {
-        throw std::invalid_argument("Invalid sensor id");
+    if (sensor_id >= configuration_.sensor_count) {
+        throw std::invalid_argument("sensor_id exceeds configured sensor count");
+    }
+    if (!(ip_address_.flags & IPADDRESS_HAS_BROADCAST)) {
+        throw std::invalid_argument("Broadcast address not found for ip address " + IPAddress_to_string(ip_address_));
+    }
+    // strictly speaking, this is just a warning.
+    if (!(ip_address_.flags & IPADDRESS_HAS_MAC)) {
+        fprintf(stderr, "MAC address not found/recognized for ip address %s. For non-COE applications, this is non-fatal\n", IPAddress_to_string(ip_address_).c_str());
     }
 
+    // DataPlaneConfiguration
     configuration_.data_plane = data_plane_id;
+    // SensorConfiguration. See DataChannel::use_sensor() for more details
+    uint8_t sif0_index = sensor_id_ * configuration_.sifs_per_sensor;
+    vp_mask_ = 1 << sif0_index;
+    switch (sif0_index) {
+    case 0:
+        frame_end_event_ = hololink::Hololink::Event::SIF_0_FRAME_END;
+        break;
+    case 1:
+        frame_end_event_ = hololink::Hololink::Event::SIF_1_FRAME_END;
+        break;
+    default:
+        // TODO: what's a reasonable default value since enumerator.cpp does not assign anything to the metadata here
+        break;
+    }
+    vp_address_ = 0x1000 + 0x40 * sif0_index;
 
     // register the DataPlane with the HSBEmulator so that it can be started/stopped
     hsb_emulator.add_data_plane(*this);
@@ -143,6 +195,12 @@ void DataPlane::stop()
 bool DataPlane::is_running()
 {
     return running_;
+}
+
+bool DataPlane::packetizer_enabled() const
+{
+    uint32_t packetizer_mode = registers_->read(sif_address_ + PACKETIZER_MODE);
+    return (packetizer_mode >> 28) & 0x1;
 }
 
 int64_t DataPlane::send(const DLTensor& tensor)
@@ -181,28 +239,32 @@ void update_bootp_packet(BootpPacket& bootp_packet, const struct timespec& start
     bootp_packet.secs = get_delta_secs(start_time, ts);
 }
 
-void init_bootp_packet(BootpPacket& bootp_packet, const std::string& ip_address, HSBConfiguration& vendor_info)
+void init_bootp_packet(BootpPacket& bootp_packet, IPAddress& ip_address, HSBConfiguration& vendor_info)
 {
     bootp_packet = (BootpPacket) {
         .op = 1,
         .htype = 1,
         .hlen = 6,
         .hops = 0,
-        .xid = vendor_info.data_plane
+        .xid = vendor_info.data_plane,
         // all other fields initialized to 0
+        .ciaddr = ntohl(ip_address.ip_address),
     };
+    memcpy(bootp_packet.chaddr, ip_address.mac.data(), ip_address.mac.size());
 
-    auto [local_ip, local_device, local_mac] = local_ip_and_mac(ip_address, BOOTP_REQUEST_PORT);
     hololink::core::Serializer chaddr_serializer(bootp_packet.chaddr, sizeof(bootp_packet.chaddr));
     // MacAddress is 6 bytes (std::array<uint8_t, 6> in hololink/core/networking.hpp). Check that it wrote the whole thing
-    if (local_mac.size() != serialize_chaddr(chaddr_serializer, local_mac)) {
+    if (ip_address.mac.size() != serialize_chaddr(chaddr_serializer, ip_address.mac)) {
         throw std::runtime_error("Failed to initialize chaddr in bootp packet with local mac address");
     }
 
     hololink::core::Serializer vendor_info_serializer(bootp_packet.vend, sizeof(bootp_packet.vend));
-    // serialize_hsb_configuration does not necessarily fill the entire buffer, so only check that it didn't fail
-    if (!serialize_hsb_configuration(vendor_info_serializer, vendor_info)) {
+    // check if vendor info was written within the buffer
+    size_t vendor_info_length = serialize_vendor_info(vendor_info_serializer, vendor_info);
+    if (!vendor_info_length) {
         throw std::runtime_error("Failed to initialize vendor information in bootp packet");
+    } else if (vendor_info_length > sizeof(bootp_packet.vend)) {
+        throw std::runtime_error("buffer overrun serializing vendor info");
     }
 }
 
@@ -225,6 +287,18 @@ void DataPlane::broadcast_bootp()
         fprintf(stderr, "Failed to set reuse address on bootp socket...socket will be set up with this option disabled: %d - %s\n", errno, strerror(errno));
     }
 
+    struct sockaddr_in bind_addr = { 0 };
+    bind_addr.sin_family = AF_INET;
+    bind_addr.sin_port = htons(BOOTP_REPLY_PORT);
+    bind_addr.sin_addr.s_addr = ip_address_.ip_address;
+
+    if (bind(bootp_socket_, (struct sockaddr*)&bind_addr, sizeof(bind_addr)) < 0) {
+        fprintf(stderr, "Failed to bind bootp socket: %d - %s\n", errno, strerror(errno));
+        close(bootp_socket_);
+        bootp_socket_ = -1;
+        throw std::runtime_error("Failed to create data channel");
+    }
+
     // Enable broadcast
     int broadcast = 1;
     if (setsockopt(bootp_socket_, SOL_SOCKET, SO_BROADCAST, &broadcast, sizeof(broadcast)) < 0) {
@@ -236,7 +310,7 @@ void DataPlane::broadcast_bootp()
 
     // initialize the bootp packet and buffer
     BootpPacket bootp_packet;
-    init_bootp_packet(bootp_packet, IPAddress_to_string(ip_address_), configuration_);
+    init_bootp_packet(bootp_packet, ip_address_, configuration_);
     uint8_t packet_buffer[BOOTP_SIZE] = { 0 };
 
     struct iovec iov = {
@@ -249,7 +323,7 @@ void DataPlane::broadcast_bootp()
     struct sockaddr_in dest_addr = { 0 };
     dest_addr.sin_family = AF_INET;
     dest_addr.sin_port = htons(BOOTP_REQUEST_PORT);
-    dest_addr.sin_addr.s_addr = htonl(get_broadcast_address(ip_address_));
+    dest_addr.sin_addr.s_addr = get_broadcast_address(ip_address_);
     struct msghdr msg { };
     msg.msg_name = &dest_addr;
     msg.msg_namelen = sizeof(dest_addr);

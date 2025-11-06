@@ -211,7 +211,7 @@ void AD9986Config::power_on()
     // First check the XCVR's refclk. Switch back if not on refclk 1 before starting config.
     // Only check the first XCVR b/c that should indicate which clock all XCVRs are using.
     // This is a generic function that is associated with the Stratix 10 FPGA E-Tile Transceiver.
-    auto refclk = hololink_.read_uint32(0x051003B0) & 0xF;
+    auto refclk = hololink_.read_uint32(JESD_XCVR_CTRL + 0x03B0) & 0xF;
     if (refclk != 1) {
         HSB_LOG_INFO("Switching XCVRs back to refclk 1");
         for (size_t i = 0; i < 8; ++i) {
@@ -247,8 +247,8 @@ void AD9986Config::setup_clocks()
 
     // Reset the JESD
     //- This is to ensure the nvidia JESD IP is reset after clocks have been stabilized
-    hololink_.write_uint32(0x05300000, 0x1);
-    hololink_.write_uint32(0x05300000, 0x0);
+    hololink_.write_uint32(JESD_REG_CTRL, 0x1);
+    hololink_.write_uint32(JESD_REG_CTRL, 0x0);
 }
 
 void AD9986Config::configure()
@@ -273,7 +273,7 @@ void AD9986Config::configure()
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     // Enable the TX data (input to the JESD IP) and the RX data (output from the JESD IP)
-    hololink_.write_uint32(0x05300000, 0x10);
+    hololink_.write_uint32(JESD_REG_CTRL, 0x10);
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 }
 
@@ -284,15 +284,15 @@ void AD9986Config::run()
     // Cycle the RX Link
     //  - This cycles the RX link on the nvidia JESD IP. It's kinda like a reset but not completely.
     //  - TODO: Determine if sleeps are needed here.
-    hololink_.write_uint32(0x05039000, 0x0);
+    hololink_.write_uint32(JESD_RX_CTRL + 0x39000, 0x0);
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    hololink_.write_uint32(0x05039000, 0x1);
+    hololink_.write_uint32(JESD_RX_CTRL + 0x39000, 0x1);
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
     // Write the rx lane status to clear errors
     //  - Clears some RX lane status that we are interested in.
     for (int i = 0x0; i < 0x800; i += 0x100) {
-        uint32_t address = 0x0503C008 + i;
+        uint32_t address = JESD_RX_CTRL + 0x3C008 + i;
         hololink_.write_uint32(address, 0xff);
     }
 
@@ -303,20 +303,20 @@ void AD9986Config::run()
     //  - TODO: Intelligently assess the status based on what we read back...
     HSB_LOG_DEBUG("LANE 64B66B Status:");
     for (int i = 0x0; i < 0x800; i += 0x100) {
-        uint32_t address = 0x0503C008 + i;
+        uint32_t address = JESD_RX_CTRL + 0x3C008 + i;
         HSB_LOG_DEBUG("address:{:#x}, value:{:#x}", address, hololink_.read_uint32(address));
     }
     HSB_LOG_DEBUG("UPHY OVERFLOW Status:");
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x0502102C));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x05021448));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x05021864));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x05021C80));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x0502209C));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x050224B8));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x050228D4));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(0x05022CF0));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x2102C));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21448));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21864));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21C80));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x2209C));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x224B8));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x228D4));
+    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x22CF0));
 
-    hololink_.write_uint32(0x05300000, 0x30); // Enable RX
+    hololink_.write_uint32(JESD_REG_CTRL, 0x30); // Enable RX
     hololink_.write_uint32(0x01200000, 0x3); // Enable TX
 
     jesd_configured_.store(true, std::memory_order_release);
@@ -328,7 +328,7 @@ bool AD9986Config::task_refclk_sw(uint32_t channel, uint32_t refclk, uint32_t hw
 
     bool loop_status = false;
     uint32_t retry_cnt = 0;
-    uint32_t ch_offset = channel * 0x00010000 + 0x05100000;
+    uint32_t ch_offset = JESD_XCVR_CTRL + channel * JESD_XCVR_CHANNEL_STRIDE;
     uint32_t data = refclk;
 
     // Put a retry around this for when the refclk sw fails.
@@ -375,7 +375,7 @@ bool AD9986Config::task_set_pma_attribute(uint32_t channel, uint32_t code, uint3
         HSB_LOG_DEBUG("Setting PMA Attribute:{:#} to:{:#} for channel{}", code, data, channel);
 
         failed = false;
-        uint32_t ch_offset = channel * 0x00010000 + 0x05100000;
+        uint32_t ch_offset = JESD_XCVR_CTRL + channel * JESD_XCVR_CHANNEL_STRIDE;
 
         uint32_t low_data = data & 0xFF; // Get the lower byte of data to program and left-pad to 8 characters
         uint32_t high_data = data >> 8 & 0xFF; // Get the upper byte of data to program and left-pad to 8 characters
@@ -443,7 +443,7 @@ void AD9986Config::task_pma_analog_reset(uint32_t channel)
     uint32_t addr = 0;
 
     HSB_LOG_INFO("Issuing PMA Analog Reset for Channel:{}", channel);
-    uint32_t ch_offset = channel * 0x00010000 + 0x05100000;
+    uint32_t ch_offset = JESD_XCVR_CTRL + channel * JESD_XCVR_CHANNEL_STRIDE;
 
     for (uint32_t i = 0; i < 3; i++) {
         addr = ch_offset + (0x200 + i) * 4;
@@ -472,7 +472,7 @@ void AD9986Config::task_pma_analog_reset(uint32_t channel)
 
 void AD9986Config::configure_nvda_jesd_tx(void)
 {
-    uint32_t tx_base = 0x05040000;
+    uint32_t tx_base = JESD_TX_CTRL;
 
     // Configure TX link parameters
     hololink_.write_uint32(tx_base + 0x39028, 0x0000A802); // CNTRL3
@@ -492,7 +492,7 @@ void AD9986Config::configure_nvda_jesd_tx(void)
 
 void AD9986Config::configure_nvda_jesd_rx(void)
 {
-    uint32_t rx_base = 0x05000000;
+    uint32_t rx_base = JESD_RX_CTRL;
 
     // Configure RBD per-lane
     hololink_.write_uint32(rx_base + 0x13008, 0x0000003f); // Calculated from sequence

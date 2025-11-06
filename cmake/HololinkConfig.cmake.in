@@ -1,0 +1,7 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+# Hololink config: provides imported targets under the hololink:: namespace
+
+include("${CMAKE_CURRENT_LIST_DIR}/HololinkTargets.cmake")

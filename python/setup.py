@@ -16,6 +16,7 @@
 # See README.md for detailed information.
 
 import distutils.command.build
+import os
 import re
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ setuptools.setup(
         "hololink",
         "hololink/hololink_core",
         "hololink/emulation",
+        "hololink/emulation/sensors",
         "hololink/operators",
         "hololink/sensors",
         "hololink/sensors/camera",
@@ -69,6 +71,8 @@ setuptools.setup(
                 # the logic of FindPython3.cmake to find the active version
                 f"-DPython3_ROOT_DIR={Path(sys.prefix)}",
                 "-DBUILD_SHARED_LIBS:BOOL=OFF",
+                f"-DHOLOLINK_BUILD_ARGUS_ISP={'ON' if os.path.isdir('/usr/src/jetson_multimedia_api/argus') else 'OFF'}",
+                f"-DHOLOLINK_BUILD_SIPL={'ON' if os.path.isdir('/usr/src/jetson_sipl_api') else 'OFF'}",
                 # Add this to debug the code
                 # "-DCMAKE_BUILD_TYPE=Debug",
             ],
@@ -79,8 +83,8 @@ setuptools.setup(
         "build_ext": cmake_build_extension.BuildExtension,
     },
     install_requires=[
-        "cuda-python==12.9.0",
-        "nvtx==0.2.13",
+        "cuda-python",
+        "nvtx",
     ],
     entry_points={
         "console_scripts": [

@@ -13,6 +13,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Find python-dev and pybind11
+find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
+include(hololink_deps/pybind11)
+
 # Helper function to generate pybind11 operator modules
 function(pybind11_add_hololink_module)
     cmake_parse_arguments(MODULE                # PREFIX
@@ -36,6 +40,36 @@ function(pybind11_add_hololink_module)
             holoscan::pybind11
             ${MODULE_CPP_CMAKE_TARGET}
     )
+
+    # Check if this module depends on hololink_core and if hololink_core_python exists
+    # If so, configure it to use symbols from _hololink_core.so at runtime instead of embedding them
+    if(TARGET hololink_core_python AND NOT MODULE_NAME STREQUAL "hololink_core")
+        get_target_property(link_libs ${MODULE_CPP_CMAKE_TARGET} LINK_LIBRARIES)
+        if(link_libs)
+            # Check if hololink_core or hololink::core is in the dependencies (direct or transitive)
+            list(FIND link_libs "hololink_core" has_hololink_core)
+            list(FIND link_libs "hololink::core" has_hololink_core_alias)
+            if(NOT ${has_hololink_core} EQUAL -1 OR NOT ${has_hololink_core_alias} EQUAL -1)
+                # The module will still link against the static hololink_core library,
+                # but at runtime, Python will load _hololink_core.so with RTLD_GLOBAL first,
+                # making its symbols take precedence over the statically linked ones.
+                # This ensures only one copy of the symbols is active in memory.
+                
+                # Add RPATH to find hololink_core module at runtime
+                file(RELATIVE_PATH core_relative_path
+                    ${CMAKE_CURRENT_LIST_DIR}
+                    ${CMAKE_SOURCE_DIR}/python/hololink/hololink_core
+                )
+                set_property(TARGET ${target_name}
+                    APPEND PROPERTY BUILD_RPATH "\$ORIGIN/${core_relative_path}"
+                )
+                set_property(TARGET ${target_name}
+                    APPEND PROPERTY INSTALL_RPATH "\$ORIGIN/${core_relative_path}"
+                )
+                message(STATUS "${target_name} will use hololink_core symbols from _hololink_core.so at runtime (via RTLD_GLOBAL)")
+            endif()
+        endif()
+    endif()
 
     # Sets the rpath of the module
     file(RELATIVE_PATH install_lib_relative_path

@@ -20,8 +20,8 @@ import ctypes
 import logging
 import os
 
+import cuda.bindings.driver as cuda
 import holoscan
-from cuda import cuda
 
 import hololink as hololink_module
 
@@ -123,7 +123,7 @@ class HoloscanApplication(holoscan.core.Application):
         assert frame_size == csi_to_bayer_operator_right.get_csi_length()
 
         frame_context = self._cuda_context
-        receiver_operator_left = hololink_module.operators.LinuxReceiverOperator(
+        receiver_operator_left = hololink_module.operators.LinuxReceiverOp(
             self,
             condition_left,
             name="receiver_left",
@@ -134,7 +134,7 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         #
-        receiver_operator_right = hololink_module.operators.LinuxReceiverOperator(
+        receiver_operator_right = hololink_module.operators.LinuxReceiverOp(
             self,
             condition_right,
             frame_size=frame_size,

@@ -31,12 +31,12 @@ namespace hololink::operators {
  * The LinuxDataPlaneOp operator emulates a Holoscan Sensor Bridge with a single LinuxDataPlane
  *
  * Parameters:
- *  'enum_version' - The enum version of the HSB sensor. Default is "ENUM_VERSION_2".
+ *  'enum_version' - The enum version of the HSB sensor. Default is 2.
  *  'ip_address'   - The IP address of the HSB sensor. Default is "192.168.0.2".
- *  'data_plane_id' - The data plane ID of the HSB sensor (DATA_PLANE_0 or DATA_PLANE_1). Default is "DATA_PLANE_0".
- *  'sensor_id'     - The sensor ID of the HSB sensor (SENSOR_0 or SENSOR_1). Default is "SENSOR_0".
- *  'source_port'   - The source port of the HSB sensor. Default is "12888".
- *  'subnet_bits'   - The subnet bits of the HSB sensor. Default is "24".
+ *  'data_plane_id' - The data plane ID of the HSB sensor (0 or 1). Default is 0.
+ *  'sensor_id'     - The sensor ID of the HSB sensor (0 or 1, or 2 (if Leopard Eagle)). Default is 0.
+ *  'source_port'   - The source port of the HSB sensor. Default is 12888.
+ *  'name'          - The name of the operator. Default is "".
  */
 class LinuxDataPlaneOp : public holoscan::Operator {
 public:
@@ -56,10 +56,8 @@ private:
 
     holoscan::Parameter<std::shared_ptr<hololink::emulation::HSBEmulator>> hsb_emulator_;
     holoscan::Parameter<std::string> source_ip_address_;
-    holoscan::Parameter<uint32_t> subnet_bits_;
-    holoscan::Parameter<uint32_t> source_port_;
-    holoscan::Parameter<hololink::emulation::DataPlaneID> data_plane_id_;
-    holoscan::Parameter<hololink::emulation::SensorID> sensor_id_;
+    holoscan::Parameter<uint8_t> data_plane_id_;
+    holoscan::Parameter<uint8_t> sensor_id_;
 };
 
 } // namespace hololink::operators

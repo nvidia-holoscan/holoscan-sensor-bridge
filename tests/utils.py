@@ -17,7 +17,7 @@
 
 import logging
 import os
-import queue
+import signal
 import threading
 import time
 import traceback
@@ -264,13 +264,12 @@ class Watchdog:
         except TypeError:
             self._initial_timeout = iter([initial_timeout])
         self._next_timeout = timeout
-        self._q = queue.Queue()
         self._count = 0
         self._lock = threading.Lock()
         self._tap_time = None
         self._last_timeout = None
-        self._thread = None
-        self._thread_lock = threading.Lock()
+        self._reactor = hololink_module.Reactor.get_reactor()
+        self._running = False
 
     def __enter__(self):
         self.start()
@@ -280,58 +279,85 @@ class Watchdog:
         self.stop()
 
     def start(self):
-        with self._thread_lock:
-            assert self._thread is None
-            self._thread = threading.Thread(target=self._run, daemon=True)
-            self._thread.start()
+        # In order to get pytest to properly fail, we need to call assert False
+        # in the main thread-- which must be the thread calling start().  (This
+        # is checked by these calls to signal.signal(...) which fail in any
+        # other thread except the main one.)  So the idea is, when a background
+        # thread (the reactor) discovers a watchdog timeout, it sends SIGUSR1
+        # to the foreground process, which will interrupt whatever it's waiting
+        # on and trigger the test failure.  When we stop the watchdog, we need
+        # to set the SIGUSR1 and SIGUSR2 signals back to SIG_DFL, so we use
+        # SIGUSR2 to get the foreground thread to do that.
+        signal.signal(signal.SIGUSR1, self._sigusr1)
+        signal.signal(signal.SIGUSR2, self._sigusr2)
+        self._pid = os.getpid()
+        timeout = self._get_next_timeout()
+        self._running = True
+        self._alarm = self._reactor.add_alarm_s(timeout, self._expired)
+
+    def _sigusr1(self, signal_number, stack_frame):
+        message = f'Caught SIGUSR1: watchdog "{self._str_id}" timeout.'
+        logging.error(message)
+        assert False, message
+
+    def _sigusr2(self, signal_number, stack_frame):
+        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+        signal.signal(signal.SIGUSR2, signal.SIG_DFL)
 
     def stop(self):
-        with self._thread_lock:
-            if self._thread is None:
-                return
-            self._q.put(None)
-            self._thread.join()
-            self._thread = None
+        self._running = False
+        self._reactor.cancel_alarm(self._alarm)
+        os.kill(self._pid, signal.SIGUSR2)
 
     def tap(self, timeout=None):
-        self._count += 1
-        logging.trace(f"tapping {self._str_id} count={self._count} {timeout=}")
-        self._tap_time = time.monotonic()
-        self._q.put(self._get_next_timeout(timeout))
+        # It's permissible for users to call stop
+        # and then call tap at a later time;
+        # just ignore the tap call in that case.
+        if not self._running:
+            logging.debug(
+                f"{self._str_id} Ignoring call to tap because we've been stopped."
+            )
+            return
+        with self._lock:
+            self._count += 1
+            logging.trace(f"tapping {self._str_id} count={self._count} {timeout=}")
+            self._tap_time = time.monotonic()
+            self._reactor.cancel_alarm(self._alarm)
+            timeout = self._get_next_timeout(timeout)
+            self._alarm = self._reactor.add_alarm_s(timeout, self._expired)
 
     def _get_next_timeout(self, user_value=None):
-        with self._lock:
-            if user_value is not None:
-                return user_value
-            try:
-                timeout = next(self._initial_timeout)
-                self._last_timeout = timeout
-                return timeout
-            except StopIteration:
-                pass
-            if self._next_timeout is None:
-                return self._last_timeout
-            return self._next_timeout
-
-    def _run(self):
-        hololink_module.NvtxTrace.setThreadName(self._name)
-        logging.trace(f"running {self._str_id}.")
+        if user_value is not None:
+            return user_value
         try:
-            timeout = self._get_next_timeout()
-            while True:
-                timeout = self._q.get(block=True, timeout=timeout)
-                if timeout is None:
-                    logging.trace(f"closing {self._str_id}.")
-                    return
-        except queue.Empty:
+            timeout = next(self._initial_timeout)
+            self._last_timeout = timeout
+            return timeout
+        except StopIteration:
             pass
+        if self._next_timeout is None:
+            return self._last_timeout
+        return self._next_timeout
+
+    def _expired(self):
+        # It's possible for users to call stop
+        # when we have this call queued up; so
+        # don't trigger an error in that case.
+        if not self._running:
+            logging.debug(
+                f"{self._str_id} Ignoring call to _expired because we've been stopped."
+            )
+            return
+        now = time.monotonic()
         dt = "N/A"
         if self._tap_time is not None:
             now = time.monotonic()
             dt = now - self._tap_time
-        message = f"{self._str_id} timed out, count={self._count}, {timeout=}, time since last tap={dt}."
-        logging.trace(message)
-        raise Exception(message)
+        message = (
+            f"{self._str_id} timed out, count={self._count}, time since last tap={dt}."
+        )
+        logging.error(message)
+        os.kill(self._pid, signal.SIGUSR1)
 
     def update(self, timeout=None, initial_timeout=None, tap=True):
         """Reconfigure how the next tap() works."""

@@ -1,3 +1,5 @@
+(HostSetupTarget)=
+
 # Host Setup
 
 Holoscan sensor bridge is supported on the following configurations:
@@ -9,8 +11,8 @@ Holoscan sensor bridge is supported on the following configurations:
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
-- AGX Thor systems running [JP7.0.0](https://developer.nvidia.com/embedded/jetpack) with
-  MGBE SmartNIC device and CoE transport. JP7.0.0 release currently supports only the
+- AGX Thor systems running [JP7.1.0](https://developer.nvidia.com/embedded/jetpack) with
+  MGBE SmartNIC device and CoE transport. JP7.1.0 release currently supports only the
   [Leopard imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md).
 - DGX Spark systems running
   [DGX OS 7.2.3](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
@@ -41,11 +43,6 @@ remembered across power cycles and therefore only need to be set up once.
 
 Next, follow the directions on the appropriate tab below to configure your Orin host
 system.
-
-**For AGX Thor host setup and applications, please follow the instructions on the
-[Thor Host Setup](thor-jp7-setup.md) page.**
-
-**For all other host systems' setup, continue with the appropriate tab.**
 
 `````{tab-set}
 ````{tab-item} IGX
@@ -382,6 +379,162 @@ which is the RJ45 connector on the AGX Orin.
 
   When the second port is configured, the first port should continue to respond to
   pings as appropriate.
+
+````
+````{tab-item} AGX Thor
+  
+- After installing JP 7.1.0 on the Thor devkit, complete the following steps.
+  If JP 7.1.0 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
+
+  **These steps are not required if JetPack 7.1.0 was installed using SDK Manager with the all available optional packages selected.**
+
+  ```none
+  export PATH=/usr/local/cuda-13.0/bin:$PATH
+  export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_SIPL_API_R38.2.0_aarch64.tbz2
+  sudo tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C /
+  ```
+
+- Configure the AGX Thor to enable running unaccelerated network examples:
+  holoscan sensor bridge release v2.5 supports running Li VB1940 and IMX274 unaccelerated network Linux sockets 
+  based examples within the holoscan sensor bridge container.
+  
+  For best performance of these examples please take the following configuration steps.
+  Increase the Linux sockets network receiver buffer:
+  
+  ```none
+  echo 'net.core.rmem_max = 31326208' | sudo tee /etc/sysctl.d/52-hololink-rmem_max.conf
+  sudo sysctl -p /etc/sysctl.d/52-hololink-rmem_max.conf
+  ```
+
+- For the Linux socket based examples, isolating a processor core from Linux kernel is
+  recommended. For high bandwidth applications, like 4k video acquisition, isolation of
+  the network receiver core is required. When an example program runs with processor
+  affinity set to that isolated core, performance is improved and latency is reduced.
+  By default, sensor bridge software runs the time-critical background network receiver
+  process on the third processor core. If that core is isolated from Linux scheduling,
+  no processes will be scheduled on that core without an explicit request from the
+  user, and reliability and performance is greatly improved.
+
+  Isolating that core from Linux can be achieved by editing
+  `/boot/extlinux/extlinux.conf`. Add the setting `isolcpus=2` to the end of the line
+  that starts with `APPEND`. Your file should look like something like this:
+
+  ```none
+  TIMEOUT 30
+  DEFAULT primary
+
+  MENU TITLE L4T boot options
+
+  LABEL primary
+        MENU LABEL primary kernel
+        LINUX /boot/Image
+        ...
+        APPEND ${cbootargs} ...<other-settings>... isolcpus=2
+
+  ```
+
+  Sensor bridge applications can run the network receiver process on another core by
+  setting the environment variable `HOLOLINK_AFFINITY` to the core it should run on.
+  For example, to run on the first processor core,
+
+  ```none
+  HOLOLINK_AFFINITY=0 python3 examples/linux_imx274_player.py
+  ```
+
+  Setting `HOLOLINK_AFFINITY` to blank will skip any core affinity settings in the
+  sensor bridge code.
+
+  **This step requires a system reboot to take effect.**
+  
+- Install Holoscan SDK v3.7.0:
+
+  ```none
+  sudo apt update
+  sudo apt install holoscan=3.7.0-2
+  ```
+
+- Install other Holoscan sensor bridge dependencies:
+
+  ```none
+  sudo apt install -y git-lfs cmake libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev libibverbs-dev python3-dev
+  ```
+
+- Enable the network interface and ensure that the camera enumerates (assumes camera IP address 192.168.0.2):
+
+  ```none
+  EN0=mgbe0_0
+  sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
+  sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
+  sudo nmcli connection up hololink-$EN0
+  ```
+
+- Obtain and build holoscan sensor bridge:
+
+  holoscan sensor bridge release v2.5 supports running C++ Li VB1940 accelerated networking [SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html) based examples 
+  from the terminal cli as well as running Li VB1940 and IMX274 python examples from within the
+  holoscan sensor bridge container.
+  
+  as a first step, please clone the holoscan sensor bridge repository: 
+
+  ```none
+  git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
+  ```
+
+  to run C++ Li VB1940 accelerated networking SIPL based examples in the terminal cli
+  use the following commands:
+
+  ```none
+  cd holoscan-sensor-bridge
+  mkdir build && cd build
+  cmake -DCCCL_DIR:PATH="/usr/local/cuda/targets/sbsa-linux/lib/cmake/cccl" -DHOLOLINK_BUILD_SIPL=1 ..
+  make -j
+  ```
+
+- Retrieve your camera's MAC ID:
+
+  ```none
+  ./tools/enumerate/hololink-enumerate
+  ```
+
+  Example output:
+
+  ```none
+  mac_id=8C:1F:64:6D:70:03 hsb_ip_version=0x2510 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=f1627640-b4dc-48af-a360-c55b09b3d230 serial_number=ffffffffffffff interface=mgbe0_0 board=Leopard Eagle
+  ```
+
+- Update the `ip_address` and `mac_address` fields in these configuration files (multiple instances in each file):
+
+  ```none
+  ../examples/sipl_config/vb1940_single.json
+  ../examples/sipl_config/vb1940_dual.json
+  ```
+
+- Allow root to access the X display (ensure `DISPLAY` is set if using SSH):
+
+  ```none
+  xhost +
+  ```
+
+- Run the `sipl_player` application (HW ISP capture mode):
+
+  ```none
+  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json
+  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json
+  ```
+
+- For RAW capture mode (image quality will be poor without proper ISP processing):
+
+  ```none
+  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json --raw
+  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json --raw
+  ```
+
+- JP 7.1.0 currently supports only the [Leopard Imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md)
+  running in SIPL-accelerated networking mode.
+
+- Building and running Li VB1940 and IMX274 python examples from within the holoscan sensor bridge container
+  is explained in the following pages of the user guide.
 
 ````
 `````

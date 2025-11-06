@@ -33,35 +33,16 @@ set_target_properties(program_lattice_cpnx100 PROPERTIES
     CXX_STANDARD_REQUIRED ON
 )
 
-# Set compile definitions
-target_compile_definitions(program_lattice_cpnx100 PRIVATE
-    FMT_HEADER_ONLY=1
-)
-
 # Link libraries
-if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
-    # When building with Holoscan, fmt is provided by holoscan::core
-    target_link_libraries(program_lattice_cpnx100
-        PRIVATE
-            hololink::core
-            yaml-cpp
-            CURL::libcurl
-            OpenSSL::SSL
-            OpenSSL::Crypto
-    )
-else()
-    # When building only native components, we need to link fmt directly
-    find_package(fmt REQUIRED)
-    target_link_libraries(program_lattice_cpnx100
-        PRIVATE
-            hololink::core
-            yaml-cpp
-            CURL::libcurl
-            OpenSSL::SSL
-            OpenSSL::Crypto
-            fmt
-    )
-endif()
+target_link_libraries(program_lattice_cpnx100
+    PRIVATE
+        hololink::core
+        yaml-cpp
+        CURL::libcurl
+        OpenSSL::SSL
+        OpenSSL::Crypto
+        fmt::fmt-header-only
+)
 
 # Include directories
 target_include_directories(program_lattice_cpnx100
@@ -73,4 +54,4 @@ target_include_directories(program_lattice_cpnx100
 install(TARGETS program_lattice_cpnx100
     DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT hololink-tools
-) 
+)

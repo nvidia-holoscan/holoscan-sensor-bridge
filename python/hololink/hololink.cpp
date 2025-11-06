@@ -129,6 +129,46 @@ std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t 
 // we don't have it in a public header file anywhere.
 std::shared_ptr<Hololink::I2c> get_traditional_i2c(Hololink& hololink, uint32_t i2c_address);
 
+// Python wrapper functions for HSB_LOG macros
+namespace logging_wrappers {
+
+    void hsb_log_trace(const std::string& message)
+    {
+        HSB_LOG_TRACE("{}", message);
+    }
+
+    void hsb_log_debug(const std::string& message)
+    {
+        HSB_LOG_DEBUG("{}", message);
+    }
+
+    void hsb_log_info(const std::string& message)
+    {
+        HSB_LOG_INFO("{}", message);
+    }
+
+    void hsb_log_warn(const std::string& message)
+    {
+        HSB_LOG_WARN("{}", message);
+    }
+
+    void hsb_log_error(const std::string& message)
+    {
+        HSB_LOG_ERROR("{}", message);
+    }
+
+    hololink::logging::HsbLogLevel get_log_level()
+    {
+        return hololink::logging::hsb_log_level;
+    }
+
+    void set_log_level(hololink::logging::HsbLogLevel level)
+    {
+        hololink::logging::hsb_log_level = level;
+    }
+
+} // namespace logging_wrappers
+
 PYBIND11_MODULE(_hololink, m)
 {
 #ifdef VERSION_INFO
@@ -222,27 +262,94 @@ PYBIND11_MODULE(_hololink, m)
         .def("__repr__", [](const Metadata& metadata) { return fmt::format("{}", metadata); })
         .def("update", &Metadata::update, "other"_a);
 
+    // CallbackHandle bindings
+    py::class_<Enumerator::CallbackHandle, std::shared_ptr<Enumerator::CallbackHandle>>(m, "CallbackHandle")
+        .def("id", &Enumerator::CallbackHandle::id, "Get the unique ID of this callback handle")
+        .def("ip", &Enumerator::CallbackHandle::ip, "Get the IP address this handle is registered for");
+
     py::class_<Enumerator, std::shared_ptr<Enumerator>>(m, "Enumerator")
         .def(py::init<const std::string&, uint32_t, uint32_t>(),
             "local_interface"_a = std::string(),
             "bootp_request_port"_a = 12267u, "bootp_reply_port"_a = 12268u)
-        .def_static("enumerated", &Enumerator::enumerated, "call_back"_a,
-            "timeout"_a = std::shared_ptr<Timeout>())
         .def_static(
-            "find_channel",
-            [](const std::string& channel_ip, const std::shared_ptr<Timeout>& timeout) {
+            "enumerated", [](py::function call_back, const std::shared_ptr<Timeout>& timeout) {
+                // Convert py::function to a raw PyObject* to avoid reference counting issues
+                PyObject* callback_obj = call_back.ptr();
+                Py_INCREF(callback_obj); // Manually increment reference while we have GIL
+
+                // Create a C++ callback that manages the Python callback safely
+                auto cpp_callback = [callback_obj](Metadata& metadata) -> bool {
+                    py::gil_scoped_acquire acquire_guard;
+                    py::handle callback_handle(callback_obj);
+                    py::function callback_func = py::reinterpret_borrow<py::function>(callback_handle);
+                    return callback_func(metadata).cast<bool>();
+                };
+
+                // Release GIL and call the C++ method with our wrapped callback
+                {
+                    py::gil_scoped_release release_guard;
+                    Enumerator::enumerated(cpp_callback, timeout);
+                }
+
+                // Cleanup: decrement the reference we added earlier
+                Py_DECREF(callback_obj);
+            },
+            "call_back"_a, "timeout"_a = std::shared_ptr<Timeout>())
+        .def_static(
+            "find_channel", [](const std::string& channel_ip, const std::shared_ptr<Timeout>& timeout) {
                 // check if the default timeout should be used and then create a new timeout
                 // starting now
                 return Enumerator::find_channel(channel_ip,
                     timeout == default_timeout ? std::make_shared<Timeout>(20.f) : timeout);
             },
             "channel_ip"_a, "timeout"_a = default_timeout)
-        .def("enumeration_packets", &Enumerator::enumeration_packets, "call_back"_a,
-            "timeout"_a = std::shared_ptr<Timeout>())
-        .def("send_bootp_reply", &Enumerator::send_bootp_reply, "peer_address"_a, "reply_packet"_a,
-            "metadata"_a)
-        .def_static("set_uuid_strategy", &Enumerator::set_uuid_strategy,
-            "uuid"_a, "enumeration_strategy"_a);
+        .def(
+            "enumeration_packets", [](Enumerator& self, py::function call_back, const std::shared_ptr<Timeout>& timeout) {
+                // Convert py::function to a raw PyObject* to avoid reference counting issues
+                PyObject* callback_obj = call_back.ptr();
+                Py_INCREF(callback_obj); // Manually increment reference while we have GIL
+
+                // Create a C++ callback that manages the Python callback safely
+                auto cpp_callback = [callback_obj](Enumerator& enumerator, const std::vector<uint8_t>& packet, Metadata& metadata) -> bool {
+                    py::gil_scoped_acquire acquire_guard;
+                    py::handle callback_handle(callback_obj);
+                    py::function callback_func = py::reinterpret_borrow<py::function>(callback_handle);
+                    return callback_func(enumerator, packet, metadata).cast<bool>();
+                };
+
+                // Release GIL for the main enumeration operation and call the C++ method
+                {
+                    py::gil_scoped_release release_guard;
+                    self.enumeration_packets(cpp_callback, timeout);
+                }
+
+                // Cleanup: decrement the reference we added earlier
+                Py_DECREF(callback_obj);
+            },
+            "call_back"_a, "timeout"_a = std::shared_ptr<Timeout>())
+        .def("send_bootp_reply", &Enumerator::send_bootp_reply, "peer_address"_a, "reply_packet"_a, "metadata"_a)
+        .def_static("set_uuid_strategy", &Enumerator::set_uuid_strategy, "uuid"_a, "enumeration_strategy"_a)
+        .def_static("configure_socket", &Enumerator::configure_socket, "fd"_a, "port"_a = 12267u, "local_interface"_a = std::string())
+        .def_static("handle_bootp_fd", &Enumerator::handle_bootp_fd, "fd"_a)
+        .def_static(
+            "register_ip", [](const std::string& ip, py::function call_back) {
+                py::object callback_obj = std::move(call_back); // keep ref alive
+                // Create a C++ callback that manages the Python callback safely
+                auto cpp_callback = [callback_obj](Metadata& metadata) -> void {
+                    py::gil_scoped_acquire acquire_guard;
+                    callback_obj(metadata);
+                };
+
+                // Register callback and return the handle
+                return Enumerator::register_ip(ip, cpp_callback);
+            },
+            "ip"_a, "callback"_a, "Register a callback for a specific IP address")
+        .def_static(
+            "unregister_ip", [](std::shared_ptr<Enumerator::CallbackHandle> handle) {
+                Enumerator::unregister_ip(handle);
+                // Note: We don't decref here since the callback lifetime is managed by the handle
+            },
+            "handle"_a, "Unregister a callback using its handle");
 
     m.attr("APB_RAM") = APB_RAM;
     m.attr("BL_I2C_BUS") = BL_I2C_BUS;
@@ -309,6 +416,35 @@ PYBIND11_MODULE(_hololink, m)
         .value("GBRG", csi::BayerFormat::GBRG)
         .value("GRBG", csi::BayerFormat::GRBG);
 
+    // Bind HSB logging functionality
+    py::enum_<hololink::logging::HsbLogLevel>(m, "HsbLogLevel")
+        .value("HSB_LOG_LEVEL_TRACE", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_TRACE)
+        .value("HSB_LOG_LEVEL_DEBUG", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_DEBUG)
+        .value("HSB_LOG_LEVEL_INFO", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_INFO)
+        .value("HSB_LOG_LEVEL_WARN", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_WARN)
+        .value("HSB_LOG_LEVEL_ERROR", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_ERROR)
+        .value("HSB_LOG_LEVEL_INVALID", hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_INVALID)
+        .export_values();
+
+    // HSB logging functions
+    m.def("hsb_log_trace", &logging_wrappers::hsb_log_trace, "message"_a,
+        "Log a trace message using HSB_LOG_TRACE");
+    m.def("hsb_log_debug", &logging_wrappers::hsb_log_debug, "message"_a,
+        "Log a debug message using HSB_LOG_DEBUG");
+    m.def("hsb_log_info", &logging_wrappers::hsb_log_info, "message"_a,
+        "Log an info message using HSB_LOG_INFO");
+    m.def("hsb_log_warn", &logging_wrappers::hsb_log_warn, "message"_a,
+        "Log a warning message using HSB_LOG_WARN");
+    m.def("hsb_log_error", &logging_wrappers::hsb_log_error, "message"_a,
+        "Log an error message using HSB_LOG_ERROR");
+
+    // Log level control functions
+    m.def("get_hsb_log_level", &logging_wrappers::get_log_level,
+        "Get the current HSB log level");
+    m.def("set_hsb_log_level", &logging_wrappers::set_log_level, "level"_a,
+        "Set the HSB log level");
+    m.def("log_timestamp_s", &hololink::logging::log_timestamp_s);
+
     py::class_<DataChannel, std::shared_ptr<DataChannel>>(m, "DataChannel")
         .def(py::init<const Metadata&>(), "metadata"_a)
         .def(py::init<const Metadata&,
@@ -360,7 +496,7 @@ PYBIND11_MODULE(_hololink, m)
                                    "address"_a, "timeout"_a = std::shared_ptr<Timeout>())
                                .def("setup_clock", &Hololink::setup_clock, "clock_profile"_a)
                                .def("get_i2c", &Hololink::get_i2c, "i2c_bus"_a, "i2c_address"_a = I2C_CTRL)
-                               .def("get_spi", &Hololink::get_spi, "bus_address"_a, "chip_select"_a,
+                               .def("get_spi", &Hololink::get_spi, "bus_number"_a, "chip_select"_a,
                                    "prescaler"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1, "spi_address"_a = SPI_CTRL)
                                .def("get_gpio", &Hololink::get_gpio, "metadata"_a)
                                .def("send_control", &Hololink::send_control)

@@ -19,10 +19,10 @@ import ctypes
 import logging
 import os
 
+import cuda.bindings.driver as cuda
 import holoscan
 import operators
 import pytest
-from cuda import cuda
 
 import hololink as hololink_module
 

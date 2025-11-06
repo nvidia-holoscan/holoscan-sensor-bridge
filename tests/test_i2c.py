@@ -20,12 +20,12 @@ import logging
 import os
 import time
 
+import cuda.bindings.driver as cuda
 import cupy as cp
 import holoscan
 import operators
 import pytest
 import utils
-from cuda import cuda
 
 import hololink as hololink_module
 
@@ -311,7 +311,8 @@ def test_imx274_synchronized_i2c_settings(
     # to longer startup for some pipeline elements
     shutdown_frames = frame_limit - 10
     bad = False
-    for n, (pattern, buckets) in enumerate(application._buckets):
+    settled_buckets = application._buckets[operators.COLOR_PROFILER_START_FRAME :]
+    for n, (pattern, buckets) in enumerate(settled_buckets):
         ok = imx274_expected_color_profile[pattern] == list(buckets)
         message = f"{n=} {pattern=} {buckets=} {ok=}"
         if ok:

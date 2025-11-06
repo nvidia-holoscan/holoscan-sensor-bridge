@@ -1,3 +1,5 @@
+#!/bin/bash
+
 # SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -13,12 +15,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+# This script is used by the tests/test_emulator.py script to find the pid of the emulator process running in the network namespace so that it can be properly cleaned up.
 
-from . import (
-    emulation,
-)
+if [ $# -lt 2 ] ; then
+	echo "Usage: $0 <if_name> <command> [args...]"
+	echo "  prints out the pid of the <command> with args as running in the network namespace ns_<if_name>. Note that typically would just pass the program name as flags can be problematic to the use of grep"
+	exit 1
+fi
 
-__all__ = [
-    "emulation",
-]
+INTERFACE=$1
+shift
+
+ip netns pids ns_$INTERFACE | xargs ps -o pid,command -p | grep "$@" | awk '{print $1}'

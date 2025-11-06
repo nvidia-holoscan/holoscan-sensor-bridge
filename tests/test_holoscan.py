@@ -18,11 +18,11 @@
 import ctypes
 import logging
 
+import cuda.bindings.driver as cuda
 import mock_camera
 import mock_server
 import pytest
 import utils
-from cuda import cuda
 
 import hololink as hololink_module
 

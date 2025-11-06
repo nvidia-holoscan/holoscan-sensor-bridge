@@ -18,21 +18,47 @@
  */
 
 #include "hsb_config.hpp"
+#include "utils.hpp"
 
 namespace hololink::emulation {
-std::map<DataPlaneID, DataPlaneConfiguration> data_plane_map {
-    { DATA_PLANE_0, DataPlaneConfiguration { 0x02000300 } },
-    { DATA_PLANE_1, DataPlaneConfiguration { 0x02010300 } },
+
+const HSBConfiguration HSB_EMULATOR_CONFIG = {
+    .tag = HSB_EMULATOR_TAG,
+    .tag_length = HSB_EMULATOR_TAG_LENGTH,
+    .vendor_id = HSB_EMULATOR_VENDOR_ID,
+    .enum_version = HSB_EMULATOR_ENUM_VERSION,
+    .uuid = HSB_EMULATOR_UUID,
+    .serial_num = HSB_EMULATOR_SERIAL_NUM,
+    .hsb_ip_version = HSB_EMULATOR_HSB_IP_VERSION,
+    .fpga_crc = HSB_EMULATOR_FPGA_CRC,
+    .sensor_count = HSB_DEFAULT_SENSOR_COUNT,
+    .data_plane_count = HSB_DEFAULT_DATA_PLANE_COUNT,
+    .sifs_per_sensor = HSB_DEFAULT_SIFS_PER_SENSOR,
 };
-std::map<SensorID, SensorConfiguration> sensor_map {
-    { SENSOR_0, SensorConfiguration { 0, 0x1, hololink::Hololink::Event::SIF_0_FRAME_END, 0x01000000, 0x1000 } },
-    { SENSOR_1, SensorConfiguration { 2, 0x4, hololink::Hololink::Event::SIF_1_FRAME_END, 0x01010000, 0x1080 } },
+const HSBConfiguration HSB_LEOPARD_EAGLE_CONFIG = {
+    .tag = HSB_EMULATOR_TAG,
+    .tag_length = HSB_EMULATOR_TAG_LENGTH,
+    .vendor_id = HSB_EMULATOR_VENDOR_ID,
+    .enum_version = HSB_EMULATOR_ENUM_VERSION,
+    .uuid = { 0xf1, 0x62, 0x76, 0x40,
+        0xb4, 0xdc,
+        0x48, 0xaf,
+        0xa3, 0x60,
+        0xc5, 0x5b, 0x09, 0xb3, 0xd2, 0x30 },
+    .serial_num = HSB_EMULATOR_SERIAL_NUM,
+    .hsb_ip_version = HSB_EMULATOR_HSB_IP_VERSION,
+    .fpga_crc = HSB_EMULATOR_FPGA_CRC,
+    .sensor_count = 3,
+    .data_plane_count = 1,
+    .sifs_per_sensor = 1,
 };
 
-std::map<uint32_t, uint32_t> address_map = {
-    { 0, hololink::DP_ADDRESS_0 },
-    { 1, hololink::DP_ADDRESS_1 },
-    { 2, hololink::DP_ADDRESS_2 },
-    { 3, hololink::DP_ADDRESS_3 },
-};
+int hsb_config_set_uuid(HSBConfiguration& config, const char* uuid_str)
+{
+    if (uuid_parse(uuid_str, config.uuid) != 0) {
+        return 1;
+    }
+    return 0;
+}
+
 } // namespace hololink::emulation

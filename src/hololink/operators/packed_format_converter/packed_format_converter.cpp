@@ -124,19 +124,6 @@ void PackedFormatConverterOp::start()
 
     cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "packed10bitTo16bit", "packed12bitTo16bit" }));
-
-    if (hololink_channel_.has_value() && hololink_channel_.get()) {
-        switch (pixel_format_) {
-        case hololink::csi::PixelFormat::RAW_10:
-            hololink_channel_.get()->enable_packetizer_10();
-            break;
-        case hololink::csi::PixelFormat::RAW_12:
-            hololink_channel_.get()->enable_packetizer_12();
-            break;
-        default:
-            throw std::runtime_error("Unsupported bits per pixel value");
-        }
-    }
 }
 
 void PackedFormatConverterOp::stop()

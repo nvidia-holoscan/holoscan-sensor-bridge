@@ -1,27 +1,26 @@
 # Simulation
 
-Simulation bring up allows users to check the HOLOLINK IP instantiation and port
-connections. Modifications listed below are needed to bring up the HOLOLINK IP in a
+Simulation bring up allows users to check the Holoscan Sensor Bridge IP instantiation
+and port connections. Modifications listed below are needed to bring up the HSB IP in a
 configured state to stream sensor data out of the Host TX interface.
 
 1. Comment out `define ENUM_EEPROM` in "HOLOLINK_def.svh" In hardware, when
    `ENUM_EEPROM` is defined, the Holoscan Sensor Bridge IP reads the external EEPROM via
-   I2C to fetch the unique MAC address and meta data. But because this will require a
-   Bus Functional Model of the EEPROM in the simulation testbench, users can comment out
-   `define ENUM_EEPROM`. When `ENUM_EEPROM` is not defined, the Holoscan Sensor Bridge
-   IP will use the `MAC_ADDR` and other defines in the "HOLOLINK_def.svh" as hardcoded
-   values for the ethernet interface.
+   I2C to fetch the unique MAC address and enumeration data. But this will require a Bus
+   Functional Model of the EEPROM in the simulation testbench. When `ENUM_EEPROM` is not
+   defined, MAC Address and Board Serial Number can be passed to the HSB IP as input
+   ports.
 
-1. Initialize the Holoscan Sensor Bridge IP. In hardware, the software APIs configure
-   the Holoscan Sensor Bridge IP for dataplane stream on Host TX interface. In
+1. Initialize the HSB IP for dataplane streaming. In hardware, the software APIs
+   configure the Holoscan Sensor Bridge IP for dataplane stream on Host TX interface. In
    simulation, users can use the "init_reg" in "HOLOLINK_def.svh" to configure the
    Holoscan Sensor Bridge IP out of reset.
 
 Below is a list of registers that can be added to "init_reg" to initialize ethernet port
-0\. Once the Sensor RX AXI-S interface is driven with 1408 bytes or more, the Holoscan
-Sensor Bridge IP will drive the dataplane stream on the Host TX interface.
+0\. Once the Sensor RX AXI-S interface is driven with `HOST_MTU` bytes or more, the
+Holoscan Sensor Bridge IP will drive the dataplane stream on the Host TX interface.
 
-```
+```none
     //Address       Data
     {32'h0200_0304, 32'h0000_000B}, // dp_pkt_0  , dp_pkt_len
     {32'h0200_0308, 32'h0000_12B7}, // dp_pkt_0  , dp_pkt_host_udp_port

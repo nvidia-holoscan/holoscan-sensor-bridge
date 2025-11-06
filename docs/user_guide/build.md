@@ -5,7 +5,7 @@
 Holoscan sensor bridge host software includes instructions for building a demo
 container. This container is used to run all holoscan tests and examples.
 
-1. Fetch the sensor bridge source code from
+1. If you have not done so already, fetch the sensor bridge source code from
    [https://github.com/nvidia-holoscan/holoscan-sensor-bridge](https://github.com/nvidia-holoscan/holoscan-sensor-bridge)
 
    ```none
@@ -32,9 +32,12 @@ container. This container is used to run all holoscan tests and examples.
      A6000 dGPU) and an OS installed with appropriate dGPU support (e.g.
      [IGX OS 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads) with
      dGPU).
-   - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX or IGX
-     without a dGPU). This requires an OS installed with iGPU support (e.g. for AGX:
-     JetPack 6.2.1; for IGX: IGX OS with iGPU configuration).
+   - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX
+     Orin/AGX Thor or IGX without a dGPU). This requires an OS installed with iGPU
+     support (e.g. for AGX Orin: JetPack 6.2.1, for IGX: IGX OS with iGPU
+     configuration).
+
+(RunningTestsTarget)=
 
 ## Run tests in the demo container
 
@@ -81,7 +84,7 @@ then
 sh ./test-igx-cpnx100-imx274.sh
 ```
 
-For AGX configurations, only one camera is supported, so only
+For AGX Orin, only one camera is supported, so only
 [SFP+ 0](sensor_bridge_hardware_setup.md#connecting-holoscan-sensor-bridge-to-the-host)
 is to be connected. Run the device test on AGX this way:
 

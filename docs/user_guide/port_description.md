@@ -1,9 +1,12 @@
 # Port Description
 
 The port descriptions for the Holoscan Sensor Bridge IP are described in the following
-sections.
+sections. For more information on macros defined in "HOLOLINK_def.svh", refer to
+[Macro Definitions](ip_integration.md#macro-definition)
 
 ## Global Reset
+
+Table 1 Global Reset Port
 
 | **Signal Name** | **Direction** | **Description**                         |
 | --------------- | ------------- | --------------------------------------- |
@@ -11,19 +14,19 @@ sections.
 
 ## User Register Ports
 
-Table 1 User Register Clock and Reset Ports
+Table 2 User Register Clock and Reset Ports
 
 | **Signal Name** | **Direction** | **Description**                        |
 | --------------- | ------------- | -------------------------------------- |
 | i_apb_clk       | Input         | APB Clock. Must be greater than 20MHz. |
 | o_apb_rst       | Output        | APB Synchronous, Active High Reset     |
 
-Table 2 User Register APB Ports
+Table 3 User Register APB Ports
 
 | **Signal Name**                       | **Direction** | **Description**     |
 | ------------------------------------- | ------------- | ------------------- |
 | i_apb_pready [N-1:0]<sup>1<sup>       | Input         | APB Ready           |
-| [31:0] i_apb_prdata[0:N-1]<sup>1<sup> | Input         | APB Read Data       |
+| [31:0] i_apb_prdata[N-1:0]<sup>1<sup> | Input         | APB Read Data       |
 | i_apb_pserr[N-1:0]<sup>1<sup>         | Input         | APB Completer Error |
 | o_apb_psel[N-1:0]<sup>1<sup>          | Output        | APB Select          |
 | o_apb_penable                         | Output        | APB Enable          |
@@ -31,9 +34,21 @@ Table 2 User Register APB Ports
 | o_apb_pwdata[31:0]                    | Output        | APB Write Data      |
 | o_apb_pwrite                          | Output        | APB Write           |
 
-1. N=REG_INST. Refer to the Macro Definitions section for details.
+1. N=`REG_INST`
 
-Table 3 User Register System Initialization Ports
+Table 4 External Enumeration Ports
+
+These ports are only available if `ENUM_EEPROM` is NOT defined in "HOLOLINK_def.svh"
+
+| **Signal Name**                     | **Direction** | **Description**                                                                     |
+| ----------------------------------- | ------------- | ----------------------------------------------------------------------------------- |
+| [47:0] i_mac_addr[N-1:0]<sup>1<sup> | Input         | MAC Address for each Ethernet interface.                                            |
+| i_board_sn[55:0]                    | Input         | Board Serial Number.                                                                |
+| i_enum_vld                          | Input         | Enumeration Valid. Once "i_mac_addr" and "i_board_sn" is set, set and keep it to 1. |
+
+1. N=`HOST_IF_INST`
+
+Table 5 User Register System Initialization Ports
 
 | **Signal Name** | **Direction** | **Description**                                                     |
 | --------------- | ------------- | ------------------------------------------------------------------- |
@@ -41,43 +56,41 @@ Table 3 User Register System Initialization Ports
 
 ## Sensor Interface Ports
 
-Table 4 Sensor Interface Clock and Reset Ports
+Table 6 Sensor RX Interface Ports
 
-| **Signal Name** | **Direction** | **Description**                                 |
-| --------------- | ------------- | ----------------------------------------------- |
-| i_sif_clk       | Input         | Sensor Interface Clock.                         |
-| o_sif_rst       | Output        | Sensor Interface Synchronous, Active-High Reset |
+These ports are only available if `SENSOR_RX_IF_INST` is defined in "HOLOLINK_def.svh"
 
-Table 5 Sensor RX Interface Ports
+| **Signal Name**                            | **Direction** | **Description**                                                                          |
+| ------------------------------------------ | ------------- | ---------------------------------------------------------------------------------------- |
+| i_sif_rx_clk[N-1:0]<sup>1<sup>             | Input         | Sensor RX Interface Clock.                                                               |
+| o_sif_rx_rst[N-1:0]<sup>1<sup>             | Output        | Sensor RX Interface Synchronous, Active-High Reset                                       |
+| i_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Input         | Sensor RX AXI-Stream Valid                                                               |
+| i_sif_axis_tlast[N-1:0]<sup>1<sup>         | Input         | Sensor RX AXI-Stream Last.                                                               |
+| [W-1:0] i_sif_axis_tdata[N-1:0]<sup>1<sup> | Input         | Sensor RX AXI-Stream Data.                                                               |
+| [X-1:0] i_sif_axis_tkeep[N-1:0]<sup>1<sup> | Input         | Sensor RX AXI-Stream Keep. Currently not supported. See Sensor RX section for more info. |
+| [Y-1:0] i_sif_axis_tuser[N-1:0]<sup>1<sup> | Input         | Sensor RX AXI-Stream User.                                                               |
+| o_sif_axis_tready[N-1:0]<sup>1<sup>        | Output        | Sensor RX AXI-Stream Ready                                                               |
 
-| **Signal Name**                            | **Direction** | **Description**                                                                |
-| ------------------------------------------ | ------------- | ------------------------------------------------------------------------------ |
-| i_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Input         | AXI-Stream Valid                                                               |
-| i_sif_axis_tlast[N-1:0]<sup>1<sup>         | Input         | AXI-Stream Last.                                                               |
-| [W-1:0] i_sif_axis_tdata[0:N-1]<sup>1<sup> | Input         | AXI-Stream Data.                                                               |
-| [X-1:0] i_sif_axis_tkeep[0:N-1]<sup>1<sup> | Input         | AXI-Stream Keep. Currently not supported. See Sensor RX section for more info. |
-| [Y-1:0] i_sif_axis_tuser[0:N-1]<sup>1<sup> | Input         | AXI-Stream User.                                                               |
-| o_sif_axis_tready[N-1:0]<sup>1<sup>        | Output        | AXI-Stream Ready                                                               |
+1. N=`SENSOR_RX_IF_INST`, W=`DATAPATH_WIDTH`, X=`DATAKEEP_WIDTH`, Y=`DATAUSER_WIDTH`
 
-1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
-   Definitions section for details.Table 6 Sensor Event Ports
+Table 7 Sensor TX Interface
 
-Table 6 Sensor TX Interface Ports Sensor TX interface is unsupported but TBD for future
-revisions. Sensor TX interface ports should still be instantiated.
+These ports are only available if `SENSOR_TX_IF_INST` is defined in "HOLOLINK_def.svh"
 
-| **Signal Name**                            | **Direction** | **Description** |
-| ------------------------------------------ | ------------- | --------------- |
-| o_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Output        | TBD             |
-| o_sif_axis_tlast[N-1:0]<sup>1<sup>         | Output        | TBD             |
-| [W-1:0] o_sif_axis_tdata[0:N-1]<sup>1<sup> | Output        | TBD             |
-| [X-1:0] o_sif_axis_tkeep[0:N-1]<sup>1<sup> | Output        | TBD             |
-| [Y-1:0] o_sif_axis_tuser[0:N-1]<sup>1<sup> | Output        | TBD             |
-| i_sif_axis_tready[N-1:0]<sup>1<sup>        | Input         | TBD             |
+| **Signal Name**                            | **Direction** | **Description**                                    |
+| ------------------------------------------ | ------------- | -------------------------------------------------- |
+| i_sif_tx_clk[N-1:0]<sup>1<sup>             | Input         | Sensor TX Interface Clock.                         |
+| o_sif_tx_rst[N-1:0]<sup>1<sup>             | Output        | Sensor TX Interface Synchronous, Active-High Reset |
+| o_sif_axis_tvalid[N-1:0]<sup>1<sup>        | Output        | TBD                                                |
+| o_sif_axis_tlast[N-1:0]<sup>1<sup>         | Output        | TBD                                                |
+| [W-1:0] o_sif_axis_tdata[N-1:0]<sup>1<sup> | Output        | TBD                                                |
+| [X-1:0] o_sif_axis_tkeep[N-1:0]<sup>1<sup> | Output        | TBD                                                |
+| [Y-1:0] o_sif_axis_tuser[N-1:0]<sup>1<sup> | Output        | TBD                                                |
+| i_sif_axis_tready[N-1:0]<sup>1<sup>        | Input         | TBD                                                |
 
-1. N=SENSOR_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
-   Definitions section for details.
+1. N=`SENSOR_TX_IF_INST`, W=`DATAPATH_WIDTH`, X=`DATAKEEP_WIDTH`, Y=`DATAUSER_WIDTH`
 
-Table 7 Sensor Event Ports
+Table 8 Sensor Event Ports
 
 | **Signal Name**    | **Direction** | **Description**                                                                    |
 | ------------------ | ------------- | ---------------------------------------------------------------------------------- |
@@ -85,60 +98,62 @@ Table 7 Sensor Event Ports
 
 ## Host Interface Ports
 
-Table 8 Host Interface Clock and Reset Ports
+Table 9 Host Interface Clock and Reset Ports
 
 | **Signal Name** | **Direction** | **Description**                                                   |
 | --------------- | ------------- | ----------------------------------------------------------------- |
 | i_hif_clk       | Input         | 156.25MHz Host Interface Clock. See clocking section for details. |
 | o_hif_rst       | Output        | Host Interface Synchronous, Active-High Reset.                    |
 
-Table 9 Host RX Interface Ports
+Table 10 Host RX Interface Ports
 
-Connect the Host RX AXI-Streaming ports directly to Ethernet MAC TX AXI-Streaming ports.
+Connect the Host RX AXI-Streaming ports directly to Ethernet MAC RX AXI-Streaming ports.
 
 | **Signal Name**                           | **Direction** | **Description**  |
 | ----------------------------------------- | ------------- | ---------------- |
 | i_hif_axis_tvalid[N-1:0]<sup>1<sup>       | Input         | AXI-Stream Valid |
 | i_hif_axis_tlast[N-1:0]<sup>1<sup>        | Input         | AXI-Stream Last  |
-| [W-1:0]i_hif_axis_tdata[0:N-1]<sup>1<sup> | Input         | AXI-Stream Data  |
-| [X-1:0]i_hif_axis_tkeep[0:N-1]<sup>1<sup> | Input         | AXI-Stream Keep  |
-| [Y-1:0]i_hif_axis_tuser[0:N-1]<sup>1<sup> | Input         | AXI-Stream User  |
+| [W-1:0]i_hif_axis_tdata[N-1:0]<sup>1<sup> | Input         | AXI-Stream Data  |
+| [X-1:0]i_hif_axis_tkeep[N-1:0]<sup>1<sup> | Input         | AXI-Stream Keep  |
+| [Y-1:0]i_hif_axis_tuser[N-1:0]<sup>1<sup> | Input         | AXI-Stream User  |
 | o_hif_axis_tready[N-1:0]<sup>1<sup>       | Output        | AXI-Stream Ready |
 
-1. N=HOST_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
-   Definitions section for details.
+1. N=`HOST_IF_INST`, W=`DATAPATH_WIDTH`, X=`DATAKEEP_WIDTH`, Y=`DATAUSER_WIDTH`
 
-Table 10 Host TX Interface Ports
+Table 11 Host TX Interface Ports
 
-Connect the Host TX AXI-Streaming ports directly to Ethernet MAC RX AXI-Streaming ports.
+Connect the Host TX AXI-Streaming ports directly to Ethernet MAC TX AXI-Streaming ports.
 
 | **Signal Name**                           | **Direction** | **Description**  |
 | ----------------------------------------- | ------------- | ---------------- |
 | o_hif_axis_tvalid[N-1:0]<sup>1<sup>       | Output        | AXI-Stream Valid |
 | o_hif_axis_tlast[N-1:0]<sup>1<sup>        | Output        | AXI-Stream Last  |
-| [W-1:0]o_hif_axis_tdata[0:N-1]<sup>1<sup> | Output        | AXI-Stream Data  |
-| [X-1:0]o_hif_axis_tkeep[0:N-1]<sup>1<sup> | Output        | AXI-Stream Keep  |
-| [Y-1:0]o_hif_axis_tuser[0:N-1]<sup>1<sup> | Output        | AXI-Stream User  |
+| [W-1:0]o_hif_axis_tdata[N-1:0]<sup>1<sup> | Output        | AXI-Stream Data  |
+| [X-1:0]o_hif_axis_tkeep[N-1:0]<sup>1<sup> | Output        | AXI-Stream Keep  |
+| [Y-1:0]o_hif_axis_tuser[N-1:0]<sup>1<sup> | Output        | AXI-Stream User  |
 | i_hif_axis_tready[N-1:0]<sup>1<sup>       | Input         | AXI-Stream Read  |
 
-1. N=HOST_IF_INST, W=DATAPATH_WIDTH, X=DATAKEEP_WIDTH, Y=DATAUSER_WIDTH. See Macro
-   Definitions section for details.
+1. N=`HOST_IF_INST`, W=`DATAPATH_WIDTH`, X=`DATAKEEP_WIDTH`, Y=`DATAUSER_WIDTH`
 
 ## Peripheral Interface Ports
 
-Table 11 SPI Ports
+Table 12 SPI Ports
+
+These ports are only available if `SPI_INST` is defined in "HOLOLINK_def.svh"
 
 | **Signal Name**                   | **Direction** | **Description**          |
 | --------------------------------- | ------------- | ------------------------ |
 | o_spi_csn[N-1:0]<sup>1<sup>       | Output        | Chip Select (Active Low) |
 | o_spi_sck[N-1:0]<sup>1<sup>       | Output        | SPI Clock                |
 | o_spi_oen[N-1:0]<sup>1<sup>       | Output        | Output Enable            |
-| [3:0]o_spi_sdio[0:N-1]<sup>1<sup> | Output        | SDIO Output              |
-| [3:0]i_spi_sdio[0:N-1]<sup>1<sup> | Input         | SDIO Input               |
+| [3:0]o_spi_sdio[N-1:0]<sup>1<sup> | Output        | SDIO Output              |
+| [3:0]i_spi_sdio[N-1:0]<sup>1<sup> | Input         | SDIO Input               |
 
-1. N=SPI_INST. See Macro Definitions section for details.
+1. N=`SPI_INST`
 
-Table 12 I2C Ports
+Table 13 I2C Ports
+
+These ports are only available if `I2C_INST` is defined in "HOLOLINK_def.svh"
 
 | **Signal Name**                | **Direction** | **Description**         |
 | ------------------------------ | ------------- | ----------------------- |
@@ -147,49 +162,49 @@ Table 12 I2C Ports
 | o_i2c_scl_en[N-1:0]<sup>1<sup> | Output        | I2C Clock Output Enable |
 | o_i2c_sda_en[N-1:0]<sup>1<sup> | Output        | I2C Data Output Enable  |
 
-1. N=I2C_INST. See Macro Definitions section for details.
+1. N=`I2C_INST`
 
-Table 13 GPIO Ports
+Table 14 GPIO Ports
 
 | **Signal Name**          | **Direction** | **Description**                      |
 | ------------------------ | ------------- | ------------------------------------ |
 | i_gpio[N-1:0]<sup>1<sup> | Input         | GPIO In. Synchronized to “i_apb_clk” |
 | o_gpio[N-1:0]<sup>1<sup> | Output        | GPIO Out. Synchronous to “i_apb_clk” |
 
-1. N=GPIO_INST. See Macro Definitions section for details.
-
-Table 14 JESD Ports
-
-JESD Sensor Ports are unsupported and do not need to be instantiated. TBD in future
-revisions.
-
-| **Signal Name**     | **Direction** | **Description** |
-| ------------------- | ------------- | --------------- |
-| i_jesd_rxdp[7:0]    | Input         | TBD             |
-| i_jesd_rxdn[7:0]    | Input         | TBD             |
-| o_jesd_txdp[7:0]    | Output        | TBD             |
-| o_jesd_txdn[7:0]    | Output        | TBD             |
-| i_jesd_tx_sysref    | Input         | TBD             |
-| i_jesd_rx_sysref    | Input         | TBD             |
-| i_jesd_xcvr_refclk  | Input         | TBD             |
-| i_jesd_core_clk     | Input         | TBD             |
-| i_jesd_core_dev_clk | Input         | TBD             |
+1. N=`GPIO_INST`
 
 Table 15 Sensor Reset Port
 
-| **Signal Name**                 | **Direction** | **Description**                                                                          |
-| ------------------------------- | ------------- | ---------------------------------------------------------------------------------------- |
-| o_sw_sen_rst [N-1:0]<sup>1<sup> | Output        | Register Controlled Reset. Connect to on-board sensor reset pin                          |
-| o_sw_sys_rst                    | Output        | Register controlled self-clearing reset. Can be used to reset blocks, such as PCS block. |
+| **Signal Name**     | **Direction** | **Description**                                                                          |
+| ------------------- | ------------- | ---------------------------------------------------------------------------------------- |
+| o_sw_sen_rst [31:0] | Output        | Register Controlled Reset. Connect to on-board sensor reset pin                          |
+| o_sw_sys_rst        | Output        | Register controlled self-clearing reset. Can be used to reset blocks, such as PCS block. |
 
-1. N=SENSOR_IF_INST. See Macro Definitions section for details.
+Table 16 PTP Clock and Reset
 
-Table 16 PTP Port
+| **Signal Name** | **Direction** | **Description** |
+| --------------- | ------------- | --------------- |
+| i_ptp_clk       | Input         | PTP Clock       |
+| o_ptp_rst       | Output        | PTP Reset       |
+
+Table 17 Internal PTP Port
+
+These ports are only available if `EXT_PTP` is NOT defined in "HOLOLINK_def.svh". PTP
+module is instantiated within the HSB IP and is used to synchronize and timestamp.
 
 | **Signal Name**      | **Direction** | **Description**                                                          |
 | -------------------- | ------------- | ------------------------------------------------------------------------ |
-| i_ptp_clk            | Input         | PTP Clock                                                                |
-| o_ptp_rst            | Output        | PTP Reset                                                                |
 | o_ptp_sec [47:0]     | Output        | PTP Seconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk     |
 | o_ptp_nanosec [31:0] | Output        | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk |
 | o_pps                | Output        | Pulse Per Second. Synchronous to i_ptp_clk                               |
+
+Table 18 External PTP Port
+
+These ports are only available if `EXT_PTP` is defined in "HOLOLINK_def.svh". If the
+Ethernet MAC IP has built-in PTP feature, that can be used to pass the timestamp to the
+HSB IP.
+
+| **Signal Name**      | **Direction** | **Description**                                                          |
+| -------------------- | ------------- | ------------------------------------------------------------------------ |
+| i_ptp_sec [47:0]     | Input         | PTP Seconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk     |
+| i_ptp_nanosec [31:0] | Input         | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk |

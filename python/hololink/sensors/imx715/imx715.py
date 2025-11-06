@@ -65,7 +65,7 @@ MCU_TRANSACTION_END = -1
 
 IMX715_MODE_3840X2160_30FPS_12BPP = 0
 IMX715_MODE_3840X2160_60FPS_10BPP = 1
-IMX715_MODE_1220X1080_60FPS_12BPP = 2
+IMX715_MODE_1920X1080_60FPS_12BPP = 2
 
 
 class Imx715Cam:
@@ -454,7 +454,7 @@ class Imx715Cam:
             serializer.append_uint8(0x00)
             serializer.append_uint8(0x3C)
             crc = 0x4F
-        elif self._mode == IMX715_MODE_1220X1080_60FPS_12BPP:
+        elif self._mode == IMX715_MODE_1920X1080_60FPS_12BPP:
             serializer.append_uint8(0x02)
             serializer.append_uint8(0x32)
             serializer.append_uint8(0x31)
@@ -492,7 +492,7 @@ class Imx715Cam:
             self._height = 2160
             self._pixel_format = hololink_module.sensors.csi.PixelFormat.RAW_10
             self._framerate = 60
-        elif imx715_mode == IMX715_MODE_1220X1080_60FPS_12BPP:
+        elif imx715_mode == IMX715_MODE_1920X1080_60FPS_12BPP:
             self._width = 1920
             self._height = 1080
             self._pixel_format = hololink_module.sensors.csi.PixelFormat.RAW_12
@@ -525,7 +525,7 @@ class Imx715Cam:
             received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
             start_byte += 41 * received_line_bytes  # black lines
             trailing_bytes = 0
-        elif self._mode == IMX715_MODE_1220X1080_60FPS_12BPP:
+        elif self._mode == IMX715_MODE_1920X1080_60FPS_12BPP:
             transmitted_line_bytes = converter.transmitted_line_bytes(
                 self._pixel_format, self._width
             )

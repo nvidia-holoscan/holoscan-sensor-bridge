@@ -20,10 +20,10 @@ import logging
 import os
 import time
 
+import cuda.bindings.driver as cuda
 import holoscan
 import operators
 import utils
-from cuda import cuda
 
 import hololink as hololink_module
 

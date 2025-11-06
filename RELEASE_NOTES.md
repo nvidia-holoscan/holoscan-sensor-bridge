@@ -1,5 +1,38 @@
 # Release Notes
 
+## 2.5-EA, November 2025
+
+### Dependencies
+
+- IGX: [IGX-SW 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads)
+- AGX: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up JetPack
+  6.2.1.
+- Thor: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up JetPack
+  7.0.
+- Holoscan Sensor Bridge, 10G; FPGA v2510.
+
+Be sure and follow the installation instructions included with the release, including
+PTP configuration and HSB device firmware updates. To generate documentation, in the
+host system, run `sh docs/make_docs.sh`, then use your browser to look at
+`docs/user_guide/_build/html/index.html`.
+
+### Updates from 2.3-GA
+
+- **HSDK 3.7** HSB is updated to support running under HSDK 3.7.0.
+- **Container builds for Thor** for use with Linux network receiver applications only.
+- **Read and write block optimization** for I2C and SPI transactions. Before, individual
+  `WR_DWORD` requests were used to set up the buffers and activate the I2C or SPI bus
+  controller, with individual `RD_DWORD` requests used to fetch the results. This is
+  optimized to use a `WR_BLOCK` and `RD_BLOCK` where possible, greatly reducing the
+  number of UDP transactions to complete these transactions.
+- **APB_TIMEOUT_MAX was incorrect**, limiting I2C and SPI bus timeouts to 3.3ms. This is
+  now corrected from a 16-bit max value to 24-bits-- increasing the possible timeout to
+  greater than 840ms.
+- **LinuxReceiverOp implemented in C++** which provides better performance than the
+  python LinuxReceiverOperator implementation. This operator provides Linux emulation of
+  ROCE RDMA support.
+- **Emulation** documentation and support for I2C peripherals with VB1940 examples.
+
 ## 2.3-GA, August 2025
 
 ### Dependencies

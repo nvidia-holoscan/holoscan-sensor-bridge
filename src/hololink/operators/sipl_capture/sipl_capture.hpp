@@ -22,6 +22,7 @@
 #include <hololink/core/csi_controller.hpp>
 #include <holoscan/holoscan.hpp>
 
+#include <INvSIPLISPStatCustomInterface.hpp>
 #include <NvSIPLCamera.hpp>
 #include <NvSIPLCameraQuery.hpp>
 
@@ -70,6 +71,32 @@ public:
     static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
 
 private:
+    struct PerCameraState {
+        PerCameraState()
+            : isp_stats_(nullptr)
+            , stop_thread_(std::make_unique<std::atomic<bool>>(false))
+            , buffer_mutex_(std::make_unique<std::mutex>())
+            , buffer_available_(std::make_unique<std::condition_variable>())
+            , buffer_raw_(nullptr)
+            , buffer_isp_(nullptr)
+        {
+        }
+
+        std::string output_name_;
+        nvsipl::INvSIPLISPStatCustomInterface* isp_stats_;
+        nvsipl::NvSIPLPipelineQueues queues_;
+        std::vector<NvSciBufObj> sci_bufs_icp_;
+        std::vector<NvSciBufObj> sci_bufs_isp0_;
+        NvSciSyncObj sci_sync_isp0_;
+
+        std::thread acquire_thread_;
+        std::unique_ptr<std::atomic<bool>> stop_thread_;
+        std::unique_ptr<std::mutex> buffer_mutex_;
+        std::unique_ptr<std::condition_variable> buffer_available_;
+        nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_raw_;
+        nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_isp_;
+    };
+
     void init_cameras();
     void init_nvsipl();
     void init_nvsci();
@@ -79,6 +106,7 @@ private:
     void allocate_sync(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, NvSciSyncObj& sync);
     void register_autocontrol(uint32_t camera_index);
     bool load_nito_file(std::string name, std::vector<uint8_t>& nito);
+    void acquire_buffer_thread_func(PerCameraState* camera_state, bool raw_output);
 
     std::string camera_config_;
     std::string json_config_;
@@ -96,13 +124,6 @@ private:
     NvSciSyncModule sci_sync_module_;
     NvSciSyncCpuWaitContext cpu_wait_context_;
 
-    struct PerCameraState {
-        std::string output_name_;
-        nvsipl::NvSIPLPipelineQueues queues_;
-        std::vector<NvSciBufObj> sci_bufs_icp_;
-        std::vector<NvSciBufObj> sci_bufs_isp0_;
-        NvSciSyncObj sci_sync_isp0_;
-    };
     std::vector<PerCameraState> per_camera_state_;
     std::vector<CameraInfo> camera_info_;
 

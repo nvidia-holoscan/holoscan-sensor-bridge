@@ -14,7 +14,10 @@
 # limitations under the License.
 
 # Enable testing for the current directory and below
-include(CTest) # it calls 'enable_testing()' internally
+enable_testing()
+
+# Find or fetch gtest
+include(hololink_deps/gtest)
 
 # ##################################################################################################
 # * compiler function -----------------------------------------------------------------------------
@@ -30,7 +33,7 @@ function(ConfigureTest)
     ${ARGN}
   )
 
-  # The first parameter can implicitly be the NAME 
+  # The first parameter can implicitly be the NAME
   if(NOT CMAKE_TEST_NAME)
     list(GET ARGN 0 CMAKE_TEST_NAME)
   endif()

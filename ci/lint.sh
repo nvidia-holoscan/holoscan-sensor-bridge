@@ -62,7 +62,9 @@ SKIP=( \
 CODESPELL_FILES=( `git ls-files | grep -v '.pdf$'` )
 
 C_FILES=( `git ls-files | egrep '.(cpp|hpp)$' ` )
-DOCS_FILES=( `git ls-files | egrep '.md$' ` )
+# added explicit exclude on mdformat docs/user_guide/emulation.md because 
+# it is completely messing up tables and code formatting blocks used by sphinx
+DOCS_FILES=( `git ls-files | egrep -v 'docs/user_guide/emulation.md' | egrep '.md$' ` )
 
 # Each command likes its list of inputs slightly different
 T=${SKIP[*]}

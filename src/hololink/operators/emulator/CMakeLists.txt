@@ -13,33 +13,33 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-add_library(emulator STATIC
+add_library(linux_data_plane STATIC
   linux_data_plane_op.cpp
 )
 
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -g3")
-set_property(TARGET emulator PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET linux_data_plane PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-add_library(hololink::operators::emulator ALIAS emulator)
+add_library(hololink::operators::linux_data_plane ALIAS linux_data_plane)
 
-target_include_directories(emulator
+target_include_directories(linux_data_plane
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
-    $<INSTALL_INTERFACE:src>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
-target_link_libraries(emulator
+target_link_libraries(linux_data_plane
   PRIVATE
-    hololink::emulation
+    hsbemulator
+    hsbemulatorroce
     hololink::core
     holoscan::core
 )
 
-install(TARGETS emulator
+install(TARGETS linux_data_plane
+        EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_data_plane_op.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/operators/emulator
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/emulator
         COMPONENT hololink-operators)
-

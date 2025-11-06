@@ -11,9 +11,9 @@ import queue
 import threading
 import zlib
 
+import cuda.bindings.driver as cuda
 import cupy as cp
 import holoscan
-from cuda import cuda
 
 import hololink as hololink_module
 

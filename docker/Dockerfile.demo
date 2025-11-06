@@ -49,7 +49,7 @@ RUN cd /opt/hololink \
 FROM base AS demo
 
 RUN python3 -m pip install --upgrade pip
-RUN pip3 install pytest
+RUN pip3 install pytest pytest-timeout
 
 # net-tools gives us the "arp" command
 # iputils-ping gives us the "ping" command

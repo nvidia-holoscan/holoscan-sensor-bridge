@@ -20,11 +20,11 @@ import ctypes
 import logging
 import os
 
+import cuda.bindings.driver as cuda
 import cupy as cp
 import holoscan
 import holoscan as hs
 import numpy as np
-from cuda import cuda
 from holoscan.core import Operator, OperatorSpec
 from holoscan.gxf import Entity
 

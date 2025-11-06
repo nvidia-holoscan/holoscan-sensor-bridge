@@ -22,6 +22,7 @@
 #include "logging_internal.hpp"
 #include "metadata.hpp"
 #include "networking.hpp"
+#include "reactor.hpp"
 
 #include <cmath>
 #include <iomanip>
@@ -31,6 +32,7 @@
 #include <stdexcept>
 #include <string>
 
+#include <algorithm>
 #include <arpa/inet.h>
 #include <net/if.h>
 #include <netinet/in.h>
@@ -40,52 +42,6 @@
 namespace hololink {
 
 namespace {
-
-    class Socket {
-    public:
-        Socket(const std::string& local_interface, uint32_t port)
-        {
-            socket_.reset(socket(AF_INET, SOCK_DGRAM, 0));
-            if (!socket_) {
-                throw std::runtime_error("Failed to create socket");
-            }
-
-            // Allow other programs to receive these broadcast packets.
-            const int reuse_port = 1;
-            if (setsockopt(get(), SOL_SOCKET, SO_REUSEPORT, &reuse_port, sizeof(reuse_port)) < 0) {
-                throw std::runtime_error(fmt::format("setsockopt failed with errno={}: \"{}\"", errno, strerror(errno)));
-            }
-
-            // Tell us what interface the request came in on, so we reply to the same place
-            const int ptk_info = 1;
-            if (setsockopt(get(), SOL_IP, IP_PKTINFO, &ptk_info, sizeof(ptk_info)) < 0) {
-                throw std::runtime_error(fmt::format("setsockopt failed with errno={}: \"{}\"", errno, strerror(errno)));
-            }
-
-            // Maybe listen only on the named interface.
-            if (!local_interface.empty()) {
-                struct ifreq ifr = {};
-                strncpy(ifr.ifr_name, local_interface.c_str(), sizeof(ifr.ifr_name));
-                if (setsockopt(get(), SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
-                    throw std::runtime_error(fmt::format("setsockopt SO_BINDTODEVICE failed with errno={}: \"{}\"", errno, strerror(errno)));
-                }
-            }
-
-            sockaddr_in address {};
-            address.sin_family = AF_INET;
-            address.sin_port = htons(port);
-            address.sin_addr.s_addr = INADDR_ANY;
-
-            if (bind(get(), (sockaddr*)&address, sizeof(address)) < 0) {
-                throw std::runtime_error(fmt::format("bind failed with errno={}: \"{}\"", errno, strerror(errno)));
-            }
-        }
-
-        int get() const { return socket_.get(); }
-
-    private:
-        core::UniqueFileDescriptor socket_;
-    };
 
     /**
      * Get a buffer from the deserializer and return it as a hex string.
@@ -369,23 +325,6 @@ Enumerator::Enumerator(const std::string& local_interface,
     enumerator.enumeration_packets(
         [call_back](
             Enumerator&, const std::vector<uint8_t>& packet, Metadata& metadata) -> bool {
-            HSB_LOG_DEBUG(fmt::format("Enumeration metadata={}", metadata));
-            auto peer_ip = metadata.get<std::string>("peer_ip");
-            if (!peer_ip) {
-                return true;
-            }
-            // Add some supplemental data.
-            auto opt_data_plane = metadata.get<int64_t>("data_plane");
-            if (!opt_data_plane.has_value()) {
-                // 2410 and later always provide this.
-                return true;
-            }
-            int data_plane = opt_data_plane.value();
-            DataChannel::use_data_plane_configuration(metadata, data_plane);
-            // By default, use the data_plane ID to select the sensor.
-            int sensor_number = data_plane;
-            DataChannel::use_sensor(metadata, sensor_number);
-            // Do we have the information we need?
             HSB_LOG_DEBUG(fmt::format("metadata={}", metadata));
             if (DataChannel::enumerated(metadata)) {
                 if (!call_back(metadata)) {
@@ -427,11 +366,11 @@ void Enumerator::enumeration_packets(
     const std::function<bool(Enumerator&, const std::vector<uint8_t>&, Metadata&)>& call_back,
     const std::shared_ptr<Timeout>& timeout)
 {
-    Socket bootp_socket(local_interface_, bootp_request_port_);
-
-    constexpr size_t receive_message_size = hololink::core::UDP_PACKET_SIZE;
-    std::vector<uint8_t> iobuf(receive_message_size);
-    std::array<uint8_t, CMSG_ALIGN(receive_message_size)> controlbuf;
+    core::UniqueFileDescriptor bootp_socket(socket(AF_INET, SOCK_DGRAM, 0));
+    if (!bootp_socket) {
+        throw std::runtime_error("Failed to create socket");
+    }
+    configure_socket(bootp_socket.get(), bootp_request_port_, local_interface_);
 
     timeval timeout_value {};
     bool done = false;
@@ -487,44 +426,7 @@ void Enumerator::enumeration_packets(
                 continue;
             }
 
-            struct msghdr msg { };
-
-            sockaddr_in peer_address {};
-            peer_address.sin_family = AF_UNSPEC;
-            msg.msg_name = &peer_address;
-            msg.msg_namelen = sizeof(peer_address);
-
-            iovec iov {};
-            iov.iov_base = iobuf.data();
-            iov.iov_len = iobuf.size();
-            msg.msg_iov = &iov;
-            msg.msg_iovlen = 1;
-
-            msg.msg_control = controlbuf.data();
-            msg.msg_controllen = controlbuf.size();
-
-            ssize_t received_bytes;
-            do {
-                received_bytes = recvmsg(fd, &msg, 0);
-                if (received_bytes == -1) {
-                    throw std::runtime_error(fmt::format("recvmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
-                }
-            } while (received_bytes <= 0);
-
-            const std::string peer_address_string(inet_ntoa(peer_address.sin_addr));
-            HSB_LOG_TRACE(fmt::format(
-                "enumeration peer_address \"{}:{}\", ancdata size {}, msg_flags {}, packet size {}",
-                peer_address_string, ntohs(peer_address.sin_port), msg.msg_controllen, msg.msg_flags, received_bytes));
-
-            Metadata metadata;
-            metadata["peer_ip"] = peer_address_string;
-            metadata["source_port"] = ntohs(peer_address.sin_port);
-            metadata["_socket_fd"] = fd;
-            deserialize_ancdata(msg, metadata);
-
-            if (fd == bootp_socket.get()) {
-                deserialize_bootp_request(iobuf, metadata);
-            }
+            auto [metadata, iobuf] = handle_bootp_fd(fd);
 
             if (!call_back(*this, iobuf, metadata)) {
                 done = true;
@@ -592,8 +494,9 @@ void Enumerator::send_bootp_reply(
     }
 }
 
-// Static variable definition
+// Static variable definitions
 std::map<std::string, std::shared_ptr<EnumerationStrategy>> Enumerator::uuid_strategies_;
+std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::reactor_enumerator_;
 
 EnumerationStrategy::~EnumerationStrategy()
 {
@@ -649,7 +552,6 @@ BasicEnumerationStrategy::BasicEnumerationStrategy(const Metadata& additional_me
     , total_dataplanes_(total_dataplanes)
     , sifs_per_sensor_(sifs_per_sensor)
     , ptp_enable_(true)
-    , vsync_enable_(true)
     , block_enable_(true)
 {
 }
@@ -657,11 +559,6 @@ BasicEnumerationStrategy::BasicEnumerationStrategy(const Metadata& additional_me
 void BasicEnumerationStrategy::ptp_enable(bool enable)
 {
     ptp_enable_ = enable;
-}
-
-void BasicEnumerationStrategy::vsync_enable(bool enable)
-{
-    vsync_enable_ = enable;
 }
 
 void BasicEnumerationStrategy::block_enable(bool enable)
@@ -672,7 +569,6 @@ void BasicEnumerationStrategy::block_enable(bool enable)
 void BasicEnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::Deserializer& deserializer)
 {
     metadata["ptp_enable"] = ptp_enable_ ? 1 : 0;
-    metadata["vsync_enable"] = vsync_enable_ ? 1 : 0;
     metadata["block_enable"] = block_enable_ ? 1 : 0;
     metadata.update(additional_metadata_);
 }
@@ -783,13 +679,220 @@ void Enumerator::configure_default_enumeration_strategies()
     unsigned microchip_polarfire_sifs_per_sensor = 1;
     auto microchip_polarfire_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(microchip_polarfire_metadata,
         microchip_polarfire_total_sensors, microchip_polarfire_total_dataplanes, microchip_polarfire_sifs_per_sensor);
-    microchip_polarfire_enumeration_strategy->vsync_enable(false);
     uuid_strategies_[MICROCHIP_POLARFIRE_UUID] = microchip_polarfire_enumeration_strategy;
 
     auto leopard_eagle_enumeration_strategy = std::make_shared<LeopardEagleEnumerationStrategy>();
     uuid_strategies_[LEOPARD_EAGLE_UUID] = leopard_eagle_enumeration_strategy;
 
     done = true;
+}
+
+bool Enumerator::configure_socket(int fd, uint32_t port /*=12267u*/, const std::string& local_interface /* = "" */)
+{
+    // Allow other programs to receive these broadcast packets.
+    const int reuse_port = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse_port, sizeof(reuse_port)) < 0) {
+        throw std::runtime_error(fmt::format("setsockopt failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+
+    // Tell us what interface the request came in on, so we reply to the same place
+    const int ptk_info = 1;
+    if (setsockopt(fd, SOL_IP, IP_PKTINFO, &ptk_info, sizeof(ptk_info)) < 0) {
+        throw std::runtime_error(fmt::format("setsockopt failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+
+    // Maybe listen only on the named interface.
+    if (!local_interface.empty()) {
+        struct ifreq ifr = {};
+        strncpy(ifr.ifr_name, local_interface.c_str(), sizeof(ifr.ifr_name));
+        if (setsockopt(fd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
+            throw std::runtime_error(fmt::format("setsockopt SO_BINDTODEVICE failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    }
+
+    sockaddr_in address {};
+    address.sin_family = AF_INET;
+    address.sin_port = htons(port);
+    address.sin_addr.s_addr = INADDR_ANY;
+
+    if (bind(fd, (sockaddr*)&address, sizeof(address)) < 0) {
+        throw std::runtime_error(fmt::format("bind failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+
+    return true;
+}
+
+std::tuple<Metadata, std::vector<uint8_t>> Enumerator::handle_bootp_fd(int fd)
+{
+    constexpr size_t receive_message_size = hololink::core::UDP_PACKET_SIZE;
+    std::vector<uint8_t> iobuf(receive_message_size);
+    std::array<uint8_t, CMSG_ALIGN(receive_message_size)> controlbuf;
+
+    struct msghdr msg { };
+
+    sockaddr_in peer_address {};
+    peer_address.sin_family = AF_UNSPEC;
+    msg.msg_name = &peer_address;
+    msg.msg_namelen = sizeof(peer_address);
+
+    iovec iov {};
+    iov.iov_base = iobuf.data();
+    iov.iov_len = iobuf.size();
+    msg.msg_iov = &iov;
+    msg.msg_iovlen = 1;
+
+    msg.msg_control = controlbuf.data();
+    msg.msg_controllen = controlbuf.size();
+
+    ssize_t received_bytes;
+    do {
+        received_bytes = recvmsg(fd, &msg, 0);
+        if (received_bytes == -1) {
+            throw std::runtime_error(fmt::format("recvmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
+        }
+    } while (received_bytes <= 0);
+
+    char peer_addr_buf[INET_ADDRSTRLEN];
+    const std::string peer_address_string(inet_ntop(AF_INET, &peer_address.sin_addr, peer_addr_buf, sizeof(peer_addr_buf)));
+    HSB_LOG_TRACE(fmt::format(
+        "enumeration peer_address \"{}:{}\", ancdata size {}, msg_flags {}, packet size {}",
+        peer_address_string, ntohs(peer_address.sin_port), msg.msg_controllen, msg.msg_flags, received_bytes));
+
+    Metadata metadata;
+    metadata["peer_ip"] = peer_address_string;
+    metadata["source_port"] = ntohs(peer_address.sin_port);
+    metadata["_socket_fd"] = fd;
+    deserialize_ancdata(msg, metadata);
+    deserialize_bootp_request(iobuf, metadata);
+
+    // Add some supplemental data.
+    auto opt_data_plane = metadata.get<int64_t>("data_plane");
+    if (opt_data_plane.has_value()) {
+        int data_plane = opt_data_plane.value();
+        DataChannel::use_data_plane_configuration(metadata, data_plane);
+        // By default, use the data_plane ID to select the sensor.
+        int sensor_number = data_plane;
+        DataChannel::use_sensor(metadata, sensor_number);
+    }
+
+    return { metadata, iobuf };
+}
+
+// ReactorEnumerator implementation
+std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::ReactorEnumerator::get_reactor_enumerator()
+{
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+
+    if (!Enumerator::reactor_enumerator_) {
+        Enumerator::reactor_enumerator_ = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
+        Enumerator::reactor_enumerator_->start();
+    }
+    return Enumerator::reactor_enumerator_;
+}
+
+Enumerator::ReactorEnumerator::ReactorEnumerator()
+    : socket_fd_(-1)
+    , next_callback_id_(1)
+    , reactor_(hololink::core::Reactor::get_reactor())
+{
+}
+
+Enumerator::ReactorEnumerator::~ReactorEnumerator()
+{
+    if (socket_fd_ >= 0) {
+        reactor_->remove_fd_callback(socket_fd_);
+        close(socket_fd_);
+    }
+}
+
+void Enumerator::ReactorEnumerator::start()
+{
+    // Create UDP socket
+    socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
+    if (socket_fd_ < 0) {
+        throw std::runtime_error("Failed to create socket for ReactorEnumerator");
+    }
+
+    // Configure the socket
+    Enumerator::configure_socket(socket_fd_);
+
+    // Register with reactor
+    reactor_->add_fd_callback(socket_fd_,
+        [this](int fd, short events) { this->fd_callback(fd, events); });
+}
+
+void Enumerator::ReactorEnumerator::fd_callback(int fd, int events)
+{
+    auto [metadata, packet] = Enumerator::handle_bootp_fd(fd);
+
+    std::lock_guard<std::recursive_mutex> lock(lock_);
+
+    auto peer_ip_opt = metadata.get<std::string>("peer_ip");
+    if (!peer_ip_opt.has_value()) {
+        return;
+    }
+
+    const std::string& peer_ip = peer_ip_opt.value();
+    auto callbacks_iter = ip_callback_map_.find(peer_ip);
+    if (callbacks_iter != ip_callback_map_.end()) {
+        // Copy to avoid iterator invalidation if the callback
+        // unregisters itself.
+        auto callbacks_copy = callbacks_iter->second;
+        for (auto& handle : callbacks_copy) {
+            handle->callback()(metadata);
+        }
+    }
+}
+
+std::shared_ptr<Enumerator::CallbackHandle> Enumerator::ReactorEnumerator::register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback)
+{
+    std::lock_guard<std::recursive_mutex> lock(lock_);
+
+    uint64_t callback_id = next_callback_id_++;
+    auto handle = std::make_shared<CallbackHandle>(callback_id, ip, callback);
+
+    auto& callbacks = ip_callback_map_[ip];
+    callbacks.push_back(handle);
+
+    return handle;
+}
+
+void Enumerator::ReactorEnumerator::unregister_ip(const std::shared_ptr<CallbackHandle>& handle)
+{
+    std::lock_guard<std::recursive_mutex> lock(lock_);
+
+    const std::string& ip = handle->ip();
+    uint64_t callback_id = handle->id();
+
+    auto callbacks_iter = ip_callback_map_.find(ip);
+    if (callbacks_iter != ip_callback_map_.end()) {
+        auto& callbacks = callbacks_iter->second;
+        callbacks.erase(
+            std::remove_if(callbacks.begin(), callbacks.end(),
+                [callback_id](const std::shared_ptr<CallbackHandle>& h) {
+                    return h->id() == callback_id;
+                }),
+            callbacks.end());
+
+        // Clean up empty entries
+        if (callbacks.empty()) {
+            ip_callback_map_.erase(callbacks_iter);
+        }
+    }
+}
+
+// Static interface methods
+std::shared_ptr<Enumerator::CallbackHandle> Enumerator::register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback)
+{
+    auto reactor_enum = ReactorEnumerator::get_reactor_enumerator();
+    return reactor_enum->register_ip(ip, callback);
+}
+
+void Enumerator::unregister_ip(const std::shared_ptr<CallbackHandle>& handle)
+{
+    auto reactor_enum = ReactorEnumerator::get_reactor_enumerator();
+    reactor_enum->unregister_ip(handle);
 }
 
 } // namespace hololink

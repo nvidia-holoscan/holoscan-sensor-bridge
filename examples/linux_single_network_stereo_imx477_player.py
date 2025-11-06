@@ -19,8 +19,8 @@ import argparse
 import ctypes
 import logging
 
+import cuda.bindings.driver as cuda
 import holoscan
-from cuda import cuda
 
 import hololink as hololink_module
 
@@ -286,7 +286,6 @@ def main():
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    #    cu_result, cu_context = cuda.cuCtxCreate(0, cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device

@@ -10,14 +10,11 @@ Holoscan Sensor Bridge IP.
 
 Bandwidth matching between Sensor and Host is an important consideration of Holoscan
 Sensor Bridge integration. Sensor bandwidth must be equal to or less than the Host
-bandwidth to avoid backpressure. Currently, the AXIS TDATA width of Sensor Interface
-(defined in `DATAPATH_WIDTH`) and Host Interface (defined in `HOST_WIDTH`) must be the
-same width. For example, in 10G application, the Host clock runs at 156.25MHz and
-`HOST_WIDTH=64`, therefore, `DATAPATH_WIDTH=64`. And to match the Host bandwidth, and
-the sensor clock can run at 156.25MHz if AXIS TVALID is high all the time or run at
-double the clock frequency and assert AXIS TVALID every other clock cycle. The Sensor
-clock can be asynchronous to Host clock but the effective Sensor bandwidth must be equal
-to or less than the Host bandwidth.
+bandwidth to avoid backpressure. To match the Host bandwidth, the sensor clock can run
+at 156.25MHz if AXIS TVALID is high all the time or run at double the clock frequency
+and assert AXIS TVALID every other clock cycle. The Sensor clock can be asynchronous to
+Host clock but the effective Sensor bandwidth must be equal to or less than the Host
+bandwidth.
 
 ## Sensor RX (Sensor to FPGA)
 
@@ -58,9 +55,10 @@ Figure 1 Sensor RX AXI-Streaming Interface
 In certain sensor applications, a window size serves specific purpose. For example, in
 camera sensor application, the number of bytes in 1 frame can be the sensor window size.
 
-Once the end of sensor window is reached, a metadata UDP packet is sent. The metadata
-UDP packet alerts the host that sensor data buffered in memory is ready to be processed.
-See below in Sensor TX section for more details on metadata UDP packet.
+When the end of sensor window is reached, the Holoscan Sensor Bridge (HSB) IP transmits
+a metadata UDP packet. The metadata UDP packet alerts the host that sensor data buffered
+in memory is ready to be processed. Refer to
+[Metadata RoCE Packet](dataplane.md#metadata-roce-packet) section for more details.
 
 End of sensor window can occur in 2 ways.
 
@@ -69,7 +67,7 @@ End of sensor window can occur in 2 ways.
 
 Ideally, the calculated sensor window size matches the received sensor data size. In the
 case they're different, asserting "i_sif_axis_tlast" allows for re-synchronization of
-sensor window between host and the Holoscan Sensor Board.
+sensor window between host and the HSB IP.
 
 If "i_sif_axis_tlast" is asserted earlier than the calculated sensor window size, a
 metadata packet is sent to host with the Flags[0] field asserted to indicate early tlast
@@ -84,8 +82,8 @@ can be used as the primary source of generating the end of frame. In this case, 
 window size is to be configured to the largest expected value, allowing
 "i_sif_axis_tlast" to always drive the end of window.
 
-In the metadata packet, there's a "Valid Number of Bytes within Buffer" field that can
-be used to identify the number of bytes transferred in the current sensor window.
+Metadata packet has a "Valid Number of Bytes within Buffer" field that can be used to
+identify the number of bytes transferred in the current sensor window.
 
 ### Camera Streaming
 
@@ -102,10 +100,9 @@ CoE format), as long as the software driver is also developed to decode the inco
 MIPI CSI-2 data.
 
 Outside of the use of current software drivers for camera data, there is no restriction
-on the format of the i_sif_axis_tdata data bus.
+on the format of the i_sif_axis_tdata bus.
 
-The Sensor AXI-S interface for MIPI CSI-2 camera data for IMX274 example and CoE is as
-follows.
+The Sensor AXI-S interface for MIPI CSI-2 camera data for IMX274 example and CoE is:
 
 1. Short MIPI packets must not streamed to Sensor AXI-S interface.
 1. Headers of Long MIPI packets must not streamed to Sensor AXI-S interface.
@@ -149,20 +146,20 @@ Figure 5 Sensor Window Calculation
 ### Sensor Interface to Virtual Port Mapping
 
 The Holoscan Sensor Bridge IP supports mapping multiple sensor interfaces to virtual
-ports for data access. This mapping is controlled by the FPGA parameter `SIF_NUM_VP`
+ports for data access. This mapping is controlled by the FPGA parameter `SIF_RX_NUM_VP`
 which defines the number of virtual ports per sensor interface. When not explicitly
-configured, `SIF_NUM_VP` defaults to 1 for all sensors. The virtual port mapping is only
-valid when using high bandwidth camera data settings. When high bandwidth camera data
-settings are not used, the virtual port setting is undefined and set to 0. Software
+configured, `SIF_RX_NUM_VP` defaults to 1 for all sensors. The virtual port mapping is
+only valid when using high bandwidth camera data settings. When high bandwidth camera
+data settings are not used, the virtual port setting is undefined and set to 0. Software
 interacts with sensor data through these virtual port indices.
 
 The virtual ports are concatenated together in a sequential manner, where each sensor
 interface's virtual ports are allocated in order. For example:
 
-- With 2 sensors and `SIF_NUM_VP={1,1}`:
+- With 2 sensors and `SIF_RX_NUM_VP={1,1}`:
   - Sensor 0's data is accessible on virtual port 0
   - Sensor 1's data is accessible on virtual port 1
-- With 2 sensors and `SIF_NUM_VP={2,2}`:
+- With 2 sensors and `SIF_RX_NUM_VP={2,2}`:
   - Sensor 0's data is accessible on virtual ports 0 and 1
   - Sensor 1's data is accessible on virtual ports 2 and 3
 
@@ -182,9 +179,11 @@ sensor event signal that can be configured using software API. Sensor event sign
 crossed into Host clock domain within Holoscan Sensor Bridge IP, so the sensor event
 signal duration will need to be asserted for a minimum of 2 Host clock cycles.
 
-## Sensor TX (FPGA to Sensor)
+## Sensor TX (Host to FPGA to Sensor)
 
-Sensor TX is a preliminary function. Refer to the audio player example for details.
+The Host can transmit sensor data via RoCE Send packets. The HSB IP strips the
+Ethernet/UDP headers and CRC from the RoCE Send packets and forwards the sensor data
+through AXI-Stream interface.
 
 ## Host TX (FPGA to Host)
 

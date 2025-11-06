@@ -30,6 +30,9 @@ pybind11_add_hololink_module(
     SOURCES hololink.cpp
 )
 
+# Note: Link against _hololink_core.so is handled automatically by pybind11_add_hololink_module
+# since the hololink target depends on hololink_core
+
 # install compiled modules
 if(NOT HOLOLINK_PYTHON_INSTALL_DIR)
     set(HOLOLINK_PYTHON_INSTALL_DIR .)
