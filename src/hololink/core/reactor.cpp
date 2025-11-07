@@ -27,13 +27,6 @@
 #include <stdexcept>
 #include <unistd.h>
 
-// Help printing Callback and FdCallback values by showing the address
-// of the underlying callable object or function pointer
-#define CALLBACK_VALUE(callback) \
-    (callback.target<void (*)()>() ? reinterpret_cast<const void*>(*callback.target<void (*)()>()) : static_cast<const void*>(callback.target_type().name()))
-#define FDCALLBACK_VALUE(callback) \
-    (callback.target<void (*)(int, short)>() ? reinterpret_cast<const void*>(*callback.target<void (*)(int, short)>()) : static_cast<const void*>(callback.target_type().name()))
-
 // Utility functions for timespec operations
 namespace {
 // Compare two timespec values: returns -1, 0, or 1
@@ -143,14 +136,12 @@ namespace core {
 
     void Reactor::add_callback(Callback callback)
     {
-        HSB_LOG_TRACE("add_callback(callback={})", CALLBACK_VALUE(callback));
         struct timespec zero_time = { 0, 0 };
         add_alarm(zero_time, callback);
     }
 
     void Reactor::add_fd_callback(int fd, FdCallback callback, short events)
     {
-        HSB_LOG_TRACE("add_fd_callback(fd={}, callback={}, events={:#x})", fd, FDCALLBACK_VALUE(callback), events);
         std::lock_guard<std::mutex> lock(lock_);
         fd_callbacks_[fd] = std::make_pair(callback, events);
         wakeup();
@@ -166,7 +157,6 @@ namespace core {
 
     Reactor::AlarmHandle Reactor::add_alarm_s(float seconds, Callback callback)
     {
-        HSB_LOG_TRACE("add_alarm_s(seconds={}, callback={})", seconds, CALLBACK_VALUE(callback));
         struct timespec current = now();
         struct timespec target = timespec_add_seconds(current, seconds);
         return add_alarm(target, callback);
@@ -174,7 +164,6 @@ namespace core {
 
     Reactor::AlarmHandle Reactor::add_alarm(const struct timespec& when, Callback callback)
     {
-        HSB_LOG_TRACE("add_alarm(when={}.{:09d}, callback={})", when.tv_sec, when.tv_nsec, CALLBACK_VALUE(callback));
         auto entry = std::make_shared<AlarmEntry>();
         entry->when = when;
         entry->sequence = alarms_added_.fetch_add(1);
@@ -306,7 +295,6 @@ namespace core {
                             }
                         }
 
-                        HSB_LOG_TRACE("poll(...) fd={} callback={}", fd, FDCALLBACK_VALUE(callback));
                         if (callback) {
                             callback(fd, poll_fds[i].revents);
                         }
@@ -328,7 +316,6 @@ namespace core {
 
             // Execute expired callbacks outside of lock to avoid deadlock
             for (const auto& entry : expired) {
-                HSB_LOG_TRACE("poll(...) expired_callback={}", CALLBACK_VALUE(entry->callback));
                 entry->callback();
             }
         }
