@@ -69,7 +69,7 @@ public:
         size_t metadata_offset,
         const char* peer_ip);
 
-    ~RoceReceiver();
+    virtual ~RoceReceiver();
 
     void blocking_monitor();
 

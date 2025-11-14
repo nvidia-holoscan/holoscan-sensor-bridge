@@ -41,16 +41,22 @@ constexpr uint32_t DP_QP = 0x00;
 constexpr uint32_t DP_RKEY = 0x04;
 // these are all page addresses; the actual byte address in the
 // packet will be this page address * 128.
-constexpr uint32_t DP_ADDRESS_0 = 0x08;
-constexpr uint32_t DP_ADDRESS_1 = 0x0C;
-constexpr uint32_t DP_ADDRESS_2 = 0x10;
-constexpr uint32_t DP_ADDRESS_3 = 0x14;
+constexpr uint32_t DP_PAGE_LSB = 0x08;
+constexpr uint32_t DP_PAGE_MSB = 0x0C;
+constexpr uint32_t DP_PAGE_INC = 0x10;
+constexpr uint32_t DP_MAX_BUFF = 0x14;
 constexpr uint32_t DP_BUFFER_LENGTH = 0x18; // this is in bytes
-constexpr uint32_t DP_BUFFER_MASK = 0x1C; // each bit enables a buffer
 constexpr uint32_t DP_HOST_MAC_LOW = 0x20;
 constexpr uint32_t DP_HOST_MAC_HIGH = 0x24;
 constexpr uint32_t DP_HOST_IP = 0x28;
 constexpr uint32_t DP_HOST_UDP_PORT = 0x2C;
+
+// For now keeping both register mappings to compile
+constexpr uint32_t DP_BUFFER_MASK = 0x1C; // each bit enables a buffer
+constexpr uint32_t DP_ADDRESS_0 = 0x08;
+constexpr uint32_t DP_ADDRESS_1 = 0x0C;
+constexpr uint32_t DP_ADDRESS_2 = 0x10;
+constexpr uint32_t DP_ADDRESS_3 = 0x14;
 
 class Enumerator;
 class Programmer;

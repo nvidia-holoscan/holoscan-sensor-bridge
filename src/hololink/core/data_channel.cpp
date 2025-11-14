@@ -206,14 +206,14 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     if (page_size & (hololink::core::PAGE_SIZE - 1)) {
         throw std::runtime_error(fmt::format("page_size={:#x} must be {}-byte aligned.", page_size, hololink::core::PAGE_SIZE));
     }
-    size_t aligned_frame_size = hololink::core::round_up(frame_size, hololink::core::PAGE_SIZE);
-    size_t metadata_size = hololink::core::PAGE_SIZE;
-    size_t aligned_frame_with_metadata = aligned_frame_size + metadata_size;
-    if (page_size < aligned_frame_with_metadata) {
-        throw std::runtime_error(fmt::format("page_size={:#x} must be at least {:#x} bytes.", page_size, aligned_frame_with_metadata));
-    }
-    if (pages > 4) {
-        throw std::runtime_error(fmt::format("pages={} can be at most 4.", pages));
+    // size_t aligned_frame_size = hololink::core::round_up(frame_size, hololink::core::PAGE_SIZE);
+    // size_t metadata_size = hololink::core::PAGE_SIZE;
+    // size_t aligned_frame_with_metadata = aligned_frame_size + metadata_size;
+    // if (page_size < aligned_frame_with_metadata) {
+    //     throw std::runtime_error(fmt::format("page_size={:#x} must be at least {:#x} bytes.", page_size, aligned_frame_with_metadata));
+    // }
+    if (pages > 4096) {
+        throw std::runtime_error(fmt::format("pages={} can be at most 4096.", pages));
     }
     if (pages < 1) {
         throw std::runtime_error(fmt::format("pages={} must be at least 1.", pages));
@@ -229,14 +229,14 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
 
     const uint32_t roce_overhead = 74;
+    const uint32_t frame_msb = frame_memory >> 32;
     configure_common(frame_size, roce_overhead, local_data_port);
     hololink_->write_uint32(vp_address_ + DP_QP, qp_number_);
     hololink_->write_uint32(vp_address_ + DP_RKEY, rkey_);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, (pages > 0) ? PAGES(frame_memory) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, (pages > 1) ? PAGES(frame_memory + page_size) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, (pages > 2) ? PAGES(frame_memory + (page_size * 2)) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, (pages > 3) ? PAGES(frame_memory + (page_size * 3)) : 0);
-    hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, (1 << pages) - 1);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, PAGES(frame_memory));
+    hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, frame_msb);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_INC, PAGES(page_size));
+    hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, pages - 1);
 
     // Restore the DP_VP_MASK to re-enable the sensor.
     hololink_->or_uint32(hif_address_ + DP_VP_MASK, vp_mask_);
@@ -292,14 +292,13 @@ void DataChannel::unconfigure()
         // Let any in-transit data flush out.
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         // Clear the ROCE configuration.
-        hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, 0);
         hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
         hololink_->write_uint32(vp_address_ + DP_QP, 0);
         hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_INC, 0);
+        hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);

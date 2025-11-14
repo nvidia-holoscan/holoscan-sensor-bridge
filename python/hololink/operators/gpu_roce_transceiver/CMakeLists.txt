@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,22 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+include(pybind11_add_hololink_module)
 
-from . import (
-    gpu_roce_loopback,
-    imx274_player,
-    linux_imx274_player,
-    linux_tao_peoplenet,
-    stereo_imx274_player,
-    tao_peoplenet,
+pybind11_add_hololink_module(
+    CPP_CMAKE_TARGET gpu_roce_transceiver
+    CLASS_NAME "GpuRoceTransceiverOp"
+    IMPORT "import holoscan.core"
+    SOURCES gpu_roce_transceiver.cpp
 )
 
-__all__ = [
-    "gpu_roce_loopback",
-    "imx274_player",
-    "linux_imx274_player",
-    "linux_tao_peoplenet",
-    "stereo_imx274_player",
-    "tao_peoplenet",
-]

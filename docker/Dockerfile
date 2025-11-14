@@ -178,3 +178,59 @@ RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print
 ARG CONTAINER_TYPE=invalid
 ARG HSDK_CONTAINER_CONFIG=invalid
 ENV CONTAINER_TYPE=${CONTAINER_TYPE}
+ARG TARGET_ARCH=${TARGET_ARCH}
+ENV TARGET_ARCH=${TARGET_ARCH}
+
+ARG DOCA_VERSION=3.2.1
+ARG CACHEBUST=1
+ARG DEBIAN_FRONTEND=noninteractive
+
+WORKDIR /opt
+
+# Configure the DOCA APT repository
+RUN if [ "${TARGET_ARCH}" = "amd64" ]; then \
+        DOCA_ARCH="amd64"; \
+    elif [ "$TARGET_ARCH" = "arm64" ]; then \
+        DOCA_ARCH="arm64"; \
+    else \
+        echo "Unknown architecture: $TARGET_ARCH"; \
+        exit 1; \
+    fi \
+    && apt install wget \
+    && UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && wget https://www.mellanox.com/downloads/DOCA/DOCA_v3.2.1/host/doca-host_3.2.1-044000-25.10-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
+    && apt install -o DPkg::Options::="--force-confnew" -y ./doca-host_3.2.1-044000-25.10-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
+    && apt update
+
+    # Temporary issue, GPG keys are invalid
+    # && DISTRO=$(. /etc/os-release && echo ${ID}${VERSION_ID}) \
+    # && DOCA_REPO_LINK=https://linux.mellanox.com/public/repo/doca/${DOCA_VERSION}/${DISTRO}/${DOCA_ARCH} \
+    # && echo "Using DOCA_REPO_LINK=${DOCA_REPO_LINK}" \
+    # && LOCAL_GPG_KEY_PATH="/usr/share/keyrings/mellanox-archive-keyring.gpg" \
+    # && curl -fsSL ${DOCA_REPO_LINK}/GPG-KEY-Mellanox.pub | gpg --dearmor | tee ${LOCAL_GPG_KEY_PATH} > /dev/null \
+    # && echo "deb [signed-by=${LOCAL_GPG_KEY_PATH}] ${DOCA_REPO_LINK} ./" | tee /etc/apt/sources.list.d/mellanox.list
+
+# APT installs
+# - cublas, cufft, cusolver, curand dev libs: for matx
+# - ninja-build: for cmake build
+# - pkgconf: to import dpdk and doca in CMake
+# - mlnx-dpdk-dev: for dpdk and gpunetio backends
+# - libdoca-sdk-gpunetio-dev: for gpunetio backend (doca-gpunetio module)
+# - libdoca-sdk-verbs-dev: for gpunetio backend, verbs in control path (doca-gpunetio module)
+# - mlnx-ofed-kernel-utils: utilities, including ibdev2netdev used by tune_system.py
+# - ibverbs-utils: utilities
+# - python3-pyelftools: used by some mlnx tools
+# - python3-dev: for building python bindings
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ninja-build \
+        pkgconf \
+        mlnx-dpdk-dev \
+        libdoca-sdk-gpunetio-dev \
+        libdoca-sdk-verbs-dev \
+        mlnx-ofed-kernel-utils \
+        ibverbs-utils \
+        python3-pyelftools \
+        python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+

@@ -39,6 +39,7 @@ _MODULES = {
     "Rational": "sig_gen",
     "RoceReceiverOp": "roce_receiver",
     "RoceTransmitterOp": "roce_transmitter",
+    "GpuRoceTransceiverOp": "gpu_roce_transceiver",
     "SignalGeneratorOp": "sig_gen",
     "SignalViewerOp": "sig_viewer",
     "SIPLCaptureOp": "sipl_capture",

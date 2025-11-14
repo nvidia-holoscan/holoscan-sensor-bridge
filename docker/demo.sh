@@ -71,6 +71,7 @@ docker run \
     -v /tmp/argus_socket:/tmp/argus_socket \
     -v /sys/devices:/sys/devices \
     -v /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings \
+    -v /opt/mellanox/doca \
     -w $PWD \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
     -e NVIDIA_VISIBLE_DEVICES=all \

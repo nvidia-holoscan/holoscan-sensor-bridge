@@ -246,6 +246,7 @@ list(APPEND EXAMPLE_INSTALL_FILES
     single_network_stereo_vb1940_player.py
     stereo_imx274_player.py
     stereo_imx477_player.py
+    gpu_roce_loopback.py
     tao_peoplenet.py
     vb1940_player.py)
 if(HOLOLINK_BUILD_FUSA)

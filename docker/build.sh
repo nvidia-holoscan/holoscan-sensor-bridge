@@ -262,6 +262,15 @@ then
 INSTALL_ENVIRONMENT="taskset -c 0-2"
 fi
 
+TARGET_ARCH=""
+case "$(uname -m)" in
+  x86_64|amd64) TARGET_ARCH="amd64" ;;
+  aarch64|arm64) TARGET_ARCH="arm64" ;;
+  *)             TARGET_ARCH="$(uname -m)" ;;  # fallback
+esac
+echo "$TARGET_ARCH"
+
+
 # temporarily disable tracing to output configuration variables
 set +x
 echo "PRODUCT_NAME: $PRODUCT_NAME"
@@ -270,6 +279,7 @@ echo "HSDK_CONTAINER_CONFIG: $HSDK_CONTAINER_CONFIG"
 echo "CONTAINER_TYPE: $CONTAINER_TYPE"
 echo "PROTOTYPE_OPTIONS: $PROTOTYPE_OPTIONS"
 echo "INSTALL_ENVIRONMENT: $INSTALL_ENVIRONMENT"
+echo "TARGET_ARCH: $TARGET_ARCH"
 set -x
 
 # Build the development container.  We specifically rely on buildkit skipping
@@ -280,6 +290,7 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     --build-arg "HSDK_CONTAINER_CONFIG=$HSDK_CONTAINER_CONFIG" \
     --build-arg "DRIVER_CUDA_VERSION_MAJOR=$DRIVER_CUDA_VERSION_MAJOR" \
+    --build-arg "TARGET_ARCH=$TARGET_ARCH" \
     -t hololink-prototype:$VERSION \
     -f $HERE/Dockerfile \
     $PROTOTYPE_OPTIONS \
