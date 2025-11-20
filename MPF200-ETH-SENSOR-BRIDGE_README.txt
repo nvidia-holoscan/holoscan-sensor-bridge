@@ -14,10 +14,10 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
 	a. 	xhost + <enter>
 	b.	sh docker/demo.sh <enter>
 			b.1:The above command runs holoscan-sensor-bridge docker container
-	c.	polarfire_esb flash --fpga-bit-version 2506
-			c.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
-	d.	polarfire_esb --force flash --fpga-bit-version 2506
-			d.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
+	c.	polarfire_esb flash --fpga-bit-version 2510
+			c.1 The above command flashes(Transfers to on board SPI flash) 2510 version bit file.
+	d.	polarfire_esb --force flash --fpga-bit-version 2510
+			d.1 The above command flashes(Transfers to on board SPI flash) 2510 version bit file.
 			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
 4. Step 3.c(or 3.d) downloads FPGA design file from internet and takes around 50 minutes to transfer the design file to on-board flash.
 5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker container
@@ -25,8 +25,8 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
  			a.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA
 	b.	polarfire_esb --force --program
  			b.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA.
- 			b.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407
-6. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software is not unable to detect ethernet packets. This situation arise if FPGA is running older bit file and NVIDIA
+ 			b.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
+6. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software is not able to detect ethernet packets. This situation arises if FPGA is running older bit file and NVIDIA
    AGX/IGX running newer holoscan sensor bridge software.
 
 Running imx477 applications - single camera

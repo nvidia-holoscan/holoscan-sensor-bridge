@@ -209,8 +209,6 @@ class MicroApplication(holoscan.core.Application):
             headless=self._headless,
             framebuffer_srgb=True,
             tensors=[left_spec, right_spec],
-            height=1920,
-            width=1080,
         )
 
         self.add_flow(

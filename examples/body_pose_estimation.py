@@ -533,7 +533,7 @@ def main():
         default="192.168.0.2",
         help="IP address of Hololink board",
     )
-    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
+    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.onnx")
     parser.add_argument(
         "--engine",
         default=default_engine,
