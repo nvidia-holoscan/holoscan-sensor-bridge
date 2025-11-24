@@ -21,8 +21,9 @@ import logging
 import os
 import time
 import zipfile
-import yaml
+
 import requests
+import yaml
 
 import hololink as hololink_module
 
@@ -49,22 +50,22 @@ SPI_CONN_ADDR = 0x03000000
 
 
 def download_extract(current_file_cfg):
-        current_url = current_file_cfg.get('url',None)
-        filename = current_file_cfg.get('filename',None)
-        expected_md5 = current_file_cfg.get('md5',None)
+    current_url = current_file_cfg.get("url", None)
+    filename = current_file_cfg.get("filename", None)
+    expected_md5 = current_file_cfg.get("md5", None)
 
-        if current_url:
-            r = requests.get(current_url)
-            #parse URL to get last set of / before zip
-            zipname = current_url.split("/")[-1]
-            open(zipname, "wb").write(r.content)
-            with zipfile.ZipFile(zipname) as zip_ref:
-                zip_ref.extractall(".")
-        with open(filename, "rb") as file_to_check:
-            data = file_to_check.read()
-            md5_returned = hashlib.md5(data).hexdigest()
-        if md5_returned != expected_md5:
-            raise Exception("md5 Hash mismatch")
+    if current_url:
+        r = requests.get(current_url)
+        # parse URL to get last set of / before zip
+        zipname = current_url.split("/")[-1]
+        open(zipname, "wb").write(r.content)
+        with zipfile.ZipFile(zipname) as zip_ref:
+            zip_ref.extractall(".")
+    with open(filename, "rb") as file_to_check:
+        data = file_to_check.read()
+        md5_returned = hashlib.md5(data).hexdigest()
+    if md5_returned != expected_md5:
+        raise Exception("md5 Hash mismatch")
 
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
@@ -93,19 +94,21 @@ def _spi_program(hololink):
 
 def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
 
-    yaml_path = os.path.join(os.getcwd(),cfg_file)
+    yaml_path = os.path.join(os.getcwd(), cfg_file)
     try:
-        with open(yaml_path, 'r') as file:
+        with open(yaml_path, "r") as file:
             default_config = yaml.safe_load(file)
-        fname = default_config['hololink']['images'][0]['content'] #should be the zip or spi file name
-        current_file_cfg = default_config['hololink']['content'][fname]
-        filename = current_file_cfg.get('filename',None)
-        current_url = current_file_cfg.get('url',None)
+        fname = default_config["hololink"]["images"][0][
+            "content"
+        ]  # should be the zip or spi file name
+        current_file_cfg = default_config["hololink"]["content"][fname]
+        filename = current_file_cfg.get("filename", None)
+        current_url = current_file_cfg.get("url", None)
         if current_url:
-           zipname = current_url.split("/")[-1]
-           lfname = zipname
+            zipname = current_url.split("/")[-1]
+            lfname = zipname
         else:
-           lfname = None
+            lfname = None
         lfilename = filename
     except Exception:
         print("Incorrect YAML file")
@@ -233,11 +236,11 @@ def main():
     )
 
     flash.add_argument(
-        "--fpga-bit-version",
+        "--yaml-file",
         type=str,
-        nargs='?',
-        help="FPGA bit file version to be flashed. Currently supported version: 2510",
-        default="scripts/mchp_manifest.yaml"
+        nargs="?",
+        help="Yaml configuration file to load. Defaulted to: scripts/mchp_manifest.yaml",
+        default="scripts/mchp_manifest.yaml",
     )
 
     args = parser.parse_args()
@@ -266,12 +269,10 @@ def main():
     hololink.start()
 
     if args.flash:
-        if args.fpga_bit_version == "2510":
-    	    args.fpga_bit_version = "scripts/mchp_manifest.yaml"
-        _spi_flash(SPI_CONN_ADDR, hololink, args.fpga_bit_version, channel_metadata)
+        _spi_flash(SPI_CONN_ADDR, hololink, args.yaml_file, channel_metadata)
     elif args.program:
         _spi_program(hololink)
-        time.sleep(60)
+        time.sleep(45)
         print("Please power cycle the board to finish programming process")
 
 

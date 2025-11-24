@@ -14,10 +14,10 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
 	a. 	xhost + <enter>
 	b.	sh docker/demo.sh <enter>
 			b.1:The above command runs holoscan-sensor-bridge docker container
-	c.	polarfire_esb flash --fpga-bit-version 2510
-			c.1 The above command flashes(Transfers to on board SPI flash) 2510 version bit file.
-	d.	polarfire_esb --force flash --fpga-bit-version 2510
-			d.1 The above command flashes(Transfers to on board SPI flash) 2510 version bit file.
+	c.	polarfire_esb flash --yaml-file scripts/mchp_manifest.yaml
+			c.1 The above command flashes the SPI flash referenced in the YAML file.
+	d.	polarfire_esb --force flash --yaml-file scripts/mchp_manifest.yaml
+			d.1 The above command flashes the SPI flash referenced in the YAML file.
 			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
 4. Step 3.c(or 3.d) downloads FPGA design file from internet and takes around 50 minutes to transfer the design file to on-board flash.
 5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker container
