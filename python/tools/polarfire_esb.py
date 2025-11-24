@@ -55,7 +55,7 @@ def download_extract(current_file_cfg):
     expected_md5 = current_file_cfg.get("md5", None)
 
     if current_url:
-        r = requests.get(current_url)
+        r = requests.get(current_url, timeout=300)
         # parse URL to get last set of / before zip
         zipname = current_url.split("/")[-1]
         open(zipname, "wb").write(r.content)
@@ -65,7 +65,7 @@ def download_extract(current_file_cfg):
         data = file_to_check.read()
         md5_returned = hashlib.md5(data).hexdigest()
     if md5_returned != expected_md5:
-        raise Exception("md5 Hash mismatch")
+        raise ValueError(f"MD5 hash mismatch: expected {expected_md5}, got {md5_returned}")
 
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
