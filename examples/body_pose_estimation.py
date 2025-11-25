@@ -537,7 +537,7 @@ def main():
     parser.add_argument(
         "--engine",
         default=default_engine,
-        help="TRT engine model",
+        help="Model path (ONNX or TRT engine)",
     )
     parser.add_argument(
         "--log-level",

@@ -26,7 +26,7 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
 	b.	polarfire_esb --force --program
  			b.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA.
  			b.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
-6. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software is not able to detect ethernet packets. This situation arises if FPGA is running older bit file and NVIDIA
+6. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software cannot detect ethernet packets. This situation arises if FPGA is running older bit file and NVIDIA
    AGX/IGX running newer holoscan sensor bridge software.
 
 Running imx477 applications - single camera

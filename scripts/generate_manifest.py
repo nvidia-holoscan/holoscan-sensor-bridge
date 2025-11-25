@@ -146,7 +146,7 @@ def main():
     if (fpga_uuid is None) or (len(fpga_uuid) < 1):
         parser.error("At least one --fpga-uuid must be specified.")
     if not any([cpnx_file, clnx_file, stratix_file, mchp_file, cpnx_url, clnx_url, stratix_url, mchp_url]):
-        parser.error("At least one of --cpnx-file, --clnx-file, --stratix-file, --cpnx-url, --clnx-url, or --stratix-url must be specified.")
+        parser.error("At least one of --cpnx-file, --clnx-file, --stratix-file, --mchp-file, --cpnx-url, --clnx-url, --stratix-url, or --mchp-url must be specified.")
     strategy = args.strategy
     if strategy is None:
         strategy = "sensor_bridge_10"

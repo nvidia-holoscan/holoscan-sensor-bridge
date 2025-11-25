@@ -58,14 +58,17 @@ def download_extract(current_file_cfg):
         r = requests.get(current_url, timeout=300)
         # parse URL to get last set of / before zip
         zipname = current_url.split("/")[-1]
-        open(zipname, "wb").write(r.content)
+        with open(zipname, "wb") as f:
+            f.write(r.content)
         with zipfile.ZipFile(zipname) as zip_ref:
             zip_ref.extractall(".")
     with open(filename, "rb") as file_to_check:
         data = file_to_check.read()
         md5_returned = hashlib.md5(data).hexdigest()
     if md5_returned != expected_md5:
-        raise ValueError(f"MD5 hash mismatch: expected {expected_md5}, got {md5_returned}")
+        raise ValueError(
+            f"MD5 hash mismatch: expected {expected_md5}, got {md5_returned}"
+        )
 
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
@@ -98,21 +101,30 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
     try:
         with open(yaml_path, "r") as file:
             default_config = yaml.safe_load(file)
-        fname = default_config["hololink"]["images"][0][
-            "content"
-        ]  # should be the zip or spi file name
+    except FileNotFoundError:
+        logging.error(f"YAML configuration file not found: {yaml_path}")
+        raise
+    except yaml.YAMLError as e:
+        logging.error(f"Failed to parse YAML file: {e}")
+        raise
+
+    try:
+        images = default_config["hololink"]["images"]
+        if not images:
+            raise ValueError("No images defined in YAML manifest")
+        fname = images[0]["content"]
         current_file_cfg = default_config["hololink"]["content"][fname]
         filename = current_file_cfg.get("filename", None)
         current_url = current_file_cfg.get("url", None)
         if current_url:
             zipname = current_url.split("/")[-1]
-            lfname = zipname
+            archive_filename = zipname
         else:
-            lfname = None
-        lfilename = filename
-    except Exception:
-        print("Incorrect YAML file")
-        exit()
+            archive_filename = None
+        spi_filename = filename
+    except (KeyError, IndexError) as e:
+        logging.error(f"Invalid YAML structure: missing required key {e}")
+        raise ValueError(f"YAML manifest is missing required fields: {e}")
     download_extract(current_file_cfg)
     hsb_ip_version = channel_metadata["hsb_ip_version"]
     if hsb_ip_version < 0x2506:
@@ -134,8 +146,8 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
             width=1,
             prescaler=0x4,
         )
-    f = open(lfilename, "rb")
-    content = list(f.read())
+    with open(spi_filename, "rb") as f:
+        content = list(f.read())
     con_len = len(content) + START_ADDR
     tot_len = len(content)
     _spi_command(in_spi, [0x01, 0])
@@ -168,19 +180,18 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
             print(f"writing to spi: {offset}/{tot_len}", end="\r")
             _wait_for_spi_ready(in_spi)
     _wait_for_spi_ready(in_spi)
-    f.close()
     _spi_command(in_spi, [ENABLE_RESET])
     _spi_command(in_spi, [RESET])
     _wait_for_spi_ready(in_spi)
-    if os.path.exists(lfilename):
-        os.remove(lfilename)
+    if os.path.exists(spi_filename):
+        os.remove(spi_filename)
     else:
-        print("file" + lfilename + "doesn't exists")
+        logging.warning(f"SPI file {spi_filename} doesn't exist for cleanup")
 
-    if os.path.exists(lfname):
-        os.remove(lfname)
+    if archive_filename and os.path.exists(archive_filename):
+        os.remove(archive_filename)
     else:
-        print("file" + lfname + "doesn't exists")
+        logging.warning(f"Archive file {archive_filename} doesn't exist for cleanup")
     hololink.stop()
 
 
@@ -272,8 +283,9 @@ def main():
         _spi_flash(SPI_CONN_ADDR, hololink, args.yaml_file, channel_metadata)
     elif args.program:
         _spi_program(hololink)
+        # Wait for FPGA programming to complete and stabilize
         time.sleep(45)
-        print("Please power cycle the board to finish programming process")
+        logging.info("Please power cycle the board to finish programming process")
 
 
 if __name__ == "__main__":
