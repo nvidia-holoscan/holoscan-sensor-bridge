@@ -12,7 +12,7 @@ container. This container is used to run all holoscan tests and examples.
    $ git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge
    ```
 
-1. Build the sensor bridge demonstration container. For systems with dGPU or DGX Spark,
+1. Build the sensor bridge demonstration container. For systems with dGPU,
 
    ```none
    $ cd holoscan-sensor-bridge
@@ -28,13 +28,13 @@ container. This container is used to run all holoscan tests and examples.
 
    Notes:
 
-   - `--dgpu` requires either DGX Spark or a system with a dGPU installed (e.g. IGX with
-     A6000 dGPU) and an OS installed with appropriate dGPU support (e.g.
+   - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
+     OS installed with appropriate dGPU support (e.g.
      [IGX OS 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads) with
      dGPU).
    - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX
-     Orin/AGX Thor or IGX without a dGPU). This requires an OS installed with iGPU
-     support (e.g. for AGX Orin: JetPack 6.2.1, for IGX: IGX OS with iGPU
+     Orin/AGX Thor, IGX without a dGPU, or DGX Spark). This requires an OS installed
+     with iGPU support (e.g. for AGX Orin: JetPack 6.2.1, for IGX: IGX BaseOS with iGPU
      configuration).
 
 (RunningTestsTarget)=

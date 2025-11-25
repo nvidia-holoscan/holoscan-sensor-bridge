@@ -26,20 +26,15 @@ import holoscan
 import hololink as hololink_module
 
 
-def get_infiniband_interface_index(interface_name):
-    """Get the index of an infiniband interface by name."""
-    try:
-        infiniband_devices = hololink_module.infiniband_devices()
-        return infiniband_devices.index(interface_name)
-    except (FileNotFoundError, ValueError):
-        return -1
-
-
 class HololinkDevice:
     def __init__(self, hololink, frame_size, host_pause_mapping):
         logging.info("HololinkDevice __init__")
         self._hololink = hololink
         self._frame_size = frame_size
+        if host_pause_mapping != 1 and host_pause_mapping != 2:
+            raise RuntimeError(
+                "Host pause mapping is not valid. Mask must be 0x01 or 0x02"
+            )
         self._host_pause_mapping = host_pause_mapping
         logging.info(f"HololinkDevice {self._frame_size=:#X}")
 
@@ -62,10 +57,10 @@ class RoceReceiverInitializer:
     maintaining clean separation of concerns.
     """
 
-    def __init__(self, hololink_ip, frame_size, host_pause_mapping):
-        self._hololink_ip = hololink_ip
+    def __init__(self, rx_hololink_ip, frame_size, tx_hololink_ip):
+        self._rx_hololink_ip = rx_hololink_ip
         self._frame_size = frame_size
-        self._host_pause_mapping = host_pause_mapping
+        self._tx_hololink_ip = tx_hololink_ip
         self._cu_context = None
         self._hololink_channel = None
         self._hololink = None
@@ -91,7 +86,7 @@ class RoceReceiverInitializer:
 
             # Initialize Hololink
             channel_metadata = hololink_module.Enumerator.find_channel(
-                channel_ip=self._hololink_ip
+                channel_ip=self._rx_hololink_ip
             )
             hololink_module.DataChannel.use_sensor(
                 channel_metadata, 0
@@ -100,8 +95,22 @@ class RoceReceiverInitializer:
 
             self._hololink_channel = hololink_module.DataChannel(channel_metadata)
             self._hololink = self._hololink_channel.hololink()
+
+            # identify the host pause mapping from the data plane (from Bootp) of the target hololink ip address
+            tx_channel_metadata = hololink_module.Enumerator.find_channel(
+                channel_ip=self._tx_hololink_ip
+            )
+            tx_data_plane = tx_channel_metadata.get("data_plane")
+            if tx_data_plane not in (0, 1):
+                logging.error(
+                    f"HSB100G host pause mapping must have tx-hololink mapped to data plane 0 or 1. tx-hololink ({self._tx_hololink_ip}) is mapped to data plane {tx_data_plane}. Check enumeration and connections"
+                )
+                raise ValueError("TX data plane must be 0 or 1")
+            logging.info(f"TX data plane={tx_data_plane}")
+            host_pause_mapping = 1 << tx_data_plane
+
             self._hololink_device = HololinkDevice(
-                self._hololink, self._frame_size, self._host_pause_mapping
+                self._hololink, self._frame_size, host_pause_mapping
             )
 
             self._hololink.start()
@@ -229,11 +238,9 @@ class SignalGeneratorRxApp(holoscan.core.Application):
         samples_count = self._args.samples_count
         buffer_size = samples_count * 4
 
-        host_pause_mapping = 1 << get_infiniband_interface_index(self._args.tx_ibv_name)
-
         # Initialize receiver resources
         self._receiver_initializer = RoceReceiverInitializer(
-            self._args.rx_hololink, buffer_size, host_pause_mapping
+            self._args.rx_hololink, buffer_size, self._args.tx_hololink
         )
         self._receiver_initializer.initialize()
 

@@ -233,18 +233,20 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    # Configures the camera for 3840x2160, 60fps
-    camera.configure()
+    try:
+        hololink.reset()
+        # Configures the camera for 3840x2160, 60fps
+        camera.configure()
 
-    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-    camera.set_analog_gain(0x2FF)
-    camera.set_exposure_reg(args.exposure)
+        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+        camera.set_analog_gain(0x2FF)
+        camera.set_exposure_reg(args.exposure)
 
-    if args.pattern:
-        camera.set_pattern()
-    application.run()
-    hololink.stop()
+        if args.pattern:
+            camera.set_pattern()
+        application.run()
+    finally:
+        hololink.stop()
 
 
 if __name__ == "__main__":

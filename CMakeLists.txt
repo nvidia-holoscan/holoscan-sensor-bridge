@@ -24,6 +24,7 @@ option(HOLOLINK_BUILD_ONLY_NATIVE "Build only native (i.e. C++) components" OFF)
 option(HOLOLINK_BUILD_ARGUS_ISP "Build Argus ISP support" OFF)
 option(HOLOLINK_BUILD_SIPL "Build NvSIPL capture components" OFF)
 option(HOLOLINK_BUILD_EMULATOR "Build HSB Emulator components" ON)
+option(HOLOLINK_BUILD_FUSA "Build NvFusa capture components" OFF)
 
 if (HOLOLINK_BUILD_PYTHON AND NOT HOLOLINK_BUILD_EMULATOR)
   message(FATAL_ERROR "If building Python bindings, HOLOLINK_BUILD_EMULATOR must be ON")

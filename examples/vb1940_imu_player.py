@@ -211,19 +211,21 @@ def main():
 
     hololink = hololink_channel.hololink()
     hololink.start()  # Start the Hololink device before configuring IMU
-    hololink.reset()
-    logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize():
-        raise ValueError("Failed to synchronize PTP.")
-    logging.debug("PTP synchronized.")
-    imu.configure(
-        samples_per_frame=imu_samples_per_frame,
-        accelerometer_rate=args.accelerometer_rate,
-        gyroscope_rate=args.gyroscope_rate,
-    )
-    logging.info("Calling run")
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        logging.debug("Waiting for PTP sync.")
+        if not hololink.ptp_synchronize():
+            raise ValueError("Failed to synchronize PTP.")
+        logging.debug("PTP synchronized.")
+        imu.configure(
+            samples_per_frame=imu_samples_per_frame,
+            accelerometer_rate=args.accelerometer_rate,
+            gyroscope_rate=args.gyroscope_rate,
+        )
+        logging.info("Calling run")
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

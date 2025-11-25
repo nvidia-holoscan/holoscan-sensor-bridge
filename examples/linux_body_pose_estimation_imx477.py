@@ -283,15 +283,17 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    camera.configure()
+    try:
+        hololink.reset()
+        camera.configure()
 
-    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-    camera.set_analog_gain(0x2FF)
-    camera.set_exposure_reg(args.exposure)
+        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+        camera.set_analog_gain(0x2FF)
+        camera.set_exposure_reg(args.exposure)
 
-    application.run()
-    hololink.stop()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

@@ -84,6 +84,44 @@ target_link_libraries(vb1940_player
 
 list(APPEND EXAMPLE_INSTALL_TARGETS vb1940_player)
 
+if(HOLOLINK_BUILD_FUSA)
+  add_executable(fusa_coe_imx274_player
+    fusa_coe_imx274_player.cpp
+    )
+
+  target_link_libraries(fusa_coe_imx274_player
+    PRIVATE
+      hololink
+      hololink::operators::fusa_coe_capture
+      hololink::operators::image_processor
+      hololink::operators::packed_format_converter
+      hololink::sensors::native_imx274_camera_sensor
+      holoscan::core
+      holoscan::ops::bayer_demosaic
+      holoscan::ops::holoviz
+    )
+
+  list(APPEND EXAMPLE_INSTALL_TARGETS fusa_coe_imx274_player)
+
+  add_executable(fusa_coe_vb1940_player
+    fusa_coe_vb1940_player.cpp
+    )
+
+  target_link_libraries(fusa_coe_vb1940_player
+    PRIVATE
+      hololink
+      hololink::operators::fusa_coe_capture
+      hololink::operators::image_processor
+      hololink::operators::packed_format_converter
+      hololink::sensors::native_vb1940_camera_sensor
+      holoscan::core
+      holoscan::ops::bayer_demosaic
+      holoscan::ops::holoviz
+    )
+
+  list(APPEND EXAMPLE_INSTALL_TARGETS fusa_coe_vb1940_player)
+endif()
+
 add_executable(single_network_stereo_vb1940_player
   single_network_stereo_vb1940_player.cpp
   )
@@ -210,6 +248,11 @@ list(APPEND EXAMPLE_INSTALL_FILES
     stereo_imx477_player.py
     tao_peoplenet.py
     vb1940_player.py)
+if(HOLOLINK_BUILD_FUSA)
+  list(APPEND EXAMPLE_INSTALL_FILES
+    fusa_coe_imx274_player.py
+    fusa_coe_vb1940_player.py)
+endif() # HOLOLINK_BUILD_FUSA
 if(HOLOLINK_BUILD_SIPL)
   list(APPEND EXAMPLE_INSTALL_FILES sipl_player.py)
 endif() # HOLOLINK_BUILD_SIPL

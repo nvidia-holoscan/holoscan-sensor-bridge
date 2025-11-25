@@ -22,9 +22,9 @@ add_library(hololink_core STATIC
   logging.cpp
   metadata.cpp
   networking.cpp
+  packetizer_program.cpp
   reactor.cpp
   timeout.cpp
-  tools.cpp
   traditional_spi.cpp
   traditional_i2c.cpp
   )
@@ -70,6 +70,5 @@ install(FILES
         serializer.hpp
         smart_object_pool.hpp
         timeout.hpp
-        tools.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/core
         COMPONENT hololink-core)

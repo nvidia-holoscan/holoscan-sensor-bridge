@@ -18,6 +18,14 @@
 #ifndef CSI_FORMATS_HPP
 #define CSI_FORMATS_HPP
 
+#include <memory>
+
+namespace hololink {
+
+class PacketizerProgram;
+
+} // namespace hololink
+
 namespace hololink::csi {
 
 /**
@@ -43,6 +51,11 @@ enum class BayerFormat {
     GRBG = 3
 };
 
-} // namespace hololink::sensors::csi
+/**
+ * Gets a CSI packetizer program given a pixel format.
+ */
+std::shared_ptr<PacketizerProgram> get_packetizer_program(PixelFormat pixel_format);
+
+} // namespace hololink::csi
 
 #endif /* CSI_FORMATS_HPP */

@@ -56,21 +56,24 @@ void mac_from_if(IPAddress& iface, std::string const& if_name)
         (int)if_name_len, if_name.c_str());
     FILE* file = fopen(buf, "rb");
     if (!file) {
+        std::string error_message = "failed to open file: " + std::string(buf);
         delete[] buf;
-        throw std::runtime_error("failed to open file: " + std::string(buf));
+        throw std::runtime_error(error_message);
     }
     size_t read_size = fread(buf, 1, len, file);
     if (read_size < 3 * ETHER_ADDR_LEN) { // 2 bytes per octet + 1 ':' delimiter per ETHER_ADDR_LEN - 1 octets + 1 null terminator/LF minimum
         fclose(file);
+        std::string error_message = "failed to read file: " + std::string(buf);
         delete[] buf;
-        throw std::runtime_error("failed to read file: " + std::string(buf));
+        throw std::runtime_error(error_message);
     }
     fclose(file);
     buf[3 * ETHER_ADDR_LEN - 1] = '\0'; // null terminate the string
     struct ether_addr* ether_addr = ether_aton(buf);
     if (!ether_addr) {
+        std::string error_message = "failed to parse MAC address from file: " + std::string(buf);
         delete[] buf;
-        throw std::runtime_error("failed to parse MAC address from file: " + std::string(buf));
+        throw std::runtime_error(error_message);
     }
     memcpy(iface.mac.data(), ether_addr->ether_addr_octet, std::min((long unsigned int)ETHER_ADDR_LEN, iface.mac.size()));
     iface.flags |= IPADDRESS_HAS_MAC;
@@ -99,7 +102,6 @@ int comp_ifaddrs_addr(struct ifaddrs* ifa, void* ipv4)
 int comp_ifaddrs_iface(struct ifaddrs* ifa, void* iface)
 {
     char const* iface_ = (char const*)iface;
-    size_t iface_len = strlen(iface_);
 
     if (!strcmp(ifa->ifa_name, iface_)) {
         return 0;

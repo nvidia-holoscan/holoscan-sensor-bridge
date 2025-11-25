@@ -35,7 +35,6 @@ from ._hololink_core import (
     Reactor,
     Serializer,
     gettid,
-    infiniband_devices,
     local_ip_and_mac,
     local_ip_and_mac_from_socket,
     local_mac,
@@ -58,5 +57,4 @@ __all__ = [
     "local_mac",
     "round_up",
     "gettid",
-    "infiniband_devices",
 ]

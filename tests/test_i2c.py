@@ -300,12 +300,14 @@ def test_imx274_synchronized_i2c_settings(
         # Run it.
         hololink = hololink_channel.hololink()
         hololink.start()
-        hololink.reset()
-        camera.setup_clock()
-        camera.configure(camera_mode)
-        camera.set_digital_gain_reg(0x4)
-        application.run()
-        hololink.stop()
+        try:
+            hololink.reset()
+            camera.setup_clock()
+            camera.configure(camera_mode)
+            camera.set_digital_gain_reg(0x4)
+            application.run()
+        finally:
+            hololink.stop()
     start_frames = 10
     # the pipeline sees frames that we don't due
     # to longer startup for some pipeline elements
@@ -694,14 +696,16 @@ def test_stereo_imx274_synchronized_i2c_settings(
         application.config(default_configuration)
         # Run it.
         hololink.start()
-        hololink.reset()
-        camera_left.setup_clock()
-        camera_left.configure(camera_mode_left)
-        camera_left.set_digital_gain_reg(0x4)
-        camera_right.configure(camera_mode_right)
-        camera_right.set_digital_gain_reg(0x4)
-        application.run()
-        hololink.stop()
+        try:
+            hololink.reset()
+            camera_left.setup_clock()
+            camera_left.configure(camera_mode_left)
+            camera_left.set_digital_gain_reg(0x4)
+            camera_right.configure(camera_mode_right)
+            camera_right.set_digital_gain_reg(0x4)
+            application.run()
+        finally:
+            hololink.stop()
 
     def check_buckets(context, histogram):
         start_frames = 10

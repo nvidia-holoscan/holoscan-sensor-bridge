@@ -16,12 +16,13 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_TYPE=invalid
+ARG HSDK_CONTAINER_CONFIG=invalid
 
 # dgpu specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda12-dgpu AS build_dgpu
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_dgpu
 
-# Orin specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda12-igpu AS build_igpu_orin
+# generic l4t igpu (Orin/NX/Nano/Thor) specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu
 RUN \
     # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
     apt-get update && \
@@ -51,7 +52,7 @@ COPY --from=l4t-libs \
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 
 # Thor specific configuration goes here.
-FROM nvcr.io/nvidia/clara-holoscan/holoscan:v3.7.0-cuda13 AS build_igpu_thor
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu_sipl
 
 # Download and install the Jetson Multimedia API.
 RUN wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_Multimedia_API_R38.2.0_aarch64.tbz2 && \
@@ -80,9 +81,10 @@ COPY --from=l4t-libs \
     libnvargus_socketclient.so \
     libnvargus_socketserver.so \
     libnvbufsurface.so \
+    libnvbuf_fdmap.so.1.0.0 \
     libnvcamerahal.so \
     libnvfusacapinterface.so \
-    libnvfusacap.so \
+    libnvfusacap*.so \
     libnvisppg.so \
     libnvisp.so \
     libnvodm_imager.so \
@@ -111,6 +113,9 @@ COPY --from=l4t-libs \
     /usr/lib/aarch64-linux-gnu/nvidia/
 ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 
+# DGX Spark specific configuration goes here.
+FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu_spark
+
 # configuration for all GPU configurations start here.
 FROM build_${CONTAINER_TYPE}
 
@@ -138,4 +143,5 @@ RUN apt-get update \
 RUN pip3 install meson ninja pyelftools
 # repeated ARG because it has to be inside the FROM above
 ARG CONTAINER_TYPE=invalid
+ARG HSDK_CONTAINER_CONFIG=invalid
 ENV CONTAINER_TYPE=${CONTAINER_TYPE}

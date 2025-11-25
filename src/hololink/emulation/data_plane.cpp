@@ -199,6 +199,7 @@ bool DataPlane::is_running()
 
 bool DataPlane::packetizer_enabled() const
 {
+    constexpr uint32_t PACKETIZER_MODE = 0x0C;
     uint32_t packetizer_mode = registers_->read(sif_address_ + PACKETIZER_MODE);
     return (packetizer_mode >> 28) & 0x1;
 }

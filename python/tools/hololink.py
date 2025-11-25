@@ -704,7 +704,7 @@ class Programmer:
         strategy_name = self._manifest["strategy"]
         strategy_constructor = strategies.get(strategy_name)
         if strategy_constructor is None:
-            raise Exception('Unsupported strategy "{strategy_name}" specified.')
+            raise Exception(f'Unsupported strategy "{strategy_name}" specified.')
         self._strategy = strategy_constructor(self)
         if "licenses" not in self._manifest:
             # Note that removing the "licenses" section from the manifest file,

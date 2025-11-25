@@ -73,6 +73,7 @@ setuptools.setup(
                 "-DBUILD_SHARED_LIBS:BOOL=OFF",
                 f"-DHOLOLINK_BUILD_ARGUS_ISP={'ON' if os.path.isdir('/usr/src/jetson_multimedia_api/argus') else 'OFF'}",
                 f"-DHOLOLINK_BUILD_SIPL={'ON' if os.path.isdir('/usr/src/jetson_sipl_api') else 'OFF'}",
+                f"-DHOLOLINK_BUILD_FUSA={'ON' if os.path.isdir('/usr/src/jetson_sipl_api/sipl/fusa') else 'OFF'}",
                 # Add this to debug the code
                 # "-DCMAKE_BUILD_TYPE=Debug",
             ],

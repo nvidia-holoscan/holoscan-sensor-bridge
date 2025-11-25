@@ -243,23 +243,25 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    hololink.write_uint32(0x8, 0x0)  # Keep the sensor RESET at low
-    camera.setup_clock()
-    # Release the sensor RESET to high
-    if args.use_sensor == 0:
-        hololink.write_uint32(0x8, 0x1)
-    elif args.use_sensor == 1:
-        hololink.write_uint32(0x8, 0x2)
-    else:
-        raise Exception(f"Unexpected value for use-sensor ({args.use_sensor})")
-    time.sleep(100 / 1000)
-    camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera.configure(camera_mode)
+    try:
+        hololink.reset()
+        hololink.write_uint32(0x8, 0x0)  # Keep the sensor RESET at low
+        camera.setup_clock()
+        # Release the sensor RESET to high
+        if args.use_sensor == 0:
+            hololink.write_uint32(0x8, 0x1)
+        elif args.use_sensor == 1:
+            hololink.write_uint32(0x8, 0x2)
+        else:
+            raise Exception(f"Unexpected value for use-sensor ({args.use_sensor})")
+        time.sleep(100 / 1000)
+        camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera.configure(camera_mode)
 
-    application.run()
-    hololink.stop()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

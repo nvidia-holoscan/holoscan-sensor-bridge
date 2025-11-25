@@ -522,11 +522,22 @@ void NativeVb1940Sensor::configure_converter(std::shared_ptr<hololink::csi::CsiC
     uint32_t transmitted_line_bytes = converter->transmitted_line_bytes(pixel_format_, width_);
     uint32_t received_line_bytes = converter->received_line_bytes(transmitted_line_bytes);
 
+    // Status lines are not converted
+    uint32_t status_line_bytes = 0;
+    if (pixel_format_ == csi::PixelFormat::RAW_8) {
+        status_line_bytes = width_;
+    } else if (pixel_format_ == csi::PixelFormat::RAW_10) {
+        status_line_bytes = width_ * 10 / 8;
+    } else if (pixel_format_ == csi::PixelFormat::RAW_12) {
+        status_line_bytes = width_ * 12 / 8;
+    }
+    status_line_bytes = converter->received_line_bytes(status_line_bytes);
+
     // VB1940 sensor has 1 line of status before the real image data starts
-    start_byte += received_line_bytes;
+    start_byte += status_line_bytes;
 
     // VB1940 sensor has 2 lines of status after the real image data is complete
-    uint32_t trailing_bytes = received_line_bytes * 2;
+    uint32_t trailing_bytes = status_line_bytes * 2;
 
     // Configure the converter
     converter->configure(

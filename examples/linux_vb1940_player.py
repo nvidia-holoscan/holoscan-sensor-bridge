@@ -215,19 +215,21 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    hololink.write_uint32(0x8, 0x0)  # Keep the sensor RESET at low
-    camera.setup_clock()
-    # hololink.reset()
-    hololink.write_uint32(0x8, 0x1)  # Release the sensor RESET to high
-    time.sleep(100 / 1000)
-    camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera.configure(camera_mode)
-    # camera.set_exposure_reg(0x0000)
-    # camera.set_analog_gain_reg(0x0c)
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        hololink.write_uint32(0x8, 0x0)  # Keep the sensor RESET at low
+        camera.setup_clock()
+        # hololink.reset()
+        hololink.write_uint32(0x8, 0x1)  # Release the sensor RESET to high
+        time.sleep(100 / 1000)
+        camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera.configure(camera_mode)
+        # camera.set_exposure_reg(0x0000)
+        # camera.set_analog_gain_reg(0x0c)
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

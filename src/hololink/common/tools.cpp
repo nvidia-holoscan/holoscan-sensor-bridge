@@ -17,17 +17,27 @@
  * See README.md for detailed information.
  */
 
-#ifndef SRC_HOLOLINK_TOOLS
-#define SRC_HOLOLINK_TOOLS
-
+#include <algorithm>
+#include <infiniband/verbs.h>
 #include <string>
 #include <vector>
 
-namespace hololink::core {
+namespace hololink {
 
-// Return a sorted vector of Infiniband devices.
-std::vector<std::string> infiniband_devices();
+std::vector<std::string> infiniband_devices()
+{
+    int num_devices = 0;
+    struct ibv_device** devices = ibv_get_device_list(&num_devices);
+    if (!devices) {
+        return {};
+    }
+    std::vector<std::string> device_names;
+    for (int i = 0; i < num_devices; i++) {
+        device_names.push_back(ibv_get_device_name(devices[i]));
+    }
+    ibv_free_device_list(devices);
+    std::sort(device_names.begin(), device_names.end());
+    return device_names;
+}
 
 } // namespace hololink
-
-#endif /* SRC_HOLOLINK_TOOLS */

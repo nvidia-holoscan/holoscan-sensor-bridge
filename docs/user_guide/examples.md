@@ -4,8 +4,8 @@ Holoscan sensor bridge Python example applications are located under the `exampl
 directory.
 
 Below are instructions for running the applications on the AGX Thor, DGX Spark, IGX and
-the Jetson AGX Orin platforms. For each IGX dGPU camera example, an appropriately
-configured DGX Spark may also be used.
+the Jetson AGX Orin platforms. For each IGX camera example, an appropriately configured
+DGX Spark may also be used.
 
 - Examples starting with the word "linux\_" in the filename use the unaccelerated Linux
   Sockets API network receiver operator. These examples work on DGX Spark and both IGX

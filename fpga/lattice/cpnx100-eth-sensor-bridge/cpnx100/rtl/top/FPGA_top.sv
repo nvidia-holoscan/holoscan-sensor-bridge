@@ -1,8 +1,24 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 // Lattice Sensor Board Example Design
 `include "HOLOLINK_def.svh"
 
 module FPGA_top
   import HOLOLINK_pkg::*;
+  import apb_pkg::*;
 #(
   parameter BUILD_REV = 48'h0
 )(
@@ -58,7 +74,7 @@ module FPGA_top
 // FPGA Board Control
 //------------------------------------------------------------------------------
 
-  logic [`SENSOR_IF_INST-1:0] sw_sen_rst;
+  logic [31:0]                sw_sen_rst;
   logic                       sw_sys_rst;
 
   assign CAM_1V8_EN       = 1'b1;
@@ -93,7 +109,8 @@ module FPGA_top
   logic                     sys_rst;     // system active high reset
   logic                     apb_rst;     // apb active high reset
   logic                     hif_rst;     // host interface active high reset
-  logic                     sif_rst;     // sensor interface active high reset
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_rst;     // sensor Rx interface active high reset
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_rst;     // sensor Tx interface active high reset
   logic                     ptp_rst;     // ptp active high reset
   logic                     pcs_rst_n;   // ethernet pcs active low reset
   logic                     ptp_cam_24m_clk;
@@ -106,6 +123,11 @@ module FPGA_top
   /* synthesis syn_keep=1 nomerge=""*/
   logic                     i2s_clk_int;
   /* synthesis syn_keep=1 nomerge=""*/
+  logic                     i2s_ref_clk;
+  /* synthesis syn_keep=1 nomerge=""*/
+
+  logic                     uart_tx;
+  logic                     uart_rx;  
 
   assign usr_clk_locked = &usr_clk_rdy;
 
@@ -124,8 +146,9 @@ module FPGA_top
     .o_ptp_cam_clk   ( ptp_cam_24m_clk), //ptp 24MHz clock
 
     .o_i2s_clk_int   ( i2s_clk_int    ),
-    .o_i2s_clk_ext   ( i2s_clk_ext    ),
-    .o_i2s_mclk_ext  ( i2s_mclk_ext   ),
+    // .o_i2s_clk_ext   ( i2s_clk_ext    ),
+    // .o_i2s_mclk_ext  ( i2s_mclk_ext   ),
+    .o_i2s_ref_clk   ( i2s_ref_clk    ),
 
     .i_pb_rst_n      ( RESET_N        ), // asynchronous active low board reset
     .i_sw_rst        ( sw_sys_rst     ), // software controlled active high reset
@@ -134,7 +157,7 @@ module FPGA_top
     .o_pcs_rst_n     ( pcs_rst_n      )  // ethernet pcs active low reset
   );
 
-  assign SWRST_N = !sys_rst;
+  assign SWRST_N = '1; //!sys_rst;
   assign PTP_CAM_CLK = ptp_cam_24m_clk;
 
 
@@ -181,20 +204,14 @@ module FPGA_top
   logic [31         :0] apb_pwdata;
   logic                 apb_pwrite;
   logic [`REG_INST-1:0] apb_pready;
-  logic [31         :0] apb_prdata [`REG_INST];
+  logic [31         :0] apb_prdata [`REG_INST-1:0];
   logic [`REG_INST-1:0] apb_pserr;
 
 
   //Tie off unused REG_INST APB signals
   genvar i;
 
-/*
-  for(i=7; i<`REG_INST; i++) begin
-    assign apb_pready[i] = '0;
-    assign apb_prdata[i] = '0;
-    assign apb_pserr [i] = '0;
-  end
-*/
+  // Note: All APB indices (0-7) are now in use since REG_INST=8
 
 //------------------------------------------------------------------------------
 // Lattice 10GbE Host Interface
@@ -202,16 +219,16 @@ module FPGA_top
 
   logic [`HOST_IF_INST-1  :0] hif_tx_axis_tvalid;
   logic [`HOST_IF_INST-1  :0] hif_tx_axis_tlast;
-  logic [`HOST_WIDTH-1    :0] hif_tx_axis_tdata [`HOST_IF_INST];
-  logic [`HOSTKEEP_WIDTH-1:0] hif_tx_axis_tkeep [`HOST_IF_INST];
-  logic [`HOSTUSER_WIDTH-1:0] hif_tx_axis_tuser [`HOST_IF_INST];
+  logic [`HOST_WIDTH-1    :0] hif_tx_axis_tdata [`HOST_IF_INST-1:0];
+  logic [`HOSTKEEP_WIDTH-1:0] hif_tx_axis_tkeep [`HOST_IF_INST-1:0];
+  logic [`HOSTUSER_WIDTH-1:0] hif_tx_axis_tuser [`HOST_IF_INST-1:0];
   logic [`HOST_IF_INST-1  :0] hif_tx_axis_tready;
 
   logic [`HOST_IF_INST-1  :0] hif_rx_axis_tvalid;
   logic [`HOST_IF_INST-1  :0] hif_rx_axis_tlast;
-  logic [`HOST_WIDTH-1    :0] hif_rx_axis_tdata [`HOST_IF_INST];
-  logic [`HOSTKEEP_WIDTH-1:0] hif_rx_axis_tkeep [`HOST_IF_INST];
-  logic [`HOSTUSER_WIDTH-1:0] hif_rx_axis_tuser [`HOST_IF_INST];
+  logic [`HOST_WIDTH-1    :0] hif_rx_axis_tdata [`HOST_IF_INST-1:0];
+  logic [`HOSTKEEP_WIDTH-1:0] hif_rx_axis_tkeep [`HOST_IF_INST-1:0];
+  logic [`HOSTUSER_WIDTH-1:0] hif_rx_axis_tuser [`HOST_IF_INST-1:0];
   logic [`HOST_IF_INST-1  :0] hif_rx_axis_tready;
 
   generate
@@ -305,8 +322,8 @@ module FPGA_top
   // SPI Interface, QSPI compatible
   logic [`SPI_INST-1:0] spi_csn;
   logic [`SPI_INST-1:0] spi_sck;
-  logic [3          :0] spi_sdio_i [`SPI_INST];
-  logic [3          :0] spi_sdio_o [`SPI_INST];
+  logic [3          :0] spi_sdio_i [`SPI_INST-1:0];
+  logic [3          :0] spi_sdio_o [`SPI_INST-1:0];
   logic [`SPI_INST-1:0] spi_oen;
 
   // Regular SPI
@@ -363,16 +380,59 @@ module FPGA_top
   endgenerate
 
 //------------------------------------------------------------------------------
+// UART Peripheral
+//------------------------------------------------------------------------------
+  logic uart_rx_sync;
+
+  glitch_filter #(
+    .DATA_WIDTH   ( 1    ),
+    .RESET_VALUE  ( 1'b1 ),
+    .FILTER_DEPTH ( 8    )
+  ) uart_sync (
+    .clk      ( hif_clk      ),
+    .rst_n    ( ~hif_rst     ),
+    .sync_in  ( uart_rx      ),
+    .sync_out ( uart_rx_sync )
+  );
+
+//------------------------------------------------------------------------------
+// Delayed I/O Interface
+//------------------------------------------------------------------------------
+
+  logic delayed_io_pin;
+  logic delayed_io_busy;
+
+  // APB interface structs for delayed I/O (driven by APB switch below)
+  apb_m2s delayed_io_apb_m2s;
+  apb_s2m delayed_io_apb_s2m;
+
+  FPGA_delayed_io #(
+    .NUM_OUTPUTS  ( 1 ),
+    .W_OFSET      ( 8 )
+  ) u_delayed_io (
+    .cmd_clk      ( apb_clk              ),
+    .cmd_rst_n    ( ~apb_rst             ),
+    .proc_clk     ( apb_clk              ),  // Using same clock for simplicity
+    .proc_rst_n   ( ~apb_rst             ),  // Using same reset for simplicity
+    // APB interface
+    .i_apb_m2s    ( delayed_io_apb_m2s   ),
+    .o_apb_s2m    ( delayed_io_apb_s2m   ),
+    // Delayed I/O outputs
+    .o_io_pins    ( delayed_io_pin       ),
+    .o_io_busy    ( delayed_io_busy      )
+  );
+
+//------------------------------------------------------------------------------
 // I2S IF
 //------------------------------------------------------------------------------
-  logic [`SENSOR_IF_INST-1:0] sif_tx_axis_tvalid;
-  logic [`SENSOR_IF_INST-1:0] sif_tx_axis_tlast;
-  logic [`DATAPATH_WIDTH-1:0] sif_tx_axis_tdata [`SENSOR_IF_INST];
-  logic [`DATAKEEP_WIDTH-1:0] sif_tx_axis_tkeep [`SENSOR_IF_INST];
-  logic [`DATAUSER_WIDTH-1:0] sif_tx_axis_tuser [`SENSOR_IF_INST];
-  logic [`SENSOR_IF_INST-1:0] sif_tx_axis_tready;
-
-  assign sif_tx_axis_tready[1] = 1'b0; //Tie Sensor TX[1]
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_clk;
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_rst;
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tvalid;
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tlast;
+  logic [`DATAPATH_WIDTH-1:0]    sif_tx_axis_tdata [`SENSOR_TX_IF_INST-1:0];
+  logic [`DATAKEEP_WIDTH-1:0]    sif_tx_axis_tkeep [`SENSOR_TX_IF_INST-1:0];
+  logic [`DATAUSER_WIDTH-1:0]    sif_tx_axis_tuser [`SENSOR_TX_IF_INST-1:0];
+  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tready;
 
   logic                       i2s_tx_axis_tvalid;
   logic                       i2s_tx_axis_tlast;
@@ -381,90 +441,150 @@ module FPGA_top
   logic                       i2s_tx_axis_tuser;
   logic                       i2s_tx_axis_tready;
 
-  axis_buffer #(
-    .IN_DWIDTH           ( `HOST_WIDTH            ),
-    .OUT_DWIDTH          ( 32                     ),
-    .BUF_DEPTH           ( 64                     ),
-    .WAIT2SEND           ( 0                      ),
-    .DUAL_CLOCK          ( 1                      ),
-    .W_USER              ( 1                      )
-  ) u_i2s_tx_axis_buffer (
-
-    .in_clk              ( hif_clk                ),
-    .in_rst              ( hif_rst                ),
-    .out_clk             ( apb_clk                ),
-    .out_rst             ( apb_rst                ),
-
-    //Sensor TX
-    .i_axis_rx_tvalid    ( sif_tx_axis_tvalid[0]  ),
-    .i_axis_rx_tdata     ( sif_tx_axis_tdata[0]   ),
-    .i_axis_rx_tlast     ( sif_tx_axis_tlast[0]   ),
-    .i_axis_rx_tuser     ( sif_tx_axis_tuser[0]   ),
-    .i_axis_rx_tkeep     ( sif_tx_axis_tkeep[0]   ),
-    .o_axis_rx_tready    ( sif_tx_axis_tready[0]  ),
-    //I2S IP
-    .o_axis_tx_tvalid    ( i2s_tx_axis_tvalid     ),
-    .o_axis_tx_tdata     ( i2s_tx_axis_tdata      ),
-    .o_axis_tx_tlast     ( i2s_tx_axis_tlast      ),
-    .o_axis_tx_tuser     ( i2s_tx_axis_tuser      ),
-    .o_axis_tx_tkeep     ( i2s_tx_axis_tkeep      ),
-    .i_axis_tx_tready    ( i2s_tx_axis_tready     )
-  );
+  assign sif_tx_clk[0] = apb_clk;
 
 //------------------------------------------------------------------------------
-// I2S Instantiation IP NOT available to the public
+// I2S Instantiation
 //------------------------------------------------------------------------------
-/*  
   logic I2S_LRCLK;
   logic I2S_SDATA;
 
-  NV_i2s_fpga u_i2s (
-    .ahc2client_paddr   ( apb_paddr          ), //|< i
-    .ahc2client_penable ( apb_penable        ), //|< i
-    .ahc2client_pprot   ( 3'b0               ), //|< i
-    .ahc2client_psel    ( apb_psel[7]        ), //|< i
-    .ahc2client_pwdata  ( apb_pwdata         ), //|< i
-    .ahc2client_pwrite  ( apb_pwrite         ), //|< i
-    .ahub_clk           ( apb_clk            ), //|< i
-    .ape_aperstn        ( !apb_rst           ), //|< i
-    .i2s_clk            ( i2s_clk_int        ), //|< i
-    .i2s_lrck_in        ( 1'b0               ), //|< i  UNUSED IN MMODE
-    .i2s_rx_axis_tready ( 1'b0               ), //|< i  UNUSED IN TX
-    .i2s_sdata_in       ( 1'b0               ), //|< i  UNUSED IN TX
-    .i2s_tx_axis_tdata  ( i2s_tx_axis_tdata  ), //|< i
-    .i2s_tx_axis_tvalid ( i2s_tx_axis_tvalid ), //|< i
-    .client2ahc_prdata  ( apb_prdata[7]      ), //|> o
-    .client2ahc_pready  ( apb_pready[7]      ), //|> o
-    .client2ahc_pslverr ( apb_pserr[7]       ), // ReLingo_waive_line:temp:RL02
-    .i2s_lrck_oen       (                    ), //|> o
-    .i2s_lrck_out       ( I2S_LRCLK          ), //|> o
-    .i2s_rx_axis_tdata  (                    ), //|> o  UNUSED IN TX
-    .i2s_rx_axis_tvalid (                    ), //|> o  UNUSED IN TX
-    .i2s_sdata_oen      (                    ), //|> o
-    .i2s_sdata_out      ( I2S_SDATA          ), //|> o
-    .i2s_tx_axis_tready ( i2s_tx_axis_tready )  //|> o
+  // APB interface structs for both modules
+  apb_m2s i2s_apb_m2s;
+  apb_s2m i2s_apb_s2m;
+  apb_m2s switch_apb6_m2s [1];
+  apb_s2m switch_apb6_s2m [1];
+  
+  // APB switch on index 6 - shared with vsync module (matches original hardware)
+  assign switch_apb6_m2s[0].psel    = apb_psel[6];
+  assign switch_apb6_m2s[0].penable = apb_penable;
+  assign switch_apb6_m2s[0].paddr   = apb_paddr;
+  assign switch_apb6_m2s[0].pwdata  = apb_pwdata;
+  assign switch_apb6_m2s[0].pwrite  = apb_pwrite;
+  
+  // Connect switch output back to main APB bus (index 6)
+  assign apb_prdata[6] = switch_apb6_s2m[0].prdata;
+  assign apb_pready[6] = switch_apb6_s2m[0].pready;
+  assign apb_pserr[6]  = switch_apb6_s2m[0].pserr;
+
+  // I2S gets direct connection to APB index 7 (original location)
+  assign i2s_apb_m2s.psel    = apb_psel[7];
+  assign i2s_apb_m2s.penable = apb_penable;
+  assign i2s_apb_m2s.paddr   = apb_paddr;
+  assign i2s_apb_m2s.pwdata  = apb_pwdata;
+  assign i2s_apb_m2s.pwrite  = apb_pwrite;
+  
+  assign apb_prdata[7] = i2s_apb_s2m.prdata;
+  assign apb_pready[7] = i2s_apb_s2m.pready;
+  assign apb_pserr[7]  = i2s_apb_s2m.pserr;
+  
+  // Create Completer APB interfaces
+  apb_m2s vsync_apb_m2s;
+  apb_s2m vsync_apb_s2m;
+  
+  // Arrays for apb_switch interface
+  apb_m2s apb6_m2s_array [2];
+  apb_s2m apb6_s2m_array [2];
+  
+  // APB switch instantiation using existing hololink module
+  // W_OFSET=11, W_SW=1 means bit [11] is used for decode, bits [10:0] passed to Completer
+  // vsync gets addr[11]=0 (0x000-0x7FF), delayed_io gets addr[11]=1 (0x800-0xFFF)
+  apb_switch #(
+    .N_MPORT              ( 1  ),   // Single Requester port
+    .N_SPORT              ( 2  ),   // Two Completer ports: vsync and delayed_io
+    .W_OFSET              ( 11 ),   // Pass address bits [10:0] to Completer
+    .W_SW                 ( 1  ),   // Use 1 bit (bit [11]) for decode
+    .MERGE_COMPLETER_SIG  ( 1  )    // Merge completer signals
+  ) u_apb6_switch (
+    .i_apb_clk     ( apb_clk              ),
+    .i_apb_reset   ( apb_rst              ),
+    .i_apb_timeout ( 1'b0                 ), // No timeout
+    
+    // Requester interface (from main APB bus) - single port array
+    .i_apb_m2s     ( switch_apb6_m2s[0:0] ),
+    .o_apb_s2m     ( switch_apb6_s2m[0:0] ),
+    
+    // Completer interfaces: [0] = vsync (addr[11]=0), [1] = delayed_io (addr[11]=1)  
+    .o_apb_m2s     ( apb6_m2s_array       ),
+    .i_apb_s2m     ( apb6_s2m_array       )
   );
-*/
+  
+  // Extract single element from arrays
+  assign vsync_apb_m2s      = apb6_m2s_array[0];
+  assign delayed_io_apb_m2s = apb6_m2s_array[1];
+
+  assign apb6_s2m_array[0] = vsync_apb_s2m;
+  assign apb6_s2m_array[1] = delayed_io_apb_s2m;
+
+  // New i2s_peripheral_top instantiation
+  i2s_top #(
+    .AXI_DWIDTH     ( 32           ),  // Match the 32-bit interface
+    .I2S_DWIDTH     ( 32           ),  // I2S data width
+    .TX_FIFO_DEPTH  ( 8            ),  // TX buffer depth
+    .RX_FIFO_DEPTH  ( 8            ),  // RX buffer depth  
+    .APB_ADDR_WIDTH ( 12           )   // APB address space width
+  ) u_i2s (
+    // Clock and Reset
+    .i_apb_clk         ( apb_clk            ),
+    .i_apb_rst         ( apb_rst            ),
+    // .i_ref_clk         ( apb_clk            ), // Use APB clock as reference
+    .i_ref_clk         ( i2s_ref_clk        ), // Use APB clock as reference
+    .i_axis_clk        ( apb_clk            ), // Use APB clock for AXI-Stream
+    
+    // APB Configuration Interface
+    .i_apb_m2s         ( i2s_apb_m2s        ),
+    .o_apb_s2m         ( i2s_apb_s2m        ),
+    
+    // Host AXI-Stream TX Interface (Host to I2S)
+    .i_tx_axis_tvalid  ( sif_tx_axis_tvalid[0] ),
+    .i_tx_axis_tdata   ( sif_tx_axis_tdata[0]  ),
+    .i_tx_axis_tkeep   ( sif_tx_axis_tkeep[0]  ),
+    .i_tx_axis_tlast   ( sif_tx_axis_tlast[0]  ),
+    .i_tx_axis_tuser   ( sif_tx_axis_tuser[0]  ),
+    .o_tx_axis_tready  ( sif_tx_axis_tready[0] ),
+    
+    // Host AXI-Stream RX Interface (I2S to Host) - Unused
+    .o_rx_axis_tvalid  (                    ), // Not connected - TX only
+    .o_rx_axis_tdata   (                    ), // Not connected - TX only
+    .o_rx_axis_tkeep   (                    ), // Not connected - TX only
+    .o_rx_axis_tlast   (                    ), // Not connected - TX only
+    .o_rx_axis_tuser   (                    ), // Not connected - TX only
+    .i_rx_axis_tready  ( 1'b0               ), // Not ready - TX only
+    
+    // I2S Physical Interface
+    .o_i2s_bclk        ( i2s_clk_ext        ), // Not connected
+    .o_i2s_lrclk       ( I2S_LRCLK          ),
+    .o_i2s_sdata_tx    ( I2S_SDATA          ),
+    .i_i2s_sdata_rx    ( 1'b0               ), // Not connected - TX only
+    .o_i2s_mclk_out    ( i2s_mclk_ext       ), // Not connected
+    
+    // Status and Interrupts
+    .o_tx_underrun     (                    ), // Not connected
+    .o_rx_overrun      (                    ), // Not connected
+    .o_pll_locked      (                    ), // Not connected
+    .o_irq             (                    )  // Not connected
+  );
+
 //------------------------------------------------------------------------------
 // Camera LVDS Data
 //------------------------------------------------------------------------------
 
-  logic                       sif_clk;
-  logic [`SENSOR_IF_INST-1:0] sif_rx_axis_tvalid;
-  logic [`SENSOR_IF_INST-1:0] sif_rx_axis_tlast;
-  logic [`DATAPATH_WIDTH-1:0] sif_rx_axis_tdata [`SENSOR_IF_INST];
-  logic [`DATAKEEP_WIDTH-1:0] sif_rx_axis_tkeep [`SENSOR_IF_INST];
-  logic [`DATAUSER_WIDTH-1:0] sif_rx_axis_tuser [`SENSOR_IF_INST];
-  logic [`SENSOR_IF_INST-1:0] sif_rx_axis_tready;
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_clk;
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_rst;
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_axis_tvalid;
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_axis_tlast;
+  logic [`DATAPATH_WIDTH-1:0]    sif_rx_axis_tdata [`SENSOR_RX_IF_INST-1:0];
+  logic [`DATAKEEP_WIDTH-1:0]    sif_rx_axis_tkeep [`SENSOR_RX_IF_INST-1:0];
+  logic [`DATAUSER_WIDTH-1:0]    sif_rx_axis_tuser [`SENSOR_RX_IF_INST-1:0];
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_axis_tready;
 
-  assign sif_clk = hif_clk;
-
-  logic [`SENSOR_IF_INST-1:0] cam_drdy_i;
+  logic [`SENSOR_RX_IF_INST-1:0] cam_drdy_i;
 
   assign CAM_DRDY = &cam_drdy_i;
 
   generate
-    for (i=0; i<`SENSOR_IF_INST; i++) begin: cam_sensor_rcvr
+    for (i=0; i<`SENSOR_RX_IF_INST; i++) begin: cam_sensor_rcvr
+      assign sif_rx_clk[i] = hif_clk;
 
       cam_rcvr u_cam_rcvr (
         // LVDS PAD IO
@@ -473,8 +593,8 @@ module FPGA_top
         .i_rx_data     ( CAM_DATA           [i] ), // 500MHz ddr lvds data (1000 Mbps)
         .o_rx_drdy     ( cam_drdy_i         [i] ),
         // clock and reset
-        .i_pclk        ( sif_clk                ),
-        .i_prst        ( sif_rst                ),
+        .i_pclk        ( sif_rx_clk         [i] ),
+        .i_prst        ( sif_rx_rst         [i] ),
         // Double ECC Detected
         .o_phy_err_det (                        ),
         // Frame header info
@@ -509,25 +629,25 @@ module FPGA_top
   logic        vsync;
 
   vsync_gen u_vsync_gen (
-    .i_clk           ( ptp_clk           ),
-    .i_rst           ( ptp_rst           ),
+    .i_clk           ( ptp_clk                ),
+    .i_rst           ( ptp_rst                ),
 
-    .i_apb_clk       ( apb_clk           ),
-    .i_apb_rst       ( apb_rst           ),
-    .i_apb_sel       ( apb_psel      [6] ),
-    .i_apb_enable    ( apb_penable       ),
-    .i_apb_addr      ( apb_paddr         ),
-    .i_apb_wdata     ( apb_pwdata        ),
-    .i_apb_write     ( apb_pwrite        ),
-    .o_apb_ready     ( apb_pready    [6] ),
-    .o_apb_rdata     ( apb_prdata    [6] ),
-    .o_apb_serr      ( apb_pserr     [6] ),
+    .i_apb_clk       ( apb_clk                ),
+    .i_apb_rst       ( apb_rst                ),
+    .i_apb_sel       ( vsync_apb_m2s.psel     ),  // Use switch signal (only 0x000-0x7FF)
+    .i_apb_enable    ( vsync_apb_m2s.penable  ),  // Use switch signal  
+    .i_apb_addr      ( vsync_apb_m2s.paddr    ),  // Use switch signal
+    .i_apb_wdata     ( vsync_apb_m2s.pwdata   ),  // Use switch signal
+    .i_apb_write     ( vsync_apb_m2s.pwrite   ),  // Use switch signal
+    .o_apb_ready     ( vsync_apb_s2m.pready   ),  // Connect to switch response
+    .o_apb_rdata     ( vsync_apb_s2m.prdata   ),  // Connect to switch response
+    .o_apb_serr      ( vsync_apb_s2m.pserr    ),  // Connect to switch response
 
-    .i_pps           ( sys_pps           ),
-    .i_ptp_nanosec   ( ptp_nsec          ),
+    .i_pps           ( sys_pps                ),
+    .i_ptp_nanosec   ( ptp_nsec               ),
 
-    .o_vsync_strb    ( vsync             ),
-    .o_gpio_mux_en   ( gpio_mux_en       )
+    .o_vsync_strb    ( vsync                  ),
+    .o_gpio_mux_en   ( gpio_mux_en            )
   );
 
   logic [1:0] synth_lock_sync;
@@ -564,7 +684,10 @@ module FPGA_top
   assign gpio_tri[14] = gpio_mux_en[1] ? vsync                 : gpio_out[14];
   assign gpio_tri[15] = gpio_mux_en[0] ? sys_pps_stretch       : gpio_out[15];
 
-  assign GPIO = gpio_tri;
+  //TODO: GPIO MUX for UART?
+  assign GPIO = {gpio_tri[15:1], delayed_io_pin};
+  //assign GPIO = {gpio_tri[15:12], 1'bz, uart_tx, gpio_tri[9:1], delayed_io_pin};
+  //assign uart_rx = GPIO[11];
 
   ///////////////////////////////////////
   //CAM GPIO
@@ -572,15 +695,23 @@ module FPGA_top
   logic [14:0] cam_gpio_out;
   logic [14:0] cam_gpio_tri;
 
-  for (i=0; i<3; i++) begin
-    assign cam_gpio_tri[i] = cam_gpio_out[i];
-  end
-  for (i=4; i<6; i++) begin
-    assign cam_gpio_tri[i] = cam_gpio_out[i];
-  end
-  for (i=9; i<15; i++) begin
-    assign cam_gpio_tri[i] = cam_gpio_out[i];
-  end
+  generate
+    for (i=0; i<3; i++) begin
+      assign cam_gpio_tri[i] = cam_gpio_out[i];
+    end
+  endgenerate
+  
+  generate
+    for (i=4; i<6; i++) begin
+      assign cam_gpio_tri[i] = cam_gpio_out[i];
+    end
+  endgenerate
+  
+  generate
+    for (i=9; i<15; i++) begin
+      assign cam_gpio_tri[i] = cam_gpio_out[i];
+    end
+  endgenerate
 
   assign cam_gpio_tri[3] = gpio_mux_en[4] ? vsync          : cam_gpio_out[3];
   assign cam_gpio_tri[6] = gpio_mux_en[5] ? vsync          : cam_gpio_out[6];
@@ -599,7 +730,28 @@ module FPGA_top
   assign temp_tlm = '0;
 
   logic [15:0] sif_event;
-  assign sif_event = {14'h0, sif_rx_axis_tlast[1:0]};
+  
+  logic [`SENSOR_RX_IF_INST-1:0] sof, sof_done;
+
+  // Generate SOF logic for each SIF RX channel on its respective clock domain
+  generate
+    for (i=0; i<`SENSOR_RX_IF_INST; i++) begin: sof_gen
+      always_ff @ (posedge sif_rx_clk[i]) begin
+        if (sif_rx_rst[i]) begin
+          sof[i] <= 1'b0;
+          sof_done[i] <= 1'b0;
+        end else begin
+          sof[i] <= sif_rx_axis_tvalid[i] && ~sof_done[i];
+          if(sif_rx_axis_tvalid[i]) sof_done[i] <= 1'b1;
+          if(sif_rx_axis_tlast[i]) sof_done[i] <= 1'b0;
+        end
+      end
+    end
+  endgenerate
+  
+  
+  //assign sif_event = {10'h0, sof, GPIO[1], gpio_out[0], sif_rx_axis_tlast[1:0]};
+  assign sif_event = {10'h0, sof, GPIO[1], delayed_io_pin, sif_rx_axis_tlast[1:0]};
 
 //------------------------------------------------------------------------------
 // HOLOLINK Top Instantiation
@@ -632,8 +784,10 @@ module FPGA_top
   // Sensor IF
   //------------------------------------------------------------------------------
   // Sensor Interface Clock and Reset
-    .i_sif_clk         ( sif_clk            ),
-    .o_sif_rst         ( sif_rst            ),
+    .i_sif_rx_clk      ( sif_rx_clk         ),
+    .o_sif_rx_rst      ( sif_rx_rst         ),
+    .i_sif_tx_clk      ( sif_tx_clk         ),
+    .o_sif_tx_rst      ( sif_tx_rst         ),
     // Sensor Rx Streaming Interface
     .i_sif_axis_tvalid ( sif_rx_axis_tvalid ),
     .i_sif_axis_tlast  ( sif_rx_axis_tlast  ),

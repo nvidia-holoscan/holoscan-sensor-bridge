@@ -225,18 +225,16 @@ def test_imx477_pattern(
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-
-    hololink.reset()
-
-    camera.configure()
-    camera.set_pattern()
-
-    # Prove that get_register works as expected.
-    pattern_register = camera.get_register(0x601)
-    assert pattern_register == 0x2
-
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        camera.configure()
+        camera.set_pattern()
+        # Prove that get_register works as expected.
+        pattern_register = camera.get_register(0x601)
+        assert pattern_register == 0x2
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

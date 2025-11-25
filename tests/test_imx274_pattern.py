@@ -441,10 +441,14 @@ def run_test(
     camera_right = CameraWrapper(hololink_channel_right, expander_configuration=1)
     # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
     # starts running (and builds CUDA code).
+    frame_limit = 100
+    ready_frame = operators.COLOR_PROFILER_START_FRAME
+    initial_timeout = utils.timeout_sequence(
+        [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
+    )
     with utils.Watchdog(
         "watchdog",
-        initial_timeout=[30] * (operators.COLOR_PROFILER_START_FRAME + 2),
-        timeout=0.5,
+        initial_timeout=initial_timeout,
     ) as watchdog:
         # Set up the application
         application = PatternTestApplication(
@@ -472,49 +476,51 @@ def run_test(
         hololink = hololink_channel_left.hololink()
         assert hololink is hololink_channel_right.hololink()
         hololink.start()
-        assert camera_left._reset_callbacks == 0
-        assert camera_right._reset_callbacks == 0
-        hololink.reset()
-        assert camera_left._reset_callbacks == 1
-        assert camera_right._reset_callbacks == 1
-        camera_left.setup_clock()  # this also sets camera_right's clock
-        camera_left.configure(camera_mode_left)
-        camera_left.test_pattern(pattern_left)
-        camera_right.configure(camera_mode_right)
-        camera_right.test_pattern(pattern_right)
+        try:
+            assert camera_left._reset_callbacks == 0
+            assert camera_right._reset_callbacks == 0
+            hololink.reset()
+            assert camera_left._reset_callbacks == 1
+            assert camera_right._reset_callbacks == 1
+            camera_left.setup_clock()  # this also sets camera_right's clock
+            camera_left.configure(camera_mode_left)
+            camera_left.test_pattern(pattern_left)
+            camera_right.configure(camera_mode_right)
+            camera_right.test_pattern(pattern_right)
 
-        # For testing, make sure we call the get_register method.
-        STANDBY = 0x3000
-        camera_left.get_register(STANDBY)
-        # Configure scheduler.
-        if scheduler == "event":
-            app_scheduler = holoscan.schedulers.EventBasedScheduler(
-                application,
-                worker_thread_number=4,
-                name="event_scheduler",
-            )
-            application.scheduler(app_scheduler)
-        elif scheduler == "multithread":
-            app_scheduler = holoscan.schedulers.MultiThreadScheduler(
-                application,
-                worker_thread_number=4,
-                name="multithread_scheduler",
-            )
-            application.scheduler(app_scheduler)
-        elif scheduler == "greedy":
-            app_scheduler = holoscan.schedulers.GreedyScheduler(
-                application,
-                name="greedy_scheduler",
-            )
-            application.scheduler(app_scheduler)
-        elif scheduler == "default":
-            # Use the default one.
-            pass
-        else:
-            raise Exception(f"Unexpected {scheduler=}")
-        #
-        application.run()
-        hololink.stop()
+            # For testing, make sure we call the get_register method.
+            STANDBY = 0x3000
+            camera_left.get_register(STANDBY)
+            # Configure scheduler.
+            if scheduler == "event":
+                app_scheduler = holoscan.schedulers.EventBasedScheduler(
+                    application,
+                    worker_thread_number=4,
+                    name="event_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "multithread":
+                app_scheduler = holoscan.schedulers.MultiThreadScheduler(
+                    application,
+                    worker_thread_number=4,
+                    name="multithread_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "greedy":
+                app_scheduler = holoscan.schedulers.GreedyScheduler(
+                    application,
+                    name="greedy_scheduler",
+                )
+                application.scheduler(app_scheduler)
+            elif scheduler == "default":
+                # Use the default one.
+                pass
+            else:
+                raise Exception(f"Unexpected {scheduler=}")
+            #
+            application.run()
+        finally:
+            hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

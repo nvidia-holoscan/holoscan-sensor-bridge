@@ -384,30 +384,34 @@ def main():
     application.config(args.configuration)
     # Run it.
     hololink.start()
-    hololink.reset()
-    hololink.write_uint32(0x8, 0x0)
-    camera_left.setup_clock()  # this also sets camera_right's clock
-    hololink.write_uint32(0x8, 0x3)
-    time.sleep(100 / 1000)
-    camera_left.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera_left.configure(camera_mode)
-    camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
-    camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
-    camera_right.get_register_32(
-        0x0000
-    )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera_right.configure(camera_mode)
-    camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
-    camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
+    try:
+        hololink.reset()
+        hololink.write_uint32(0x8, 0x0)
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        hololink.write_uint32(0x8, 0x3)
+        time.sleep(100 / 1000)
+        camera_left.get_register_32(
+            0x0000
+        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera_left.configure(camera_mode)
+        camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
+        camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
+        camera_right.get_register_32(
+            0x0000
+        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera_right.configure(camera_mode)
+        camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
+        camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
 
-    # READ CAMERA EEPROM
-    cal_eeprom = camera_left.get_calibration_data(0)
-    print(cal_eeprom)
+        # READ CAMERA EEPROM
+        cal_eeprom = camera_left.get_calibration_data(0)
+        print(cal_eeprom)
 
-    application.run()
-    hololink.stop()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

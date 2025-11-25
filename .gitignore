@@ -24,9 +24,3 @@ configurator/poky
 spi-vm.log
 spi-vm.pid
 *.so
-
-# Emulation files
-*.o
-*.so
-src/hololink/emulation/dlpack
-src/hololink/emulation/build

@@ -27,9 +27,9 @@ exec bash $0 $*
 fi
 
 # Usage:
-#   lint.sh [--lint]
+#   lint.sh [--lint] [--docker-build-opts <opts>] [--docker-run-cmd <cmd>]
 # or
-#   lint.sh --format
+#   lint.sh --format [--docker-build-opts <opts>] [--docker-run-cmd <cmd>]
 #
 # This script builds and invokes a container called 'hololink-lint'
 # with the tools used for formatting the project source code.  When
@@ -40,6 +40,12 @@ fi
 # When run with "--format", then source files are run through formatting
 # rules and updated accordingly.  This is usually all that's necessary
 # to get a subsequent "lint.sh --lint" to succeed.
+#
+# The optional --docker-build-opts flag allows passing additional options
+# to the docker build command.
+#
+# The optional --docker-precmd flag allows specifying a command to run
+# in the container before invoking the script.
 #
 
 SCRIPT=`realpath "$0"`
@@ -56,6 +62,9 @@ SKIP=( \
     cmake/pybind11/__init__.py
     scripts
     build*
+    # HSB100G user guide has users put build/VM config directories and 3rd party repos here with many lint errors. 
+    # ignore the directories but retain other files.
+    configurator/*/
 )
 
 # Codespell checks for spelling mistakes.  Don't include PDF files.
@@ -90,49 +99,69 @@ umask 0
 # By default, run lint; specify "--format" to
 # rewrite source files with automatic formatting.
 MODE="lint"
+DOCKER_BUILD_OPTS=""
+DOCKER_PRECMD=""
 
-case "$1" in
-    --do-format)
-        # We rely on 'set -o errexit' above to terminate on an error
-        set -o xtrace
-        isort $SKIP_ISORT --profile black .
-        black "--extend-exclude=$SKIP_RE" .
-        flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
-        clang-format --style=file:${ROOT}/.clang-format -i ${C_FILES[*]}
-        mdformat $MDFORMAT ${DOCS_FILES[*]}
-        codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
-        exit 0
-        ;;
-    --do-lint)
-        # We rely on 'set -o errexit' above to terminate on an error
-        set -o xtrace
-        isort --check-only $SKIP_ISORT --profile black .
-        black --check "--extend-exclude=$SKIP_RE" .
-        flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
-        clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror ${C_FILES[*]}
-        mdformat --check $MDFORMAT ${DOCS_FILES[*]}
-        codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
-        exit 0
-        ;;
-    --do-*)
-        # Invalid request.
-        echo "Unexpected command \"$1\"; aborting." >&2
-        exit 1
-        ;;
-    --*)
-        # Without "--do-format" or "--do-lint" on the command-line,
-        # start the CI container and run us again with "--do-<whatever>".
-        MODE="${1#--}"
-        ;;
-esac
+# Parse command-line arguments
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --docker-build-opts)
+            DOCKER_BUILD_OPTS="$2"
+            shift 2
+            ;;
+        --docker-precmd)
+            DOCKER_PRECMD="$2"
+            shift 2
+            ;;
+        --do-format)
+            # We rely on 'set -o errexit' above to terminate on an error
+            set -o xtrace
+            isort $SKIP_ISORT --profile black .
+            black "--extend-exclude=$SKIP_RE" .
+            flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
+            clang-format --style=file:${ROOT}/.clang-format -i ${C_FILES[*]}
+            mdformat $MDFORMAT ${DOCS_FILES[*]}
+            codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
+            exit 0
+            ;;
+        --do-lint)
+            # We rely on 'set -o errexit' above to terminate on an error
+            set -o xtrace
+            isort --check-only $SKIP_ISORT --profile black .
+            black --check "--extend-exclude=$SKIP_RE" .
+            flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
+            clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror ${C_FILES[*]}
+            mdformat --check $MDFORMAT ${DOCS_FILES[*]}
+            codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
+            exit 0
+            ;;
+        --do-*)
+            # Invalid request.
+            echo "Unexpected command \"$1\"; aborting." >&2
+            exit 1
+            ;;
+        --lint|--format)
+            # Without "--do-format" or "--do-lint" on the command-line,
+            # start the CI container and run us again with "--do-<whatever>".
+            MODE="${1#--}"
+            shift
+            ;;
+        *)
+            # Unknown option or end of options
+            break
+            ;;
+    esac
+done
 
 # We only get here if we weren't "--do-lint" or "--do-format"; we're going to
 # "--do-$MODE".
 # Also, we specifically rely on buildkit skipping the dgpu or igpu stages that
 # aren't included in the final image we're creating.
-DOCKER_BUILDKIT=1 docker build \
+DOCKER_BUILDKIT=1 docker buildx build \
     -t hololink-lint:$VERSION \
+    $DOCKER_BUILD_OPTS \
     -f $HERE/Dockerfile.lint \
+    --load \
     $ROOT
 
 USER=`id -u`:`id -g`
@@ -142,4 +171,4 @@ docker run \
     -v $ROOT:$ROOT \
     -w $ROOT \
     hololink-lint:$VERSION \
-    $0 --do-$MODE
+    bash -c "${DOCKER_PRECMD:-:} && $0 --do-$MODE"

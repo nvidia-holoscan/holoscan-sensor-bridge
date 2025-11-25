@@ -13,6 +13,7 @@ applications
 architecture
 latency
 new_sensors
+uddf_drivers
 emulation
 fpga_index
 sensor_bridge_firmware_setup
