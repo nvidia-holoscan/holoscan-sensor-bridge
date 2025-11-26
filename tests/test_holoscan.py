@@ -277,8 +277,10 @@ def test_holoscan(
         )
         hololink = hololink_channel.hololink()
         hololink.start()
-        application.run()
-        hololink.stop()
+        try:
+            application.run()
+        finally:
+            hololink.stop()
 
 
 @pytest.mark.skip_unless_mock_camera
@@ -335,5 +337,7 @@ def test_network_accelerated_holoscan(
         )
         hololink = hololink_channel.hololink()
         hololink.start()
-        application.run()
-        hololink.stop()
+        try:
+            application.run()
+        finally:
+            hololink.stop()

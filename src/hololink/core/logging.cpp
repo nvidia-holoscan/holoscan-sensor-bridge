@@ -30,6 +30,11 @@
 #include <time.h>
 #include <unistd.h>
 
+#if __GLIBC__ == 2 && __GLIBC_MINOR__ < 30
+#include <sys/syscall.h>
+#define gettid() syscall(SYS_gettid)
+#endif
+
 #include <fmt/core.h>
 
 #define CONSOLE_LOG

@@ -161,7 +161,7 @@ def main():
     parser.add_argument(
         "--configuration", default=default_configuration, help="Configuration file"
     )
-    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.onnx")
+    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
     parser.add_argument(
         "--engine",
         default=default_engine,

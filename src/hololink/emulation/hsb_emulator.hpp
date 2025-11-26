@@ -297,7 +297,7 @@ private:
     std::vector<DataPlane*> data_plane_list_;
     /* for workaround to handle polling conditions */
     uint32_t last_read_address_ { 0 };
-    unsigned char poll_count_ { 0 };
+    unsigned short poll_count_ { 0 };
     /* end workaround */
     std::atomic<bool> running_ { false };
 };

@@ -5,3 +5,4 @@
 .gitlab-ci.yml export-ignore
 RELEASE.sh export-ignore
 PUBLISH.sh export-ignore
+greptile.json export-ignore

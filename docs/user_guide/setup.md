@@ -54,6 +54,8 @@ system.
 
   ```none
   ls /sys/class/infiniband
+  ```
+  ```none
   roceP5p3s0f0 roceP5p3s0f1
   ```
 
@@ -65,6 +67,8 @@ system.
   LC_COLLATE=C IN=(/sys/class/infiniband/*)
   IN0=`basename ${IN[0]}`
   echo $IN0
+  ```
+  ```none
   roceP5p3s0f0
   ```
 
@@ -74,6 +78,8 @@ system.
   ```none
   EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
   echo $EN0
+  ```
+  ```none
   enP5p3s0f0np0
   ```
 
@@ -124,9 +130,11 @@ system.
   ```none
   IN1=`basename ${IN[1]}`
   echo $IN1
-  roceP5p3s0f1
   EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
   echo $EN1
+  ```
+  ```none
+  roceP5p3s0f1
   enP5p3s0f1np1
   ```
 
@@ -271,24 +279,30 @@ which is the RJ45 connector on the AGX Orin.
 ````{tab-item} DGX Spark
 
 - Determine the name of the network device associated with the first CX7 port. This is
-  the leftmost QSFP port when looking at the back of the DGX Spark unit ("port 0" in the image below).
+  the leftmost QSFP port when looking at the back of the DGX Spark unit ("port 0" in the image below). 
+  Note the specific device names `echo`'d below may be different or change depending on the specific 
+  system's driver configuration.
 
   <img src="dgx_spark_backpanel_annotated.png" alt="DGX Spark CX7 QSFP Ports" width="75%"/>
 
   ```none
   ls /sys/class/infiniband
-  roceP5p3s0f0 roceP5p3s0f1
+  ```
+  ```none
+  roceP2p1s0f0  roceP2p1s0f1  rocep1s0f0  rocep1s0f1
   ```
 
-  This will produce a list of CX7 ports; your device names may vary. The lowest
-  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port.  Let's assign
+  This will produce a list of infiniband devices connected to the CX7 ports; your device names may 
+  vary. The lowest numbered one, in this case `roceP2p1s0f0`, is the first CX7 port.  Let's assign
   that name to the variable `$IN0`.
 
   ```none
   LC_COLLATE=C IN=(/sys/class/infiniband/*)
   IN0=`basename ${IN[0]}`
   echo $IN0
-  roceP5p3s0f0
+  ```
+  ```none
+  roceP2p1s0f0
   ```
 
   Next, determine which host ethernet port is associated with that device, and assign
@@ -297,11 +311,13 @@ which is the RJ45 connector on the AGX Orin.
   ```none
   EN0=`basename /sys/class/infiniband/$IN0/device/net/*`
   echo $EN0
-  enP5p3s0f0np0
+  ```
+  ```none
+  enP2p1s0f0np0
   ```
 
-  In summary, the host network interface associated with `$IN0` (`roceP5p3s0f0`) is
-  `$EN0` (`enP5p3s0f0np0`); your specific device names may vary.
+  In summary, the host network interface associated with `$IN0` (`roceP2p1s0f0`) is
+  `$EN0` (`enP2p1s0f0np0`); your specific device names may vary.
 
 - DGX OS uses NetworkManager to configure network interfaces. By default, the sensor
   bridge device uses the address 192.168.0.2 for the first port. Set up your first
@@ -345,10 +361,12 @@ which is the RJ45 connector on the AGX Orin.
   ```none
   IN1=`basename ${IN[1]}`
   echo $IN1
-  roceP5p3s0f1
   EN1=`basename /sys/class/infiniband/$IN1/device/net/*`
   echo $EN1
-  enP5p3s0f1np1
+  ```
+  ```none
+  roceP2p1s0f1
+  enP2p1s0f1np1
   ```
 
   As above, your device names may be different.  Configure the second QSFP network port
@@ -541,6 +559,10 @@ which is the RJ45 connector on the AGX Orin.
 
 Now, for all configurations,
 
+- Make sure that $EN0 is set to the name of the Ethernet controller connected to HSB.
+  Some installations require reboots which will clear this value, so be sure and
+  configure it appropriately for your configuration per the instructions above.
+
 - Enable PTP on $EN0. This synchronizes the timestamps reported with received data with
   the host time.
 
@@ -619,10 +641,10 @@ Now, for all configurations,
   sudo systemctl start ptp4l-$EN0.service
   ```
 
-- For IGX with iGPU only: Install
+- For iGPU configurations only: Install
   [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.
-  Applications using inference need this at initialization time; the IGX OS image for
-  iGPU doesn't include it.
+  Applications using inference need this at initialization time; some OS images for iGPU
+  don't include it.
 
   ```none
   sudo apt update && sudo apt install -y nvidia-l4t-dla-compiler

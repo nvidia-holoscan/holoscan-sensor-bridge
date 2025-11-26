@@ -258,9 +258,11 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        application.run()
+    finally:
+        hololink.stop()
 
 
 if __name__ == "__main__":

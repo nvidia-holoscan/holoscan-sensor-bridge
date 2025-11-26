@@ -158,12 +158,9 @@ namespace core {
         int wakeup_read_fd_;
         int wakeup_write_fd_;
 
-        std::unique_ptr<std::thread> thread_;
+        std::thread thread_;
         std::atomic<bool> running_ { true };
         std::string name_;
-
-        static std::shared_ptr<Reactor> instance_;
-        static std::mutex instance_mutex_;
     };
 
 } // namespace core

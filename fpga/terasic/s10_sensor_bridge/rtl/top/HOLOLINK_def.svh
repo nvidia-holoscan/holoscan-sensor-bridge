@@ -1,14 +1,22 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 `ifndef HOLOLINK_def
 `define HOLOLINK_def
 
 package HOLOLINK_pkg;
-
-//-----------------------------------------------------
-// Define FPGA Vendor for Macro Instantiation
-//-----------------------------------------------------
-
-// XILINX / ALTERA / LATTICE / MICROSEMI
-  `define ALTERA
 
 //-----------------------------------------------------
 // Holoscan IP Host Clock Frequency
@@ -46,12 +54,6 @@ package HOLOLINK_pkg;
 
   `ifdef ENUM_EEPROM
     `define EEPROM_REG_ADDR_BITS 8                //EEPROM Register Address Bits. Valid values: 8, 16
-  `else
-    `define MAC_ADDR             48'hCAFEC0FFEE00 //Soft MAC Address. Can be passed to Hololink IP I/O
-    `define BOARD_SN             56'h0            //Soft Board Serial Number. Can be passed to Hololink IP I/O
-    `define BOARD_VER            160'h0
-    `define FPGA_CRC             16'h0
-    `define MISC                 32'h0
   `endif
 //-----------------------------------------------------
 // Sensor Interface
@@ -78,7 +80,7 @@ package HOLOLINK_pkg;
   //----------------------------------------------------------------------------------
 
   `ifdef SENSOR_RX_IF_INST
-    //`define SENSOR_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up. 
+    //`define SIF_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up. 
 
     localparam integer  SIF_RX_WIDTH        [`SENSOR_RX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH};
     //--------------------------------------------------------------------------------
@@ -88,17 +90,17 @@ package HOLOLINK_pkg;
     //                    {Sensor[1], Sensor[0]}
     // RX_PACKETIZER_EN = {        1,         1}
     //--------------------------------------------------------------------------------
-    localparam integer  RX_PACKETIZER_EN    [`SENSOR_RX_IF_INST-1:0] = '{default:'1};
+    localparam integer  SIF_RX_PACKETIZER_EN   [`SENSOR_RX_IF_INST-1:0] = '{default:'1};
     `ifdef JESD_HIGH_PERF
-    localparam integer  SIF_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {4};
-    localparam integer  SIF_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {16};
-    localparam integer  SIF_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {256};
-    localparam integer  SIF_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {1};
+    localparam integer  SIF_RX_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {4};
+    localparam integer  SIF_RX_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {16};
+    localparam integer  SIF_RX_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {256};
+    localparam integer  SIF_RX_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {1};
     `else
-    localparam integer  SIF_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {4};
-    localparam integer  SIF_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {16};
-    localparam integer  SIF_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {128};
-    localparam integer  SIF_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {1};
+    localparam integer  SIF_RX_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {4};
+    localparam integer  SIF_RX_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {16};
+    localparam integer  SIF_RX_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {128};
+    localparam integer  SIF_RX_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {1};
     `endif
   `endif
  
@@ -147,32 +149,13 @@ package HOLOLINK_pkg;
 // established between the FPGA and the Host
 //------------------------------------------------------------------------------
 
-  `define N_INIT_REG 20
+  `define N_INIT_REG 2
 
   localparam logic [63:0] init_reg [`N_INIT_REG] = '{
     // 32b Addr   | 32b Data
     // Hololink Internal Reg Initialization // TODO To be removed (not required, can be done by sw)
-    {32'h0200_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
-    {32'h0201_0020, 32'h0000_2000}, // inst_dec_1, ecb_udp_port
-    {32'h0200_021C, 32'h0000_2329}, // ctrl_evt_0, ctrl_evt_host_udp_port
-    {32'h0200_0220, 32'h0000_2329}, // ctrl_evt_0, ctrl_evt_fpga_udp_port
-    {32'h0201_021C, 32'h0000_2329}, // ctrl_evt_1, ctrl_evt_host_udp_port
-    {32'h0201_0220, 32'h0000_2329}, // ctrl_evt_1, ctrl_evt_fpga_udp_port
-    {32'h0200_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
-    {32'h0200_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
-    {32'h0201_0304, 32'h0000_05CE}, // dp_pkt_1  , dp_pkt_len
-    {32'h0201_0308, 32'h0000_3000}, // dp_pkt_1  , dp_pkt_fpga_udp_port
-    {32'h0300_0210, 32'h004C_4B40}, // i2c timeout
-    {32'h0200_0108, 32'h0000_0064}, // eth_pkt_0 , Eth pkt data plane priority
-    {32'h0201_0108, 32'h0000_0064}, // eth_pkt_1 , Eth pkt data plane priority
     {32'h0200_0024, 32'h0000_12B7}, // inst_dec_0, stx_udp_port
-    {32'h0201_0024, 32'h0000_12B7}, // inst_dec_1, stx_udp_port
-    //PTP Config
-    {32'h0000_0110, 32'h0000_0002}, // ptp, dpll cfg1
-    {32'h0000_0114, 32'h0000_0002}, // ptp, dpll cfg2
-    {32'h0000_0118, 32'h0000_0003}, // ptp, delay avg factor
-    {32'h0000_010C, 32'h0000_0000}, // ptp, delay asymmetry 
-    {32'h0000_0104, 32'h0000_0003}  // ptp, dpll en
+    {32'h0201_0024, 32'h0000_12B7} // inst_dec_1, stx_udp_port
   };
 
 

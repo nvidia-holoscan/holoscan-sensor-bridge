@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 `include "HOLOLINK_def.svh"
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////
 // Top level targeting the AD9986 Evaluation Platform
@@ -189,34 +204,34 @@ logic [31         :0]             apb_paddr;
 logic [31         :0]             apb_pwdata;
 logic                             apb_pwrite;
 logic [`REG_INST-1:0]             apb_pready;
-logic [31         :0]             apb_prdata              [`REG_INST];
+logic [31         :0]             apb_prdata              [`REG_INST-1:0];
 logic [`REG_INST-1:0]             apb_pserr;
 
 //------------------------------------------------------------------------------
 // Hololink Host Rx/Tx 
 //------------------------------------------------------------------------------
 logic [`HOST_IF_INST-1:0]         hl_axis_rx_tvalid;
-logic [`HOST_WIDTH-1:0]           hl_axis_rx_tdata      [`HOST_IF_INST];
+logic [`HOST_WIDTH-1:0]           hl_axis_rx_tdata      [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1:0]         hl_axis_rx_tlast;
-logic [`HOSTUSER_WIDTH-1:0]       hl_axis_rx_tuser      [`HOST_IF_INST];
-logic [`HOST_WIDTH/8-1:0]         hl_axis_rx_tkeep      [`HOST_IF_INST];
+logic [`HOSTUSER_WIDTH-1:0]       hl_axis_rx_tuser      [`HOST_IF_INST-1:0];
+logic [`HOST_WIDTH/8-1:0]         hl_axis_rx_tkeep      [`HOST_IF_INST-1:0];
       
 logic [`HOST_IF_INST-1:0]         hl_axis_tx_tvalid;
-logic [`HOST_WIDTH-1:0]           hl_axis_tx_tdata      [`HOST_IF_INST];
+logic [`HOST_WIDTH-1:0]           hl_axis_tx_tdata      [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1:0]         hl_axis_tx_tlast;
-logic [`HOSTUSER_WIDTH-1:0]       hl_axis_tx_tuser      [`HOST_IF_INST];
-logic [`HOST_WIDTH/8-1:0]         hl_axis_tx_tkeep      [`HOST_IF_INST];
+logic [`HOSTUSER_WIDTH-1:0]       hl_axis_tx_tuser      [`HOST_IF_INST-1:0];
+logic [`HOST_WIDTH/8-1:0]         hl_axis_tx_tkeep      [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1:0]         hl_axis_tx_tready;
 
 //------------------------------------------------------------------------------
 // Hololink Sensor Rx/Tx 
 //------------------------------------------------------------------------------
 logic [`SENSOR_RX_IF_INST-1:0]    o_sif_axis_tready;
-logic [`DATAPATH_WIDTH-1:0]       sif_rx_tdata              [`SENSOR_RX_IF_INST];
+logic [`DATAPATH_WIDTH-1:0]       sif_rx_tdata              [`SENSOR_RX_IF_INST-1:0];
 logic [`SENSOR_RX_IF_INST-1:0]    sif_rx_tvalid;
 logic [`SENSOR_RX_IF_INST-1:0]    sif_rx_tlast;
 logic [`SENSOR_TX_IF_INST-1:0]    sif_tx_tready;
-logic [`DATAPATH_WIDTH-1:0]       sif_tx_tdata              [`SENSOR_TX_IF_INST];
+logic [`DATAPATH_WIDTH-1:0]       sif_tx_tdata              [`SENSOR_TX_IF_INST-1:0];
 logic [`SENSOR_TX_IF_INST-1:0]    sif_tx_tvalid;
 logic [`SENSOR_TX_IF_INST-1:0]    sif_tx_tlast;
 
@@ -238,8 +253,8 @@ logic                             ad9545_i2c_sda_sync;
 //------------------------------------------------------------------------------
 logic [`SPI_INST-1:0]             spi_csn;
 logic [`SPI_INST-1:0]             spi_sck;
-logic [3          :0]             spi_sdio_i [`SPI_INST];
-logic [3          :0]             spi_sdio_o [`SPI_INST];
+logic [3          :0]             spi_sdio_i [`SPI_INST-1:0];
+logic [3          :0]             spi_sdio_o [`SPI_INST-1:0];
 logic [`SPI_INST-1:0]             spi_oen;
           
 logic                             hmc_spi_sdio_sync;

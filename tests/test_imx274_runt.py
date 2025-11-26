@@ -284,13 +284,15 @@ def runt_test(
         # Run it.
         hololink = hololink_channel.hololink()
         hololink.start()
-        hololink.reset()
-        camera.setup_clock()
-        camera.configure(camera_mode)
-        camera.test_pattern(pattern)
-        #
-        application.run()
-        hololink.stop()
+        try:
+            hololink.reset()
+            camera.setup_clock()
+            camera.configure(camera_mode)
+            camera.test_pattern(pattern)
+            #
+            application.run()
+        finally:
+            hololink.stop()
 
     for bytes_written, num_elements in size_checker_operator._found_sizes.items():
         logging.info(f"{bytes_written=:#x} {num_elements=:#x}")

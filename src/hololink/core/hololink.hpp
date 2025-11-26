@@ -729,6 +729,11 @@ public:
     bool ptp_synchronize(const std::shared_ptr<Timeout>& timeout);
 
     /**
+     * Returns true if PTP is synchronized now.
+     */
+    bool ptp_synchronized();
+
+    /**
      * ptp_synchronize(...) with a default timeout of 20 seconds.
      */
     bool ptp_synchronize()
@@ -802,6 +807,25 @@ public:
         clear_apb_event(write_data, event);
         write_uint32(write_data);
     }
+
+    /** Drive the HSB device into reset.  All I/O to the device
+     * will fail following this.  Call `post_reset_configuration`,
+     * after enumeration messages are observed, to reconnect.
+     */
+    void trigger_reset();
+
+    /**
+     * Optimize reconnection after enumeration is discovered.  Note
+     * that this requires root access; but if we don't have that we
+     * continue with the ordinary kernel ARP cache refresh.
+     */
+    void seed_arp(const Metadata& metadata);
+
+    /**
+     * After `trigger_reset`, when enumeration messages are observed,
+     * call this to reconnect to HSB.
+     */
+    void post_reset_configuration();
 
 protected:
     /**
@@ -882,6 +906,7 @@ private:
     std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
     bool ptp_enable_;
     bool block_enable_;
+    uint32_t ptp_sync_stat_;
 
     bool write_uint32_block_(WriteData data, const std::shared_ptr<Timeout>& timeout,
         bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);

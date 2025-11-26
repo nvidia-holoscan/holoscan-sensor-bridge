@@ -1,0 +1,302 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# See README.md for detailed information.
+
+import argparse
+import ctypes
+import logging
+import os
+
+import holoscan
+from body_pose_estimation import FormatInferenceInputOp, PostprocessorOp
+
+import hololink as hololink_module
+
+
+class HoloscanApplication(holoscan.core.Application):
+    def __init__(
+        self,
+        hololink_channel,
+        camera,
+        camera_mode,
+        interface,
+        headless,
+        fullscreen,
+        frame_limit,
+        engine,
+    ):
+        super().__init__()
+        self._hololink_channel = hololink_channel
+        self._camera = camera
+        self._camera_mode = camera_mode
+        self._interface = interface
+        self._headless = headless
+        self._fullscreen = fullscreen
+        self._frame_limit = frame_limit
+        self._engine = engine
+
+        # Not using metadata
+        self.enable_metadata(False)
+
+    def compose(self):
+        metadata = self._hololink_channel.enumeration_metadata()
+        interface = self._interface
+        if interface is None:
+            interface = metadata.get("interface")
+        local_ip = metadata.get("interface_address")
+        hsb_ip = metadata.get("client_ip_address")
+        hsb_mac = metadata.get("mac_id")
+        hsb_mac_bytes = list(bytes.fromhex(hsb_mac.replace(":", "")))
+        logging.info("Using VB1940:")
+        logging.info(f"  Interface: {interface}")
+        logging.info(f"  Local IP:  {local_ip}")
+        logging.info(f"  HSB IP:    {hsb_ip}")
+        logging.info(f"  HSB MAC:   {hsb_mac}")
+
+        if self._frame_limit:
+            self._count = holoscan.conditions.CountCondition(
+                self,
+                name="count",
+                count=self._frame_limit,
+            )
+            condition = self._count
+        else:
+            self._ok = holoscan.conditions.BooleanCondition(
+                self, name="ok", enable_tick=True
+            )
+            condition = self._ok
+
+        self._camera.set_mode(self._camera_mode)
+        pixel_format = self._camera.pixel_format()
+        bayer_format = self._camera.bayer_format()
+
+        # Capture from Fusa.
+        fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
+            self,
+            condition,
+            name="fusa_coe_capture",
+            interface=interface,
+            mac_addr=hsb_mac_bytes,
+            hololink_channel=self._hololink_channel,
+            device=self._camera,
+            timeout=1500,
+        )
+        self._camera.configure_converter(fusa_coe_capture)
+
+        # Convert packed RAW to 16-bit Bayer.
+        packed_format_converter_pool = holoscan.resources.BlockMemoryPool(
+            self,
+            name="packed_format_converter_pool",
+            # storage_type of 1 is device memory
+            storage_type=1,
+            block_size=self._camera._width
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera._height,
+            num_blocks=4,
+        )
+        packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
+            self,
+            name="packed_format_converter",
+            allocator=packed_format_converter_pool,
+        )
+        fusa_coe_capture.configure_converter(packed_format_converter)
+
+        # Perform basic ISP operations.
+        image_processor = hololink_module.operators.ImageProcessorOp(
+            self,
+            name="image_processor",
+            optical_black=0,
+            bayer_format=bayer_format.value,
+            pixel_format=pixel_format.value,
+        )
+
+        # Bayer demosaic to RGB buffer.
+        rgba_components_per_pixel = 3
+        bayer_demosaic_pool = holoscan.resources.BlockMemoryPool(
+            self,
+            name="bayer_demosaic_pool",
+            # storage_type of 1 is device memory
+            storage_type=1,
+            block_size=self._camera._width
+            * rgba_components_per_pixel
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera._height,
+            num_blocks=4,
+        )
+        bayer_demosaic = holoscan.operators.BayerDemosaicOp(
+            self,
+            name="bayer_demosaic",
+            pool=bayer_demosaic_pool,
+            generate_alpha=False,
+            alpha_value=65535,
+            bayer_grid_pos=bayer_format.value,
+            interpolation_mode=0,
+        )
+
+        # Shift from 16- to 8-bit data.
+        image_shift = hololink_module.operators.ImageShiftToUint8Operator(
+            self, name="image_shift", shift=8
+        )
+
+        # Holoviz will render both the RGB image and the body pose estimation overlay.
+        holoviz_args = self.kwargs("holoviz")
+        visualizer = holoscan.operators.HolovizOp(
+            self,
+            name="holoviz",
+            fullscreen=self._fullscreen,
+            headless=self._headless,
+            framebuffer_srgb=True,
+            **holoviz_args,
+        )
+
+        # Perform body pose estimation.
+        pool = holoscan.resources.UnboundedAllocator(self)
+        preprocessor_args = self.kwargs("preprocessor")
+        preprocessor = holoscan.operators.FormatConverterOp(
+            self,
+            name="preprocessor",
+            pool=pool,
+            **preprocessor_args,
+        )
+        format_input = FormatInferenceInputOp(
+            self,
+            name="transpose",
+            pool=pool,
+        )
+        inference = holoscan.operators.InferenceOp(
+            self,
+            name="inference",
+            allocator=pool,
+            model_path_map={
+                "yolo_pose": self._engine,
+            },
+            **self.kwargs("inference"),
+        )
+        postprocessor_args = self.kwargs("postprocessor")
+        postprocessor_args["image_width"] = preprocessor_args["resize_width"]
+        postprocessor_args["image_height"] = preprocessor_args["resize_height"]
+        postprocessor = PostprocessorOp(
+            self,
+            name="postprocessor",
+            allocator=pool,
+            **postprocessor_args,
+        )
+
+        # Flow to capture from Fusa and process/render the RGB image.
+        self.add_flow(fusa_coe_capture, packed_format_converter, {("output", "input")})
+        self.add_flow(packed_format_converter, image_processor, {("output", "input")})
+        self.add_flow(image_processor, bayer_demosaic, {("output", "receiver")})
+        self.add_flow(bayer_demosaic, image_shift, {("transmitter", "input")})
+        self.add_flow(image_shift, visualizer, {("output", "receivers")})
+
+        # Flow to process and render the body pose estimation overlay.
+        self.add_flow(image_shift, preprocessor, {("output", "")})
+        self.add_flow(preprocessor, format_input)
+        self.add_flow(format_input, inference, {("", "receivers")})
+        self.add_flow(inference, postprocessor, {("transmitter", "in")})
+        self.add_flow(postprocessor, visualizer, {("out", "receivers")})
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    modes = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode
+    mode_choices = [mode.value for mode in modes]
+    parser.add_argument(
+        "--camera-mode",
+        type=int,
+        choices=mode_choices,
+        default=mode_choices[1],
+        help=" ".join([f"{mode.value}:{mode.name}" for mode in modes]),
+    )
+    default_configuration = os.path.join(
+        os.path.dirname(__file__), "body_pose_estimation.yaml"
+    )
+    parser.add_argument(
+        "--configuration", default=default_configuration, help="Configuration file"
+    )
+    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
+    parser.add_argument(
+        "--engine",
+        default=default_engine,
+        help="TRT engine model",
+    )
+    parser.add_argument(
+        "--frame-limit",
+        type=int,
+        default=None,
+        help="Exit after receiving this many frames",
+    )
+    parser.add_argument(
+        "--fullscreen", action="store_true", help="Run in fullscreen mode"
+    )
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
+    parser.add_argument(
+        "--interface",
+        default=None,
+        help="Ethernet interface",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=int,
+        default=20,
+        help="Logging level to display",
+    )
+
+    args = parser.parse_args()
+    hololink_module.logging_level(args.log_level)
+
+    # Get a handle to the Hololink device
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
+
+    # Start the HSB
+    hololink = hololink_channel.hololink()
+    hololink.start()
+    hololink.reset()
+
+    # Get handle to the camera
+    camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
+        args.camera_mode
+    )
+    camera = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(hololink_channel)
+    camera.setup_clock()
+    camera.configure(camera_mode)
+
+    # Set up the application
+    application = HoloscanApplication(
+        hololink_channel,
+        camera,
+        camera_mode,
+        args.interface,
+        args.headless,
+        args.fullscreen,
+        args.frame_limit,
+        args.engine,
+    )
+    application.config(args.configuration)
+
+    # Run the application
+    application.run()
+    hololink.stop()
+
+
+if __name__ == "__main__":
+    main()

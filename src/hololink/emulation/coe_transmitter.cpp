@@ -145,7 +145,7 @@ static inline size_t serialize_acf_user0c_header(hololink::core::Serializer& ser
 
 // Assumes all fields of headers have been properly sanitized for range checks
 // returns 0 on failure and the number of bytes written on success. if failure, the buffer is in an indeterminate state.
-static size_t serialize_packet(COEHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content, size_t content_size, memcpy_func_t copy_func)
+static size_t serialize_packet(COEHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content, size_t content_size)
 {
     // The way we send Ethernet frames, there is only ever one packet so headersntscf_header.version_ntscf_length should always match headers.acf_header.acf_metadata & 0x1FF
     // should we add ACF payloads, ntscf_length is the source of truth
@@ -172,8 +172,8 @@ static size_t serialize_packet(COEHeaders& headers, uint8_t* __restrict__ buffer
     }
 
     // if content is directly provided, copy it into the buffer
-    if (content && copy_func && content_size) {
-        copy_func(buffer + data_loc, content, content_size);
+    if (content && content_size) {
+        memcpy(buffer + data_loc, content, content_size);
     }
     return data_loc + content_size; // return the size of the packet
 }
@@ -234,7 +234,6 @@ int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTenso
     size_t line_offset = 0;
     int64_t n_bytes_sent = 0;
     const int64_t n_bytes = DLTensor_n_bytes(tensor);
-    memcpy_func_t copy_func = memcpy;
     uint8_t psn = 0;
 
     const int64_t payload_size = metadata->payload_size;
@@ -308,7 +307,7 @@ int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTenso
         }
         headers_.acf_user0c_header.frame_flags = flags;
 
-        size_t message_size = serialize_packet(headers_, mesg, sizeof(mesg), content + offset, n_bytes_to_send, copy_func);
+        size_t message_size = serialize_packet(headers_, mesg, sizeof(mesg), content + offset, n_bytes_to_send);
         if (message_size != COE_HEADER_SIZE + (size_t)n_bytes_to_send) {
             fprintf(stderr, "error in writing packet. found %zu bytes sent expected %zu\n", message_size, COE_HEADER_SIZE + n_bytes_to_send);
         } else if (::send(data_socket_fd_, &mesg, message_size, 0) <= 0) {
@@ -335,7 +334,7 @@ int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTenso
     headers_.acf_user0c_header.psn = psn;
     headers_.acf_user0c_header.frame_flags = COE_FLAG_FRAME_END | (line_threshold >= n_bytes_to_send ? COE_FLAG_LINE_END : 0);
 
-    size_t message_size = serialize_packet(headers_, mesg, sizeof(mesg), nullptr, n_bytes_to_send, nullptr);
+    size_t message_size = serialize_packet(headers_, mesg, sizeof(mesg), nullptr, n_bytes_to_send);
     if (message_size != COE_PAYLOAD_OFFSET + n_bytes_to_send) {
         fprintf(stderr, "error in serialize frame metadata packet. found %zu expected %zu\n", message_size, COE_PAYLOAD_OFFSET + n_bytes_to_send);
     } else if (::send(data_socket_fd_, &mesg, message_size, 0) <= 0) {

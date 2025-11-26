@@ -16,6 +16,7 @@
  */
 
 #include <hololink/common/gui_renderer.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/csi_controller.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
@@ -445,6 +446,12 @@ PYBIND11_MODULE(_hololink, m)
         "Set the HSB log level");
     m.def("log_timestamp_s", &hololink::logging::log_timestamp_s);
 
+    // Packetizer programs
+    py::class_<PacketizerProgram, std::shared_ptr<PacketizerProgram>>(m, "PacketizerProgram")
+        .def("get_output_size", &PacketizerProgram::get_output_size, "input_size"_a);
+    m.def_submodule("csi")
+        .def("get_packetizer_program", &csi::get_packetizer_program, "pixel_format"_a);
+
     py::class_<DataChannel, std::shared_ptr<DataChannel>>(m, "DataChannel")
         .def(py::init<const Metadata&>(), "metadata"_a)
         .def(py::init<const Metadata&,
@@ -456,8 +463,6 @@ PYBIND11_MODULE(_hololink, m)
         .def("authenticate", &DataChannel::authenticate, "qp_number"_a, "rkey"_a)
         .def("configure_roce", &DataChannel::configure_roce, "frame_memory"_a, "frame_size"_a, "page_size"_a, "pages"_a, "local_data_port"_a)
         .def("configure_coe", &DataChannel::configure_coe, "channel"_a, "frame_size"_a, "pixel_width"_a, "vlan_enabled"_a = false)
-        .def("disable_packetizer", &DataChannel::disable_packetizer)
-        .def("enable_packetizer_10", &DataChannel::enable_packetizer_10)
         .def("unconfigure", &DataChannel::unconfigure)
         .def_static("use_multicast", &DataChannel::use_multicast, "metadata"_a, "address"_a, "port"_a)
         .def_static("use_broadcast", &DataChannel::use_broadcast, "metadata"_a, "port"_a)
@@ -465,7 +470,8 @@ PYBIND11_MODULE(_hololink, m)
         .def_static("use_sensor", &DataChannel::use_sensor, "metadata"_a, "sensor_number"_a)
         .def("frame_end_sequencer", &DataChannel::frame_end_sequencer)
         .def_static("use_data_plane_configuration", &DataChannel::use_data_plane_configuration, "metadata"_a, "data_plane"_a)
-        .def("enumeration_metadata", &DataChannel::enumeration_metadata);
+        .def("enumeration_metadata", &DataChannel::enumeration_metadata)
+        .def("set_packetizer_program", &DataChannel::set_packetizer_program);
 
     py::register_exception<TimeoutError>(m, "TimeoutError");
     py::register_exception<UnsupportedVersion>(m, "UnsupportedVersion");
@@ -691,6 +697,8 @@ PYBIND11_MODULE(_hololink, m)
         .def("setup", &Synchronizer::setup)
         .def("shutdown", &Synchronizer::shutdown)
         .def("is_enabled", &Synchronizer::is_enabled);
+
+    m.def("infiniband_devices", &infiniband_devices, "Return a sorted list of Infiniband devices.");
 
 } // PYBIND11_MODULE
 

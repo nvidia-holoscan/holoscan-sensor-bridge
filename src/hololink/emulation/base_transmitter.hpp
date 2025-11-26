@@ -63,8 +63,6 @@ struct TransmissionMetadata {
     uint16_t src_port;
 };
 
-typedef void* (*memcpy_func_t)(void* dst, const void* src, size_t n);
-
 // returns 0 on failure or the number of bytes written on success.
 // Note that on failure, serializer and buffer contents are in indeterminate state.
 size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata);

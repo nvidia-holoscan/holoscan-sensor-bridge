@@ -51,8 +51,9 @@ uint32_t bayer8p_to_T_X2Rc10Rb10Ra10(uint8_t * dest, uint8_t * src, uint16_t pix
     auto threads_per_block = dim3(32, 32);
     auto blocks_per_grid = dim3((pixel_width + 3 * threads_per_block.x - 1) / (threads_per_block.x * 3), (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
     bayer8p_to_T_X2Rc10Rb10Ra10_kernel<<<blocks_per_grid, threads_per_block>>>(dest, line_bytes, src, pixel_height, pixel_width);
-    if (cudaGetLastError() != cudaSuccess) {
-        throw std::runtime_error("bayer8p_to_T_X2Rc10Rb10Ra10_kernel failed");
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("bayer8p_to_T_X2Rc10Rb10Ra10_kernel failed: " + std::string(cudaGetErrorString(error)));
     }
     return 0;
 }
@@ -70,8 +71,9 @@ uint32_t bayer8p_to_10p(uint8_t * dest, uint8_t * src, uint16_t pixel_height, ui
     auto threads_per_block = dim3(32, 32);
     auto blocks_per_grid = dim3((pixel_width + 4 * threads_per_block.x - 1) / threads_per_block.x / 4, (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
     bayer8p_to_10p_kernel<<<blocks_per_grid, threads_per_block>>>(dest, line_bytes, src, pixel_height, pixel_width);
-    if (cudaGetLastError() != cudaSuccess) {
-        throw std::runtime_error("bayer8p_to_10p_kernel failed");
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("bayer8p_to_10p_kernel failed: " + std::string(cudaGetErrorString(error)));
     }
     cudaDeviceSynchronize();
     return 0;
@@ -93,8 +95,9 @@ uint32_t bayer8p_to_T_R12_PK_ISP(uint8_t * dest, uint8_t * src, uint16_t pixel_h
     auto threads_per_block = dim3(32, 32);
     auto blocks_per_grid = dim3((pixel_width + 2 * threads_per_block.x - 1) / threads_per_block.x / 2, (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
     bayer8p_to_T_R12_PK_ISP_kernel<<<blocks_per_grid, threads_per_block>>>(dest, line_bytes, src, pixel_height, pixel_width);
-    if (cudaGetLastError() != cudaSuccess) {
-        throw std::runtime_error("bayer8p_to_T_R12_PK_ISP_kernel failed");
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("bayer8p_to_T_R12_PK_ISP_kernel failed: " + std::string(cudaGetErrorString(error)));
     }
     return 0;
 }
@@ -105,8 +108,9 @@ void generate_bayerGB8p(uint8_t * data, uint16_t pixel_height, uint16_t pixel_wi
     auto threads_per_block = dim3(32, 32);
     auto blocks_per_grid = dim3((pixel_width + threads_per_block.x - 1) / threads_per_block.x, (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
     generate_bayerGB8p_kernel<<<blocks_per_grid, threads_per_block>>>(data, pixel_height, pixel_width);
-    if (cudaGetLastError() != cudaSuccess) {
-        throw std::runtime_error("generate_bayerGB8p_kernel failed");
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("generate_bayerGB8p_kernel failed: " + std::string(cudaGetErrorString(error)));
     }
     cudaDeviceSynchronize();
 }
@@ -308,19 +312,19 @@ void generate_vb1940_frame(DLTensor &frame_data, sensors::Vb1940Emulator& vb1940
     }
     image_size += line_bytes * 3; // 1 line of leading data, 2 lines of trailing data
 
-    cudaMalloc(&frame_data.data, image_size);
-    if (cudaGetLastError() != cudaSuccess) {
+    cudaError_t error = cudaMalloc(&frame_data.data, image_size);
+    if (error != cudaSuccess) {
         frame_data.data = nullptr;
-        throw std::runtime_error("CUDA allocation failed for frame data");
+        throw std::runtime_error("CUDA allocation failed for frame data: " + std::string(cudaGetErrorString(error)));
     }
     cudaMemset(frame_data.data, 0, image_size);
 
     if (frame_generator) {
         uint8_t * gbrg = nullptr;
-        cudaMalloc(&gbrg, pixel_height * pixel_width);
-        if (cudaGetLastError() != cudaSuccess) {
+        error = cudaMalloc(&gbrg, pixel_height * pixel_width);
+        if (error != cudaSuccess) {
             frame_data.data = nullptr;
-            throw std::runtime_error("CUDA allocation failed for gbrg");
+            throw std::runtime_error("CUDA allocation failed for gbrg: " + std::string(cudaGetErrorString(error)));
         }
         generate_bayerGB8p(gbrg, pixel_height, pixel_width);
         frame_generator(((uint8_t*)frame_data.data) + start_byte, gbrg, pixel_height, pixel_width);
@@ -333,8 +337,9 @@ void generate_vb1940_frame(DLTensor &frame_data, sensors::Vb1940Emulator& vb1940
 
     if (!is_gpu) { // if example wants to exercise sending host memory
         uint8_t * host_data = new uint8_t[image_size];
-        if (cudaMemcpy(host_data, frame_data.data, image_size, cudaMemcpyDeviceToHost) != cudaSuccess) {
-            throw std::runtime_error("CUDA Memcpy failed");
+        error = cudaMemcpy(host_data, frame_data.data, image_size, cudaMemcpyDeviceToHost);
+        if (error != cudaSuccess) {
+            throw std::runtime_error("CUDA Memcpy failed: " + std::string(cudaGetErrorString(error)));
         }
         cudaFree(frame_data.data);
         frame_data.data = host_data;

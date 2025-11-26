@@ -145,7 +145,7 @@ public:
      * @return Metadata&
      */
     static Metadata find_channel(const std::string& channel_ip,
-        const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(20.f));
+        const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(60.f));
 
     /**
      * @brief Register a callback for a specific IP address

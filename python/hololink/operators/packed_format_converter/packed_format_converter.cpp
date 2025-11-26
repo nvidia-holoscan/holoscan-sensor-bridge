@@ -29,8 +29,6 @@
 #include <holoscan/core/operator_spec.hpp>
 #include <holoscan/core/resources/gxf/allocator.hpp>
 
-#include <hololink/core/data_channel.hpp>
-
 using std::string_literals::operator""s;
 using pybind11::literals::operator""_a;
 
@@ -58,14 +56,12 @@ public:
     // Define a constructor that fully initializes the object.
     PyPackedFormatConverterOp(holoscan::Fragment* fragment,
         const std::shared_ptr<holoscan::Allocator>& allocator,
-        py::object hololink_channel,
         int cuda_device_ordinal,
         const std::string& name = "packed_format_converter",
         const std::string& in_tensor_name = "",
         const std::string& out_tensor_name = "")
         : PackedFormatConverterOp(holoscan::ArgList { holoscan::Arg { "allocator", allocator },
             holoscan::Arg { "cuda_device_ordinal", cuda_device_ordinal },
-            holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
             holoscan::Arg { "in_tensor_name", in_tensor_name },
             holoscan::Arg { "out_tensor_name", out_tensor_name } })
     {
@@ -89,8 +85,8 @@ PYBIND11_MODULE(_packed_format_converter, m)
     auto op = py::class_<PackedFormatConverterOp, PyPackedFormatConverterOp, holoscan::Operator, hololink::csi::CsiConverter,
         std::shared_ptr<PackedFormatConverterOp>>(m, "PackedFormatConverterOp")
                   .def(py::init<holoscan::Fragment*, const std::shared_ptr<holoscan::Allocator>&,
-                           py::object, int, const std::string&, const std::string&, const std::string&>(),
-                      "fragment"_a, "allocator"_a, "hololink_channel"_a = nullptr, "cuda_device_ordinal"_a = 0,
+                           int, const std::string&, const std::string&, const std::string&>(),
+                      "fragment"_a, "allocator"_a, "cuda_device_ordinal"_a = 0,
                       "name"_a = "packed_format_converter"s, "in_tensor_name"_a = ""s, "out_tensor_name"_a = ""s)
                   .def("setup", &PackedFormatConverterOp::setup, "spec"_a)
                   .def("configure", &PackedFormatConverterOp::configure, "start_byte"_a, "bytes_per_line"_a, "pixel_width"_a, "pixel_height"_a,

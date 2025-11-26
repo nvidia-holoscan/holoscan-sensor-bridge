@@ -27,13 +27,6 @@
 #include <stdexcept>
 #include <unistd.h>
 
-// Help printing Callback and FdCallback values by showing the address
-// of the underlying callable object or function pointer
-#define CALLBACK_VALUE(callback) \
-    (callback.target<void (*)()>() ? reinterpret_cast<const void*>(*callback.target<void (*)()>()) : static_cast<const void*>(callback.target_type().name()))
-#define FDCALLBACK_VALUE(callback) \
-    (callback.target<void (*)(int, short)>() ? reinterpret_cast<const void*>(*callback.target<void (*)(int, short)>()) : static_cast<const void*>(callback.target_type().name()))
-
 // Utility functions for timespec operations
 namespace {
 // Compare two timespec values: returns -1, 0, or 1
@@ -79,25 +72,22 @@ struct timespec timespec_add_seconds(const struct timespec& ts, float seconds)
 namespace hololink {
 namespace core {
 
-    // Static members
-    std::shared_ptr<Reactor> Reactor::instance_;
-    std::mutex Reactor::instance_mutex_;
-
     std::shared_ptr<Reactor> Reactor::get_reactor()
     {
-        std::lock_guard<std::mutex> lock(instance_mutex_);
+        // Use a leaked static pointer to avoid destruction order issues
+        // This ensures the shared_ptr control block survives until program exit
+        static auto* instance_ptr = new std::shared_ptr<Reactor>();
+        static std::once_flag init_flag;
 
-        if (!instance_) {
-            instance_ = std::shared_ptr<Reactor>(new Reactor());
+        std::call_once(init_flag, []() {
+            *instance_ptr = std::shared_ptr<Reactor>(new Reactor());
+        });
 
-            // Start the reactor thread
-            instance_->thread_ = std::make_unique<std::thread>(&Reactor::run, instance_.get());
-        }
-
-        return instance_;
+        return *instance_ptr;
     }
 
     Reactor::Reactor()
+        : thread_()
     {
         // Create the wakeup pipe
         int pipe_fds[2];
@@ -112,6 +102,10 @@ namespace core {
         std::stringstream ss;
         ss << "reactor@" << std::hex << reinterpret_cast<uintptr_t>(this);
         name_ = ss.str();
+
+        // Start the reactor thread
+        std::thread run_thread(&Reactor::run, this);
+        thread_ = std::move(run_thread);
     }
 
     Reactor::~Reactor()
@@ -120,9 +114,7 @@ namespace core {
             stop();
         }
 
-        if (thread_ && thread_->joinable()) {
-            thread_->join();
-        }
+        thread_.join();
 
         // Close the wakeup pipe
         if (wakeup_read_fd_ >= 0) {
@@ -143,14 +135,12 @@ namespace core {
 
     void Reactor::add_callback(Callback callback)
     {
-        HSB_LOG_TRACE("add_callback(callback={})", CALLBACK_VALUE(callback));
         struct timespec zero_time = { 0, 0 };
         add_alarm(zero_time, callback);
     }
 
     void Reactor::add_fd_callback(int fd, FdCallback callback, short events)
     {
-        HSB_LOG_TRACE("add_fd_callback(fd={}, callback={}, events={:#x})", fd, FDCALLBACK_VALUE(callback), events);
         std::lock_guard<std::mutex> lock(lock_);
         fd_callbacks_[fd] = std::make_pair(callback, events);
         wakeup();
@@ -166,7 +156,6 @@ namespace core {
 
     Reactor::AlarmHandle Reactor::add_alarm_s(float seconds, Callback callback)
     {
-        HSB_LOG_TRACE("add_alarm_s(seconds={}, callback={})", seconds, CALLBACK_VALUE(callback));
         struct timespec current = now();
         struct timespec target = timespec_add_seconds(current, seconds);
         return add_alarm(target, callback);
@@ -174,7 +163,6 @@ namespace core {
 
     Reactor::AlarmHandle Reactor::add_alarm(const struct timespec& when, Callback callback)
     {
-        HSB_LOG_TRACE("add_alarm(when={}.{:09d}, callback={})", when.tv_sec, when.tv_nsec, CALLBACK_VALUE(callback));
         auto entry = std::make_shared<AlarmEntry>();
         entry->when = when;
         entry->sequence = alarms_added_.fetch_add(1);
@@ -226,7 +214,7 @@ namespace core {
 
     bool Reactor::is_current_thread() const
     {
-        bool result = thread_ && std::this_thread::get_id() == thread_->get_id();
+        bool result = std::this_thread::get_id() == thread_.get_id();
         HSB_LOG_TRACE("is_current_thread() -> {}", result);
         return result;
     }
@@ -306,7 +294,6 @@ namespace core {
                             }
                         }
 
-                        HSB_LOG_TRACE("poll(...) fd={} callback={}", fd, FDCALLBACK_VALUE(callback));
                         if (callback) {
                             callback(fd, poll_fds[i].revents);
                         }
@@ -328,7 +315,6 @@ namespace core {
 
             // Execute expired callbacks outside of lock to avoid deadlock
             for (const auto& entry : expired) {
-                HSB_LOG_TRACE("poll(...) expired_callback={}", CALLBACK_VALUE(entry->callback));
                 entry->callback();
             }
         }

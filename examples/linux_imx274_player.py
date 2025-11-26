@@ -235,14 +235,16 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-    camera.setup_clock()
-    camera.configure(camera_mode)
-    camera.set_digital_gain_reg(0x4)
-    if args.pattern is not None:
-        camera.test_pattern(args.pattern)
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        camera.setup_clock()
+        camera.configure(camera_mode)
+        camera.set_digital_gain_reg(0x4)
+        if args.pattern is not None:
+            camera.test_pattern(args.pattern)
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

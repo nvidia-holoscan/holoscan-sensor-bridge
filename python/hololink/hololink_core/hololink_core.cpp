@@ -20,7 +20,6 @@
 #include <hololink/core/networking.hpp>
 #include <hololink/core/reactor.hpp>
 #include <hololink/core/serializer.hpp>
-#include <hololink/core/tools.hpp>
 
 #include <unistd.h>
 
@@ -299,8 +298,6 @@ PYBIND11_MODULE(_hololink_core, m)
     m.attr("PAGE_SIZE") = PAGE_SIZE;
 
     m.def("round_up", &round_up, "value"_a, "alignment"_a);
-
-    m.def("infiniband_devices", &infiniband_devices, "Return a sorted list of Infiniband devices.");
 
     // Reactor bindings
     py::class_<Reactor, std::shared_ptr<Reactor>>(m, "Reactor")

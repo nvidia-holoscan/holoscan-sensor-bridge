@@ -36,11 +36,10 @@ namespace hololink::core {
 
 size_t round_up(size_t value, size_t alignment)
 {
-    // This only works when alignment is a power of two.
-    if (alignment & (alignment - 1)) {
-        throw std::runtime_error(fmt::format("round_up called with an invalid alignment={:#x}; it must be a power of two.", alignment));
+    if (alignment == 0) {
+        throw std::runtime_error("Alignment must be greater than zero");
     }
-    return (value + alignment - 1) & ~(alignment - 1);
+    return ((value + alignment - 1) / alignment) * alignment;
 }
 
 std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(

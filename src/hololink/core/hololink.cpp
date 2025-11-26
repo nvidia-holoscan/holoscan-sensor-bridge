@@ -123,6 +123,7 @@ Hololink::Hololink(
     , ptp_pps_output_(std::make_shared<PtpSynchronizer>(this[0]))
     , ptp_enable_(ptp_enable)
     , block_enable_(block_enable)
+    , ptp_sync_stat_(0)
 {
 }
 
@@ -257,7 +258,7 @@ void Hololink::stop()
     started_ = false;
 }
 
-void Hololink::reset()
+void Hololink::trigger_reset()
 {
     std::shared_ptr<Spi> spi = get_spi(RESET_SPI_BUS, /*chip_select*/ 0, /*prescaler*/ 15,
         /*cpol*/ 0, /*cpha*/ 1, /*width*/ 1);
@@ -283,13 +284,10 @@ void Hololink::reset()
     } catch (const std::exception& e) {
         HSB_LOG_INFO("ignoring error {}.", e.what());
     }
+}
 
-    // Now wait for the device to come back up.
-    // This guy raises an exception if we're not found;
-    // this can happen if set-ip is used in one-time
-    // mode.
-    Metadata channel_metadata = Enumerator::find_channel(peer_ip_, std::make_shared<Timeout>(30.f));
-
+void Hololink::seed_arp(const Metadata& channel_metadata)
+{
     // When the connection was lost, the host flushes its ARP cache.
     // Because ARP requests are slow, let's just set the ARP cache here,
     // because we know the MAC ID and the IP address of the system that
@@ -299,7 +297,10 @@ void Hololink::reset()
     std::string client_ip_address = channel_metadata.get<std::string>("client_ip_address").value();
     std::string mac_id = channel_metadata.get<std::string>("mac_id").value();
     hololink::core::ArpWrapper::arp_set(control_socket_.get(), interface.c_str(), client_ip_address.c_str(), mac_id.c_str());
+}
 
+void Hololink::post_reset_configuration()
+{
     // Necessary for e.g. I2C or SPI to work.
     configure_hsb();
 
@@ -309,9 +310,25 @@ void Hololink::reset()
     }
 }
 
+void Hololink::reset()
+{
+    trigger_reset();
+
+    // Now wait for the device to come back up.
+    // This guy raises an exception if we're not found;
+    // this can happen if set-ip is used in one-time
+    // mode.
+    Metadata channel_metadata = Enumerator::find_channel(peer_ip_, std::make_shared<Timeout>(30.f));
+
+    // Reduce the time wasted in ARP cache updates.
+    seed_arp(channel_metadata);
+
+    post_reset_configuration();
+}
+
 uint32_t Hololink::get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout, bool sequence_check)
 {
-    const uint32_t version = read_uint32(HSB_IP_VERSION, timeout, sequence_check);
+    const uint32_t version = read_uint32(HSB_IP_VERSION, timeout, sequence_check) & 0xFFFF;
     return version;
 }
 
@@ -1585,20 +1602,28 @@ Hololink::ResetController::~ResetController()
 
 bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 {
-    constexpr uint32_t SYNCHRONIZED = 0xF;
     while (true) {
-        auto value = read_uint32(FPGA_PTP_SYNC_STAT);
-        if ((value & SYNCHRONIZED) == SYNCHRONIZED) {
+        if (ptp_synchronized()) {
             break;
         }
         if (timeout->expired()) {
-            HSB_LOG_ERROR("ptp_synchronize timed out; value={:#X}.", value);
+            HSB_LOG_ERROR("ptp_synchronize timed out; PTP_SYNC_STAT={:#X}.", ptp_sync_stat_);
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
     // Time is sync'd now.
     return true;
+}
+
+bool Hololink::ptp_synchronized()
+{
+    constexpr uint32_t SYNCHRONIZED = 0xF;
+    ptp_sync_stat_ = read_uint32(FPGA_PTP_SYNC_STAT);
+    if ((ptp_sync_stat_ & SYNCHRONIZED) == SYNCHRONIZED) {
+        return true;
+    }
+    return false;
 }
 
 std::shared_ptr<Synchronizer> Hololink::ptp_pps_output(unsigned frequency)
