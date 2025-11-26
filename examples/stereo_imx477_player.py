@@ -393,32 +393,34 @@ def main():
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
     hololink.start()
-    hololink.reset()
-    camera_left.configure()
+    try:
+        hololink.reset()
+        camera_left.configure()
 
-    camera_right.configure()
+        camera_right.configure()
 
-    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-    camera_left.set_analog_gain(0x2FF)
-    camera_left.set_exposure_reg(args.exposure)
+        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+        camera_left.set_analog_gain(0x2FF)
+        camera_left.set_exposure_reg(args.exposure)
 
-    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-    camera_right.set_analog_gain(0x2FF)
-    camera_right.set_exposure_reg(args.exposure)
+        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+        camera_right.set_analog_gain(0x2FF)
+        camera_right.set_exposure_reg(args.exposure)
 
-    # For demonstration purposes, use the Event based
-    # scheduler.  Any HSDK scheduler works fine here,
-    # including the default greedy scheduler, which
-    # you get if you don't explicitly configure one.
-    scheduler = holoscan.schedulers.EventBasedScheduler(
-        application,
-        worker_thread_number=4,
-        name="event_scheduler",
-    )
-    application.scheduler(scheduler)
+        # For demonstration purposes, use the Event based
+        # scheduler.  Any HSDK scheduler works fine here,
+        # including the default greedy scheduler, which
+        # you get if you don't explicitly configure one.
+        scheduler = holoscan.schedulers.EventBasedScheduler(
+            application,
+            worker_thread_number=4,
+            name="event_scheduler",
+        )
+        application.scheduler(scheduler)
 
-    application.run()
-    hololink.stop()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

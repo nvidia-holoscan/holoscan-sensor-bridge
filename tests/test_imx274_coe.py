@@ -132,7 +132,6 @@ class DualCoeTestApplication(holoscan.core.Application):
             name="converter_left",
             allocator=converter_pool_left,
             cuda_device_ordinal=self._cuda_device_ordinal,
-            hololink_channel=self._hololink_channel_left,
         )
         self._camera_left.configure_converter(converter_left)
 
@@ -151,7 +150,6 @@ class DualCoeTestApplication(holoscan.core.Application):
             name="converter_right",
             allocator=converter_pool_right,
             cuda_device_ordinal=self._cuda_device_ordinal,
-            hololink_channel=self._hololink_channel_right,
         )
         self._camera_right.configure_converter(converter_right)
 
@@ -356,17 +354,24 @@ def run_dual_coe_test(
         hololink = hololink_channel_left.hololink()
         assert hololink is hololink_channel_right.hololink()
         hololink.start()
-        hololink.reset()
-        camera_left.setup_clock()  # this also sets camera_right's clock
-        hololink_channel_left.enable_packetizer_10()
-        camera_left.configure(camera_mode_left)
-        camera_left.test_pattern(pattern_left)
-        hololink_channel_right.enable_packetizer_10()
-        camera_right.configure(camera_mode_right)
-        camera_right.test_pattern(pattern_right)
-        #
-        application.run()
-        hololink.stop()
+        try:
+            hololink.reset()
+            camera_left.setup_clock()  # this also sets camera_right's clock
+            camera_left.configure(camera_mode_left)
+            camera_left.test_pattern(pattern_left)
+            camera_right.configure(camera_mode_right)
+            camera_right.test_pattern(pattern_right)
+
+            # Setup the packetizer based on the camera mode. This is shared with camera_right.
+            packetizer_program = hololink_module.csi.get_packetizer_program(
+                camera_left.pixel_format()
+            )
+            hololink_channel_left.set_packetizer_program(packetizer_program)
+
+            #
+            application.run()
+        finally:
+            hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
@@ -486,7 +491,6 @@ class CoeTestApplication(holoscan.core.Application):
             name="data_in",
             allocator=converter_pool,
             cuda_device_ordinal=self._cuda_device_ordinal,
-            hololink_channel=self._hololink_channel,
         )
         self._camera.configure_converter(data_in)
 
@@ -623,14 +627,22 @@ def test_imx274_pattern_coe(
         # Run it.
         hololink = hololink_channel.hololink()
         hololink.start()
-        hololink.reset()
-        camera.setup_clock()
-        hololink_channel.enable_packetizer_10()
-        camera.configure(camera_mode)
-        camera.test_pattern(pattern)
-        #
-        application.run()
-        hololink.stop()
+        try:
+            hololink.reset()
+            camera.setup_clock()
+            camera.configure(camera_mode)
+            camera.test_pattern(pattern)
+
+            # Setup the packetizer based on the camera mode.
+            packetizer_program = hololink_module.csi.get_packetizer_program(
+                camera.pixel_format()
+            )
+            hololink_channel.set_packetizer_program(packetizer_program)
+
+            #
+            application.run()
+        finally:
+            hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

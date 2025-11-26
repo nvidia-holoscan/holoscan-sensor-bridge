@@ -24,10 +24,10 @@
 #include <sched.h>
 
 #include <hololink/common/holoargs.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/hololink.hpp>
 #include <hololink/core/jesd.hpp>
-#include <hololink/core/tools.hpp>
 #include <hololink/operators/iq_dec/iq_dec_op.hpp>
 #include <hololink/operators/iq_enc/iq_enc_op.hpp>
 #include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
@@ -38,16 +38,6 @@
 
 using Rational = hololink::operators::Rational;
 
-uint32_t get_infiniband_interface_index(const std::string& interface_name)
-{
-    auto infiniband_devices = hololink::core::infiniband_devices();
-
-    for (size_t i = 0; i < infiniband_devices.size(); ++i)
-        if (infiniband_devices[i] == interface_name)
-            return i;
-    return -1;
-}
-
 class HololinkDevice {
 public:
     HololinkDevice(hololink::Hololink& hololink, size_t frame_size, uint32_t host_pause_mapping)
@@ -56,6 +46,9 @@ public:
         , host_pause_mapping_(host_pause_mapping)
     {
         HSB_LOG_INFO("HololinkDevice frame_size={}", frame_size_);
+        if (host_pause_mapping_ != 1 && host_pause_mapping_ != 2) {
+            throw std::runtime_error("Host pause mapping is not valid. Mask must be 0x01 or 0x02");
+        }
     }
 
     void start()
@@ -89,10 +82,10 @@ private:
  */
 class RoceReceiverInitializer {
 public:
-    RoceReceiverInitializer(const std::string& hololink_ip, size_t frame_size, uint32_t host_pause_mapping)
-        : hololink_ip_(hololink_ip)
+    RoceReceiverInitializer(const std::string& rx_hololink_ip, size_t frame_size, const std::string& tx_hololink_ip)
+        : rx_hololink_ip_(rx_hololink_ip)
         , frame_size_(frame_size)
-        , host_pause_mapping_(host_pause_mapping)
+        , tx_hololink_ip_(tx_hololink_ip)
     {
         initialize();
     }
@@ -114,12 +107,22 @@ public:
             CudaCheck(cuDevicePrimaryCtxRetain(&cu_context_, cu_device_));
 
             // Get a handle to the data source
-            auto channel_metadata = hololink::Enumerator::find_channel(hololink_ip_);
+            auto channel_metadata = hololink::Enumerator::find_channel(rx_hololink_ip_);
             hololink::DataChannel::use_sensor(channel_metadata, 0); // Support Tx/Rx on the same interface
             HSB_LOG_INFO("channel_metadata={}", channel_metadata);
             hololink_channel_.reset(new hololink::DataChannel(channel_metadata));
             hololink_ = hololink_channel_->hololink();
-            hololink_device_.reset(new HololinkDevice(*hololink_, frame_size_, host_pause_mapping_));
+
+            auto tx_channel_metadata = hololink::Enumerator::find_channel(tx_hololink_ip_);
+            int64_t tx_data_plane = tx_channel_metadata.get<int64_t>("data_plane").value();
+            if (tx_data_plane != 0 && tx_data_plane != 1) {
+                HSB_LOG_ERROR("HSB100G host pause mapping must have tx-hololink mapped to data plane 0 or 1. tx-hololink ({}) is mapped to data plane {}", tx_hololink_ip_, tx_data_plane);
+                throw std::runtime_error("TX data plane must be 0 or 1");
+            }
+            HSB_LOG_INFO("TX data plane={}", tx_data_plane);
+            uint32_t host_pause_mapping = static_cast<uint32_t>(1 << tx_data_plane);
+
+            hololink_device_.reset(new HololinkDevice(*hololink_, frame_size_, host_pause_mapping));
 
             hololink_->start();
             hololink_->reset();
@@ -169,9 +172,9 @@ public:
     }
 
 private:
-    std::string hololink_ip_;
+    std::string rx_hololink_ip_;
+    std::string tx_hololink_ip_;
     size_t frame_size_;
-    uint32_t host_pause_mapping_;
     CUdevice cu_device_;
     CUcontext cu_context_;
     std::unique_ptr<hololink::DataChannel> hololink_channel_;
@@ -256,13 +259,11 @@ public:
         const auto samples_count = variables_map_["samples-count"].as<unsigned>();
         auto buffer_size = static_cast<uint64_t>(samples_count * 4);
 
-        uint32_t host_pause_mapping = 1 << get_infiniband_interface_index(variables_map_["tx-ibv-name"].as<std::string>());
-
         // Initialize receiver resources
         roce_receiver_initializer_ = std::make_unique<RoceReceiverInitializer>(
             variables_map_["rx-hololink"].as<std::string>(),
             buffer_size,
-            host_pause_mapping);
+            variables_map_["tx-hololink"].as<std::string>());
 
         roce_receiver_ = roce_receiver_initializer_->create_receiver_op(
             *this,
@@ -310,7 +311,7 @@ int main([[maybe_unused]] int argc, [[maybe_unused]] char** argv)
 
     std::string rx_default_infiniband_interface("mlx5_0");
     std::string tx_default_infiniband_interface("mlx5_1");
-    auto infiniband_devices = hololink::core::infiniband_devices();
+    auto infiniband_devices = hololink::infiniband_devices();
     if (infiniband_devices.size() >= 2) {
         rx_default_infiniband_interface = infiniband_devices[0];
         tx_default_infiniband_interface = infiniband_devices[1];

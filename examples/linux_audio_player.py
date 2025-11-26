@@ -27,11 +27,15 @@ SLEEP_TIME = 1
 def enable_i2s(hololink):
     hololink.write_uint32(0x70000014, 0x0000000F)
     time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000100, 0x00000001)
+    hololink.write_uint32(0x80000010, 0x00000004)
     time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000000, 0x00000001)
+    hololink.write_uint32(0x8000000C, 0x00000002)
     time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x0000002C, 0x00001000)  # dmic gpio in
+    hololink.write_uint32(0x80000008, 0x00000003)
+    time.sleep(SLEEP_TIME)
+    hololink.write_uint32(0x80000004, 0x00000002)
+    time.sleep(SLEEP_TIME)
+    hololink.write_uint32(0x80000000, 0x00000003)
     logging.info("Finished setting I2S")
 
 
@@ -49,14 +53,9 @@ def set_tx_pause(hololink):
     # set sensor tx 0 out
     hololink.write_uint32(0x01200000, 0x00000003)
     time.sleep(SLEEP_TIME)
-    # set sensor tx 1 out
-    hololink.write_uint32(0x01210000, 0x00000003)
-    time.sleep(SLEEP_TIME)
     # set tx 0 host pause mapping
     hololink.write_uint32(0x0120000C, 0x00000001)
     time.sleep(SLEEP_TIME)
-    # set tx 1 host pause mapping
-    hololink.write_uint32(0x0120000C, 0x00000001)
     logging.info("Finished setting TX and pause")
 
 

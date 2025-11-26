@@ -396,26 +396,28 @@ def main():
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
     hololink.start()
-    hololink.reset()
-    camera_left.setup_clock()  # this also sets camera_right's clock
-    camera_left.configure(camera_mode)
-    camera_left.set_digital_gain_reg(0x4)
-    camera_right.configure(camera_mode)
-    camera_right.set_digital_gain_reg(0x4)
+    try:
+        hololink.reset()
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        camera_left.configure(camera_mode)
+        camera_left.set_digital_gain_reg(0x4)
+        camera_right.configure(camera_mode)
+        camera_right.set_digital_gain_reg(0x4)
 
-    # For demonstration purposes, use the Event based
-    # scheduler.  Any HSDK scheduler works fine here,
-    # including the default greedy scheduler, which
-    # you get if you don't explicitly configure one.
-    scheduler = holoscan.schedulers.EventBasedScheduler(
-        application,
-        worker_thread_number=4,
-        name="event_scheduler",
-    )
-    application.scheduler(scheduler)
+        # For demonstration purposes, use the Event based
+        # scheduler.  Any HSDK scheduler works fine here,
+        # including the default greedy scheduler, which
+        # you get if you don't explicitly configure one.
+        scheduler = holoscan.schedulers.EventBasedScheduler(
+            application,
+            worker_thread_number=4,
+            name="event_scheduler",
+        )
+        application.scheduler(scheduler)
 
-    application.run()
-    hololink.stop()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

@@ -70,7 +70,7 @@ The Holoscan Sensor Bridge FPGA firmware can be remotely flashed over Ethernet.
 
 1. For programming the Leopard imaging VB1940 Eagle Camera: make sure you cloned and
    built the `holoscan-sensor-bridge repo` (for instructions please see
-   [Thor Host Setup](thor-jp7-setup.md) page).
+   [Thor Host Setup](setup.md) page).
 
    ```sh
    cd holoscan-sensor-bridge/build

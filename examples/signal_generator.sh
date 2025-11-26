@@ -13,7 +13,7 @@ cd "$SCRIPT_DIR" || exit
 #EXP_Q='--expression-q=sin(2*PI*x)'
 #IQ_EXPRESSIONS="$EXP_I $EXP_Q"
 
-INFINIBANDS=(/sys/class/infiniband/*)
+LC_COLLATE=C INFINIBANDS=(/sys/class/infiniband/*)
 # The RoCE interfaces used for the TX and RX
 TX_INTERFACE=`basename ${INFINIBANDS[1]}`
 RX_INTERFACE=`basename ${INFINIBANDS[0]}`

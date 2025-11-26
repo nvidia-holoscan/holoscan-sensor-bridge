@@ -442,58 +442,62 @@ def main():
     imu = hololink_module.sensors.vb1940.Imu(hololink)
     # Connect to the Hololink device before configuring sensors
     hololink.start()
-    hololink.reset()
-    logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize():
-        raise ValueError("Failed to synchronize PTP.")
-    logging.debug("PTP synchronized.")
-    # Initialize cameras.
-    hololink.write_uint32(0x8, 0x0)
-    camera_left.setup_clock()  # this also sets camera_right's clock
-    hololink.write_uint32(0x8, 0x3)
-    time.sleep(100 / 1000)
+    try:
+        hololink.reset()
+        logging.debug("Waiting for PTP sync.")
+        if not hololink.ptp_synchronize():
+            raise ValueError("Failed to synchronize PTP.")
+        logging.debug("PTP synchronized.")
+        # Initialize cameras.
+        hololink.write_uint32(0x8, 0x0)
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        hololink.write_uint32(0x8, 0x3)
+        time.sleep(100 / 1000)
 
-    camera_left.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera_left.configure(camera_mode)
-    camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
-    camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
+        camera_left.get_register_32(
+            0x0000
+        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera_left.configure(camera_mode)
+        camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
+        camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
 
-    camera_right.get_register_32(
-        0x0000
-    )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-    camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-    camera_right.configure(camera_mode)
-    camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
-    camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
-    #
-    imu.configure(
-        samples_per_frame=10,
-        accelerometer_rate=args.accelerometer_rate,
-        gyroscope_rate=args.gyroscope_rate,
-    )
+        camera_right.get_register_32(
+            0x0000
+        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera_right.configure(camera_mode)
+        camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
+        camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
+        #
+        imu.configure(
+            samples_per_frame=10,
+            accelerometer_rate=args.accelerometer_rate,
+            gyroscope_rate=args.gyroscope_rate,
+        )
 
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        cu_context,
-        cu_device_ordinal,
-        args.ibv_name,
-        args.ibv_port,
-        hololink_channel_left,
-        camera_left,
-        camera_mode,
-        hololink_channel_right,
-        camera_right,
-        camera_mode,
-        hololink_channel_imu,
-        imu,
-        args.frame_limit,
-    )
+        # Set up the application
+        application = HoloscanApplication(
+            args.headless,
+            cu_context,
+            cu_device_ordinal,
+            args.ibv_name,
+            args.ibv_port,
+            hololink_channel_left,
+            camera_left,
+            camera_mode,
+            hololink_channel_right,
+            camera_right,
+            camera_mode,
+            hololink_channel_imu,
+            imu,
+            args.frame_limit,
+        )
 
-    logging.info("Calling run")
-    application.run()
-    hololink.stop()
+        logging.info("Calling run")
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

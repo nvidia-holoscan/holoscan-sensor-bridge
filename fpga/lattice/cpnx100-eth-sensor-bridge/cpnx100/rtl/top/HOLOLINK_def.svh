@@ -1,14 +1,22 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 `ifndef HOLOLINK_def
 `define HOLOLINK_def
 
 package HOLOLINK_pkg;
-
-//-----------------------------------------------------
-// Define FPGA Vendor for Macro Instantiation
-//-----------------------------------------------------
-
-// XILINX / ALTERA / LATTICE / MICROCHIP
-  `define LATTICE
 
 //-----------------------------------------------------
 // Holoscan IP Host Clock Frequency
@@ -35,73 +43,88 @@ package HOLOLINK_pkg;
   `define PTP_CLK_FREQ  100446545
 
 //-----------------------------------------------------
-// MAC Address
-//
-// If MAC address is not defined in an external memory,
-// i.e EEPROM, then the soft MAC address can be used
-//-----------------------------------------------------
-
-//-----------------------------------------------------
 // Board Info Enumeration
-//
-// Use ENUM_EEPROM if board info is stored in an external
-// EEPROM. Otherwise,
 //-----------------------------------------------------
 
+  //UUID is used to uniquely identify the board. The UUID is sent over BOOTP.
+  `define UUID                   128'h889B_7CE3_65A5_4247_8B05_4FF1_904C_3359
+
+  // Define ENUM_EEPROM if board info is stored in an external EEPROM.
+  // Otherwise, soft MAC address and Board Serial Number can be used
   `define ENUM_EEPROM
-  `define EEPROM_REG_ADDR_BITS 8
-  `define UUID                 128'h889B_7CE3_65A5_4247_8B05_4FF1_904C_3359
 
-`ifndef ENUM_EEPROM
-  `define MAC_ADDR  48'hCAFEC0FFEE00
-  `define BOARD_VER 160'h0
-  `define BOARD_SN  56'h0
-  `define FPGA_CRC  16'h0
-  `define MISC      32'h0
-`endif
+  `ifdef ENUM_EEPROM
+    `define EEPROM_REG_ADDR_BITS 8                //EEPROM Register Address Bits. Valid values: 8, 16
+  `endif
+
 //-----------------------------------------------------
-// Sensor IF
+// Sensor Interface 
 //-----------------------------------------------------
 
-`ifndef DATAPATH_WIDTH
-  `define DATAPATH_WIDTH  64                 // Sensor interface data width
-`endif
+  `define DATAPATH_WIDTH  64                 // Sensor interface data width. This should be set to MAX width between SIF RX and TX widths
+                                             // Valid values: 8, 16, 64, 128, 512, 1024
   `define DATAKEEP_WIDTH  `DATAPATH_WIDTH/8  // Sensor interface data keep width
   `define DATAUSER_WIDTH  2                  // Sensor interface data user width
-`ifndef SENSOR_IF_INST
-  `define SENSOR_IF_INST  2                  // Sensor interface instantiation number
-`endif
 
-  `define SENSOR_TX_ENABLE  1                // Sensor interface TX Path Enable
+//-----------------------------------------------------
+// Sensor RX IF
+//-----------------------------------------------------
+
+  `define SENSOR_RX_IF_INST  2               // Number of Sensor RX Interface. Valid values: undefined, 1 - 32
+  //----------------------------------------------------------------------------------
+  //If no Sensor RX Interfaces are used, then comment out "`define SENSOR_RX_IF_INST" 
+  //This will remove Sensor RX IF I/Os from HOLOLINK_top module.
+  //The same applies for "SENSOR_TX_IF_INST", "SPI_INST", and "I2C_INST" definitions. 
+  //----------------------------------------------------------------------------------
+
+  `ifdef SENSOR_RX_IF_INST
+    //`define SIF_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up. 
+
+    localparam integer  SIF_RX_WIDTH        [`SENSOR_RX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH}; // Define width for each interface. 
+    //--------------------------------------------------------------------------------
+    // Sensor RX Packetizer Parameters
+    // If RX_PACKETIZER_EN is set to 0, then Packetizer is disabled for that Sensor RX interface. 
+    // Example of how array index matches to Sensor is:
+    //                    {Sensor[1], Sensor[0]}
+    // RX_PACKETIZER_EN = {        1,         1}
+    //--------------------------------------------------------------------------------
+    localparam integer  SIF_RX_PACKETIZER_EN   [`SENSOR_RX_IF_INST-1:0] = '{default:1};               
+    localparam integer  SIF_RX_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {2   , 2   };
+    localparam integer  SIF_RX_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {2   , 2   };
+    localparam integer  SIF_RX_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {64  , 64  };
+    localparam integer  SIF_RX_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {3   , 3   };
+  `endif
+
+//-----------------------------------------------------
+// Sensor TX IF
+//-----------------------------------------------------
+
+  `define SENSOR_TX_IF_INST  1               // Number of Sensor TX Interface. Valid values: undefined, 1 - 32
+
+  `ifdef SENSOR_TX_IF_INST
+    localparam integer  SIF_TX_WIDTH        [`SENSOR_TX_IF_INST-1:0] = {32};                // Define width for each interface. 
+    localparam integer  SIF_TX_BUF_SIZE     [`SENSOR_TX_IF_INST-1:0] = '{default : 4096};   // Define buffer size for each interface. 
+  `endif
 
 //-----------------------------------------------------
 // Host IF
 //-----------------------------------------------------
 
-`ifndef HOST_WIDTH
-  `define HOST_WIDTH      64                 // Host interface data width
-`endif
+  `define HOST_WIDTH      64                 // Host interface data width.                     Valid values: 8, 64, 128, 512
   `define HOSTKEEP_WIDTH  `HOST_WIDTH/8      // Host interface data keep width
   `define HOSTUSER_WIDTH  1                  // Host interface data user width
-`ifndef HOST_IF_INST
-  `define HOST_IF_INST    2                  // Host interface instantiation number
-`endif
-
-  `define HOST_MTU       4096
+  `define HOST_IF_INST    2                  // Host interface instantiation number.           Valid values: 1 - 32
+  `define HOST_MTU        4096               // Maximum Transmission Unit for Ethernet packet. Valid values: 1500, 4096
 
 //------------------------------------------------------------------------------
 // Peripheral Control
 //------------------------------------------------------------------------------
 
-`ifndef SPI_INST
-  `define SPI_INST  2   // SPI interface instantiation number
-`endif
-`ifndef  I2C_INST
-  `define I2C_INST  4   // I2C interface instantiation number
-`endif
-  `define GPIO_INST 31  // INOUT GPIO instantiation number
+  `define SPI_INST  2   // SPI interface instantiation number. Valid values: undefined, 1 - 8
+  `define I2C_INST  4   // I2C interface instantiation number. Valid values: undefined, 1 - 8
+  `define GPIO_INST 31  // INOUT GPIO instantiation number.    Valid values: 1 - 255
 
-  localparam [`GPIO_INST-1:0] GPIO_RESET_VALUE ='0;
+  localparam [`GPIO_INST-1:0] GPIO_RESET_VALUE ='0; 
 
 //------------------------------------------------------------------------------
 // Register IF
@@ -112,34 +135,13 @@ package HOLOLINK_pkg;
   `define REG_INST 8
 
 //------------------------------------------------------------------------------
-// Packetizer
-//
-// Sets the Packetizer Parameters for Each Sensor IF
-//------------------------------------------------------------------------------
-  `define RX_PACKETIZER_EN 1
-
-  localparam integer  SIF_SORT_RESOLUTION [`SENSOR_IF_INST-1:0] = {2   , 2   };
-  localparam integer  SIF_VP_COUNT        [`SENSOR_IF_INST-1:0] = {2   , 2   };
-  localparam integer  SIF_VP_SIZE         [`SENSOR_IF_INST-1:0] = {64  , 64  };
-  localparam integer  SIF_NUM_CYCLES      [`SENSOR_IF_INST-1:0] = {3   , 3   };
-  localparam integer  SIF_DYN_VP          [`SENSOR_IF_INST-1:0] = {0   , 0   };
-  localparam integer  SIF_MIXED_VP_SIZE   [`SENSOR_IF_INST-1:0] = {0   , 0   };
-//------------------------------------------------------------------------------
-// TX Stream Buffer
-//
-// Sets the Transmit Stream Buffer Size (number of entries) for Each Sensor IF
-//------------------------------------------------------------------------------
-  localparam integer SIF_TX_BUF_SIZE      [`SENSOR_IF_INST-1:0] = {4096 , 4096};
-
-//------------------------------------------------------------------------------
 // System Initialization
 //
 // Initialization for the Host Interface registers so communication can be
 // established between the FPGA and the Host
 //------------------------------------------------------------------------------
 
-  `define N_INIT_REG 38
-
+  `define N_INIT_REG 22
 
   localparam logic [63:0] init_reg [`N_INIT_REG] = '{
     // 32b Addr   | 32b Data
@@ -164,25 +166,7 @@ package HOLOLINK_pkg;
     {32'h4000_0004, 32'h0000_0000}, // Lattice mac 1, mac_tx_ctl
     {32'h4000_0008, 32'h0000_0061}, // Lattice mac 1, mac_rx_ctl
     {32'h4000_000C, 32'h0000_05E0}, // Lattice mac 1, mac_pkg_len
-    {32'h4000_0010, 32'h0000_0010}, // Lattice mac 1, mac_ipg_val
-    // Hololink Internal Reg Initialization // TODO To be removed (not required, can be done by sw)
-    {32'h0300_0210, 32'h004C_4B40}, // i2c timeout
-    {32'h0200_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
-    {32'h0201_0020, 32'h0000_2000}, // inst_dec_1, ecb_udp_port
-    {32'h0200_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
-    {32'h0200_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
-    {32'h0201_0304, 32'h0000_05CE}, // dp_pkt_1  , dp_pkt_len
-    {32'h0201_0308, 32'h0000_3000}, // dp_pkt_1  , dp_pkt_fpga_udp_port
-    {32'h0200_0108, 32'h0000_0064}, // eth_pkt_0 , Eth pkt data plane priority
-    {32'h0201_0108, 32'h0000_0064}, // eth_pkt_1 , Eth pkt data plane priority
-    {32'h0200_0024, 32'h0000_12b7}, // inst_dec_0, stx_udp_port
-    {32'h0201_0024, 32'h0000_12b7}, // inst_dec_1, stx_udp_port
-    //PTP Config
-    {32'h0000_0110, 32'h0000_0002}, // ptp, dpll cfg1
-    {32'h0000_0114, 32'h0000_0002}, // ptp, dpll cfg2
-    {32'h0000_0118, 32'h0000_0003}, // ptp, delay avg factor
-    {32'h0000_010C, 32'h0000_0038}, // ptp, delay asymmetry 
-    {32'h0000_0104, 32'h0000_0003}  // ptp, dpll en
+    {32'h4000_0010, 32'h0000_0010}  // Lattice mac 1, mac_ipg_val
   };
 
 endpackage: HOLOLINK_pkg

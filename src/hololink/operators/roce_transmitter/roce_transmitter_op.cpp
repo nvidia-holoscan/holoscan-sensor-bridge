@@ -60,23 +60,73 @@ YAML_CONVERTER(hololink::operators::RoceTransmitterOp::OnStartCallback);
 namespace hololink::operators {
 namespace {
 
+    enum cudaAllocateType {
+        cudaAllocateTypeHost,
+        cudaAllocateTypeDevice,
+        cudaAllocateTypeManaged,
+    };
+
     static const std::string input_name("input");
     struct CudaDeleter {
+        CudaDeleter(enum cudaAllocateType mem_type = cudaAllocateType::cudaAllocateTypeDevice)
+            : mem_type_(mem_type)
+        {
+        }
         void operator()(char* ptr) const
         {
-            cudaFree(ptr);
+            switch (mem_type_) {
+            case cudaAllocateTypeDevice:
+            case cudaAllocateTypeManaged:
+                cudaFree(ptr);
+                break;
+            case cudaAllocateTypeHost:
+                cudaFreeHost(ptr);
+                break;
+            default:
+                throw std::runtime_error("Invalid memory type");
+            }
         }
+
+    private:
+        enum cudaAllocateType mem_type_;
     };
 
     template <typename T>
     using CudaUniquePtr = std::unique_ptr<T, CudaDeleter>;
 
+    /**
+     * @brief Allocate a CUDA memory region that can be used for RDMA operations. Namely registering memory regions
+     *
+     * @tparam T
+     * @param length
+     * @return CudaUniquePtr<T>
+     */
     template <typename T>
-    CudaUniquePtr<T> CudaAllocate(size_t length = 1)
+    CudaUniquePtr<T> CudaRDMAAllocate(size_t length = 1)
     {
-        T* ptr;
+        T* ptr = nullptr;
+        int device_id = 0;
+        CUDA_CHECK(cudaGetDevice(&device_id));
+        int integrated = 0;
+        CUDA_CHECK(cudaDeviceGetAttribute(&integrated, cudaDevAttrIntegrated, device_id));
+        if (integrated) {
+            int can_map_host_mem = 0;
+            CUDA_CHECK(cudaDeviceGetAttribute(&can_map_host_mem, cudaDevAttrCanMapHostMemory, device_id));
+            if (can_map_host_mem) {
+                CUDA_CHECK(cudaMallocHost(&ptr, sizeof(T) * length));
+                return CudaUniquePtr<T>(ptr, CudaDeleter(cudaAllocateType::cudaAllocateTypeHost));
+            } else {
+                /*
+                this is still not guaranteed to work, but if the device does not support
+                clear attributes that do work cudaMallocManaged is the best bet, or this
+                operator will not work
+                */
+                CUDA_CHECK(cudaMallocManaged(&ptr, sizeof(T) * length));
+                return CudaUniquePtr<T>(ptr, CudaDeleter(cudaAllocateType::cudaAllocateTypeManaged));
+            }
+        }
         CUDA_CHECK(cudaMalloc(&ptr, sizeof(T) * length));
-        return CudaUniquePtr<T>(ptr, CudaDeleter());
+        return CudaUniquePtr<T>(ptr, CudaDeleter(cudaAllocateType::cudaAllocateTypeDevice));
     }
 
     struct CudaStream {
@@ -124,7 +174,7 @@ class RoceTransmitterOp::Buffer {
 public:
     Buffer(ibv::ProtectionDomain& protection_domain, size_t size)
         : output_buffer_size_(size)
-        , output_buffer_(CudaAllocate<char>(output_buffer_size_))
+        , output_buffer_(CudaRDMAAllocate<char>(output_buffer_size_))
         , memory_region_(protection_domain.register_memory_region(
               output_buffer_.get(),
               output_buffer_size_,

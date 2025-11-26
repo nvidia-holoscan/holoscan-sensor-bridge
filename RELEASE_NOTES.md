@@ -54,7 +54,7 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 - **Thor support with Leopard Eagle VB1940 cameras.** Documentation and device
   programming support is included to support JP7.0 based Thor configurations with the
   Leopard Eagle VB1940 camera. See
-  [Thor JP7 setup instructions here](https://docs.nvidia.com/holoscan/sensor-bridge/latest/thor-jp7-setup.md).
+  [Thor JP7 setup instructions here](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.md).
 
 ## 2.2-GA, August 2025
 

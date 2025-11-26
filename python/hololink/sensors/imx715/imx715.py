@@ -125,7 +125,7 @@ class Imx715Cam:
         if frame_rate_val == DEFAULT_VALUE:
             self._frame_rate = self._framerate << 22
             logging.debug(
-                "Setting default FRAME RATE({self._frame_rate}) values based on IMX715 Mode"
+                f"Setting default FRAME RATE({self._frame_rate}) values based on IMX715 Mode"
             )
         else:
             if frame_rate_val < IMX715_MIN_FRAMERATE:

@@ -345,14 +345,16 @@ def test_linux_hwisp_pattern(
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
     hololink.start()
-    hololink.reset()
-    camera_left.setup_clock()  # this also sets camera_right's clock
-    camera_left.configure(camera_mode_left)
-    camera_left.test_pattern(pattern_left)
-    camera_right.configure(camera_mode_right)
-    camera_right.test_pattern(pattern_right)
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        camera_left.setup_clock()  # this also sets camera_right's clock
+        camera_left.configure(camera_mode_left)
+        camera_left.test_pattern(pattern_left)
+        camera_right.configure(camera_mode_right)
+        camera_right.test_pattern(pattern_right)
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

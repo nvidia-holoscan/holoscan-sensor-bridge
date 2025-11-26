@@ -31,11 +31,11 @@ def test_udpcam_version(mock_camera_ip):
         hololink_channel = hololink_module.DataChannel(channel_metadata)
         hololink = hololink_channel.hololink()
         hololink.start()
-
-        # Camera
-        camera = mock_camera.MockCamera(hololink_channel)
-        camera.reset()
-
-        version = camera.get_version()
-        logging.info("version=%s" % (version,))
-        hololink.stop()
+        try:
+            # Camera
+            camera = mock_camera.MockCamera(hololink_channel)
+            camera.reset()
+            version = camera.get_version()
+            logging.info("version=%s" % (version,))
+        finally:
+            hololink.stop()

@@ -18,28 +18,9 @@
 #include "packed_format_converter.hpp"
 
 #include <hololink/common/cuda_helper.hpp>
-#include <hololink/core/data_channel.hpp>
 #include <hololink/core/logging_internal.hpp>
 #include <hololink/core/networking.hpp>
 #include <holoscan/holoscan.hpp>
-
-/**
- * @brief This macro defining a YAML converter which throws for unsupported types.
- *
- * Background: Holoscan supports setting parameters through YAML files. But for some parameters
- * accepted by the receiver operators like `DataChannel` class of functions it makes no sense
- * to specify them in YAML files. Therefore use a converter which throws for these types.
- *
- * @tparam TYPE
- */
-#define YAML_CONVERTER(TYPE)                                                                \
-    template <>                                                                             \
-    struct YAML::convert<TYPE> {                                                            \
-        static Node encode(TYPE&) { throw std::runtime_error("Unsupported"); }              \
-        static bool decode(const Node&, TYPE&) { throw std::runtime_error("Unsupported"); } \
-    };
-
-YAML_CONVERTER(hololink::DataChannel*);
 
 namespace {
 
@@ -92,8 +73,6 @@ void PackedFormatConverterOp::setup(holoscan::OperatorSpec& spec)
     spec.input<holoscan::gxf::Entity>("input");
     spec.output<holoscan::gxf::Entity>("output");
 
-    register_converter<hololink::DataChannel*>();
-
     spec.param(allocator_, "allocator", "Allocator",
         "Allocator used to allocate the output image, defaults to BlockMemoryPool");
     spec.param(cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal",
@@ -102,8 +81,6 @@ void PackedFormatConverterOp::setup(holoscan::OperatorSpec& spec)
         "Name of the input tensor", std::string(""));
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
         "Name of the output tensor", std::string(""));
-    spec.param(hololink_channel_, "hololink_channel", "HololinkChannel",
-        "Pointer to Hololink Datachannel object");
     cuda_stream_handler_.define_params(spec);
 }
 
@@ -128,10 +105,6 @@ void PackedFormatConverterOp::start()
 
 void PackedFormatConverterOp::stop()
 {
-    if (hololink_channel_.has_value() && hololink_channel_.get()) {
-        hololink_channel_.get()->disable_packetizer();
-    }
-
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     cuda_function_launcher_.reset();

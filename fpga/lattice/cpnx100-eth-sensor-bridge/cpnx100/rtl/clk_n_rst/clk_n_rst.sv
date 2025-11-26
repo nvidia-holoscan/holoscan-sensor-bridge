@@ -1,3 +1,18 @@
+// SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
 module clk_n_rst (
   // Reference Clock
   input  i_refclk,    // pll reference clock
@@ -16,6 +31,7 @@ module clk_n_rst (
   output o_i2s_clk_int,  //I2S Clock for Internal I2S IP
   output o_i2s_clk_ext,  //I2S Clock for External device
   output o_i2s_mclk_ext, //I2S MCLK for External device
+  output o_i2s_ref_clk, //I2S Reference Clock
   //
   input  i_pb_rst_n,  // asynchronous active low pushbutton reset
   input  i_sw_rst,    // software controlled system active high reset
@@ -101,6 +117,8 @@ module clk_n_rst (
     .clkos_o  ( i2s_pll_clk    ), //37MHz
     .lock_o   ( i2s_pll_locked )
   );
+
+  assign o_i2s_ref_clk = i2s_pll_clk;
 
   //PCLKDIV primitive
   PCLKDIVSP #(

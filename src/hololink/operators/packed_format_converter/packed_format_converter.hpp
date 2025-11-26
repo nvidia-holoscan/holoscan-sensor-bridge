@@ -24,10 +24,6 @@
 
 #include <cuda.h>
 
-namespace hololink {
-class DataChannel;
-} // namespace hololink
-
 namespace hololink::common {
 class CudaFunctionLauncher;
 } // namespace hololink::common
@@ -66,7 +62,6 @@ private:
     holoscan::Parameter<int> cuda_device_ordinal_;
     holoscan::Parameter<std::string> in_tensor_name_;
     holoscan::Parameter<std::string> out_tensor_name_;
-    holoscan::Parameter<DataChannel*> hololink_channel_;
 
     CUcontext cuda_context_ = nullptr;
     CUdevice cuda_device_ = 0;

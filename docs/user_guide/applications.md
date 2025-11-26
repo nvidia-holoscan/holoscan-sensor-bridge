@@ -555,3 +555,60 @@ data. It does following operations:
 
 The `HolovizOp` provides rendering for both Active IR and depth data, with depth data
 visualized using the `DEPTH_MAP` option for 3D rendering.
+
+## Linux Audio Player
+
+The Hololink board includes an I2S (Inter‑IC Sound) audio peripheral that provides a
+digital audio link between the FPGA and external audio devices such as DACs, codecs, or
+amplifiers. It uses a 32‑bit AXI‑Stream interface on the FPGA side for audio samples and
+an APB register interface for configuration and status.
+
+On the board pins, the peripheral drives the standard I2S signals: a bit clock (BCLK), a
+word‑select / left‑right clock (LRCLK), a master clock (MCLK), and serial data (SDATA).
+Internally, configurable clock dividers derive MCLK, BCLK, and LRCLK from a reference
+clock to generate the desired audio sample rate.
+
+The `linux_audio_player.py` application demonstrates how to stream audio samples from a
+WAV file on the host to a Hololink board and play them out through the I2S interface.
+
+The application builds a simple Holoscan pipeline that packetizes audio samples and
+sends them to the Hololink device over UDP:
+
+```{mermaid}
+:align: center
+:caption: Linux Audio Player
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+    p[AudioPacketizerOp] --> u[UdpTransmitterOp]
+```
+
+- `AudioPacketizerOp` reads audio data from a WAV file on the host, splits it into
+  fixed-size chunks (controlled by `chunk_size`), and publishes those chunks into the
+  Holoscan pipeline.
+- `UdpTransmitterOp` sends each audio chunk as UDP packets to the Hololink device at the
+  configured IP address (port 4791 by default).
+
+Before starting the Holoscan application, `linux_audio_player.py` configures the
+Hololink device to enable I2S transmit by writing to a set of device registers
+(functions `enable_i2s`, `set_tx_af_ae`, and `set_tx_pause`). This sets up the transmit
+FIFO thresholds and pause behavior so that the incoming UDP audio stream is played out
+on the I2S interface.
+
+You can run the application from the `examples` directory with:
+
+```bash
+python3 linux_audio_player.py \
+  --hololink <HOLINK_IP_ADDRESS> \
+  --wav-file </path/to/file.wav> \
+  [--chunk-size 192]
+```
+
+The current I2S/FPGA audio path and application are designed for a fixed audio format.
+The WAV file must use the following audio parameters:
+
+- **Channels**: Stereo
+- **Sample rate**: 48 kHz
+- **Sample size**: 24-bit
+- **Bit rate**: 2304 kbps

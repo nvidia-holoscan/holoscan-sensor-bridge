@@ -74,6 +74,7 @@ private:
     struct PerCameraState {
         PerCameraState()
             : isp_stats_(nullptr)
+            , sci_sync_isp0_(nullptr)
             , stop_thread_(std::make_unique<std::atomic<bool>>(false))
             , buffer_mutex_(std::make_unique<std::mutex>())
             , buffer_available_(std::make_unique<std::condition_variable>())
@@ -139,6 +140,7 @@ private:
     // Pending buffer map is static since the callback only provides the buffer pointer.
     static std::map<void*, nvsipl::INvSIPLClient::INvSIPLBuffer*> pending_buffers_;
     static std::mutex pending_buffers_mutex_;
+    static std::condition_variable pending_buffer_released_;
 };
 
 } // namespace holoscan::ops

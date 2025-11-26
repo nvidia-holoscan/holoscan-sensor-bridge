@@ -174,8 +174,8 @@ static bool update_crc(uint8_t* buffer, size_t buffer_size, size_t content_size)
 }
 
 // assumes that the buffer size is large enough to hold the whole packet, else UB.
-// if any of content, headers.ret_h.content_size, or copy_func are 0/nullptr, the payload will not be copied and it is up to the caller to ensure payload is written to buffer
-static size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content, memcpy_func_t copy_func)
+// if either of content or headers.ret_h.content_size are 0/nullptr, the payload will not be copied and it is up to the caller to ensure payload is written to buffer
+static size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buffer, size_t buffer_size, const uint8_t* __restrict__ content)
 {
     // local copy of content_size.
     // NOTE: headers.ret_h.content_size is the single source of truth for the content_size
@@ -224,9 +224,9 @@ static size_t serialize_packet(LinuxHeaders& headers, uint8_t* __restrict__ buff
         return 0;
     }
 
-    if (content_size && buffer && copy_func) { // guard against 0 byte copy, memcpy UB, and no copy function
+    if (buffer && content && content_size) { // guard against 0 byte copy, memcpy UB
         // Serializer object does not have the ability to navigate the buffer or handle non-cpu memory copies, so work outside the serializer here
-        copy_func(buffer + IB_PAYLOAD_OFFSET, content, content_size);
+        memcpy(buffer + IB_PAYLOAD_OFFSET, content, content_size);
     }
 
     update_crc(buffer, buffer_size, crc_offset);
@@ -364,7 +364,6 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     int64_t offset = 0;
     int64_t n_bytes_sent = 0;
     uint8_t* content = (uint8_t*)tensor.data;
-    memcpy_func_t copy_func = memcpy;
 
     struct timespec frame_start_timestamp;
     clock_gettime(FRAME_METADATA_CLOCK, &frame_start_timestamp);
@@ -421,7 +420,7 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
         ret_header->content_size = n_bytes_to_send;
         ret_header->vaddress = linux_metadata->address + offset;
 
-        size_t message_size = serialize_packet(linux_headers_, mesg, sizeof(mesg), content + offset, copy_func);
+        size_t message_size = serialize_packet(linux_headers_, mesg, sizeof(mesg), content + offset);
         if (message_size != IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t)) {
             fprintf(stderr, "error in writing packet psn %d. found %zu expected %zu\n", psn_, message_size, IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t));
         } else if (sendto(data_socket_fd_, &mesg, message_size, 0, (struct sockaddr*)&dest_addr, sizeof(dest_addr)) <= 0) {
@@ -449,7 +448,7 @@ int64_t LinuxTransmitter::send(const TransmissionMetadata* metadata, const DLTen
     }
 
     // pass nullptr content and copy function since metadata is already written to the mesg packet buffer
-    size_t message_size = serialize_packet(linux_headers_, mesg, sizeof(mesg), nullptr, nullptr);
+    size_t message_size = serialize_packet(linux_headers_, mesg, sizeof(mesg), nullptr);
     // 2 * sizeof(uin32_t) to account for immediate value and crc
     if (message_size != IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t)) {
         fprintf(stderr, "error in serialize immediate packet. found %zu expected %zu\n", message_size, IB_PAYLOAD_OFFSET + n_bytes_to_send + sizeof(uint32_t));

@@ -382,29 +382,29 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
+    try:
+        if not args.skip_reset:
+            hololink.reset()
+        if args.ptp_sync:
+            logging.debug("Waiting for PTP sync.")
+            if not hololink.ptp_synchronize():
+                logging.error("Failed to synchronize PTP; ignoring.")
+            else:
+                logging.debug("PTP synchronized.")
 
-    if not args.skip_reset:
-        hololink.reset()
-    if args.ptp_sync:
-        logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize():
-            logging.error("Failed to synchronize PTP; ignoring.")
-        else:
-            logging.debug("PTP synchronized.")
+        program_mipi_phy(0, 2, 270, hololink)
+        program_mipi_phy(1, 2, 270, hololink)
 
-    program_mipi_phy(0, 2, 270, hololink)
-    program_mipi_phy(1, 2, 270, hololink)
+        camera.setup_clock()
+        time.sleep(1)
+        camera.configure(camera_mode)
+        if args.pattern is not None:
+            camera.test_pattern(args.pattern)
 
-    camera.setup_clock()
-    time.sleep(1)
-    camera.configure(camera_mode)
-    if args.pattern is not None:
-        camera.test_pattern(args.pattern)
-
-    logging.info("Calling run")
-    application.run()
-
-    hololink.stop()
+        logging.info("Calling run")
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS

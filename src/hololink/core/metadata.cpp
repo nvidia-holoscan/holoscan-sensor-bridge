@@ -54,9 +54,6 @@ auto fmt::formatter<hololink::Metadata::Element>::format(const hololink::Metadat
     return fmt::format_to(ctx.out(), "{}", buffer);
 }
 
-// Enable range formatting for hololink::Metadata with fmt v9.
-// We can depend on the generic range formatter below when using fmt v10+
-#if FMT_VERSION < 100000
 auto fmt::formatter<hololink::Metadata>::format(
     const hololink::Metadata& metadata, fmt::format_context& ctx) const -> decltype(ctx.out())
 {
@@ -67,4 +64,3 @@ auto fmt::formatter<hololink::Metadata>::format(
     }
     return appender;
 }
-#endif

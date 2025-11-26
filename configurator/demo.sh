@@ -95,6 +95,7 @@ docker run \
     -it \
     --rm \
     --net host \
+    --name demo \
     --gpus all \
     --runtime=nvidia \
     --shm-size=1gb \

@@ -26,6 +26,7 @@ namespace hololink::operators {
 
 std::map<void*, nvsipl::INvSIPLClient::INvSIPLBuffer*> SIPLCaptureOp::pending_buffers_;
 std::mutex SIPLCaptureOp::pending_buffers_mutex_;
+std::condition_variable SIPLCaptureOp::pending_buffer_released_;
 
 void SIPLCaptureOp::setup(holoscan::OperatorSpec& spec)
 {
@@ -49,6 +50,7 @@ nvidia::gxf::Expected<void> SIPLCaptureOp::buffer_release_callback(void* pointer
         HSB_LOG_TRACE("Released buffer {}", (void*)pending_buffers_[pointer]);
     }
     pending_buffers_.erase(pointer);
+    pending_buffer_released_.notify_all();
     return nvidia::gxf::Expected<void>();
 }
 
@@ -554,6 +556,18 @@ void SIPLCaptureOp::stop()
         if (camera_state.acquire_thread_.joinable()) {
             camera_state.stop_thread_->store(true);
             camera_state.acquire_thread_.join();
+        }
+    }
+
+    // Wait for any pending buffers to be released.
+    uint32_t wait_limit = 30;
+    std::unique_lock<std::mutex> pending_buffer_lock(pending_buffers_mutex_);
+    while (pending_buffers_.size() > 0) {
+        auto status = pending_buffer_released_.wait_for(pending_buffer_lock,
+            std::chrono::milliseconds(100));
+        if (status == std::cv_status::timeout && (--wait_limit == 0)) {
+            HSB_LOG_ERROR("Failed to wait for pending buffers to be released.");
+            break;
         }
     }
 

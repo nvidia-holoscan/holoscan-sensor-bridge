@@ -21,6 +21,7 @@
 #include <string>
 
 #include <hololink/common/cuda_helper.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
 #include <hololink/core/hololink.hpp>
@@ -170,16 +171,10 @@ int main(int argc, char** argv)
 
     std::string ibv_name("roceP5p3s0f0");
     try {
-        std::vector<std::string> devices;
-        for (auto const& dir_entry : std::filesystem::directory_iterator {
-                 std::filesystem::path { "/sys/class/infiniband" } }) {
-            devices.push_back(dir_entry.path().filename());
-        }
-        if (!devices.empty()) {
-            std::sort(devices.begin(), devices.end());
-            ibv_name = devices[0];
-        }
-    } catch (...) {
+        ibv_name = hololink::infiniband_devices()[0];
+    } catch (const std::exception& e) {
+        std::cerr << "Error getting IBV name: " << e.what() << std::endl;
+        return EXIT_FAILURE;
     }
 
     // Parse args

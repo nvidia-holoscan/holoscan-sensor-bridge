@@ -23,9 +23,11 @@
 #include <memory>
 #include <string>
 
+#include "csi_formats.hpp"
 #include "hololink.hpp"
 #include "metadata.hpp"
 #include "networking.hpp"
+#include "packetizer_program.hpp"
 
 namespace hololink {
 
@@ -49,11 +51,6 @@ constexpr uint32_t DP_HOST_MAC_LOW = 0x20;
 constexpr uint32_t DP_HOST_MAC_HIGH = 0x24;
 constexpr uint32_t DP_HOST_IP = 0x28;
 constexpr uint32_t DP_HOST_UDP_PORT = 0x2C;
-
-// SIF: packetizer configuration.
-constexpr uint32_t PACKETIZER_MODE = 0x0C;
-constexpr uint32_t PACKETIZER_RAM = 0x04;
-constexpr uint32_t PACKETIZER_DATA = 0x08;
 
 class Enumerator;
 class Programmer;
@@ -148,21 +145,6 @@ public:
     static void use_sensor(Metadata& metadata, int64_t sensor_number);
 
     /**
-     * Disable the packetizer.
-     */
-    void disable_packetizer();
-
-    /**
-     * Enable the packetizer for 10-bit data.
-     */
-    void enable_packetizer_10();
-
-    /**
-     * Enable the packetizer for 12-bit data.
-     */
-    void enable_packetizer_12();
-
-    /**
      * Get a Sequencer that's connected to the frame-end input.
      */
     std::shared_ptr<Hololink::Sequencer> frame_end_sequencer();
@@ -174,6 +156,11 @@ public:
     static void use_data_plane_configuration(Metadata& metadata, int64_t data_plane);
 
     Metadata& enumeration_metadata() { return enumeration_metadata_; }
+
+    /**
+     * Sets the current PacketizerProgram. This program will be enabled at configure() time.
+     */
+    void set_packetizer_program(std::shared_ptr<PacketizerProgram> program);
 
 protected:
     /**
@@ -209,6 +196,7 @@ private:
     uint32_t hif_address_;
     uint32_t sif_address_;
     std::string fpga_uuid_;
+    std::shared_ptr<PacketizerProgram> packetizer_program_;
 };
 
 } // namespace hololink

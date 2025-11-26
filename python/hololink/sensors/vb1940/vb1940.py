@@ -811,10 +811,19 @@ class Vb1940Cam(hololink_module.Synchronizable):
             self._pixel_format, self._width
         )
         received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+        # status lines are not converted
+        status_line_bytes = 0
+        if self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_8:
+            status_line_bytes = int(self._width)
+        elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
+            status_line_bytes = int(self._width * 10 / 8)
+        elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
+            status_line_bytes = int(self._width * 12 / 8)
+        status_line_bytes = converter.received_line_bytes(status_line_bytes)
         # sensor has 1 line of status before the real image data starts
-        start_byte += received_line_bytes
+        start_byte += status_line_bytes
         # sensor has 2 line of status after the real image data is complete
-        trailing_bytes = received_line_bytes * 2
+        trailing_bytes = status_line_bytes * 2
         converter.configure(
             start_byte,
             received_line_bytes,

@@ -399,29 +399,27 @@ def main():
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    hololink.reset()
-
-    ptp_sync_timeout_s = 10
-    ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
-    logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize(ptp_sync_timeout):
-        raise ValueError(
-            f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-        )
-    else:
-        logging.debug("PTP synchronized.")
-
-    # Configures the camera for 3840x2160, 60fps
-    camera.configure()
-
-    # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-    camera.set_analog_gain(0x2FF)
-    camera.set_exposure_reg(args.exposure)
-
-    if args.pattern:
-        camera.set_pattern()
-    application.run()
-    hololink.stop()
+    try:
+        hololink.reset()
+        ptp_sync_timeout_s = 10
+        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
+        logging.debug("Waiting for PTP sync.")
+        if not hololink.ptp_synchronize(ptp_sync_timeout):
+            raise ValueError(
+                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
+            )
+        else:
+            logging.debug("PTP synchronized.")
+        # Configures the camera for 3840x2160, 60fps
+        camera.configure()
+        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
+        camera.set_analog_gain(0x2FF)
+        camera.set_exposure_reg(args.exposure)
+        if args.pattern:
+            camera.set_pattern()
+        application.run()
+    finally:
+        hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
