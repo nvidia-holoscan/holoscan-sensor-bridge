@@ -223,11 +223,11 @@ def main():
         default="192.168.0.2",
         help="IP address of Hololink board",
     )
-    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.onnx")
+    default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
     parser.add_argument(
         "--engine",
         default=default_engine,
-        help="Model path (ONNX or TRT engine)",
+        help="TRT engine model",
     )
     parser.add_argument(
         "--log-level",
