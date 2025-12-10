@@ -17,7 +17,6 @@
 
 import ctypes
 import logging
-import os
 
 import cuda.bindings.driver as cuda
 import holoscan
@@ -468,10 +467,6 @@ def run_test(
             watchdog,
             frame_limit=100,
         )
-        default_configuration = os.path.join(
-            os.path.dirname(__file__), "example_configuration.yaml"
-        )
-        application.config(default_configuration)
         # Run it.
         hololink = hololink_channel_left.hololink()
         assert hololink is hololink_channel_right.hololink()

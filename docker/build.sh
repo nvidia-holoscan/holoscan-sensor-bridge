@@ -26,7 +26,7 @@ dgpu=0
 usage=1
 GPU_CONFIG=
 # HSDK follows Major.Minor.Patch versioning scheme
-HSDK_VERSION="3.7.0"
+HSDK_VERSION="3.9.0"
 
 # detected and populated in script and used in docker build command
 PROTOTYPE_OPTIONS=""
@@ -46,6 +46,9 @@ do
         "--dgpu")
             dgpu=1
             GPU_CONFIG="dgpu"
+            ;;
+        --hsdk=*)
+            HSDK_VERSION="${1#--hsdk=}"
             ;;
         *)
             usage=1
@@ -166,9 +169,10 @@ check_l4t() {
         echo "Warning: \"$1\" configuration is not officially supported."
     fi
     L4T_CONFIG=$(cat /etc/nv_tegra_release)
-    # get L4T major version from DMI. The dmi bios_version for l4t includes the full l4t release version
-    L4T_VERSION_MAJOR=$(cat /sys/class/dmi/id/bios_version | grep -oE '^[0-9]+')
-    echo "L4T version: $L4T_VERSION_MAJOR"
+    # get L4T version from DMI. The dmi bios_version for l4t includes the full l4t release version
+    L4T_VERSION=$(cat /sys/class/dmi/id/bios_version | cut -d- -f1)
+    L4T_VERSION_MAJOR=${L4T_VERSION%%.*}
+    echo "L4T version: $L4T_VERSION"
 
     # only support Jetpack 6+ or IGX Base OS v1.0+, which are both L4T v36+
     if [ $L4T_VERSION_MAJOR -lt 36 ]
@@ -201,7 +205,9 @@ check_l4t() {
         exit 1
     fi
 
-    PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context l4t-libs=$L4T_LIBRARIES_PATH"
+    PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-arg L4T_VERSION=$L4T_VERSION "
+    PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context l4t-libs=$L4T_LIBRARIES_PATH "
+    PROTOTYPE_OPTIONS="$PROTOTYPE_OPTIONS --build-context l4t-src=/usr/src "
 }
 
 set -o xtrace

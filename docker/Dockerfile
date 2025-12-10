@@ -53,18 +53,29 @@ ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 
 # Thor specific configuration goes here.
 FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu_sipl
+ARG L4T_VERSION=invalid
+ENV L4T_MAJ_VER="${L4T_VERSION%%.*}"
+ENV L4T_MIN_VER="${L4T_VERSION#*.}"
 
-# Download and install the Jetson Multimedia API.
-RUN wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_Multimedia_API_R38.2.0_aarch64.tbz2 && \
-    tar xjf Jetson_Multimedia_API_R38.2.0_aarch64.tbz2 -C / && \
-    rm Jetson_Multimedia_API_R38.2.0_aarch64.tbz2
+# Copy the Jetson Multimedia API from the host (fall back to download if not installed on the host).
+COPY --from=l4t-src jetson_multimedia_api* /usr/src/jetson_multimedia_api
+RUN if [ ! -d "/usr/src/jetson_multimedia_api" ]; then \
+        wget https://developer.nvidia.com/downloads/embedded/L4T/r${L4T_MAJ_VER}_Release_v${L4T_MIN_VER}/release/Jetson_Multimedia_API_R${L4T_VERSION}_aarch64.tbz2 && \
+        tar xjf Jetson_Multimedia_API_R${L4T_VERSION}_aarch64.tbz2 -C / && \
+        rm Jetson_Multimedia_API_R${L4T_VERSION}_aarch64.tbz2; \
+    fi
 
-# Download, build, and install the SIPL headers and UDDF drivers.
-RUN wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_SIPL_API_R38.2.0_aarch64.tbz2 && \
-    tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C / && \
-    rm Jetson_SIPL_API_R38.2.0_aarch64.tbz2 && \
-    cd /usr/src/jetson_sipl_api/sipl && \
-    mkdir build && cd build && \
+# Copy the Jetson SIPL API from the host (fall back to download if not installed on the host).
+COPY --from=l4t-src jetson_sipl_api* /usr/src/jetson_sipl_api
+RUN if [ ! -d "/usr/src/jetson_sipl_api" ]; then \
+        wget https://developer.nvidia.com/downloads/embedded/L4T/r${L4T_MAJ_VER}_Release_v${L4T_MIN_VER}/release/Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2 && \
+        tar xjf Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2 -C / && \
+        rm Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2; \
+    fi
+
+# Build and install the UDDF drivers.
+RUN cd /usr/src/jetson_sipl_api/sipl && \
+    rm -rf build && mkdir build && cd build && \
     cmake .. && \
     make -j && \
     make install

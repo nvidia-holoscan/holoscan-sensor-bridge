@@ -1,6 +1,6 @@
 # Release Notes
 
-## 2.5-EA, November 2025
+## 2.5-GA, December 2025
 
 ### Dependencies
 
@@ -18,7 +18,7 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 
 ### Updates from 2.3-GA
 
-- **HSDK 3.7** HSB is updated to support running under HSDK 3.7.0.
+- **HSDK 3.9** HSB is updated to support running under HSDK 3.9.0.
 - **Container builds for Thor** for use with Linux network receiver applications only.
 - **Read and write block optimization** for I2C and SPI transactions. Before, individual
   `WR_DWORD` requests were used to set up the buffers and activate the I2C or SPI bus
