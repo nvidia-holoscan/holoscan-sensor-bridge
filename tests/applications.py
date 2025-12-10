@@ -17,7 +17,6 @@
 
 import ctypes
 import logging
-import os
 import time
 
 import cuda.bindings.driver as cuda
@@ -379,11 +378,6 @@ class StereoTest:
                         watchdog=watchdog,
                     )
 
-                    default_configuration = os.path.join(
-                        os.path.dirname(__file__), "example_configuration.yaml"
-                    )
-                    self._application.config(default_configuration)
-                    #
                     # Run it.
                     self._application.run()
             finally:
@@ -798,10 +792,6 @@ class MonoTest:
                         watchdog=watchdog,
                     )
 
-                    default_configuration = os.path.join(
-                        os.path.dirname(__file__), "example_configuration.yaml"
-                    )
-                    application.config(default_configuration)
                     # Run it.
                     application.run()
             finally:

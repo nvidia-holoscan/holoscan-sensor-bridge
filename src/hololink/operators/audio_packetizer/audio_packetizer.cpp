@@ -35,7 +35,13 @@ void AudioPacketizerOp::setup(holoscan::OperatorSpec& spec)
     spec.param(wav_file_, "wav_file", "WAV File",
         "Path to the WAV file to transmit", std::string(""));
     spec.param(chunk_size_, "chunk_size", "Chunk Size",
-        "Size of audio chunks to transmit", 1024u);
+        "Size in bytes of audio payload per packet", 1024u);
+    spec.param(is_udp_tx_,
+        "is_udp_tx",
+        "Is UDP TX",
+        "If true, emit packets formatted for the UDP-based audio path (with InfiniBand header + CRC). "
+        "If false, emit raw audio payload only (for RoCE-based transmission).",
+        true);
     spec.param(pool_, "pool", "Pool",
         "Allocator used to allocate tensor output");
 }
@@ -46,7 +52,12 @@ void AudioPacketizerOp::start()
     load_wav_file();
 
     packet_buffer_.clear();
-    packet_buffer_.resize(chunk_size_.get() + 16);
+
+    const bool is_udp_tx = is_udp_tx_.get();
+    const size_t header_size = is_udp_tx ? kIbHeaderSize : 0;
+    const size_t crc_size = is_udp_tx ? kCrcSize : 0;
+
+    packet_buffer_.resize(chunk_size_.get() + header_size + crc_size);
     HOLOSCAN_LOG_INFO("AudioSendOp started with WAV file: {}", wav_file_.get());
     HOLOSCAN_LOG_INFO("  Sample Rate: {} Hz", wav_header_.sample_rate);
     HOLOSCAN_LOG_INFO("  Channels: {}", wav_header_.num_channels);
@@ -59,10 +70,13 @@ void AudioPacketizerOp::compute(holoscan::InputContext& op_input,
 {
     // Calculate chunk size for this iteration
     size_t chunk = chunk_size_.get();
-    const size_t ib_header_size = 12; // 3 * 4 bytes for the IB header
-    const size_t crc_size = 4; // 4 bytes for CRC
+
+    const bool is_udp_tx = is_udp_tx_.get();
+    const size_t header_size = is_udp_tx ? kIbHeaderSize : 0;
+    const size_t crc_size = is_udp_tx ? kCrcSize : 0;
+
     const size_t payload_size = std::min(chunk, audio_data_.size() - current_pos_);
-    const size_t total_size = ib_header_size + chunk + crc_size;
+    const size_t total_size = header_size + chunk + crc_size;
 
     HOLOSCAN_LOG_DEBUG("Audio chunk size: {} samples, {} channels, {} bytes total",
         chunk,
@@ -107,33 +121,37 @@ void AudioPacketizerOp::compute(holoscan::InputContext& op_input,
     // Create tensor from context
     auto tensor = std::make_shared<holoscan::Tensor>(dl_managed_tensor_context);
 
-    // Prepare IB header
-    unsigned int opcode_n_flags = htonl(0x24 << 24 | 0x40FFFF);
-    unsigned int fb_n_qp = htonl(0 | (2 & 0xFFFFFF));
-    unsigned int a_n_psn = htonl(0 | (num_of_packets_ & 0xFFFFFF));
-
     memset(packet_buffer_.data(), 0, total_size);
 
-    // Copy header to packet buffer
-    memcpy(packet_buffer_.data(), &opcode_n_flags, 4);
-    memcpy(packet_buffer_.data() + 4, &fb_n_qp, 4);
-    memcpy(packet_buffer_.data() + 8, &a_n_psn, 4);
+    if (is_udp_tx) {
+        // Prepare IB header
+        unsigned int opcode_n_flags = htonl(0x24 << 24 | 0x40FFFF);
+        unsigned int fb_n_qp = htonl(0 | (2 & 0xFFFFFF));
+        unsigned int a_n_psn = htonl(0 | (num_of_packets_ & 0xFFFFFF));
+
+        // Copy header to packet buffer
+        memcpy(packet_buffer_.data(), &opcode_n_flags, 4);
+        memcpy(packet_buffer_.data() + 4, &fb_n_qp, 4);
+        memcpy(packet_buffer_.data() + 8, &a_n_psn, 4);
+    }
 
     // Copy audio data to packet buffer
-    memcpy(packet_buffer_.data() + ib_header_size,
+    memcpy(packet_buffer_.data() + header_size,
         audio_data_.data() + current_pos_,
         payload_size);
 
     // Zero-fill if needed
     if (payload_size < chunk) {
-        memset(packet_buffer_.data() + ib_header_size + payload_size, 0, chunk - payload_size);
+        memset(packet_buffer_.data() + header_size + payload_size, 0, chunk - payload_size);
     }
 
-    // Calculate and add CRC
-    unsigned int crc = htonl(crc32(0xdebb20e3,
-        packet_buffer_.data() + ib_header_size, // Calculate CRC of payload only
-        chunk));
-    memcpy(packet_buffer_.data() + ib_header_size + chunk, &crc, crc_size);
+    if (is_udp_tx) {
+        // Calculate and add CRC
+        unsigned int crc = htonl(crc32(0xdebb20e3,
+            packet_buffer_.data() + header_size, // Calculate CRC of payload only
+            chunk));
+        memcpy(packet_buffer_.data() + header_size + chunk, &crc, crc_size);
+    }
 
     // Copy complete packet to GPU
     CUDA_CHECK(cudaMemcpy(

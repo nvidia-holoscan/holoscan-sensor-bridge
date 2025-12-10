@@ -44,11 +44,13 @@ public:
     PyAudioPacketizerOp(holoscan::Fragment* fragment,
         const std::string& wav_file,
         uint32_t chunk_size,
+        bool is_udp_tx,
         std::shared_ptr<holoscan::Allocator> pool,
         const std::string& name)
         : AudioPacketizerOp(holoscan::ArgList {
             holoscan::Arg { "wav_file", wav_file },
             holoscan::Arg { "chunk_size", chunk_size },
+            holoscan::Arg { "is_udp_tx", is_udp_tx },
             holoscan::Arg { "pool", pool } })
     {
         name_ = name;
@@ -67,11 +69,13 @@ PYBIND11_MODULE(_audio_packetizer, m)
         .def(py::init<holoscan::Fragment*,
                  const std::string&,
                  uint32_t,
+                 bool,
                  std::shared_ptr<holoscan::Allocator>,
                  const std::string&>(),
             "fragment"_a,
             "wav_file"_a,
             "chunk_size"_a = 1024,
+            "is_udp_tx"_a = true,
             "pool"_a,
             "name"_a = "audio_packetizer");
 }

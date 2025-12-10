@@ -1522,7 +1522,9 @@ Hololink::NamedLock::NamedLock(Hololink& hololink, std::string name)
     std::string formatted_name = hololink.device_specific_filename(name);
     int permissions = 0666; // make sure other processes can write
     fd_ = open(formatted_name.c_str(), O_WRONLY | O_CREAT, permissions);
-    if (fd_ < 0) {
+    if (fd_ >= 0) {
+        fchmod(fd_, permissions); // Make sure requested permissions aren't masked by umask
+    } else {
         throw std::runtime_error(
             fmt::format("open({}, ...) failed with errno={}: \"{}\"", formatted_name, errno, strerror(errno)));
     }

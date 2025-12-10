@@ -11,8 +11,8 @@ Holoscan sensor bridge is supported on the following configurations:
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
-- AGX Thor systems running [JP7.1.0](https://developer.nvidia.com/embedded/jetpack) with
-  MGBE SmartNIC device and CoE transport. JP7.1.0 release currently supports only the
+- AGX Thor systems running [JP7.0](https://developer.nvidia.com/embedded/jetpack) with
+  MGBE SmartNIC device and CoE transport. JP7.0 release currently supports only the
   [Leopard imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md).
 - DGX Spark systems running
   [DGX OS 7.2.3](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
@@ -401,10 +401,10 @@ which is the RJ45 connector on the AGX Orin.
 ````
 ````{tab-item} AGX Thor
   
-- After installing JP 7.1.0 on the Thor devkit, complete the following steps.
-  If JP 7.1.0 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
+- After installing JP 7.0 on the Thor devkit, complete the following steps.
+  If JP 7.0 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
 
-  **These steps are not required if JetPack 7.1.0 was installed using SDK Manager with the all available optional packages selected.**
+  **These steps are not required if JetPack 7.0 was installed using SDK Manager with the all available optional packages selected.**
 
   ```none
   export PATH=/usr/local/cuda-13.0/bin:$PATH
@@ -465,11 +465,11 @@ which is the RJ45 connector on the AGX Orin.
 
   **This step requires a system reboot to take effect.**
   
-- Install Holoscan SDK v3.7.0:
+- Install Holoscan SDK v3.9.0:
 
   ```none
   sudo apt update
-  sudo apt install holoscan=3.7.0-2
+  sudo apt install holoscan=3.9.0-2
   ```
 
 - Install other Holoscan sensor bridge dependencies:
@@ -548,7 +548,7 @@ which is the RJ45 connector on the AGX Orin.
   sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json --raw
   ```
 
-- JP 7.1.0 currently supports only the [Leopard Imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md)
+- JP 7.0 currently supports only the [Leopard Imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md)
   running in SIPL-accelerated networking mode.
 
 - Building and running Li VB1940 and IMX274 python examples from within the holoscan sensor bridge container

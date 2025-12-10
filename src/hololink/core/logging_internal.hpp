@@ -28,6 +28,13 @@
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
+#if FMT_VERSION >= 110000
+namespace fmt {
+template <typename Char>
+using buffer_context = buffered_context<Char>;
+}
+#endif
+
 /**
  * @brief Formatter for Metadata
  *
