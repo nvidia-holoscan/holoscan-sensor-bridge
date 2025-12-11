@@ -1,4 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+#!/usr/bin/env python3
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION &
+# AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -65,12 +67,25 @@ def en_i2s_tx(hololink):
     set_tx_pause(hololink)
 
 
-class AudioTransmitApp(holoscan.core.Application):
-    def __init__(self, wav_file, chunk_size, hololink_ip):
+class AudioRoceTransmitApp(holoscan.core.Application):
+    def __init__(
+        self,
+        wav_file,
+        chunk_size,
+        hololink_ip,
+        ibv_name,
+        ibv_port,
+        ibv_qp,
+        queue_size,
+    ):
         super().__init__()
         self.wav_file = wav_file
         self.chunk_size = chunk_size
         self.hololink_ip = hololink_ip
+        self.ibv_name = ibv_name
+        self.ibv_port = ibv_port
+        self.ibv_qp = ibv_qp
+        self.queue_size = queue_size
 
     def compose(self):
         # Create allocator for GPU memory
@@ -84,26 +99,43 @@ class AudioTransmitApp(holoscan.core.Application):
             self,
             wav_file=self.wav_file,
             chunk_size=self.chunk_size,
-            is_udp_tx=True,
+            is_udp_tx=False,
             pool=allocator,
             name="audio_packetizer",
         )
 
-        # Create UDP transmitter operator
-        udp_transmitter = hololink_module.operators.UdpTransmitterOp(
+        # Use RoCE transmitter operator instead of UDP transmitter
+        # buffer_size is the maximum size of a single transmitted buffer.
+        # With 24-bit stereo at 48 kHz, a chunk of 192 samples corresponds to:
+        # 192 frames * 2 channels * 4 bytes per sample (padded to 32-bit) = 1536 bytes.
+        # We keep buffer_size configurable at the operator level; the operator will
+        # derive sizes from the incoming tensor.
+        buffer_size = 12 + self.chunk_size + 4
+        roce_transmitter = hololink_module.operators.RoceTransmitterOp(
             self,
-            ip=self.hololink_ip,
-            port=4791,
-            name="udp_transmitter",
-            lossy=False,
+            name="roce_transmitter",
+            ibv_name=self.ibv_name,
+            ibv_port=self.ibv_port,
+            hololink_ip=self.hololink_ip,
+            ibv_qp=self.ibv_qp,
+            buffer_size=buffer_size,
+            queue_size=self.queue_size,
         )
 
         # Connect operators
-        self.add_flow(audio_packetizer, udp_transmitter, {("out", "input")})
+        self.add_flow(audio_packetizer, roce_transmitter, {("out", "input")})
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Audio Transmission Application")
+    rx_default_infiniband_interface = "mlx5_0"
+    try:
+        infiniband_interfaces = hololink_module.infiniband_devices()
+        if infiniband_interfaces:
+            rx_default_infiniband_interface = infiniband_interfaces[0]
+    except FileNotFoundError:
+        pass
+
+    parser = argparse.ArgumentParser(description="Audio RoCE Transmission Application")
     parser.add_argument(
         "--wav-file", required=True, help="Path to WAV file to transmit"
     )
@@ -111,6 +143,30 @@ def main():
         "--chunk-size", type=int, default=192, help="Size of audio chunks to transmit"
     )
     parser.add_argument("--hololink", required=True, help="Hololink IP address")
+    parser.add_argument(
+        "--ibv-name",
+        type=str,
+        default=rx_default_infiniband_interface,
+        help="IBV device name used for transmission",
+    )
+    parser.add_argument(
+        "--ibv-port",
+        type=int,
+        default=1,
+        help="Port number of IBV device used for transmission",
+    )
+    parser.add_argument(
+        "--ibv-qp",
+        type=int,
+        default=2,
+        help="QP number for the IBV stream that the data is transmitted to",
+    )
+    parser.add_argument(
+        "--queue-size",
+        type=int,
+        default=3,
+        help="The number of buffers that can wait to be transmitted",
+    )
 
     args = parser.parse_args()
 
@@ -118,8 +174,14 @@ def main():
     logging.info(f"{channel_metadata=}")
     hololink_channel = hololink_module.DataChannel(channel_metadata)
 
-    app = AudioTransmitApp(
-        wav_file=args.wav_file, chunk_size=args.chunk_size, hololink_ip=args.hololink
+    app = AudioRoceTransmitApp(
+        wav_file=args.wav_file,
+        chunk_size=args.chunk_size,
+        hololink_ip=args.hololink,
+        ibv_name=args.ibv_name,
+        ibv_port=args.ibv_port,
+        ibv_qp=args.ibv_qp,
+        queue_size=args.queue_size,
     )
 
     hololink = hololink_channel.hololink()

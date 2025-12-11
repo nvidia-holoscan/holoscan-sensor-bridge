@@ -17,7 +17,6 @@
 
 import ctypes
 import logging
-import os
 import time
 
 import cuda.bindings.driver as cuda
@@ -293,10 +292,6 @@ def test_imx274_synchronized_i2c_settings(
             watchdog,
             patterns,
         )
-        default_configuration = os.path.join(
-            os.path.dirname(__file__), "example_configuration.yaml"
-        )
-        application.config(default_configuration)
         # Run it.
         hololink = hololink_channel.hololink()
         hololink.start()
@@ -690,10 +685,6 @@ def test_stereo_imx274_synchronized_i2c_settings(
             frame_limit,
             patterns,
         )
-        default_configuration = os.path.join(
-            os.path.dirname(__file__), "example_configuration.yaml"
-        )
-        application.config(default_configuration)
         # Run it.
         hololink.start()
         try:

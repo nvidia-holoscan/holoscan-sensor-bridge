@@ -556,7 +556,7 @@ data. It does following operations:
 The `HolovizOp` provides rendering for both Active IR and depth data, with depth data
 visualized using the `DEPTH_MAP` option for 3D rendering.
 
-## Linux Audio Player
+## Audio Player
 
 The Hololink board includes an I2S (Inter‑IC Sound) audio peripheral that provides a
 digital audio link between the FPGA and external audio devices such as DACs, codecs, or
@@ -568,8 +568,19 @@ word‑select / left‑right clock (LRCLK), a master clock (MCLK), and serial da
 Internally, configurable clock dividers derive MCLK, BCLK, and LRCLK from a reference
 clock to generate the desired audio sample rate.
 
+Two example applications are provided:
+
+- `linux_audio_player.py` – streams audio to the Hololink board using **UDP / Linux
+  sockets**.
+- `audio_player.py` – streams audio using **RoCE / RDMA**.
+
+Both use the same FPGA I2S path and require the same WAV file format described below.
+
+### UDP / Linux socket path (`linux_audio_player.py`)
+
 The `linux_audio_player.py` application demonstrates how to stream audio samples from a
-WAV file on the host to a Hololink board and play them out through the I2S interface.
+WAV file on the host to a Hololink board and play them out through the I2S interface
+using a UDP-based transport path.
 
 The application builds a simple Holoscan pipeline that packetizes audio samples and
 sends them to the Hololink device over UDP:
@@ -586,7 +597,7 @@ graph
 
 - `AudioPacketizerOp` reads audio data from a WAV file on the host, splits it into
   fixed-size chunks (controlled by `chunk_size`), and publishes those chunks into the
-  Holoscan pipeline.
+  Holoscan pipeline using a UDP-oriented packet format (IB-style header + CRC).
 - `UdpTransmitterOp` sends each audio chunk as UDP packets to the Hololink device at the
   configured IP address (port 4791 by default).
 
@@ -605,10 +616,48 @@ python3 linux_audio_player.py \
   [--chunk-size 192]
 ```
 
-The current I2S/FPGA audio path and application are designed for a fixed audio format.
+### RoCE path (`audio_player.py`)
+
+The `audio_player.py` application is a RoCE-based variant of the audio player that uses
+`RoceTransmitterOp` instead of `UdpTransmitterOp`. It streams the same WAV audio format
+over a RoCE link, relying on the RDMA stack for framing and reliability.
+
+The Holoscan pipeline is:
+
+```{mermaid}
+::align: center
+::caption: Audio Player (RoCE)
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+    p[AudioPacketizerOp] --> r[RoceTransmitterOp]
+```
+
+- `AudioPacketizerOp` again reads the WAV file and produces fixed-size audio payloads
+  (with no IB header or CRC in this configuration).
+- `RoceTransmitterOp` sends each payload buffer over the configured RoCE connection to
+  the Hololink board, which then forwards the samples into the same I2S playback path as
+  in the UDP-based example.
+
+From the `examples` directory, you can run:
+
+```bash
+python3 audio_player.py \
+  --hololink <HOLINK_IP_ADDRESS> \
+  --wav-file </path/to/file.wav> \
+  [--chunk-size 192] \
+  [--ibv-name <IB_DEVICE>] \
+  [--ibv-port <PORT>] \
+  [--ibv-qp <QP_NUM>] \
+  [--queue-size <N>]
+
+**NOTE**: The current I2S/FPGA audio path and application are designed for a fixed audio format.
 The WAV file must use the following audio parameters:
 
 - **Channels**: Stereo
 - **Sample rate**: 48 kHz
 - **Sample size**: 24-bit
 - **Bit rate**: 2304 kbps
+]
+```

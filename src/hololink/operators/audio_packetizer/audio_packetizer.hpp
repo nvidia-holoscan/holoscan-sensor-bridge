@@ -18,6 +18,7 @@
 #ifndef SRC_HOLOLINK_OPERATORS_AUDIO_PACKETIZER_AUDIO_PACKETIZER_HPP
 #define SRC_HOLOLINK_OPERATORS_AUDIO_PACKETIZER_AUDIO_PACKETIZER_HPP
 
+#include <cstddef>
 #include <fstream>
 #include <memory>
 #include <string>
@@ -69,6 +70,7 @@ private:
     // Parameters
     holoscan::Parameter<std::string> wav_file_;
     holoscan::Parameter<uint32_t> chunk_size_;
+    holoscan::Parameter<bool> is_udp_tx_;
     holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> pool_;
 
     // Internal state
@@ -81,6 +83,10 @@ private:
     // Using SmartObjectPool for tensor context management
     using DLManagedTensorContextPool = SmartObjectPool<holoscan::DLManagedTensorContext>;
     DLManagedTensorContextPool dl_managed_tensor_context_pool_;
+
+    // Packet layout constants
+    static constexpr std::size_t kIbHeaderSize = 12; // 3 * 4 bytes for the IB header
+    static constexpr std::size_t kCrcSize = 4; // 4 bytes for CRC
 };
 
 } // namespace hololink::operators

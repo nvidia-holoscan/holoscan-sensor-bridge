@@ -17,7 +17,6 @@
 
 import ctypes
 import logging
-import os
 
 import cuda.bindings.driver as cuda
 import holoscan
@@ -217,11 +216,6 @@ def test_imx477_pattern(
         hololink_channel,
         camera,
     )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-
-    application.config(default_configuration)
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
