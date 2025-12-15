@@ -26,8 +26,8 @@ import utils
 
 import hololink as hololink_module
 
-actual_left = None
-actual_right = None
+# Number of frames to skip during pipeline initialization to avoid artifacts
+SKIP_INITIAL_FRAMES = 15
 
 
 class CameraWrapper(hololink_module.sensors.imx274.dual_imx274.Imx274Cam):
@@ -39,11 +39,6 @@ class CameraWrapper(hololink_module.sensors.imx274.dual_imx274.Imx274Cam):
     def _reset(self):
         self._reset_callbacks += 1
         logging.info(f"{self._reset_callbacks=}")
-
-
-def reset_globals():
-    global actual_left, actual_right
-    actual_left, actual_right = None, None
 
 
 class PatternTestApplication(holoscan.core.Application):
@@ -161,6 +156,7 @@ class PatternTestApplication(holoscan.core.Application):
                 ibv_port=self._ibv_port_left,
                 hololink_channel=self._hololink_channel_left,
                 device=self._camera_left,
+                rename_metadata=lambda name: f"left_{name}",
             )
         else:
             receiver_operator_left = hololink_module.operators.LinuxReceiverOp(
@@ -171,6 +167,7 @@ class PatternTestApplication(holoscan.core.Application):
                 frame_context=frame_context,
                 hololink_channel=self._hololink_channel_left,
                 device=self._camera_left,
+                rename_metadata=lambda name: f"left_{name}",
             )
 
         #
@@ -188,6 +185,7 @@ class PatternTestApplication(holoscan.core.Application):
                 ibv_port=self._ibv_port_right,
                 hololink_channel=self._hololink_channel_right,
                 device=self._camera_right,
+                rename_metadata=lambda name: f"right_{name}",
             )
         else:
             receiver_operator_right = hololink_module.operators.LinuxReceiverOp(
@@ -198,20 +196,50 @@ class PatternTestApplication(holoscan.core.Application):
                 frame_context=frame_context,
                 hololink_channel=self._hololink_channel_right,
                 device=self._camera_right,
+                rename_metadata=lambda name: f"right_{name}",
             )
 
         #
+        # CRC operators
+        compute_crc_left = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc_left",
+            frame_size=csi_to_bayer_operator_left.get_csi_length(),
+        )
+        self._check_crc_left = operators.RecordCrcOp(
+            self,
+            name="crcs_left",
+            compute_crc_op=compute_crc_left,
+            crc_metadata_name="left_crc",
+        )
+
+        compute_crc_right = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc_right",
+            frame_size=csi_to_bayer_operator_right.get_csi_length(),
+        )
+        self._check_crc_right = operators.RecordCrcOp(
+            self,
+            name="crcs_right",
+            compute_crc_op=compute_crc_right,
+            crc_metadata_name="right_crc",
+        )
+
+        #
         rgba_components_per_pixel = 4
+        bayer_size_left = (
+            self._camera_left._width
+            * rgba_components_per_pixel
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera_left._height
+        )
         bayer_pool_left = holoscan.resources.BlockMemoryPool(
             self,
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera_left._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left._height,
-            num_blocks=4,
+            block_size=bayer_size_left,
+            num_blocks=8,
         )
         bayer_format = self._camera_left.bayer_format()
         demosaic_left = holoscan.operators.BayerDemosaicOp(
@@ -223,16 +251,19 @@ class PatternTestApplication(holoscan.core.Application):
             bayer_grid_pos=bayer_format.value,
             interpolation_mode=0,
         )
+        bayer_size_right = (
+            self._camera_right._width
+            * rgba_components_per_pixel
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera_right._height
+        )
         bayer_pool_right = holoscan.resources.BlockMemoryPool(
             self,
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera_right._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_right._height,
-            num_blocks=4,
+            block_size=bayer_size_right,
+            num_blocks=8,
         )
         bayer_format = self._camera_right.bayer_format()
         demosaic_right = holoscan.operators.BayerDemosaicOp(
@@ -245,17 +276,40 @@ class PatternTestApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        #
-        color_profiler_left = operators.ColorProfiler(
+        # Compute the CRC of the bayer image and use that to
+        # determine if we're receiving the expected image.
+        bayer_crc_left = hololink_module.operators.ComputeCrcOp(
             self,
-            name="color_profiler_left",
-            callback=lambda buckets: self.left_buckets(buckets),
+            name="bayer_crc_left",
+            frame_size=bayer_size_left,
+        )
+        self._bayer_check_crc_left = operators.RecordCrcOp(
+            self,
+            name="bayer_crcs_left",
+            compute_crc_op=bayer_crc_left,
+            crc_metadata_name="left_crc",  # We don't actually use the value recorded here
+        )
+        # the tensor name directs which pane on the visualizer is updated
+        rename_left_tensor = operators.PassThroughOperator(
+            self,
+            name="rename_left_tensor",
             out_tensor_name="left",
         )
-        color_profiler_right = operators.ColorProfiler(
+        bayer_crc_right = hololink_module.operators.ComputeCrcOp(
             self,
-            name="color_profiler_right",
-            callback=lambda buckets: self.right_buckets(buckets),
+            name="bayer_crc_right",
+            frame_size=bayer_size_right,
+        )
+        self._bayer_check_crc_right = operators.RecordCrcOp(
+            self,
+            name="bayer_crcs_right",
+            compute_crc_op=bayer_crc_right,
+            crc_metadata_name="right_crc",  # We don't actually use the value recorded here
+        )
+        # the tensor name directs which pane on the visualizer is updated
+        rename_right_tensor = operators.PassThroughOperator(
+            self,
+            name="rename_right_tensor",
             out_tensor_name="right",
         )
         #
@@ -298,25 +352,40 @@ class PatternTestApplication(holoscan.core.Application):
             name="watchdog_operator",
             watchdog=self._watchdog,
         )
-        #
+
+        # Add CRC checking to the pipeline
+        self.add_flow(receiver_operator_left, compute_crc_left, {("output", "input")})
+        self.add_flow(compute_crc_left, self._check_crc_left, {("output", "input")})
         self.add_flow(
-            receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
+            self._check_crc_left, csi_to_bayer_operator_left, {("output", "input")}
         )
         self.add_flow(
             csi_to_bayer_operator_left, demosaic_left, {("output", "receiver")}
         )
-        self.add_flow(demosaic_left, color_profiler_left, {("transmitter", "input")})
-        self.add_flow(color_profiler_left, visualizer, {("output", "receivers")})
-
+        self.add_flow(demosaic_left, bayer_crc_left, {("transmitter", "input")})
+        self.add_flow(bayer_crc_left, self._bayer_check_crc_left, {("output", "input")})
         self.add_flow(
-            receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
+            self._bayer_check_crc_left, rename_left_tensor, {("output", "input")}
+        )
+        self.add_flow(rename_left_tensor, visualizer, {("output", "receivers")})
+
+        self.add_flow(receiver_operator_right, compute_crc_right, {("output", "input")})
+        self.add_flow(compute_crc_right, self._check_crc_right, {("output", "input")})
+        self.add_flow(
+            self._check_crc_right, csi_to_bayer_operator_right, {("output", "input")}
         )
         self.add_flow(
             csi_to_bayer_operator_right, demosaic_right, {("output", "receiver")}
         )
-        self.add_flow(demosaic_right, color_profiler_right, {("transmitter", "input")})
-        self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
-        #
+        self.add_flow(demosaic_right, bayer_crc_right, {("transmitter", "input")})
+        self.add_flow(
+            bayer_crc_right, self._bayer_check_crc_right, {("output", "input")}
+        )
+        self.add_flow(
+            self._bayer_check_crc_right, rename_right_tensor, {("output", "input")}
+        )
+        self.add_flow(rename_right_tensor, visualizer, {("output", "receivers")})
+
         self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
     def left_buckets(self, buckets):
@@ -342,29 +411,21 @@ expected_4k_results = [
         # left
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
         10,
-        # fmt: off
-        [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
-        # fmt: on
+        0xC361D7D3,
         # right
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
         11,
-        # fmt: off
-        [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
-        # fmt: on
+        0x56CDC730,
     ),
     (
         # left
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
         11,
-        # fmt: off
-        [921600, 917760, 7680, 0, 913920, 7680, 917760, 0, 0, 913920, 7680, 925440, 0, 0, 913920, 1847040],
-        # fmt: on
+        0x56CDC730,
         # right
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
         10,
-        # fmt: off
-        [1038960, 1032480, 6480, 0, 1028160, 8640, 1032480, 0, 0, 1028160, 8640, 1041120, 0, 0, 1028160, 1041120],
-        # fmt: on
+        0xC361D7D3,
     ),
 ]
 
@@ -373,29 +434,21 @@ expected_1080p_results = [
         # left
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
         10,
-        # fmt: off
-        [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
-        # fmt: on
+        0xB718A38C,
         # right
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
         11,
-        # fmt: off
-        [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
-        # fmt: on
+        0x8F4D79DE,
     ),
     (
         # left
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
         11,
-        # fmt: off
-        [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
-        # fmt: on
+        0x8F4D79DE,
         # right
         hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
         10,
-        # fmt: off
-        [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
-        # fmt: on
+        0xB718A38C,
     ),
 ]
 
@@ -423,7 +476,6 @@ def run_test(
     #
     logging.info("Initializing.")
     #
-    reset_globals()
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
@@ -438,10 +490,8 @@ def run_test(
     # Get a handle to the camera
     camera_left = CameraWrapper(hololink_channel_left, expander_configuration=0)
     camera_right = CameraWrapper(hololink_channel_right, expander_configuration=1)
-    # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
-    # starts running (and builds CUDA code).
     frame_limit = 100
-    ready_frame = operators.COLOR_PROFILER_START_FRAME
+    ready_frame = 15  # ignore this many initial frames while the pipeline initializes
     initial_timeout = utils.timeout_sequence(
         [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
     )
@@ -465,7 +515,7 @@ def run_test(
             camera_right,
             camera_mode_right,
             watchdog,
-            frame_limit=100,
+            frame_limit=frame_limit,
         )
         # Run it.
         hololink = hololink_channel_left.hololink()
@@ -520,33 +570,59 @@ def run_test(
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
-    # Now check the buckets.
-    global actual_left, actual_right
-    #
-    logging.info(f"{expected_left=}")
-    logging.info(f"{actual_left=}")
-    if expected_left is not None:
-        left_diffs = [
-            abs(a - e) for e, a in zip(expected_left, actual_left, strict=True)
-        ]
-        logging.info(f"{left_diffs=}")
-        left_diff = sum(left_diffs)
-        logging.info(f"{left_diff=}")
-    #
-    logging.info(f"{expected_right=}")
-    if expected_right is not None:
-        logging.info(f"{actual_right=}")
-        right_diffs = [
-            abs(a - e) for e, a in zip(expected_right, actual_right, strict=True)
-        ]
-        logging.info(f"{right_diffs=}")
-        right_diff = sum(right_diffs)
-        logging.info(f"{right_diff=}")
+    # Verify CRCs match
+    skip_frames = SKIP_INITIAL_FRAMES
+    left_bad_crcs = 0
+    right_bad_crcs = 0
+    if ibv_name_left:
+        crcs_left = application._check_crc_left.get_crcs()
+        logging.info(f"Left camera captured {len(crcs_left)} frames")
+        for frame_idx, (received_crc, computed_crc) in enumerate(crcs_left):
+            # Skip validation for first N frames (initialization artifacts)
+            if frame_idx < skip_frames:
+                continue
+            # Don't include the last frame, when the pipeline is shutting down.
+            if frame_idx >= (frame_limit - 1):
+                continue
+            if received_crc != computed_crc:
+                logging.error(
+                    f"Left CRC mismatch at frame {frame_idx}: "
+                    f"received={received_crc:#x}, computed={computed_crc:#x}"
+                )
+                left_bad_crcs += 1
+        if left_bad_crcs == 0:
+            logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
 
-    if expected_left:
-        assert 0 <= left_diff < 4
-    if expected_right:
-        assert 0 <= right_diff < 4
+    if ibv_name_right:
+        crcs_right = application._check_crc_right.get_crcs()
+        logging.info(f"Right camera captured {len(crcs_right)} frames")
+        for frame_idx, (received_crc, computed_crc) in enumerate(crcs_right):
+            # Skip validation for first N frames (initialization artifacts)
+            if frame_idx < skip_frames:
+                continue
+            # Don't include the last frame, when the pipeline is shutting down.
+            if frame_idx >= (frame_limit - 1):
+                continue
+            if received_crc != computed_crc:
+                logging.error(
+                    f"Right CRC mismatch at frame {frame_idx}: "
+                    f"received={received_crc:#x}, computed={computed_crc:#x}"
+                )
+                right_bad_crcs += 1
+        if right_bad_crcs == 0:
+            logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")
+    assert (left_bad_crcs + right_bad_crcs) == 0
+    # Make sure the colors are as expected.
+    if expected_left is not None:
+        for _, computed_left in application._bayer_check_crc_left.get_crcs():
+            if computed_left == expected_left:
+                continue
+            assert False, f"Color image CRC {expected_left=:#x} {computed_left=:#x}"
+    if expected_right is not None:
+        for _, computed_right in application._bayer_check_crc_right.get_crcs():
+            if computed_right == expected_right:
+                continue
+            assert False, f"Color image CRC {expected_right=:#x} {computed_right=:#x}"
 
 
 @pytest.mark.skip_unless_imx274
