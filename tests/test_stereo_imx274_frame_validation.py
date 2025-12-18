@@ -140,6 +140,9 @@ class FrameValidationData:
         self.frame_count += 1
 
 
+validate_frame_lock = threading.Lock()
+
+
 def validate_frame(recorder_queue, validation_data, expected_frame_time_ms=16.6):
     """
     Validate frame data from recorder queue.
@@ -151,7 +154,7 @@ def validate_frame(recorder_queue, validation_data, expected_frame_time_ms=16.6)
     """
     if recorder_queue.qsize() > 1:
         # Slice out only the relevant data from the recorder queue for frame validation
-        with threading.Lock():
+        with validate_frame_lock:
             internal_q = list(recorder_queue.queue)
             recorder_queue_raw = internal_q[-5:]
             sliced_recorder_queue = [sublist[-5:] for sublist in recorder_queue_raw]

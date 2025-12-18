@@ -398,6 +398,12 @@ frames processed, CRC errors detected, and success rate, followed by detailed
 performance metrics including frame time, transfer latency, operator latency, and
 processing time.
 
+To validate the stereo camera configuration:
+
+```sh
+$ python3 examples/stereo_imx274_frame_validation.py
+```
+
 **Note on Startup Performance:** Runtime performance of an HSDK pipeline at startup can
 be unpredictable, usually due to GPU kernel initialization. This is likely to lead to
 CRC failures: when the pipeline is slower than the camera frame rate, the receiver

@@ -89,6 +89,9 @@ class CrcValidationOp(hololink_module.operators.CheckCrcOp):
         return self._crcs
 
 
+validate_frame_lock = threading.Lock()
+
+
 # The purpose of this function is to parse the recorder queue values, extract the values that needed for:
 # 1. checking frame number of current and last frame
 # 2. checking frame actual size compared to calculated size
@@ -99,7 +102,7 @@ def validate_frame(recorder_queue, camera_name=""):
     if recorder_queue.qsize() > 1:
         # slice out only the relevant data from the recorder queue for frame validation
         # put a lock for thread safety
-        with threading.Lock():
+        with validate_frame_lock:
             internal_q = list(recorder_queue.queue)  # Access internal deque (as list)
             recorder_queue_raw = internal_q[-5:]  # Get last 5 records (peek only)
             sliced_recorder_queue = [
