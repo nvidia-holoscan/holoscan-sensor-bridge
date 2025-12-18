@@ -22,6 +22,8 @@ _MODULES = {
     "ArgusIspOp": "argus_isp",
     "AudioPacketizerOp": "audio_packetizer",
     "BaseReceiverOp": "base_receiver_op",
+    "CheckCrcOp": "compute_crc",
+    "ComputeCrcOp": "compute_crc",
     "CsiToBayerOp": "csi_to_bayer",
     "FusaCoeCaptureOp": "fusa_coe_capture",
     "ImageProcessorOp": "image_processor",

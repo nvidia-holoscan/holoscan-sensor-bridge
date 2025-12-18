@@ -23,6 +23,8 @@ import cupy as cp
 import holoscan
 import utils
 
+import hololink as hololink_module
+
 COLOR_PROFILER_START_FRAME = 5
 
 
@@ -238,3 +240,34 @@ class PassThroughOperator(holoscan.core.Operator):
         in_message = op_input.receive("input")
         tensor = in_message.get(self._in_tensor_name)
         op_output.emit({self._out_tensor_name: tensor}, "output")
+
+
+class RecordCrcOp(hololink_module.operators.CheckCrcOp):
+    # BE SURE TO WORKAROUND PYBIND11 OVERRIDE PROBLEMS:
+    # Because we override a C++ method here, we need to make
+    # sure that we keep a reference to this object somewhere
+    # in the python world, otherwise python will garbage collect
+    # it without knowing that C++ still needs it.
+    def __init__(
+        self,
+        *args,
+        name=None,
+        compute_crc_op=None,
+        crc_metadata_name="crc",
+        **kwargs,
+    ):
+        hololink_module.operators.CheckCrcOp.__init__(
+            self, *args, name=name, compute_crc_op=compute_crc_op, **kwargs
+        )
+        self._name = name
+        self._crc_metadata_name = crc_metadata_name
+        self._frame_count = 0
+        self._crcs = []  # list of (received_crc, computed_crc)
+
+    def check_crc(self, computed_crc):
+        self._frame_count += 1
+        received_crc = self.metadata.get(self._crc_metadata_name, 0)
+        self._crcs.append((received_crc, computed_crc))
+
+    def get_crcs(self):
+        return self._crcs

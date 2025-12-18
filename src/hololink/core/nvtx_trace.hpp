@@ -36,6 +36,11 @@ public:
         pthread_setname_np(pthread_self(), threadName);
     }
 
+    static inline void event(char const* message)
+    {
+        nvtxMark(message);
+    }
+
     static inline void event_u64(char const* message, uint64_t datum)
     {
         nvtxEventAttributes_t event = { 0 };

@@ -165,6 +165,29 @@ class StereoApplication(holoscan.core.Application):
             rename_metadata=lambda name: f"right_{name}",
         )
 
+        compute_crc_left = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc_left",
+            frame_size=csi_to_bayer_operator_left.get_csi_length(),
+        )
+        self._crc_operator_left = operators.RecordCrcOp(
+            self,
+            name="crcs_left",
+            compute_crc_op=compute_crc_left,
+            crc_metadata_name="left_crc",
+        )
+        compute_crc_right = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc_right",
+            frame_size=csi_to_bayer_operator_right.get_csi_length(),
+        )
+        self._crc_operator_right = operators.RecordCrcOp(
+            self,
+            name="crcs_right",
+            compute_crc_op=compute_crc_right,
+            crc_metadata_name="right_crc",
+        )
+
         check_left = self._stereo_test.check_left(self)
         check_right = self._stereo_test.check_right(self)
         isp_left_in, isp_left_in_name, isp_left_out, isp_left_out_name = (
@@ -237,11 +260,17 @@ class StereoApplication(holoscan.core.Application):
         #
         self.add_flow(receiver_operator_left, check_left, {("output", "input")})
         self.add_flow(receiver_operator_right, check_right, {("output", "input")})
+        self.add_flow(check_left, compute_crc_left, {("output", "input")})
+        self.add_flow(compute_crc_left, self._crc_operator_left, {("output", "input")})
+        self.add_flow(check_right, compute_crc_right, {("output", "input")})
         self.add_flow(
-            receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
+            compute_crc_right, self._crc_operator_right, {("output", "input")}
         )
         self.add_flow(
-            receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
+            self._crc_operator_left, csi_to_bayer_operator_left, {("output", "input")}
+        )
+        self.add_flow(
+            self._crc_operator_right, csi_to_bayer_operator_right, {("output", "input")}
         )
         self.add_flow(
             csi_to_bayer_operator_left, isp_left_in, {("output", isp_left_in_name)}
@@ -253,7 +282,7 @@ class StereoApplication(holoscan.core.Application):
         self.add_flow(isp_right_out, visualizer, {(isp_right_out_name, "receivers")})
         #
         self.add_flow(visualizer, check_metadata, {("camera_pose_output", "input")})
-        self.add_flow(visualizer, watchdog, {("camera_pose_output", "input")})
+        self.add_flow(check_metadata, watchdog, {("output", "input")})
 
 
 def imx274_camera_factory(hololink_channel, instance, camera_mode, test_pattern):
@@ -682,6 +711,17 @@ class MonoApplication(holoscan.core.Application):
             out_tensor_name="output",
         )
 
+        compute_crc_operator = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc",
+            frame_size=csi_to_bayer_operator.get_csi_length(),
+        )
+        self._crc_operator = operators.RecordCrcOp(
+            self,
+            name="crcs",
+            compute_crc_op=compute_crc_operator,
+        )
+
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
@@ -704,7 +744,9 @@ class MonoApplication(holoscan.core.Application):
         )
 
         #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
+        self.add_flow(receiver_operator, compute_crc_operator, {("output", "input")})
+        self.add_flow(compute_crc_operator, self._crc_operator, {("output", "input")})
+        self.add_flow(self._crc_operator, csi_to_bayer_operator, {("output", "input")})
         self.add_flow(csi_to_bayer_operator, isp_in, {("output", isp_in_name)})
         self.add_flow(isp_out, visualizer, {(isp_out_name, "receivers")})
         self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})

@@ -335,18 +335,25 @@ python3 examples/ecam0m30tof_player.py --hololink 192.168.0.2 --camera-mode=<0|1
 
 ## Running the frame validation example for IMX274
 
-For AGX systems, `examples/linux_imx274_frame_validation.py` shows an example of how to
-access frame metadata in order to detect missing frames, frame timestamp misalignment
-and frame CRC errors. This example demonstrates recording timestamps, frame numbers and
-CRC32 received from the FPGA when data is acquired. During the run, missing frames,
-timestamp misalignment and CRC32 errors are detected and prompted out to the console. At
-the end of the run, the application will provide a duration and latency report with
-average, minimum, and maximum values same as the Latency example application. These
-values are collected during the application run to assess the impact of various
-detection mechanisms on the latency of the pipeline.
+Frame validation examples demonstrate how to access frame metadata in order to detect
+missing frames, frame timestamp misalignment and frame CRC errors. These examples record
+timestamps, frame numbers and CRC32 data received from the FPGA when data is acquired.
+During the run, missing frames, timestamp misalignment and CRC32 errors are detected and
+reported. At the end of the run, the application provides a duration and latency report
+with average, minimum, and maximum values. These values are collected during the
+application run to assess the impact of various detection mechanisms on the latency of
+the pipeline.
 
-Before running the app, enable PTP sync on your setup, then use the following commands
-to run the example. Running the frame validation example on AGX Orin systems:
+### Linux Receiver
+
+For AGX systems (or unaccelerated configurations),
+`examples/linux_imx274_frame_validation.py` uses standard Linux sockets for network
+communication with CPU-based CRC validation.
+
+Before running the app,
+[enable PTP sync](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html#) on
+your setup, then use the following commands to run the example. Running the frame
+validation example on AGX Orin systems:
 
 ```sh
 $ python3 examples/linux_imx274_frame_validation.py
@@ -363,7 +370,49 @@ $ python3 examples/linux_imx274_frame_validation.py --crc-frame-check 50
 
 In this example, the application will check for CRC32 frame errors every 50 frames.
 
-While there is no equivalent example for IGX systems, this example can be quickly
-adapted by users for IGX.
+### RoCE Receiver
+
+For systems with RDMA-capable network hardware (ConnectX NICs) such as IGX Orin,
+`examples/imx274_frame_validation.py` provides high-performance frame validation with
+GPU-accelerated CRC checking using nvcomp 5.0. This example uses the accelerated network
+receiver operator and requires ConnectX SmartNIC controllers.
+
+Before running the app,
+[enable PTP sync](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html#) on
+your setup, then use the following command:
+
+```sh
+$ python3 examples/imx274_frame_validation.py
+```
+
+Unlike the CPU-based CRC validation in the Linux version, GPU-based CRC using nvcomp 5.0
+is fast enough to validate every frame by default. CRC validation is enabled by default
+with `--crc-frame-check 1`. To disable CRC validation entirely:
+
+```sh
+$ python3 examples/imx274_frame_validation.py --crc-frame-check 0
+```
+
+At the end of execution, the application provides a CRC validation report showing total
+frames processed, CRC errors detected, and success rate, followed by detailed
+performance metrics including frame time, transfer latency, operator latency, and
+processing time.
+
+To validate the stereo camera configuration:
+
+```sh
+$ python3 examples/stereo_imx274_frame_validation.py
+```
+
+**Note on Startup Performance:** Runtime performance of an HSDK pipeline at startup can
+be unpredictable, usually due to GPU kernel initialization. This is likely to lead to
+CRC failures: when the pipeline is slower than the camera frame rate, the receiver
+buffer can be overwritten with new data, which triggers the failure that CRC checking is
+looking for. Once the pipeline is fully initialized and can keep up with the received
+data, these errors would no longer be expected. We have primarily observed this issue in
+the stereo camera case. For this reason, our testing (see
+`tests/test_imx274_pattern.py`) skips CRC checking at the beginning, e.g. only after 15
+frames have been received. User applications would likely use a similar startup state to
+avoid misleading errors occurring due to this known condition.
 
 **This example will not run on AGX Thor**

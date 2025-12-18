@@ -9,7 +9,6 @@ import math
 import os
 import queue
 import threading
-import zlib
 
 import cuda.bindings.driver as cuda
 import cupy as cp
@@ -22,7 +21,61 @@ US_PER_SEC = 1000.0 * MS_PER_SEC
 NS_PER_SEC = 1000.0 * US_PER_SEC
 SEC_PER_NS = 1.0 / NS_PER_SEC
 
-validate_frame_lock = threading.Lock()
+# Shared lock for thread-safe access to recorder_queue.queue internal deque
+recorder_queue_lock = threading.Lock()
+
+
+# Custom CRC checker operator that inherits from CheckCrcOp
+class CrcValidationOp(hololink_module.operators.CheckCrcOp):
+    """
+    Custom CRC checker that validates computed CRC against received CRC
+    and tracks errors.
+    """
+
+    def __init__(
+        self,
+        *args,
+        compute_crc_op=None,
+        crc_metadata_name="crc",
+        **kwargs,
+    ):
+        hololink_module.operators.CheckCrcOp.__init__(
+            self, *args, compute_crc_op=compute_crc_op, **kwargs
+        )
+        self._crc_metadata_name = crc_metadata_name
+        self._frame_count = 0
+        self._crc_errors = 0
+        self._crcs = []  # list of (received_crc, computed_crc)
+
+    def check_crc(self, computed_crc):
+        """
+        This method is called by the C++ base class CheckCrcOp.
+        It receives the computed CRC and can compare it with metadata.
+        """
+        self._frame_count += 1
+        received_crc = self.metadata.get(self._crc_metadata_name, 0)
+
+        if received_crc != computed_crc:
+            self._crc_errors += 1
+            logging.warning(
+                f"Frame {self._frame_count}: CRC mismatch! "
+                f"computed={computed_crc:#x}, received={received_crc:#x}"
+            )
+        else:
+            logging.debug(
+                f"Frame {self._frame_count}: CRC match " f"({computed_crc:#x})"
+            )
+
+        self._crcs.append((received_crc, computed_crc))
+
+        # Store error count in metadata for validation operator
+        self.metadata["crc_errors"] = self._crc_errors
+
+    def get_crc_errors(self):
+        return self._crc_errors
+
+    def get_crcs(self):
+        return self._crcs
 
 
 # The purpose of this function is to parse the recorder queue values, extract the values that needed for:
@@ -30,12 +83,12 @@ validate_frame_lock = threading.Lock()
 # 2. checking frame actual size compared to calculated size
 # 3. checking timestamp consistency between current and last frame
 # 4. checking for recorded CRC errors
-def validate_frame(recorder_queue):
+def validate_frame(recorder_queue, expected_fps=60):
 
     if recorder_queue.qsize() > 1:
         # slice out only the relevant data from the recorder queue for frame validation
-        # put a lock for thread safety
-        with validate_frame_lock:
+        # use shared lock for thread safety when accessing internal deque
+        with recorder_queue_lock:
             internal_q = list(recorder_queue.queue)  # Access internal deque (as list)
             recorder_queue_raw = internal_q[-5:]  # Get last 5 records (peek only)
             sliced_recorder_queue = [
@@ -47,8 +100,8 @@ def validate_frame(recorder_queue):
             prev_complete_timestamp_s,
             prev_frame_number,
             prev_crc32_errors,
-            prev_received_frame_size,
-            prev_calculated_frame_size,
+            _,  # prev_received_frame_size (unused)
+            _,  # prev_calculated_frame_size (unused)
         ) = sliced_recorder_queue[-2]
 
         (
@@ -58,6 +111,8 @@ def validate_frame(recorder_queue):
             received_frame_size,
             calculated_frame_size,
         ) = sliced_recorder_queue[-1]
+
+        # Variable naming convention: _s suffix = seconds, _ms suffix = milliseconds. Python date/time objects do not have suffixes.
 
         # make sure frame numbers of current and last frames are in order
         if frame_number != prev_frame_number + 1:
@@ -84,17 +139,78 @@ def validate_frame(recorder_queue):
             f"Time difference between current and last frame is {time_difference} ms"
         )
 
-        # This is an arbitrary number of millisconds that aligns to IMX274 default mode set in the application.
-        # Default mode is 4K@60FPS which correlates to frame time of 16.6ms.
-        # In this example we allow 2 x frame time before calling an error.
-        if time_difference_ms > (2 * 16.6):
+        # Calculate frame time threshold dynamically based on expected FPS
+        # Frame time = 1000ms / FPS, we allow 2x frame time before calling an error
+        expected_frame_time_ms = 1000.0 / expected_fps
+        frame_time_threshold_ms = 2 * expected_frame_time_ms
+
+        if time_difference_ms > frame_time_threshold_ms:
             logging.info(
                 f"Frame timestamp mismatch, last frame timestamp={prev_complete_timestamp_s}, current frame timestamp={complete_timestamp_s},Diff[ms]={time_difference_ms}"
             )
 
         # check for CRC errors
-        if crc32_errors > prev_crc32_errors:  # print only on new error
-            logging.info(f"CRC32 errors found so far: {crc32_errors}")
+        if crc32_errors is not None and prev_crc32_errors is not None:
+            if crc32_errors > prev_crc32_errors:  # print only on new error
+                logging.info(f"CRC32 errors found so far: {crc32_errors}")
+
+
+def print_crc_results(crcs, crc_errors):
+    """
+    Print detailed CRC validation results for debugging.
+
+    Args:
+        crcs: List of tuples (received_crc, computed_crc) for each frame
+        crc_errors: Total number of CRC errors
+    """
+    total_frames = len(crcs)
+
+    # Print summary at info level
+    if total_frames > 0:
+        success_rate = ((total_frames - crc_errors) / total_frames) * 100
+        logging.info(
+            f"CRC Validation: {total_frames} frames, {crc_errors} errors, {success_rate:.2f}% success"
+        )
+
+    logging.debug("\n" + "=" * 60)
+    logging.debug("CRC VALIDATION RESULTS (nvcomp 5.0)")
+    logging.debug("=" * 60)
+    logging.debug(f"Total frames processed: {total_frames}")
+    logging.debug(f"CRC errors: {crc_errors}")
+    if total_frames > 0:
+        success_rate = ((total_frames - crc_errors) / total_frames) * 100
+        logging.debug(f"Success rate: {success_rate:.2f}%")
+    logging.debug("=" * 60)
+
+    # List all CRCs for debugging
+    logging.debug("\nDETAILED CRC LIST:")
+    logging.debug("-" * 80)
+    logging.debug(
+        f"{'Frame':<8} {'Received CRC':<20} {'Computed CRC':<20} {'Status':<10}"
+    )
+    logging.debug("-" * 80)
+    for frame_idx, (received_crc, computed_crc) in enumerate(crcs):
+        status = "✓ MATCH" if received_crc == computed_crc else "✗ MISMATCH"
+        logging.debug(
+            f"{frame_idx:<8} {received_crc:#018x} {computed_crc:#018x} {status:<10}"
+        )
+    logging.debug("-" * 80)
+
+    # Show only mismatches if there are many frames
+    if total_frames > 20 and crc_errors > 0:
+        logging.debug("\nCRC MISMATCHES ONLY:")
+        logging.debug("-" * 80)
+        logging.debug(
+            f"{'Frame':<8} {'Received CRC':<20} {'Computed CRC':<20} {'Diff':<20}"
+        )
+        logging.debug("-" * 80)
+        for frame_idx, (received_crc, computed_crc) in enumerate(crcs):
+            if received_crc != computed_crc:
+                diff = received_crc ^ computed_crc  # XOR to show bit differences
+                logging.debug(
+                    f"{frame_idx:<8} {received_crc:#018x} {computed_crc:#018x} {diff:#018x}"
+                )
+        logging.debug("-" * 80)
 
 
 def get_timestamp(metadata, name):
@@ -104,14 +220,14 @@ def get_timestamp(metadata, name):
     return s + f
 
 
-def record_times(recorder_queue, metadata):
+def record_times(recorder_queue, metadata, expected_fps=60):
     #
-    now = datetime.datetime.utcnow()
+    now = datetime.datetime.now(datetime.UTC)
     #
     frame_number = metadata.get("frame_number", 0)
 
     # get frame crc errors
-    crc32_errors = metadata.get("crc_errors")
+    crc32_errors = metadata.get("crc_errors", 0)
 
     # frame_start_s is the time that the first data arrived at the FPGA;
     # the network receiver calls this "timestamp".
@@ -141,10 +257,10 @@ def record_times(recorder_queue, metadata):
 
     # complete_timestamp_s is the time when visualization finished.
     complete_timestamp_s = get_timestamp(metadata, "complete_timestamp")
-    # get the frame aize and calculated frame size from the metadata
+
+    # get the frame size and calculated frame size from the metadata
     received_frame_size = metadata.get("received_frame_size")
     calculated_frame_size = metadata.get("calculated_frame_size")
-    # complete_timestamp_s is the time when visualization finished.
 
     # Use thread-safe put() operation instead of append()
     recorder_queue.put(
@@ -163,7 +279,7 @@ def record_times(recorder_queue, metadata):
     )
 
     # validate the frame
-    validate_frame(recorder_queue)
+    validate_frame(recorder_queue, expected_fps)
 
 
 def save_timestamp(metadata, name, timestamp):
@@ -180,13 +296,12 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
         *args,
         operator_name="operator",
         calculated_frame_size=0,
-        crc_frame_check=0,
+        crc_frame_check=1,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._operator_name = operator_name
         self._calculated_frame_size = calculated_frame_size
-        self._crc_errors = 0
         self._crc_frame_check = crc_frame_check
 
     def setup(self, spec):
@@ -196,36 +311,14 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        operator_timestamp = datetime.datetime.utcnow()
+        operator_timestamp = datetime.datetime.now(datetime.UTC)
 
         in_message = op_input.receive("input")
         cp_frame = cp.asarray(in_message.get(""))
-        frame_number = self.metadata.get("frame_number", 0)
-
-        # check if crc frame check is enabled, if so, check the CRC of every _crc_frame_check frames
-        if self._crc_frame_check > 0:
-            if (
-                frame_number % self._crc_frame_check == 0
-            ):  # check every _crc_frame_check frames
-                # Convert cp_frame to a NumPy array and calculate CRC32 using CuPy kernel
-                np_frame = cp.asnumpy(cp_frame)
-
-                # calculate the CRC32 of the frame
-                # this is a CPU based calculation, can be optimized with GPU based calculation
-                crc32_calculated = zlib.crc32(np_frame)
-
-                # get frame crc
-                crc32 = self.metadata.get("crc") ^ 0xFFFFFFFF
-                if crc32_calculated != crc32:
-                    logging.debug(
-                        f"frame number {frame_number}: CRC32 mismatch: calculated={crc32_calculated}, expected={crc32}"
-                    )
-                    self._crc_errors += 1
 
         # Save the number of bytes in the frame to compare to CSI calculated frame size
         self.metadata["received_frame_size"] = cp_frame.nbytes
         self.metadata["calculated_frame_size"] = self._calculated_frame_size
-        self.metadata["crc_errors"] = self._crc_errors
 
         save_timestamp(
             self.metadata, self._operator_name + "_timestamp", operator_timestamp
@@ -238,10 +331,12 @@ class MonitorOperator(holoscan.core.Operator):
         self,
         *args,
         recorder_queue=None,
+        expected_fps=60,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._recorder_queue = recorder_queue
+        self._expected_fps = expected_fps
 
     def setup(self, spec):
         logging.info("setup")
@@ -249,12 +344,12 @@ class MonitorOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        complete_timestamp = datetime.datetime.utcnow()
+        complete_timestamp = datetime.datetime.now(datetime.UTC)
         _ = op_input.receive("input")
 
         # save the complete timestamp and record the times
         save_timestamp(self.metadata, "complete_timestamp", complete_timestamp)
-        record_times(self._recorder_queue, self.metadata)
+        record_times(self._recorder_queue, self.metadata, self._expected_fps)
 
 
 class HoloscanApplication(holoscan.core.Application):
@@ -265,6 +360,8 @@ class HoloscanApplication(holoscan.core.Application):
         cuda_context,
         cuda_device_ordinal,
         hololink_channel,
+        ibv_name,
+        ibv_port,
         camera,
         camera_mode,
         frame_limit,
@@ -278,14 +375,19 @@ class HoloscanApplication(holoscan.core.Application):
         self._cuda_context = cuda_context
         self._cuda_device_ordinal = cuda_device_ordinal
         self._hololink_channel = hololink_channel
+        self._ibv_name = ibv_name
+        self._ibv_port = ibv_port
         self._camera = camera
         self._camera_mode = camera_mode
         self._frame_limit = frame_limit
-        self._crc_frame_check = crc_frame_check
         self._recorder_queue = recorder_queue
+        self._crc_frame_check = crc_frame_check
 
         # This is a control for HSDK
         self.is_metadata_enabled = True
+
+        # CRC validator will be set in compose if enabled
+        self.crc_validator = None
 
     def compose(self):
         logging.info("compose")
@@ -322,16 +424,45 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera.configure_converter(csi_to_bayer_operator)
 
         frame_size = csi_to_bayer_operator.get_csi_length()
+        logging.info(f"{frame_size=}")
 
         frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.LinuxReceiverOperator(
+        receiver_operator = hololink_module.operators.RoceReceiverOp(
             self,
             condition,
             name="receiver",
             frame_size=frame_size,
             frame_context=frame_context,
+            ibv_name=self._ibv_name,
+            ibv_port=self._ibv_port,
             hololink_channel=self._hololink_channel,
             device=self._camera,
+        )
+
+        # CRC operators using nvcomp 5.0 (optional)
+        # Note: Unlike Linux version which samples every Nth frame,
+        # GPU-based CRC is fast enough to check every frame (when crc_frame_check=1)
+        if self._crc_frame_check > 0:
+            compute_crc = hololink_module.operators.ComputeCrcOp(
+                self,
+                name="compute_crc",
+                frame_size=frame_size,
+            )
+            self.crc_validator = CrcValidationOp(
+                self,
+                name="crc_validator",
+                compute_crc_op=compute_crc,
+                crc_metadata_name="crc",
+            )
+            logging.info("CRC validation enabled (nvcomp 5.0) - checking every frame")
+        else:
+            logging.info("CRC validation disabled")
+
+        profiler = InstrumentedTimeProfiler(
+            self,
+            name="profiler",
+            calculated_frame_size=frame_size,
+            crc_frame_check=self._crc_frame_check,
         )
 
         pixel_format = self._camera.pixel_format()
@@ -377,20 +508,28 @@ class HoloscanApplication(holoscan.core.Application):
             camera_pose_output_type="extrinsics_model",
         )
 
-        profiler = InstrumentedTimeProfiler(
-            self,
-            name="profiler",
-            calculated_frame_size=frame_size,
-            crc_frame_check=self._crc_frame_check,
-        )
+        # Get FPS from camera mode for dynamic frame time validation
+        camera_fps = hololink_module.sensors.imx274.imx274_mode.imx_frame_format[
+            self._camera_mode.value
+        ].framerate
 
         monitor = MonitorOperator(
             self,
             name="monitor",
             recorder_queue=self._recorder_queue,
+            expected_fps=camera_fps,
         )
-        #
-        self.add_flow(receiver_operator, profiler, {("output", "input")})
+
+        # Pipeline flow - conditionally include CRC validation
+        if self._crc_frame_check > 0:
+            # Pipeline with CRC validation using nvcomp 5.0
+            self.add_flow(receiver_operator, compute_crc, {("output", "input")})
+            self.add_flow(compute_crc, self.crc_validator, {("output", "input")})
+            self.add_flow(self.crc_validator, profiler, {("output", "input")})
+        else:
+            # Pipeline without CRC validation
+            self.add_flow(receiver_operator, profiler, {("output", "input")})
+
         self.add_flow(profiler, csi_to_bayer_operator, {("output", "input")})
         self.add_flow(
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
@@ -446,6 +585,18 @@ def main():
         default=20,
         help="Logging level to display",
     )
+    infiniband_devices = hololink_module.infiniband_devices()
+    parser.add_argument(
+        "--ibv-name",
+        default=infiniband_devices[0] if infiniband_devices else None,
+        help="IBV device to use",
+    )
+    parser.add_argument(
+        "--ibv-port",
+        type=int,
+        default=1,
+        help="Port number of IBV device",
+    )
     parser.add_argument(
         "--expander-configuration",
         type=int,
@@ -467,8 +618,8 @@ def main():
     parser.add_argument(
         "--crc-frame-check",
         type=int,
-        default=0,
-        help="if > 0, check the CRC of n'th frame. this might cause a performance hit",
+        default=1,
+        help="GPU-based CRC validation using nvcomp 5.0: 0=disabled, 1=check every frame (default). Note: unlike CPU-based checking, GPU CRC is fast enough to always check every frame.",
     )
 
     args = parser.parse_args()
@@ -484,6 +635,7 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    logging.info(f"{channel_metadata=}")
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
     camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
@@ -492,8 +644,6 @@ def main():
     camera_mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(
         args.camera_mode
     )
-
-    crc_frame_check = args.crc_frame_check
 
     # Thread-safe recorder queue for timestamps - allows about 10 minutes of queuing for 60fps
     recorder_queue = queue.Queue(maxsize=30_000)
@@ -505,37 +655,45 @@ def main():
         cu_context,
         cu_device_ordinal,
         hololink_channel,
+        args.ibv_name,
+        args.ibv_port,
         camera,
         camera_mode,
         args.frame_limit,
         recorder_queue,
-        crc_frame_check,
+        args.crc_frame_check,
     )
     application.config(args.configuration)
     # Run it.
     hololink = hololink_channel.hololink()
     hololink.start()
-    try:
-        if not args.skip_reset:
-            hololink.reset()
-        logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize():
-            raise ValueError("Failed to synchronize PTP.")
-        else:
-            logging.debug("PTP synchronized.")
-        if not args.skip_reset:
-            camera.setup_clock()
-        camera.configure(camera_mode)
-        camera.set_digital_gain_reg(0x4)
-        if args.pattern is not None:
-            camera.test_pattern(args.pattern)
-        logging.info("Calling run")
-        application.run()
-    finally:
-        hololink.stop()
+    if not args.skip_reset:
+        hololink.reset()
+    logging.debug("Waiting for PTP sync.")
+    if not hololink.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP.")
+    else:
+        logging.debug("PTP synchronized.")
+    if not args.skip_reset:
+        camera.setup_clock()
+    camera.configure(camera_mode)
+    camera.set_digital_gain_reg(0x4)
+    if args.pattern is not None:
+        camera.test_pattern(args.pattern)
+    logging.info("Calling run")
+    application.run()
+    hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
+
+    # Report CRC validation results (if enabled)
+    if args.crc_frame_check > 0 and application.crc_validator:
+        crc_errors = application.crc_validator.get_crc_errors()
+        crcs = application.crc_validator.get_crcs()
+        print_crc_results(crcs, crc_errors)
+    else:
+        logging.info("CRC validation was disabled (--crc-frame-check=0)")
 
     # Report stats at the end of the application
     frame_time_dts = []
@@ -546,102 +704,107 @@ def main():
 
     # Extract all items from the thread-safe queue for processing
     # This creates a snapshot for safe iteration while preserving the queue contents
-    recorder_queue_items = []
-    recorder_queue_items = list(recorder_queue.queue)
+    with recorder_queue_lock:
+        recorder_queue_items = list(recorder_queue.queue)
 
-    sliced_recorder_queue = [sublist[:7] for sublist in recorder_queue_items]
-    settled_timestamps = sliced_recorder_queue[5:-5]
-    assert len(settled_timestamps) >= 100
-    for (
-        now,
-        frame_start_s,
-        frame_end_s,
-        received_timestamp_s,
-        operator_timestamp_s,
-        complete_timestamp_s,
-        frame_number,
-    ) in settled_timestamps:
+    if len(recorder_queue_items) >= 100:
+        sliced_recorder_queue = [sublist[:7] for sublist in recorder_queue_items]
+        settled_timestamps = sliced_recorder_queue[5:-5]
 
-        frame_start = datetime.datetime.fromtimestamp(frame_start_s).isoformat()
-        frame_end = datetime.datetime.fromtimestamp(frame_end_s).isoformat()
-        received_timestamp = datetime.datetime.fromtimestamp(
-            received_timestamp_s
-        ).isoformat()
-        operator_timestamp = datetime.datetime.fromtimestamp(
-            operator_timestamp_s
-        ).isoformat()
-        complete_timestamp = datetime.datetime.fromtimestamp(
-            complete_timestamp_s
-        ).isoformat()
+        for (
+            now,
+            frame_start_s,
+            frame_end_s,
+            received_timestamp_s,
+            operator_timestamp_s,
+            complete_timestamp_s,
+            frame_number,
+        ) in settled_timestamps:
 
-        frame_time_dt = frame_end_s - frame_start_s
-        frame_time_dts.append(round(frame_time_dt, 4))
+            frame_start = datetime.datetime.fromtimestamp(frame_start_s).isoformat()
+            frame_end = datetime.datetime.fromtimestamp(frame_end_s).isoformat()
+            received_timestamp = datetime.datetime.fromtimestamp(
+                received_timestamp_s
+            ).isoformat()
+            operator_timestamp = datetime.datetime.fromtimestamp(
+                operator_timestamp_s
+            ).isoformat()
+            complete_timestamp = datetime.datetime.fromtimestamp(
+                complete_timestamp_s
+            ).isoformat()
 
-        cpu_latency_dt = received_timestamp_s - frame_end_s
-        cpu_latency_dts.append(round(cpu_latency_dt, 4))
+            frame_time_dt = frame_end_s - frame_start_s
+            frame_time_dts.append(round(frame_time_dt, 4))
 
-        operator_latency_dt = operator_timestamp_s - received_timestamp_s
-        operator_latency_dts.append(round(operator_latency_dt, 4))
+            cpu_latency_dt = received_timestamp_s - frame_end_s
+            cpu_latency_dts.append(round(cpu_latency_dt, 4))
 
-        processing_time_dt = complete_timestamp_s - operator_timestamp_s
-        processing_time_dts.append(round(processing_time_dt, 4))
+            operator_latency_dt = operator_timestamp_s - received_timestamp_s
+            operator_latency_dts.append(round(operator_latency_dt, 4))
 
-        overall_time_dt = complete_timestamp_s - frame_start_s
-        overall_time_dts.append(round(overall_time_dt, 4))
-        logging.debug(f"** Frame Information  for Frame Number = {frame_number}**")
-        logging.debug(f"Frame Start          : {frame_start}")
-        logging.debug(f"Frame End            : {frame_end}")
-        logging.debug(f"Received Timestamp   : {received_timestamp}")
-        logging.debug(f"Operator Timestamp   : {operator_timestamp}")
-        logging.debug(f"Complete Timestamp   : {complete_timestamp}")
-        logging.debug(f"Frame Time (dt)      : {frame_time_dt:.6f} s")
-        logging.debug(f"CPU Latency (dt)     : {cpu_latency_dt:.6f} s")
-        logging.debug(f"Operator Latency (dt): {operator_latency_dt:.6f} s")
-        logging.debug(f"Processing Time (dt) : {processing_time_dt:.6f} s")
-        logging.debug(f"Overall Time (dt)    : {overall_time_dt:.6f} s")
+            processing_time_dt = complete_timestamp_s - operator_timestamp_s
+            processing_time_dts.append(round(processing_time_dt, 4))
 
-    logging.info("** Complete report: **")
-    logging.info(f"{'Metric':<30}{'Min':<15}{'Max':<15}{'Avg':<15}")
-    #
-    ft_min_time_difference = min(frame_time_dts)
-    ft_max_time_difference = max(frame_time_dts)
-    ft_avg_time_difference = sum(frame_time_dts) / len(frame_time_dts)
-    logging.info("Frame Time (in sec):")
-    logging.info(
-        f"{'Frame Time':<30}{ft_min_time_difference:<15}{ft_max_time_difference:<15}{ft_avg_time_difference:<15}"
-    )
-    #
-    cl_min_time_difference = min(cpu_latency_dts)
-    cl_max_time_difference = max(cpu_latency_dts)
-    cl_avg_time_difference = sum(cpu_latency_dts) / len(cpu_latency_dts)
-    logging.info("FGPA frame transfer latency (in sec):")
-    logging.info(
-        f"{'Frame Transfer Latency':<30}{cl_min_time_difference:<15}{cl_max_time_difference:<15}{cl_avg_time_difference:<15}"
-    )
-    #
-    ol_min_time_difference = min(operator_latency_dts)
-    ol_max_time_difference = max(operator_latency_dts)
-    ol_avg_time_difference = sum(operator_latency_dts) / len(operator_latency_dts)
-    logging.info("FGPA to Operator after network operator latency (in sec):")
-    logging.info(
-        f"{'Operator Latency':<30}{ol_min_time_difference:<15}{ol_max_time_difference:<15}{ol_avg_time_difference:<15}"
-    )
-    #
-    pt_min_time_difference = min(processing_time_dts)
-    pt_max_time_difference = max(processing_time_dts)
-    pt_avg_time_difference = sum(processing_time_dts) / len(processing_time_dts)
-    logging.info("Processing of frame latency (in sec):")
-    logging.info(
-        f"{'Processing Latency':<30}{pt_min_time_difference:<15}{pt_max_time_difference:<15}{pt_avg_time_difference:<15}"
-    )
-    #
-    ot_min_time_difference = min(overall_time_dts)
-    ot_max_time_difference = max(overall_time_dts)
-    ot_avg_time_difference = sum(overall_time_dts) / len(overall_time_dts)
-    logging.info("Frame start till end of SW pipeline latency (in sec):")
-    logging.info(
-        f"{'SW Pipeline Latency':<30}{ot_min_time_difference:<15}{ot_max_time_difference:<15}{ot_avg_time_difference:<15}"
-    )
+            overall_time_dt = complete_timestamp_s - frame_start_s
+            overall_time_dts.append(round(overall_time_dt, 4))
+            logging.debug(f"** Frame Information  for Frame Number = {frame_number}**")
+            logging.debug(f"Frame Start          : {frame_start}")
+            logging.debug(f"Frame End            : {frame_end}")
+            logging.debug(f"Received Timestamp   : {received_timestamp}")
+            logging.debug(f"Operator Timestamp   : {operator_timestamp}")
+            logging.debug(f"Complete Timestamp   : {complete_timestamp}")
+            logging.debug(f"Frame Time (dt)      : {frame_time_dt:.6f} s")
+            logging.debug(f"CPU Latency (dt)     : {cpu_latency_dt:.6f} s")
+            logging.debug(f"Operator Latency (dt): {operator_latency_dt:.6f} s")
+            logging.debug(f"Processing Time (dt) : {processing_time_dt:.6f} s")
+            logging.debug(f"Overall Time (dt)    : {overall_time_dt:.6f} s")
+
+        logging.info("\n** PERFORMANCE REPORT **")
+        logging.info(f"{'Metric':<30}{'Min':<15}{'Max':<15}{'Avg':<15}")
+        #
+        ft_min_time_difference = min(frame_time_dts)
+        ft_max_time_difference = max(frame_time_dts)
+        ft_avg_time_difference = sum(frame_time_dts) / len(frame_time_dts)
+        logging.info("Frame Time (in sec):")
+        logging.info(
+            f"{'Frame Time':<30}{ft_min_time_difference:<15}{ft_max_time_difference:<15}{ft_avg_time_difference:<15}"
+        )
+        #
+        cl_min_time_difference = min(cpu_latency_dts)
+        cl_max_time_difference = max(cpu_latency_dts)
+        cl_avg_time_difference = sum(cpu_latency_dts) / len(cpu_latency_dts)
+        logging.info("FPGA frame transfer latency (in sec):")
+        logging.info(
+            f"{'Frame Transfer Latency':<30}{cl_min_time_difference:<15}{cl_max_time_difference:<15}{cl_avg_time_difference:<15}"
+        )
+        #
+        ol_min_time_difference = min(operator_latency_dts)
+        ol_max_time_difference = max(operator_latency_dts)
+        ol_avg_time_difference = sum(operator_latency_dts) / len(operator_latency_dts)
+        logging.info("FPGA to Operator after network operator latency (in sec):")
+        logging.info(
+            f"{'Operator Latency':<30}{ol_min_time_difference:<15}{ol_max_time_difference:<15}{ol_avg_time_difference:<15}"
+        )
+        #
+        pt_min_time_difference = min(processing_time_dts)
+        pt_max_time_difference = max(processing_time_dts)
+        pt_avg_time_difference = sum(processing_time_dts) / len(processing_time_dts)
+        logging.info("Processing of frame latency (in sec):")
+        logging.info(
+            f"{'Processing Latency':<30}{pt_min_time_difference:<15}{pt_max_time_difference:<15}{pt_avg_time_difference:<15}"
+        )
+        #
+        ot_min_time_difference = min(overall_time_dts)
+        ot_max_time_difference = max(overall_time_dts)
+        ot_avg_time_difference = sum(overall_time_dts) / len(overall_time_dts)
+        logging.info("Frame start till end of SW pipeline latency (in sec):")
+        logging.info(
+            f"{'SW Pipeline Latency':<30}{ot_min_time_difference:<15}{ot_max_time_difference:<15}{ot_avg_time_difference:<15}"
+        )
+    else:
+        logging.info(
+            f"Not enough frames ({len(recorder_queue_items)}) for performance statistics"
+        )
 
 
 if __name__ == "__main__":
