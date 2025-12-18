@@ -22,6 +22,8 @@ US_PER_SEC = 1000.0 * MS_PER_SEC
 NS_PER_SEC = 1000.0 * US_PER_SEC
 SEC_PER_NS = 1.0 / NS_PER_SEC
 
+validate_frame_lock = threading.Lock()
+
 
 # The purpose of this function is to parse the recorder queue values, extract the values that needed for:
 # 1. checking frame number of current and last frame
@@ -33,7 +35,7 @@ def validate_frame(recorder_queue):
     if recorder_queue.qsize() > 1:
         # slice out only the relevant data from the recorder queue for frame validation
         # put a lock for thread safety
-        with threading.Lock():
+        with validate_frame_lock:
             internal_q = list(recorder_queue.queue)  # Access internal deque (as list)
             recorder_queue_raw = internal_q[-5:]  # Get last 5 records (peek only)
             sliced_recorder_queue = [
