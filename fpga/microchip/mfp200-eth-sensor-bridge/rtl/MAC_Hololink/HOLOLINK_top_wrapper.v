@@ -17,7 +17,17 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////// 
 
 //`timescale <time_units> / <precision>
-`include "HOLOLINK_def.svh"
+`define SENSOR_RX_IF_INST 2
+`define HOST_IF_INST 2
+`define DATAPATH_WIDTH 64
+`define DATAKEEP_WIDTH `DATAPATH_WIDTH/8
+`define DATAUSER_WIDTH 1
+`define HOST_WIDTH     64
+`define HOSTKEEP_WIDTH 8
+`define HOSTUSER_WIDTH 1
+`define SPI_INST  1
+`define I2C_INST  3
+`define GPIO_INST 16
 module HOLOLINK_top_wrapper(
   input                        i_sys_rst,
 //------------------------------------------------------------------------------
@@ -105,7 +115,7 @@ module HOLOLINK_top_wrapper(
 //------------------------------------------------------------------------------
 // Peripheral IF
 //------------------------------------------------------------------------------
-  // SPI Interface, QSPI compatible
+  // SPI Interface, QSPI compatable
   output                       o_spi_csn,
   output                       o_spi_sck,
   input  [3                :0] i_spi_sdio ,
@@ -124,7 +134,7 @@ module HOLOLINK_top_wrapper(
 // sensor reset
 //------------------------------------------------------------------------------
   output                       o_sw_sys_rst,
-  output [`SENSOR_IF_INST-1:0] o_sw_sen_rst,
+  output [`SENSOR_RX_IF_INST-1:0] o_sw_sen_rst,
 //------------------------------------------------------------------------------
 // PPS
 //------------------------------------------------------------------------------
@@ -136,15 +146,15 @@ module HOLOLINK_top_wrapper(
 );
 
 wire [31:0]                apb_prdata     [0:0];
-wire [`DATAPATH_WIDTH-1:0] sif_axis_tdata [0:`SENSOR_IF_INST-1];
-wire [`DATAKEEP_WIDTH-1:0] sif_axis_tkeep [0:`SENSOR_IF_INST-1];
-wire [`DATAUSER_WIDTH-1:0] sif_axis_tuser [0:`SENSOR_IF_INST-1];
-wire [`HOST_WIDTH-1:0]     hif_axis_tdata [0:`HOST_IF_INST-1];
-wire [`HOSTKEEP_WIDTH-1:0] hif_axis_tkeep [0:`HOST_IF_INST-1];
-wire [`HOSTUSER_WIDTH-1:0] hif_axis_tuser [0:`HOST_IF_INST-1];
-wire [`HOST_WIDTH-1:0]     hif_axis_tdata_out [0:`HOST_IF_INST-1];
-wire [`HOSTKEEP_WIDTH-1:0] hif_axis_tkeep_out [0:`HOST_IF_INST-1];
-wire [`HOSTUSER_WIDTH-1:0] hif_axis_tuser_out [0:`HOST_IF_INST-1];
+wire [`DATAPATH_WIDTH-1:0] sif_axis_tdata [`SENSOR_RX_IF_INST-1:0];
+wire [`DATAKEEP_WIDTH-1:0] sif_axis_tkeep [`SENSOR_RX_IF_INST-1:0];
+wire [`DATAUSER_WIDTH-1:0] sif_axis_tuser [`SENSOR_RX_IF_INST-1:0];
+wire [`HOST_WIDTH-1:0]     hif_axis_tdata [`HOST_IF_INST-1:0];
+wire [`HOSTKEEP_WIDTH-1:0] hif_axis_tkeep [`HOST_IF_INST-1:0];
+wire [`HOSTUSER_WIDTH-1:0] hif_axis_tuser [`HOST_IF_INST-1:0];
+wire [`HOST_WIDTH-1:0]     hif_axis_tdata_out [`HOST_IF_INST-1:0];
+wire [`HOSTKEEP_WIDTH-1:0] hif_axis_tkeep_out [`HOST_IF_INST-1:0];
+wire [`HOSTUSER_WIDTH-1:0] hif_axis_tuser_out [`HOST_IF_INST-1:0];
 wire [3:0]                 spi_sdin   [0:0];
 wire [3:0]                 spi_sdout  [0:0];
 
@@ -180,14 +190,16 @@ HOLOLINK_top HOLOLINK_top_0(
         .i_apb_pready      ( i_apb_pready ),
         .i_apb_prdata      ( apb_prdata ),
         .i_apb_pserr       ( i_apb_pserr ),
-        .i_sif_clk         ( i_sif_clk ),
+        //SIF RX
+        .i_sif_rx_clk      ( {i_sif_clk, i_sif_clk} ),
         .i_sif_axis_tvalid ( {i_sif_axis_tvalid_1,i_sif_axis_tvalid_0} ),
         .i_sif_axis_tlast  ( {i_sif_axis_tlast_1,i_sif_axis_tlast_0} ),
         .i_sif_axis_tdata  ( sif_axis_tdata ),
         .i_sif_axis_tkeep  ( sif_axis_tkeep ),
         .i_sif_axis_tuser  ( sif_axis_tuser ),
-        .i_sif_axis_tready ( 2'b11 ), 
+        //.i_sif_axis_tready ( 2'b11 ),
         .i_sif_event       ( i_sif_event ),
+        //HIF
         .i_hif_clk         ( i_hif_clk ),
         .i_hif_axis_tvalid ( {i_hif_axis_tvalid_1,i_hif_axis_tvalid_0} ),
         .i_hif_axis_tlast  ( {i_hif_axis_tlast_1,i_hif_axis_tlast_0} ),
@@ -207,13 +219,15 @@ HOLOLINK_top HOLOLINK_top_0(
         .o_apb_pwdata      ( o_apb_pwdata ),
         .o_apb_pwrite      ( o_apb_pwrite ),
         .o_init_done       ( o_init_done ),
-        .o_sif_rst         ( o_sif_rst ),
+        .o_sif_rx_rst      ( o_sif_rst ),
         .o_sif_axis_tready ( {o_sif_axis_tready_1,o_sif_axis_tready_0} ),
+        /*
         .o_sif_axis_tvalid (  ),
         .o_sif_axis_tlast  (  ),
         .o_sif_axis_tdata  (  ),
         .o_sif_axis_tkeep  (  ),
         .o_sif_axis_tuser  (  ),
+        */
         .o_hif_rst         ( o_hif_rst ),
         .o_hif_axis_tready ( {o_hif_axis_tready_1,o_hif_axis_tready_0} ),
         .o_hif_axis_tvalid ( {o_hif_axis_tvalid_1,o_hif_axis_tvalid_0} ),
