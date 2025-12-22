@@ -71,9 +71,11 @@ public:
     // Define a constructor that fully initializes the object.
     PyCheckCrcOp(holoscan::Fragment* fragment,
         std::shared_ptr<ComputeCrcOp> compute_crc_op,
-        const std::string& name = "check_crc")
+        const std::string& name = "check_crc",
+        const std::string& computed_crc_metadata_name = "computed_crc")
         : CheckCrcOp(holoscan::ArgList {
-            holoscan::Arg { "compute_crc_op", compute_crc_op } })
+            holoscan::Arg { "compute_crc_op", compute_crc_op },
+            holoscan::Arg { "computed_crc_metadata_name", computed_crc_metadata_name } })
     {
         name_ = name;
         fragment_ = fragment;
@@ -84,7 +86,7 @@ public:
 
     void check_crc(uint32_t computed_crc) override
     {
-        PYBIND11_OVERRIDE_PURE(
+        PYBIND11_OVERRIDE(
             void, /* Return type */
             CheckCrcOp, /* Parent class */
             check_crc, /* Name of function in C++ (must match Python name) */
@@ -112,10 +114,12 @@ PYBIND11_MODULE(_compute_crc, m)
         std::shared_ptr<CheckCrcOp>>(m, "CheckCrcOp")
         .def(py::init<holoscan::Fragment*,
                  std::shared_ptr<ComputeCrcOp>,
+                 const std::string&,
                  const std::string&>(),
             "fragment"_a,
             "compute_crc_op"_a,
-            "name"_a)
+            "name"_a,
+            "computed_crc_metadata_name"_a = "computed_crc"s)
         .def("setup", &CheckCrcOp::setup, "spec"_a);
 } // PYBIND11_MODULE
 
