@@ -152,6 +152,22 @@ RUN apt-get update \
   && rm -rf /var/lib/apt/lists/*
 
 RUN pip3 install meson ninja pyelftools
+
+# Install nvCOMP 5.0.0.6 for CRC32 operator.
+# NOTE: We pin to 5.0.0.6 because 5.1.0.21 has broken CRC32 functionality on ARM64 platforms.
+RUN curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/cuda-keyring_1.1-1_all.deb -O \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y \
+        libnvcomp5-cuda-12=5.0.0.6-1 \
+        libnvcomp5-dev-cuda-12=5.0.0.6-1 \
+        libnvcomp5-static-cuda-12=5.0.0.6-1 \
+        nvcomp-cuda-12=5.0.0.6-1 \
+    && apt-mark hold libnvcomp5-cuda-12 libnvcomp5-dev-cuda-12 libnvcomp5-static-cuda-12 nvcomp-cuda-12 \
+    && apt-get purge -y cuda-keyring \
+    && rm cuda-keyring_1.1-1_all.deb \
+    && rm -rf /var/lib/apt/lists/*
+
 # repeated ARG because it has to be inside the FROM above
 ARG CONTAINER_TYPE=invalid
 ARG HSDK_CONTAINER_CONFIG=invalid
