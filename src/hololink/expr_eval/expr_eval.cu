@@ -258,7 +258,7 @@ struct Expression::Impl {
   Impl(CudaModule cuda_module, CUfunction cuda_function, const std::string& cuda_toolkit_include_path) :
     cuda_module_(std::move(cuda_module)),
     cuda_function_(std::move(cuda_function)),
-    cuda_toolkit_include_path_(cuda_toolkit_include_path),
+    cuda_toolkit_include_paths_(cuda_toolkit_include_path),
     seed_([]{
       // Generate a seed for random numbers
       std::random_device rd;
@@ -274,7 +274,7 @@ struct Expression::Impl {
   CUfunction cuda_function_;
   using SeedType  = unsigned long long;
   SeedType seed_;
-  std::string cuda_toolkit_include_path_;  // The path to curand is required if curand functions are used
+  std::string cuda_toolkit_include_paths_;  // The path to curand is required if curand functions are used
   thrust::device_vector<curandState> curand_states_;
 };
 
@@ -290,7 +290,7 @@ void Expression::Impl::evaluate(float* device_output, size_t count, size_t strid
 
   // Curand states is costy and therefore is initialized separately and only once.
   curandState* curand_states = nullptr;
-  if (!cuda_toolkit_include_path_.empty()) {
+  if (!cuda_toolkit_include_paths_.empty()) {
     // Initialize curand_states.
     if (curand_states_.size() != count) {
       curand_states_.resize(count);
@@ -327,7 +327,7 @@ Expression Parser::compile(const std::string& expression_str,
 
   std::stringstream ss;
   // Check if curand is available
-  if (!cuda_toolkit_include_path_.empty())
+  if (!cuda_toolkit_include_paths_.empty())
     ss << 
 R"(
 #include <curand_kernel.h>
@@ -407,11 +407,16 @@ extern "C" __global__ void )" << cuda_kernel_name << R"((float* output, int coun
   CudaProgram cuda_program(cuda_code);
 
   // Compile
+  std::vector<std::string> include_paths;
   std::vector<const char*> options;
-  std::string opt_cuda_toolkit_include_path;
-  if (!cuda_toolkit_include_path_.empty()) {
-    opt_cuda_toolkit_include_path = "--include-path=" + cuda_toolkit_include_path_;
-    options.push_back(&opt_cuda_toolkit_include_path.front());
+  std::stringstream ss_paths(cuda_toolkit_include_paths_);
+  std::string token;
+
+  while (std::getline(ss_paths, token, ':')) {
+      include_paths.push_back("--include-path=" + token);
+  }
+  for (const auto& include_path : include_paths) {
+    options.push_back(include_path.c_str());
   }
   cuda_program.compile(options);
 
@@ -420,22 +425,30 @@ extern "C" __global__ void )" << cuda_kernel_name << R"((float* output, int coun
   CUfunction cuda_function(cuda_module.get_function(cuda_kernel_name));
   
   // Create an Expression object and return it
-  return expr_eval::Expression(std::make_shared<expr_eval::Expression::Impl>(std::move(cuda_module), std::move(cuda_function), cuda_toolkit_include_path_));
+  return expr_eval::Expression(std::make_shared<expr_eval::Expression::Impl>(std::move(cuda_module), std::move(cuda_function), cuda_toolkit_include_paths_));
 } catch (const std::exception& err) { return expr_eval::Expression(); }
 
-void Parser::set_cuda_toolkit_include_path(const std::string& cuda_toolkit_include_path) try {
+void Parser::set_cuda_toolkit_include_paths(const std::string& cuda_toolkit_include_paths) try {
   // Validate curand_include_ path
-  if (!cuda_toolkit_include_path.empty()) {
+  if (!cuda_toolkit_include_paths.empty()) {
     CudaProgram cuda_program("#include <curand_kernel.h>");
-    // Compile
-    std::string opt_cuda_toolkit_include_path = "--include-path=" + cuda_toolkit_include_path;
-    std::vector<const char*> options { &opt_cuda_toolkit_include_path.front() };
+    std::vector<std::string> include_paths;
+    std::vector<const char*> options;
+    std::stringstream ss_paths(cuda_toolkit_include_paths);
+    std::string token;
+
+    while (std::getline(ss_paths, token, ':')) {
+        include_paths.push_back("--include-path=" + token);
+    }
+    for (const auto& include_path : include_paths) {
+      options.push_back(include_path.c_str());
+    }
     cuda_program.compile(options);
   }
-  cuda_toolkit_include_path_ = cuda_toolkit_include_path;
+  cuda_toolkit_include_paths_ = cuda_toolkit_include_paths;
 } catch (const std::exception&) {
   std::stringstream ss;
-  ss << "Invalid cuda toolkit include path: " << cuda_toolkit_include_path;
+  ss << "Invalid cuda toolkit include paths: " << cuda_toolkit_include_paths;
   log_and_throw(ss.str());
 }
 

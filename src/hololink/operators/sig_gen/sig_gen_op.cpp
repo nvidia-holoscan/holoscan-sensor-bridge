@@ -32,7 +32,7 @@ void SignalGeneratorOp::SignalExpression::update_expression(const std::string& s
 
 void SignalGeneratorOp::SignalExpression::set_cuda_toolkit_include_path(const std::string& cuda_toolkit_include_path)
 {
-    parser_.set_cuda_toolkit_include_path(cuda_toolkit_include_path);
+    parser_.set_cuda_toolkit_include_paths(cuda_toolkit_include_path);
 }
 
 std::string SignalGeneratorOp::SignalExpression::str() const
@@ -128,9 +128,9 @@ void SignalGeneratorOp::setup(holoscan::OperatorSpec& spec)
         std::string("0"));
     spec.param(cuda_toolkit_include_path_,
         "cuda_toolkit_include_path",
-        "cuda_toolkit_include_path",
-        "cuda toolkit include path",
-        std::string(CUDA_TOOLKIT_INCLUDE_PATH));
+        "cuda_toolkit_include_path - path for cuda toolkit dependency. For multiple paths, use ':' as delimiter",
+        "cuda toolkit include path - path for cuda toolkit dependency. For multiple paths, use ':' as delimiter",
+        std::string(CUDA_TOOLKIT_INCLUDE_PATHS));
 }
 
 void SignalGeneratorOp::compute([[maybe_unused]] holoscan::InputContext& /*op_input*/, holoscan::OutputContext& op_output,
