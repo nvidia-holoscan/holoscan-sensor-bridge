@@ -279,6 +279,7 @@ DOCKER_BUILDKIT=1 docker build \
     --network=host \
     --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     --build-arg "HSDK_CONTAINER_CONFIG=$HSDK_CONTAINER_CONFIG" \
+    --build-arg "DRIVER_CUDA_VERSION_MAJOR=$DRIVER_CUDA_VERSION_MAJOR" \
     -t hololink-prototype:$VERSION \
     -f $HERE/Dockerfile \
     $PROTOTYPE_OPTIONS \

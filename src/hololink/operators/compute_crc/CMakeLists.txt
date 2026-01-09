@@ -14,7 +14,7 @@
 # limitations under the License.
 
 find_package(nvcomp REQUIRED
-    PATHS /usr/lib/sbsa-linux-gnu/nvcomp/12/cmake/nvcomp)
+    PATHS /usr/lib/sbsa-linux-gnu/cmake/nvcomp)
 
 # we don't expose the C++ interface of the operator yet, therefore link
 # statically

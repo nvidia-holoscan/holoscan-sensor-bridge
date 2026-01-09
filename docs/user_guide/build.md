@@ -12,30 +12,24 @@ container. This container is used to run all holoscan tests and examples.
    $ git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge
    ```
 
-1. Build the sensor bridge demonstration container. For systems with dGPU,
+1. Build the sensor bridge demonstration container. dGPU configurations are IGX Orin
+   with a discrete GPU and OS configured as dGPU. For all others listed
+   [here](HostSetupTarget), use iGPU configuration below
 
-   ```none
-   $ cd holoscan-sensor-bridge
-   $ sh docker/build.sh --dgpu
-   ```
-
-   For systems with iGPU,
-
+`````{tab-set}
+````{tab-item} iGPU
    ```none
    $ cd holoscan-sensor-bridge
    $ sh docker/build.sh --igpu
    ```
-
-   Notes:
-
-   - `--dgpu` requires a system with a dGPU installed (e.g. IGX with A6000 dGPU) and an
-     OS installed with appropriate dGPU support (e.g.
-     [IGX OS 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads) with
-     dGPU).
-   - `--igpu` is appropriate for systems running on a system with iGPU (e.g. AGX
-     Orin/AGX Thor, IGX without a dGPU, or DGX Spark). This requires an OS installed
-     with iGPU support (e.g. for AGX Orin: JetPack 6.2.1, for IGX: IGX BaseOS with iGPU
-     configuration).
+````
+````{tab-item} dGPU
+   ```none
+   $ cd holoscan-sensor-bridge
+   $ sh docker/build.sh --dgpu
+   ```
+````
+`````
 
 (RunningTestsTarget)=
 

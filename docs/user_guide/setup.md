@@ -11,9 +11,8 @@ Holoscan sensor bridge is supported on the following configurations:
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
-- AGX Thor systems running [JP7.0](https://developer.nvidia.com/embedded/jetpack) with
-  MGBE SmartNIC device and CoE transport. JP7.0 release currently supports only the
-  [Leopard imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md).
+- AGX Thor systems running [JP7.1](https://developer.nvidia.com/embedded/jetpack) with
+  MGBE SmartNIC device and CoE transport.
 - DGX Spark systems running
   [DGX OS 7.2.3](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
   CX7 SmartNIC devices.
@@ -401,16 +400,18 @@ which is the RJ45 connector on the AGX Orin.
 ````
 ````{tab-item} AGX Thor
   
-- After installing JP 7.0 on the Thor devkit, complete the following steps.
-  If JP 7.0 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
+- After installing JP 7.1 on the Thor devkit, complete the following steps.
+  If JP 7.1 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
 
-  **These steps are not required if JetPack 7.0 was installed using SDK Manager with the all available optional packages selected.**
+  **These steps are not required if JetPack 7.1 was installed using SDK Manager with the all available optional packages selected.**
 
   ```none
   export PATH=/usr/local/cuda-13.0/bin:$PATH
   export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
-  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v2.0/release/Jetson_SIPL_API_R38.2.0_aarch64.tbz2
-  sudo tar xjf Jetson_SIPL_API_R38.2.0_aarch64.tbz2 -C /
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v4.0/release/Jetson_SIPL_API_R38.4.0_aarch64.tbz2
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v4.0/release/Jetson_Multimedia_API_R38.4.0_aarch64.tbz2
+  sudo tar xjf Jetson_SIPL_API_R38.4.0_aarch64.tbz2 -C /
+  sudo tar xjf Jetson_Multimedia_API_R38.4.0_aarch64.tbz2 -C /
   ```
 
 - Configure the AGX Thor to enable running unaccelerated network examples:
@@ -464,18 +465,36 @@ which is the RJ45 connector on the AGX Orin.
   sensor bridge code.
 
   **This step requires a system reboot to take effect.**
-  
+
 - Install Holoscan SDK v3.9.0:
 
   ```none
   sudo apt update
-  sudo apt install holoscan=3.9.0-2
+  sudo apt install -t r38.4 holoscan=3.9.0-2
   ```
 
 - Install other Holoscan sensor bridge dependencies:
 
   ```none
-  sudo apt install -y git-lfs cmake libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev libibverbs-dev python3-dev
+  sudo apt-get install ca-certificates gpg wget
+  test -f /usr/share/doc/kitware-archive-keyring/copyright ||
+  wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+  echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+  sudo apt-get update
+  test -f /usr/share/doc/kitware-archive-keyring/copyright ||
+  sudo rm /usr/share/keyrings/kitware-archive-keyring.gpg
+  sudo apt-get install kitware-archive-keyring
+  wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
+  sudo dpkg -i cuda-keyring_1.1-1_all.deb
+  sudo apt-get update
+  rm cuda-keyring_1.1-1_all.deb
+  PINNED_NVCOMP=5.0.0.6-1
+  sudo apt install -y git-lfs cmake libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev libibverbs-dev python3-dev \
+        libnvcomp5-cuda-13=${PINNED_NVCOMP} \
+        libnvcomp5-dev-cuda-13=${PINNED_NVCOMP} \
+        libnvcomp5-static-cuda-13=${PINNED_NVCOMP} \
+        nvcomp-cuda-13=${PINNED_NVCOMP}
+  sudo apt-mark hold libnvcomp5-cuda-13 libnvcomp5-dev-cuda-13 libnvcomp5-static-cuda-13 nvcomp-cuda-13
   ```
 
 - Enable the network interface and ensure that the camera enumerates (assumes camera IP address 192.168.0.2):
@@ -489,7 +508,7 @@ which is the RJ45 connector on the AGX Orin.
 
 - Obtain and build holoscan sensor bridge:
 
-  holoscan sensor bridge release v2.5 supports running C++ Li VB1940 accelerated networking [SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html) based examples 
+  holoscan sensor bridge release v2.5 supports running C++ Li VB1940 accelerated networking based examples 
   from the terminal cli as well as running Li VB1940 and IMX274 python examples from within the
   holoscan sensor bridge container.
   
@@ -505,9 +524,25 @@ which is the RJ45 connector on the AGX Orin.
   ```none
   cd holoscan-sensor-bridge
   mkdir build && cd build
-  cmake -DCCCL_DIR:PATH="/usr/local/cuda/targets/sbsa-linux/lib/cmake/cccl" -DHOLOLINK_BUILD_SIPL=1 ..
+  cmake -DHOLOLINK_BUILD_SIPL=1 -DHOLOLINK_BUILD_FUSA=1 ..
   make -j
   ```
+
+<b> Running the CoE-Accelerated Examples </b>
+
+Thor's hardware-accelerated CoE capabilities can be leveraged by Holoscan Sensor Bridge
+using one of two different paths outlined below.
+
+<b> SIPL </b>
+
+[SIPL](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
+is a modular, extensible framework for image sensor control and image processing that
+exposes the full hardware capabilities of Thor including CoE and ISP hardware
+acceleration. SIPL-enabled sensor drivers are written using the
+[Unified Device Driver Framework (UDDF)](uddf_drivers.md), and reference VB1940 UDDF
+drivers are included with JetPack 7.1 EA.
+
+Use the following to run the SIPL-based CoE example applications for the VB1940 sensor:
 
 - Retrieve your camera's MAC ID:
 
@@ -537,19 +572,40 @@ which is the RJ45 connector on the AGX Orin.
 - Run the `sipl_player` application (HW ISP capture mode):
 
   ```none
-  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json
-  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json
+  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json
+  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json
   ```
 
 - For RAW capture mode (image quality will be poor without proper ISP processing):
 
   ```none
-  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json --raw
-  sudo ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json --raw
+  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json --raw
+  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json --raw
   ```
 
-- JP 7.0 currently supports only the [Leopard Imaging VB1940 Eagle Camera](sensor_bridge_hardware_setup.md)
-  running in SIPL-accelerated networking mode.
+<b>FuSa</b>
+
+FuSa is a new API included with JetPack 7.1 which exposes access to Thor's CoE data
+capture path without providing the additional camera control and ISP access that is
+offered by SIPL. This allows applications direct control of the Holoscan Sensor Bridge
+and attached sensors in a CoE-accelerated environment, bypassing the need for SIPL and
+its UDDF driver implementations. This enables applications to follow a more traditional
+Holoscan Sensor Bridge implementation where the sensor control is managed directly by
+the application instead of by external drivers. Because of this, FuSa example
+applications exist for both the IMX274 and VB1940 sensors using the existing reference
+drivers provided by Holoscan Sensor Bridge.
+
+A number of FuSa-based example applications are included for the IMX274 and VB1940 using
+the `fusa-coe` prefix. The C++ sample applications can be run natively (not using a
+container) and are built by the host setup instructions above, while the Python variants
+must be run using the [Holoscan Sensor Bridge container](build.md).
+
+For example, to run the C++ VB1940 player example, run the following command with the IP
+address replaced with the IP address of the device:
+
+```none
+./examples/fusa_coe_vb1940_player --hololink 192.168.0.2
+```
 
 - Building and running Li VB1940 and IMX274 python examples from within the holoscan sensor bridge container
   is explained in the following pages of the user guide.
@@ -641,7 +697,7 @@ Now, for all configurations,
   sudo systemctl start ptp4l-$EN0.service
   ```
 
-- For iGPU configurations only: Install
+- For Orin iGPU configurations only: Install
   [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.
   Applications using inference need this at initialization time; some OS images for iGPU
   don't include it.

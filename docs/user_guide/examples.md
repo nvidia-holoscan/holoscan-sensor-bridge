@@ -17,7 +17,7 @@ DGX Spark may also be used.
   Holoscan sensor bridge container are built with the appropriate iGPU or dGPU setting,
   the application code itself does not change.
 - Examples starting with "sipl\_" use the
-  [SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
+  [SIPL](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
   accelerated network receiver operator and require MGBE SmartNIC controller and are
   unique to AGX Thor.
 

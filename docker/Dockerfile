@@ -17,6 +17,7 @@
 
 ARG CONTAINER_TYPE=invalid
 ARG HSDK_CONTAINER_CONFIG=invalid
+ARG DRIVER_CUDA_VERSION_MAJOR=invalid
 
 # dgpu specific configuration goes here.
 FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_dgpu
@@ -130,6 +131,9 @@ FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_ig
 # configuration for all GPU configurations start here.
 FROM build_${CONTAINER_TYPE}
 
+# ARGs must be redeclared after FROM to be available in this build stage
+ARG DRIVER_CUDA_VERSION_MAJOR=invalid
+
 RUN apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
     python3 \
@@ -155,15 +159,17 @@ RUN pip3 install meson ninja pyelftools
 
 # Install nvCOMP 5.0.0.6 for CRC32 operator.
 # NOTE: We pin to 5.0.0.6 because 5.1.0.21 has broken CRC32 functionality on ARM64 platforms.
-RUN curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/sbsa/cuda-keyring_1.1-1_all.deb -O \
+RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O \
     && dpkg -i cuda-keyring_1.1-1_all.deb \
     && apt-get update \
+    && PINNED_NVCOMP=5.0.0.6-1 \
     && apt-get install -y \
-        libnvcomp5-cuda-12=5.0.0.6-1 \
-        libnvcomp5-dev-cuda-12=5.0.0.6-1 \
-        libnvcomp5-static-cuda-12=5.0.0.6-1 \
-        nvcomp-cuda-12=5.0.0.6-1 \
-    && apt-mark hold libnvcomp5-cuda-12 libnvcomp5-dev-cuda-12 libnvcomp5-static-cuda-12 nvcomp-cuda-12 \
+        libnvcomp5-cuda-${DRIVER_CUDA_VERSION_MAJOR}=${PINNED_NVCOMP} \
+        libnvcomp5-dev-cuda-${DRIVER_CUDA_VERSION_MAJOR}=${PINNED_NVCOMP} \
+        libnvcomp5-static-cuda-${DRIVER_CUDA_VERSION_MAJOR}=${PINNED_NVCOMP} \
+        nvcomp-cuda-${DRIVER_CUDA_VERSION_MAJOR}=${PINNED_NVCOMP} \
+    && apt-mark hold libnvcomp5-cuda-${DRIVER_CUDA_VERSION_MAJOR} libnvcomp5-dev-cuda-${DRIVER_CUDA_VERSION_MAJOR} libnvcomp5-static-cuda-${DRIVER_CUDA_VERSION_MAJOR} nvcomp-cuda-${DRIVER_CUDA_VERSION_MAJOR} \
     && apt-get purge -y cuda-keyring \
     && rm cuda-keyring_1.1-1_all.deb \
     && rm -rf /var/lib/apt/lists/*
