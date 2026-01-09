@@ -91,12 +91,20 @@ def main():
         help="Stratix-10 rpd file to program, fetched from a local copy.",
     )
     parser.add_argument(
+        "--mchp-file",
+        help="mchp spi file to program, fetched from a local copy.",
+    )
+    parser.add_argument(
         "--eula-file",
         help="EULA, fetched from a local file.",
     )
     parser.add_argument(
         "--cpnx-url",
         help="CPNX bit file to program, fetched from a URL.",
+    )
+    parser.add_argument(
+        "--mchp-url",
+        help="mchp spi file to program, fetched from a URL.",
     )
     parser.add_argument(
         "--clnx-url",
@@ -127,16 +135,18 @@ def main():
     cpnx_file = args.cpnx_file
     clnx_file = args.clnx_file
     stratix_file = args.stratix_file
+    mchp_file = args.mchp_file
     eula_file = args.eula_file
     cpnx_url = args.cpnx_url
+    mchp_url = args.mchp_url
     clnx_url = args.clnx_url
     stratix_url = args.stratix_url
     eula_url = args.eula_url
     fpga_uuid = args.fpga_uuid
     if (fpga_uuid is None) or (len(fpga_uuid) < 1):
         parser.error("At least one --fpga-uuid must be specified.")
-    if not any([cpnx_file, clnx_file, stratix_file, cpnx_url, clnx_url, stratix_url]):
-        parser.error("At least one of --cpnx-file, --clnx-file, --stratix-file, --cpnx-url, --clnx-url, or --stratix-url must be specified.")
+    if not any([cpnx_file, clnx_file, stratix_file, mchp_file, cpnx_url, clnx_url, stratix_url, mchp_url]):
+        parser.error("At least one of --cpnx-file, --clnx-file, --stratix-file, --mchp-file, --cpnx-url, --clnx-url, --stratix-url, or --mchp-url must be specified.")
     strategy = args.strategy
     if strategy is None:
         strategy = "sensor_bridge_10"
@@ -182,6 +192,8 @@ def main():
         measure_file(clnx_file, "clnx")
     if stratix_file is not None:
         measure_file(stratix_file, "stratix")
+    if mchp_file is not None:
+        measure_file(mchp_file, "mchp")
     if eula_file is not None:
         image, metadata, content = fetch_file(eula_file)
         measure(metadata, content)
@@ -192,6 +204,8 @@ def main():
         measure_url(cpnx_url, "cpnx")
     if clnx_url is not None:
         measure_url(clnx_url, "clnx")
+    if mchp_url is not None:
+        measure_url(mchp_url, "mchp")
     if stratix_url is not None:
         measure_url(stratix_url, "stratix")
     if eula_url is not None:
