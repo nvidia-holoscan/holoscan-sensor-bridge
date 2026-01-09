@@ -173,7 +173,7 @@ def print_crc_results(crcs, crc_errors):
         )
 
     logging.debug("\n" + "=" * 60)
-    logging.debug("CRC VALIDATION RESULTS (nvcomp 5.0)")
+    logging.debug("CRC VALIDATION RESULTS (nvCOMP 5.0)")
     logging.debug("=" * 60)
     logging.debug(f"Total frames processed: {total_frames}")
     logging.debug(f"CRC errors: {crc_errors}")
@@ -439,7 +439,7 @@ class HoloscanApplication(holoscan.core.Application):
             device=self._camera,
         )
 
-        # CRC operators using nvcomp 5.0 (optional)
+        # CRC operators using nvCOMP 5.0 (optional)
         # Note: Unlike Linux version which samples every Nth frame,
         # GPU-based CRC is fast enough to check every frame (when crc_frame_check=1)
         if self._crc_frame_check > 0:
@@ -454,7 +454,7 @@ class HoloscanApplication(holoscan.core.Application):
                 compute_crc_op=compute_crc,
                 crc_metadata_name="crc",
             )
-            logging.info("CRC validation enabled (nvcomp 5.0) - checking every frame")
+            logging.info("CRC validation enabled (nvCOMP 5.0) - checking every frame")
         else:
             logging.info("CRC validation disabled")
 
@@ -522,7 +522,7 @@ class HoloscanApplication(holoscan.core.Application):
 
         # Pipeline flow - conditionally include CRC validation
         if self._crc_frame_check > 0:
-            # Pipeline with CRC validation using nvcomp 5.0
+            # Pipeline with CRC validation using nvCOMP 5.0
             self.add_flow(receiver_operator, compute_crc, {("output", "input")})
             self.add_flow(compute_crc, self.crc_validator, {("output", "input")})
             self.add_flow(self.crc_validator, profiler, {("output", "input")})
@@ -619,7 +619,7 @@ def main():
         "--crc-frame-check",
         type=int,
         default=1,
-        help="GPU-based CRC validation using nvcomp 5.0: 0=disabled, 1=check every frame (default). Note: unlike CPU-based checking, GPU CRC is fast enough to always check every frame.",
+        help="GPU-based CRC validation using nvCOMP 5.0: 0=disabled, 1=check every frame (default). Note: unlike CPU-based checking, GPU CRC is fast enough to always check every frame.",
     )
 
     args = parser.parse_args()
