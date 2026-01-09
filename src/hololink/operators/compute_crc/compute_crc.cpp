@@ -182,6 +182,8 @@ void CheckCrcOp::setup(holoscan::OperatorSpec& spec)
 
     spec.param(compute_crc_op_, "compute_crc_op", "ComputeCrcOp",
         "Operator that computed the CRC");
+    spec.param(computed_crc_metadata_name_, "computed_crc_metadata_name", "ComputedCrcMetadataName",
+        "When specified, we'll save the computed CRC under this name.", std::string("computed_crc"));
     cuda_stream_handler_.define_params(spec);
 }
 
@@ -200,17 +202,40 @@ void CheckCrcOp::compute(holoscan::InputContext& op_input, holoscan::OutputConte
         throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
     }
 
-    // Emit the input tensor
-    op_output.emit(maybe_entity.value(), "output");
-
     //
     std::shared_ptr<ComputeCrcOp> compute_crc_op = compute_crc_op_.get();
     if (!compute_crc_op) {
         throw std::runtime_error(fmt::format("ComputeCrcOp wasn't specified; \"{}\" isn't properly configured.", name()));
     }
 
+    // WORKAROUND -- There's a bug where using the operator.metadata() method
+    // doesn't work to add more metadata to the pipeline.  The current workaround
+    // for this is to use the member directly-- note that this will be fixed in
+    // HSDK 3.11-- and that this specific approach here isn't recommended unless
+    // completely necessary.
+    auto maybe_meta = entity.get<holoscan::MetadataDictionary>("metadata_");
+    if (maybe_meta) {
+        meta_ = maybe_meta.value();
+    } else {
+        meta_ = entity.add<holoscan::MetadataDictionary>("metadata_").value();
+    }
+
     uint32_t computed_crc = compute_crc_op->get_computed_crc();
     check_crc(computed_crc);
+
+    // Emit the input tensor; note that this has to be
+    // done AFTER any updates to metadata.
+    op_output.emit(maybe_entity.value(), "output");
+}
+
+void CheckCrcOp::check_crc(uint32_t computed_crc)
+{
+    // SHOULD BE:
+    // auto const& meta = metadata();
+
+    // WORKAROUND: Update metadata directly in the entity's component
+    // instead of using operator's metadata() method.
+    meta_->set(computed_crc_metadata_name_.get(), static_cast<int64_t>(computed_crc));
 }
 
 } // namespace hololink::operators

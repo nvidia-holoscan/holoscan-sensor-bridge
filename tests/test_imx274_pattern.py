@@ -206,11 +206,11 @@ class PatternTestApplication(holoscan.core.Application):
             name="compute_crc_left",
             frame_size=csi_to_bayer_operator_left.get_csi_length(),
         )
-        self._check_crc_left = operators.RecordCrcOp(
+        check_crc_left = hololink_module.operators.CheckCrcOp(
             self,
-            name="crcs_left",
-            compute_crc_op=compute_crc_left,
-            crc_metadata_name="left_crc",
+            compute_crc_left,
+            name="check_crc_left",
+            computed_crc_metadata_name="check_crc_left",
         )
 
         compute_crc_right = hololink_module.operators.ComputeCrcOp(
@@ -218,11 +218,11 @@ class PatternTestApplication(holoscan.core.Application):
             name="compute_crc_right",
             frame_size=csi_to_bayer_operator_right.get_csi_length(),
         )
-        self._check_crc_right = operators.RecordCrcOp(
+        check_crc_right = hololink_module.operators.CheckCrcOp(
             self,
-            name="crcs_right",
-            compute_crc_op=compute_crc_right,
-            crc_metadata_name="right_crc",
+            compute_crc_right,
+            name="check_crc_right",
+            computed_crc_metadata_name="check_crc_right",
         )
 
         #
@@ -283,11 +283,11 @@ class PatternTestApplication(holoscan.core.Application):
             name="bayer_crc_left",
             frame_size=bayer_size_left,
         )
-        self._bayer_check_crc_left = operators.RecordCrcOp(
+        bayer_check_crc_left = hololink_module.operators.CheckCrcOp(
             self,
-            name="bayer_crcs_left",
-            compute_crc_op=bayer_crc_left,
-            crc_metadata_name="left_crc",  # We don't actually use the value recorded here
+            bayer_crc_left,
+            name="bayer_check_crc_left",
+            computed_crc_metadata_name="bayer_crc_left",
         )
         # the tensor name directs which pane on the visualizer is updated
         rename_left_tensor = operators.PassThroughOperator(
@@ -295,17 +295,38 @@ class PatternTestApplication(holoscan.core.Application):
             name="rename_left_tensor",
             out_tensor_name="left",
         )
+
         bayer_crc_right = hololink_module.operators.ComputeCrcOp(
             self,
             name="bayer_crc_right",
             frame_size=bayer_size_right,
         )
-        self._bayer_check_crc_right = operators.RecordCrcOp(
+        bayer_check_crc_right = hololink_module.operators.CheckCrcOp(
             self,
-            name="bayer_crcs_right",
-            compute_crc_op=bayer_crc_right,
-            crc_metadata_name="right_crc",  # We don't actually use the value recorded here
+            bayer_crc_right,
+            name="bayer_check_crc_right",
+            computed_crc_metadata_name="bayer_crc_right",
         )
+
+        self._record_metadata_left = operators.RecordMetadataOp(
+            self,
+            name="record_metadata_left",
+            metadata_names=[
+                "left_crc",
+                "check_crc_left",
+                "bayer_crc_left",
+            ],
+        )
+        self._record_metadata_right = operators.RecordMetadataOp(
+            self,
+            name="record_metadata_right",
+            metadata_names=[
+                "right_crc",
+                "check_crc_right",
+                "bayer_crc_right",
+            ],
+        )
+
         # the tensor name directs which pane on the visualizer is updated
         rename_right_tensor = operators.PassThroughOperator(
             self,
@@ -355,34 +376,36 @@ class PatternTestApplication(holoscan.core.Application):
 
         # Add CRC checking to the pipeline
         self.add_flow(receiver_operator_left, compute_crc_left, {("output", "input")})
-        self.add_flow(compute_crc_left, self._check_crc_left, {("output", "input")})
-        self.add_flow(
-            self._check_crc_left, csi_to_bayer_operator_left, {("output", "input")}
-        )
+        self.add_flow(compute_crc_left, check_crc_left, {("output", "input")})
+        self.add_flow(check_crc_left, csi_to_bayer_operator_left, {("output", "input")})
         self.add_flow(
             csi_to_bayer_operator_left, demosaic_left, {("output", "receiver")}
         )
         self.add_flow(demosaic_left, bayer_crc_left, {("transmitter", "input")})
-        self.add_flow(bayer_crc_left, self._bayer_check_crc_left, {("output", "input")})
+        self.add_flow(bayer_crc_left, bayer_check_crc_left, {("output", "input")})
         self.add_flow(
-            self._bayer_check_crc_left, rename_left_tensor, {("output", "input")}
+            bayer_check_crc_left, self._record_metadata_left, {("output", "input")}
+        )
+        self.add_flow(
+            self._record_metadata_left, rename_left_tensor, {("output", "input")}
         )
         self.add_flow(rename_left_tensor, visualizer, {("output", "receivers")})
 
         self.add_flow(receiver_operator_right, compute_crc_right, {("output", "input")})
-        self.add_flow(compute_crc_right, self._check_crc_right, {("output", "input")})
+        self.add_flow(compute_crc_right, check_crc_right, {("output", "input")})
         self.add_flow(
-            self._check_crc_right, csi_to_bayer_operator_right, {("output", "input")}
+            check_crc_right, csi_to_bayer_operator_right, {("output", "input")}
         )
         self.add_flow(
             csi_to_bayer_operator_right, demosaic_right, {("output", "receiver")}
         )
         self.add_flow(demosaic_right, bayer_crc_right, {("transmitter", "input")})
+        self.add_flow(bayer_crc_right, bayer_check_crc_right, {("output", "input")})
         self.add_flow(
-            bayer_crc_right, self._bayer_check_crc_right, {("output", "input")}
+            bayer_check_crc_right, self._record_metadata_right, {("output", "input")}
         )
         self.add_flow(
-            self._bayer_check_crc_right, rename_right_tensor, {("output", "input")}
+            self._record_metadata_right, rename_right_tensor, {("output", "input")}
         )
         self.add_flow(rename_right_tensor, visualizer, {("output", "receivers")})
 
@@ -573,56 +596,64 @@ def run_test(
     # Verify CRCs match
     skip_frames = SKIP_INITIAL_FRAMES
     left_bad_crcs = 0
+    left_bad_color_crcs = 0
     right_bad_crcs = 0
+    right_bad_color_crcs = 0
     if ibv_name_left:
-        crcs_left = application._check_crc_left.get_crcs()
+        crcs_left = application._record_metadata_left.get_record()
         logging.info(f"Left camera captured {len(crcs_left)} frames")
-        for frame_idx, (received_crc, computed_crc) in enumerate(crcs_left):
+        for frame_idx, (left_crc, check_crc_left, bayer_crc_left) in enumerate(
+            crcs_left
+        ):
+            logging.trace(f"{left_crc=:#x} {check_crc_left=:#x} {bayer_crc_left=:#x}")
             # Skip validation for first N frames (initialization artifacts)
             if frame_idx < skip_frames:
                 continue
             # Don't include the last frame, when the pipeline is shutting down.
             if frame_idx >= (frame_limit - 1):
                 continue
-            if received_crc != computed_crc:
+            if left_crc != check_crc_left:
                 logging.error(
                     f"Left CRC mismatch at frame {frame_idx}: "
-                    f"received={received_crc:#x}, computed={computed_crc:#x}"
+                    f"received={left_crc:#x}, computed={check_crc_left:#x}"
                 )
                 left_bad_crcs += 1
+            if bayer_crc_left != expected_left:
+                left_bad_color_crcs += 1
         if left_bad_crcs == 0:
             logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
 
     if ibv_name_right:
-        crcs_right = application._check_crc_right.get_crcs()
+        crcs_right = application._record_metadata_right.get_record()
         logging.info(f"Right camera captured {len(crcs_right)} frames")
-        for frame_idx, (received_crc, computed_crc) in enumerate(crcs_right):
+        for frame_idx, (right_crc, check_crc_right, bayer_crc_right) in enumerate(
+            crcs_right
+        ):
+            logging.trace(
+                f"{right_crc=:#x} {check_crc_right=:#x} {bayer_crc_right=:#x}"
+            )
             # Skip validation for first N frames (initialization artifacts)
             if frame_idx < skip_frames:
                 continue
             # Don't include the last frame, when the pipeline is shutting down.
             if frame_idx >= (frame_limit - 1):
                 continue
-            if received_crc != computed_crc:
+            if right_crc != check_crc_right:
                 logging.error(
                     f"Right CRC mismatch at frame {frame_idx}: "
-                    f"received={received_crc:#x}, computed={computed_crc:#x}"
+                    f"received={right_crc:#x}, computed={check_crc_right:#x}"
                 )
                 right_bad_crcs += 1
+            if bayer_crc_right != expected_right:
+                right_bad_color_crcs += 1
         if right_bad_crcs == 0:
             logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")
     assert (left_bad_crcs + right_bad_crcs) == 0
     # Make sure the colors are as expected.
     if expected_left is not None:
-        for _, computed_left in application._bayer_check_crc_left.get_crcs():
-            if computed_left == expected_left:
-                continue
-            assert False, f"Color image CRC {expected_left=:#x} {computed_left=:#x}"
+        assert left_bad_color_crcs == 0
     if expected_right is not None:
-        for _, computed_right in application._bayer_check_crc_right.get_crcs():
-            if computed_right == expected_right:
-                continue
-            assert False, f"Color image CRC {expected_right=:#x} {computed_right=:#x}"
+        assert right_bad_color_crcs == 0
 
 
 @pytest.mark.skip_unless_imx274
