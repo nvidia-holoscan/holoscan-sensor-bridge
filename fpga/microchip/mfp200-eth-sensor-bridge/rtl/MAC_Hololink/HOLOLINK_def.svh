@@ -125,20 +125,25 @@ package HOLOLINK_pkg;
 // established between the FPGA and the Host
 //------------------------------------------------------------------------------
 
-  `define N_INIT_REG 1
+  `define N_INIT_REG 9
 
   localparam logic [63:0] init_reg [`N_INIT_REG] = '{
     // 32b Addr   | 32b Data
     //-----------------------------------------------
     // Add register writes to Ethernet MAC/PCS here
     //-----------------------------------------------
-    {32'h0300_0210, 32'h004C_4B40} // i2c timeout
+    // Hololink Internal Reg Initialization // TODO To be removed (not required, can be done by sw)
+    {32'h0300_0210, 32'h004C_4B40}, // i2c timeout
+    {32'h0200_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
+    {32'h0200_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
+    {32'h0200_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
+    {32'h0200_0108, 32'h0000_0064}, // eth_pkt_0 , Eth pkt data plane priority
+
+    {32'h0201_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
+    {32'h0201_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
+    {32'h0201_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
+    {32'h0201_0108, 32'h0000_0064}  // eth_pkt_0 , Eth pkt data plane priority
   };
 
 endpackage: HOLOLINK_pkg
 `endif
-
-
-
-
-

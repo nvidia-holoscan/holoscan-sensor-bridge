@@ -192,7 +192,6 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
         os.remove(archive_filename)
     else:
         logging.warning(f"Archive file {archive_filename} doesn't exist for cleanup")
-    hololink.stop()
 
 
 def manual_enumeration(args):
@@ -216,12 +215,6 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument(
-        "--program",
-        action="store_true",
-        help="Program the board with BIT file present in SPI flash",
-    )
-
-    parser.add_argument(
         "--force",
         action="store_true",
         help="Don't rely on enumeration data for device connection, Use this option when FPGA runs old bit file versions like 2407",
@@ -239,19 +232,10 @@ def main():
         help="IP address of Hololink board",
     )
 
-    subparsers = parser.add_subparsers(help="Subcommands", dest="flash", required=False)
-
-    flash = subparsers.add_parser(
-        "flash",
-        help="Transfer the BIT file to SPI flash.",
-    )
-
-    flash.add_argument(
-        "--yaml-file",
+    parser.add_argument(
+        "--flash",
         type=str,
-        nargs="?",
-        help="Yaml configuration file to load. Defaulted to: scripts/mchp_manifest.yaml",
-        default="scripts/mchp_manifest.yaml",
+        help="Yaml configuration file to load.",
     )
 
     args = parser.parse_args()
@@ -261,12 +245,9 @@ def main():
 
     if not args.flash and not args.program:
         raise Exception(
-            "Choose option 'flash' to transfer bit file to SPI flash memory or choose option '--program' to program FPGA with bit file in SPI flash memory"
+            "Choose option '--flash' to transfer bit file to SPI flash memory"
         )
-    elif args.flash and args.program:
-        raise Exception("Choose either 'flash' option or '--program' option")
-    else:
-        logging.info("Initializing.")
+    logging.info("Initializing.")
 
     if args.force:
         channel_metadata = manual_enumeration(args)
@@ -280,12 +261,12 @@ def main():
     hololink.start()
 
     if args.flash:
-        _spi_flash(SPI_CONN_ADDR, hololink, args.yaml_file, channel_metadata)
-    elif args.program:
+        _spi_flash(SPI_CONN_ADDR, hololink, args.flash, channel_metadata)
         _spi_program(hololink)
         # Wait for FPGA programming to complete and stabilize
         time.sleep(45)
         logging.info("Please power cycle the board to finish programming process")
+    hololink.stop()
 
 
 if __name__ == "__main__":

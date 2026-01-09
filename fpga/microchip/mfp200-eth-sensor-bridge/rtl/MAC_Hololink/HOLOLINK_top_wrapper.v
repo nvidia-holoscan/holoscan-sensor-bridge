@@ -115,7 +115,7 @@ module HOLOLINK_top_wrapper(
 //------------------------------------------------------------------------------
 // Peripheral IF
 //------------------------------------------------------------------------------
-  // SPI Interface, QSPI compatable
+  // SPI Interface, QSPI compatible
   output                       o_spi_csn,
   output                       o_spi_sck,
   input  [3                :0] i_spi_sdio ,

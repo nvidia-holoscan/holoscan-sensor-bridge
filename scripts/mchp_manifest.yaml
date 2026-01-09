@@ -1,11 +1,11 @@
 hololink:
   archive:
-    enrollment_date: '2025-11-19T17:57:14.344333+00:00'
+    enrollment_date: '2026-01-09T15:36:27.990174+00:00'
     version: '2510'
   content:
     PF_ESB_HSB2510_v2025p1.spi:
       filename: PF_ESB_HSB2510_v2025p1.spi
-      md5: 3b86792bd727de0494bdaf911f11f5eb
+      md5: 5d3ec442594cfcbee7fa0bd69bed51d2
       size: 6135712
       url: https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/PF_ESB_HSB2510_v2025p1.zip
   fpga_uuid:

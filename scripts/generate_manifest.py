@@ -205,7 +205,7 @@ def main():
     if clnx_url is not None:
         measure_url(clnx_url, "clnx")
     if mchp_url is not None:
-        measure_url(mchp_url, "mchp")    
+        measure_url(mchp_url, "mchp")
     if stratix_url is not None:
         measure_url(stratix_url, "stratix")
     if eula_url is not None:
