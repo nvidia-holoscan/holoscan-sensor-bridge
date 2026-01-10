@@ -23,8 +23,10 @@
 #include <string>
 
 #include <infiniband/mlx5dv.h>
+#include <unistd.h>
 
 #include <hololink/common/cuda_error.hpp>
+#include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/logging_internal.hpp>
 
 #include "ibv.hpp"
@@ -175,10 +177,7 @@ public:
     Buffer(ibv::ProtectionDomain& protection_domain, size_t size)
         : output_buffer_size_(size)
         , output_buffer_(CudaRDMAAllocate<char>(output_buffer_size_))
-        , memory_region_(protection_domain.register_memory_region(
-              output_buffer_.get(),
-              output_buffer_size_,
-              IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE))
+        , memory_region_(register_dmabuf_memory(protection_domain, output_buffer_.get(), output_buffer_size_))
     {
     }
 
@@ -191,6 +190,14 @@ public:
               payload_size_,
               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE))
     {
+    }
+
+    ~Buffer()
+    {
+        if (dmabuf_fd_ >= 0) {
+            ::close(dmabuf_fd_);
+            dmabuf_fd_ = -1;
+        }
     }
 
     ibv::ScatterGatherElement get_scatter_gather_element()
@@ -228,6 +235,39 @@ public:
     }
 
 private:
+    ibv::MemoryRegion register_dmabuf_memory(ibv::ProtectionDomain& protection_domain, void* addr, size_t size)
+    {
+        int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+
+        // Try to get dmabuf fd from CUDA memory
+        using namespace hololink::common;
+        CUresult cu_result = cuMemGetHandleForAddressRange(
+            (void*)&dmabuf_fd_, reinterpret_cast<CUdeviceptr>(addr),
+            size, CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
+
+        if (cu_result == CUDA_SUCCESS) {
+            // Try to register memory region using dmabuf
+            try {
+                uint64_t iova = reinterpret_cast<uint64_t>(addr);
+                auto mr = protection_domain.register_dmabuf_memory_region(size, iova, dmabuf_fd_, access);
+                HSB_LOG_DEBUG("Successfully registered memory using dmabuf for p={:#x}, size={}", iova, size);
+                return mr;
+            } catch (const std::exception& e) {
+                HSB_LOG_WARN("Failed to register dmabuf memory region ({}), falling back to ibv_reg_mr", e.what());
+                ::close(dmabuf_fd_);
+                dmabuf_fd_ = -1;
+            }
+        } else {
+            HSB_LOG_WARN("Cannot get dmabuf fd for memory region p={} size={}, cu_result={}, falling back to ibv_reg_mr",
+                addr, size, cu_result);
+            dmabuf_fd_ = -1;
+        }
+
+        // Fallback to traditional memory registration
+        HSB_LOG_DEBUG("Using traditional ibv_reg_mr for p={}, size={}", addr, size);
+        return protection_domain.register_memory_region(addr, size, access);
+    }
+
     CudaStream stream_;
     size_t output_buffer_size_;
     CudaUniquePtr<char> output_buffer_;
@@ -235,6 +275,7 @@ private:
     Tensor input_tensor_;
     size_t payload_size_ {};
     ibv::MemoryRegion memory_region_;
+    int dmabuf_fd_ { -1 };
 };
 
 struct RoceTransmitterOp::Resource {
