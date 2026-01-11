@@ -27,6 +27,7 @@ _MODULES = {
     "CsiToBayerOp": "csi_to_bayer",
     "FusaCoeCaptureOp": "fusa_coe_capture",
     "ImageProcessorOp": "image_processor",
+    "ImageDecoderOp": "image_decoder",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
     "IQDecoderOp": "iq_dec",
     "IQEncoderOp": "iq_enc",

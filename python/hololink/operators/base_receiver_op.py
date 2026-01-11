@@ -58,6 +58,7 @@ class BaseReceiverOp(holoscan.core.Operator):
 
     def setup(self, spec):
         logging.info("setup")
+        spec.param("udp_port", 0)
         spec.output("output")
 
     def start(self):
