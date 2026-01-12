@@ -134,7 +134,8 @@ class RealsenseCamD555:
             f"WRITE >> address=0x{int(address):X} set_register(register=0x{int(register):04X}, value=0x{int(value):04X})"
         )
 
-        write_bytes = bytearray(4)
+        buffer_size = reg_size.value + val_size.value
+        write_bytes = bytearray(buffer_size)
         serializer = hololink_module.Serializer(write_bytes)
 
         if reg_size == DataWidth.BITS_32:

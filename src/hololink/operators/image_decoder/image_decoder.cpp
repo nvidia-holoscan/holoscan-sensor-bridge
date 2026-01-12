@@ -153,7 +153,9 @@ void ImageDecoder::start() {
              "prefix_sum_histogram"}));
     
     // Allocate d_hist_ (256KB)
-    cudaMalloc(&d_hist_, sizeof(int) * 0x10000);
+    if (cudaMalloc(&d_hist_, sizeof(int) * 0x10000) != cudaSuccess) {
+        throw std::runtime_error("Failed to allocate histogram buffer");
+    }
 
     // Allocate and upload colormap
     std::vector<float3> colormap = {
@@ -164,8 +166,12 @@ void ImageDecoder::start() {
         {50.f, 0.f, 0.f}      // Dark red
     };
     colormap_size_ = colormap.size();
-    cudaMalloc(&d_colormap_, colormap_size_ * sizeof(float3));
-    cudaMemcpy(d_colormap_, colormap.data(), colormap_size_ * sizeof(float3), cudaMemcpyHostToDevice);
+    if (cudaMalloc(&d_colormap_, colormap_size_ * sizeof(float3)) != cudaSuccess) {
+        throw std::runtime_error("Failed to allocate colormap buffer");
+    }
+    if (cudaMemcpy(d_colormap_, colormap.data(), colormap_size_ * sizeof(float3), cudaMemcpyHostToDevice) != cudaSuccess) {
+        throw std::runtime_error("Failed to copy colormap to device");
+    }
 }
 
 void ImageDecoder::stop() {
