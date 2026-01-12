@@ -633,14 +633,16 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
 
 std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
 {
+    // in_timeout may be nullptr
+    std::shared_ptr<Timeout> timeout = Timeout::default_timeout(in_timeout);
     if (block_enable_) {
-        return read_uint32_block_(address, count, in_timeout, sequence_check);
+        return read_uint32_block_(address, count, timeout, sequence_check);
     } else {
-        return read_uint32_(address, count, in_timeout, sequence_check);
+        return read_uint32_singly_(address, count, timeout, sequence_check);
     }
 }
 
-std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
+std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_singly_(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check)
 {
     std::vector<uint32_t> r(count);
     bool current_sequence_check = sequence_check;
