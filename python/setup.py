@@ -57,6 +57,7 @@ setuptools.setup(
         "hololink/sensors/imx715",
         "hololink/sensors/vb1940",
         "hololink/sensors/ecam0m30tof",
+        "hololink/sensors/d555",
         "tools",
     ],
     ext_modules=[

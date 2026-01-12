@@ -91,6 +91,57 @@ lastly, running SIPL accelerated network python example on AGX Thor:
 $ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_single.json
 ```
 
+## RealSense D555 player example
+
+This example is similar to the IMX274 player example above, using Realsense D555
+camera instead of IMX274. To run the high-speed video player with Realsense D555, in
+the demo container with a ConnectX accelerated network controller,
+
+```sh
+$ python3 examples/linux_d555_player.py
+$ python3 examples/linux_d555_dual_stream.py
+$ python3 examples/linux_d555_peoplenet.py
+```
+
+### Known Limitations
+
+1. **Resolution Changes**: Switching resolutions (not FPS) requires a camera reboot. The first resolution set after reboot will be used.
+
+2. **IP Address Discovery**: The camera IP may not be the default `192.168.0.2`. To discover the actual IP address, run the `hololink-enumerate` tool from within the Docker container:
+
+```sh
+$ hololink-enumerate
+```
+
+The output should display information similar to:
+
+```
+mac_id=98:4F:EE:1A:F4:A9 hsb_ip_version=0x2501 fpga_crc=0xffff ip_address=192.168.11.55 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=70255f4343534c interface=eno1 board=hololink-lite
+mac_id=98:4F:EE:1A:F4:A9 hsb_ip_version=0x2501 fpga_crc=0xffff ip_address=192.168.11.55 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=70255f4343534c interface=eno1 board=hololink-lite
+mac_id=98:4F:EE:1A:F4:A9 hsb_ip_version=0x2501 fpga_crc=0xffff ip_address=192.168.11.55 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=70255f4343534c interface=eno1 board=hololink-lite
+^C
+```
+
+Note the `ip_address` and `interface` fields from the output.
+
+### Host Network Configuration
+
+To configure the host subnet to match the camera's IP address and enable communication:
+
+```sh
+EN0=eno1  # Replace with your interface name from hololink-enumerate output
+sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.11.101/24
+sudo nmcli connection up hololink-$EN0
+```
+
+Replace `192.168.11.101/24` with an IP address in the same subnet as your camera's IP address (e.g., if camera is `192.168.11.55`, use `192.168.11.101/24`).
+
+After configuration, verify connectivity by pinging the camera:
+
+```sh
+$ ping 192.168.11.55  # Replace with your camera's IP address
+```
+
 ## Running the TAO PeopleNet example
 
 The tao-peoplenet example demonstrates running inference on a live video feed.

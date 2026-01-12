@@ -134,7 +134,7 @@ public:
      * Configure the receiver to handle this traffic; this
      * is useful when using, say, multicast.
      */
-    void configure_socket(int socket_fd);
+    void configure_socket(int socket_fd, uint16_t udp_port = 0);
 
     /**
      * Configure the given metadata to exchange data from the
