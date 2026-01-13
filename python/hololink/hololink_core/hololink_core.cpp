@@ -296,6 +296,7 @@ PYBIND11_MODULE(_hololink_core, m)
 
     m.attr("UDP_PACKET_SIZE") = UDP_PACKET_SIZE;
     m.attr("PAGE_SIZE") = PAGE_SIZE;
+    m.attr("DEFAULT_MTU") = DEFAULT_MTU;
 
     m.def("round_up", &round_up, "value"_a, "alignment"_a);
 

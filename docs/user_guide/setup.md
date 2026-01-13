@@ -96,6 +96,7 @@ system.
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
   sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
+  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096
   sudo nmcli connection up hololink-$EN0
   ```
 
@@ -144,6 +145,7 @@ system.
   sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
   sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
   sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
+  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4096
   sudo nmcli connection up hololink-$EN1
   ```
 
@@ -329,6 +331,7 @@ which is the RJ45 connector on the AGX Orin.
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
   sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
+  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096
   sudo nmcli connection up hololink-$EN0
   ```
 
@@ -375,6 +378,7 @@ which is the RJ45 connector on the AGX Orin.
   sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
   sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
   sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
+  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4096
   sudo nmcli connection up hololink-$EN1
   ```
 

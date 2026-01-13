@@ -38,6 +38,9 @@ constexpr uint32_t UDP_PACKET_SIZE = 10240;
 // All our I/O are aligned to this page size.
 constexpr uint32_t PAGE_SIZE = 128;
 
+// The default MTU comes from the TCP/IP specification.
+constexpr uint32_t DEFAULT_MTU = 1500;
+
 // Round up
 size_t round_up(size_t value, size_t alignment);
 
