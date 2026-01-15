@@ -427,6 +427,25 @@ MemoryRegion ProtectionDomain::register_memory_region(void* addr, size_t length,
     return MemoryRegion(reg);
 }
 
+MemoryRegion ProtectionDomain::register_dmabuf_memory_region(size_t length, uint64_t iova, int fd, int access)
+{
+    HSB_LOG_DEBUG("Registering dmabuf memory(fd={}, iova={:#x}): {} bytes", fd, iova, length);
+    auto reg = ibv_reg_dmabuf_mr(ptr_, 0, length, iova, fd, access);
+    if (!reg) {
+        switch (errno) {
+        case EINVAL:
+            THROW_ERROR("Failed to register DMA-BUF Memory Region with iova, Invalid access value");
+        case ENOMEM:
+            THROW_ERROR("Failed to register DMA-BUF Memory Region with iova, Not enough resources "
+                        "(either in operating system or in RDMA device) to complete "
+                        "this operation");
+        default:
+            THROW_ERROR("Failed to register DMA-BUF Memory Region with iova, " << strerror(errno));
+        }
+    }
+    return MemoryRegion(reg);
+}
+
 QueuePair ProtectionDomain::create_queue_pair(QueuePair::InitAttr& init_attr)
 {
     auto qp = ibv_create_qp(ptr_, &init_attr);

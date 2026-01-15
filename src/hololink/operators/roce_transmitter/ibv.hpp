@@ -129,6 +129,8 @@ struct ProtectionDomain {
 
     MemoryRegion register_memory_region(void* addr, size_t length, int access);
 
+    MemoryRegion register_dmabuf_memory_region(size_t length, uint64_t iova, int fd, int access);
+
     QueuePair create_queue_pair(QueuePair::InitAttr& init_attr);
 
     friend void swap(ProtectionDomain& lhs, ProtectionDomain& rhs) noexcept;
