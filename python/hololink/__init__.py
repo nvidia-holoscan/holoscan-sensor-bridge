@@ -117,6 +117,7 @@ from ._hololink import (
     set_hsb_log_level,
 )
 from .hololink_core import (
+    DEFAULT_MTU,
     PAGE_SIZE,
     UDP_PACKET_SIZE,
     ArpWrapper,
@@ -143,6 +144,7 @@ __all__ = [
     "CTRL_EVT_SW_EVENT",
     "CPNX_SPI_BUS",
     "CsiConverter",
+    "DEFAULT_MTU",
     "DP_ADDRESS_0",
     "DP_ADDRESS_1",
     "DP_ADDRESS_2",

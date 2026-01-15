@@ -90,6 +90,15 @@ public:
     static void use_broadcast(Metadata& metadata, uint16_t port);
 
     /**
+     * Suggest an MTU for use with this data channel; the
+     * implementation is allowed to do any of these:
+     *  - use the specific value you've passed here,
+     *  - adjust that value based on e.g. GPU page size, NIC constraints, or RDMA requirements
+     *  - stick with it's default value, ignoring this suggestion entirely
+     */
+    static void use_mtu(Metadata& metadata, uint32_t mtu);
+
+    /**
      * @brief
      *
      * @return std::shared_ptr<Hololink>

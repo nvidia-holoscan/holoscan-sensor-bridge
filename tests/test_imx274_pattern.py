@@ -479,6 +479,13 @@ expected_results = []
 expected_results.extend(expected_4k_results)
 expected_results.extend(expected_1080p_results)
 
+mtus = [
+    None,  # Use the datachannel default setting
+    hololink_module.DEFAULT_MTU,
+    330,  # produces a 2-page, 256 byte payload.
+    4096,
+]
+
 
 def run_test(
     headless,
@@ -711,6 +718,77 @@ def test_imx274_pattern(
         pattern_right,
         expected_right,
         scheduler,
+    )
+
+
+@pytest.mark.skip_unless_imx274
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right",  # noqa: E501
+    [expected_4k_results[0]],  # No need to do lots of these
+)
+@pytest.mark.parametrize(
+    "ibv_name_left, ibv_name_right",
+    [
+        (sys_ibv_name_left, sys_ibv_name_right),
+    ],
+)
+@pytest.mark.parametrize(
+    "hololink_left, hololink_right",
+    [
+        ("192.168.0.2", "192.168.0.3"),
+    ],
+)
+@pytest.mark.parametrize(
+    "mtu_left",
+    mtus,
+)
+@pytest.mark.parametrize(
+    "mtu_right",
+    mtus,
+)
+def test_imx274_pattern_with_various_mtus(
+    camera_mode_left,
+    pattern_left,
+    expected_left,
+    camera_mode_right,
+    pattern_right,
+    expected_right,
+    headless,
+    hololink_left,
+    hololink_right,
+    ibv_name_left,
+    ibv_name_right,
+    mtu_left,
+    mtu_right,
+):
+    # Get a handle to data sources
+    channel_metadata_left = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_left
+    )
+    if mtu_left is not None:
+        hololink_module.DataChannel.use_mtu(channel_metadata_left, mtu_left)
+    channel_metadata_right = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_right
+    )
+    if mtu_right is not None:
+        hololink_module.DataChannel.use_mtu(channel_metadata_right, mtu_right)
+    ibv_port_left, ibv_port_right = 1, 1
+    run_test(
+        headless,
+        channel_metadata_left,
+        ibv_name_left,
+        ibv_port_left,
+        camera_mode_left,
+        pattern_left,
+        expected_left,
+        channel_metadata_right,
+        ibv_name_right,
+        ibv_port_right,
+        camera_mode_right,
+        pattern_right,
+        expected_right,
+        scheduler="default",
     )
 
 
