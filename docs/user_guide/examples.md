@@ -17,7 +17,7 @@ DGX Spark may also be used.
   Holoscan sensor bridge container are built with the appropriate iGPU or dGPU setting,
   the application code itself does not change.
 - Examples starting with "sipl\_" use the
-  [SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
+  [SIPL](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
   accelerated network receiver operator and require MGBE SmartNIC controller and are
   unique to AGX Thor.
 
@@ -374,7 +374,7 @@ In this example, the application will check for CRC32 frame errors every 50 fram
 
 For systems with RDMA-capable network hardware (ConnectX NICs) such as IGX Orin,
 `examples/imx274_frame_validation.py` provides high-performance frame validation with
-GPU-accelerated CRC checking using nvcomp 5.0. This example uses the accelerated network
+GPU-accelerated CRC checking using nvCOMP 5.0. This example uses the accelerated network
 receiver operator and requires ConnectX SmartNIC controllers.
 
 Before running the app,
@@ -385,13 +385,10 @@ your setup, then use the following command:
 $ python3 examples/imx274_frame_validation.py
 ```
 
-Unlike the CPU-based CRC validation in the Linux version, GPU-based CRC using nvcomp 5.0
-is fast enough to validate every frame by default. CRC validation is enabled by default
-with `--crc-frame-check 1`. To disable CRC validation entirely:
-
-```sh
-$ python3 examples/imx274_frame_validation.py --crc-frame-check 0
-```
+Unlike the CPU-based CRC validation in the Linux version,
+[GPU-based CRC using nvCOMP 5.0](https://docs.nvidia.com/cuda/nvcomp/crc32.html) is fast
+enough to validate every frame by default. CRC validation is enabled by default with
+`--crc-frame-check 1`. To disable CRC validation entirely, use `--crc-frame-check 0`.
 
 At the end of execution, the application provides a CRC validation report showing total
 frames processed, CRC errors detected, and success rate, followed by detailed
@@ -402,6 +399,17 @@ To validate the stereo camera configuration:
 
 ```sh
 $ python3 examples/stereo_imx274_frame_validation.py
+```
+
+#### Performance
+
+The nvCOMP CRC calculation performance on IGX-dGPU for single-camera configuration
+(measured over 1000 frames):
+
+```text
+Minimum: 0.275 ms
+Maximum: 0.390 ms
+Average: 0.295 ms
 ```
 
 **Note on Startup Performance:** Runtime performance of an HSDK pipeline at startup can

@@ -57,6 +57,7 @@ RoceReceiver::RoceReceiver(
     , peer_ip_(strdup(peer_ip))
     , ib_qp_(NULL)
     , ib_mr_(NULL)
+    , dmabuf_fd_(-1)
     , ib_cq_(NULL)
     , ib_pd_(NULL)
     , ib_context_(NULL)
@@ -299,13 +300,28 @@ bool RoceReceiver::start()
         return false;
     }
 
-    // Provide access to the frame buffer
-    int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-    ib_mr_ = ibv_reg_mr_iova(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, 0, access);
-    if (ib_mr_ == NULL) {
-        HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
-        free_ib_resources();
-        return false;
+    // Get dmabuf fd from CUDA memory
+    CUresult cu_result = cuMemGetHandleForAddressRange(
+        (void*)&dmabuf_fd_, cu_buffer_, cu_buffer_size_,
+        CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
+    if (cu_result == CUDA_SUCCESS) {
+        // Provide access to the frame buffer
+        int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+        ib_mr_ = ibv_reg_dmabuf_mr(ib_pd_, 0, cu_buffer_size_, 0, dmabuf_fd_, access);
+        if (ib_mr_ == NULL) {
+            HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
+            free_ib_resources();
+            return false;
+        }
+    } else {
+        // Provide access to the frame buffer
+        int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+        ib_mr_ = ibv_reg_mr_iova(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, 0, access);
+        if (ib_mr_ == NULL) {
+            HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
+            free_ib_resources();
+            return false;
+        }
     }
 
     rkey_ = ib_mr_->rkey;
@@ -653,6 +669,11 @@ void RoceReceiver::free_ib_resources()
         ib_mr_ = NULL;
     }
 
+    if (dmabuf_fd_ >= 0) {
+        ::close(dmabuf_fd_);
+        dmabuf_fd_ = -1;
+    }
+
     if (ib_cq_ != NULL) {
         if (ibv_destroy_cq(ib_cq_)) {
             HSB_LOG_ERROR("ibv_destroy_cq failed, errno={}.", errno);
@@ -787,8 +808,8 @@ std::mutex& RoceReceiver::get_lock()
 
 uint64_t RoceReceiver::external_frame_memory()
 {
-    // If we didn't use ibv_reg_mr_iova above, we'd return
-    // cu_buffer_ here; but ibv_reg_mr_iova always adds it's
+    // If we didn't use ibv_reg_dmabuf_mr above, we'd return
+    // cu_buffer_ here; but ibv_reg_dmabuf_mr always adds it's
     // address to the address received from the peripheral.
     return 0;
 }

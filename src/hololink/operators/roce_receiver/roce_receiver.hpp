@@ -132,6 +132,7 @@ protected:
     char* peer_ip_;
     struct ibv_qp* ib_qp_;
     struct ibv_mr* ib_mr_;
+    int dmabuf_fd_;
     struct ibv_cq* ib_cq_;
     struct ibv_pd* ib_pd_;
     struct ibv_context* ib_context_;

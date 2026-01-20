@@ -1,16 +1,16 @@
 # UDDF (SIPL) Drivers
 
 When accessing Holoscan Sensor Bridge via
-[SIPL](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html),
+[SIPL](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html),
 such as when using the `SIPLCapture` operator and/or running the `sipl_player` example
 application on a supported AGX Thor platform, the sensor drivers that are used are
 provided by external driver libraries written against the
-[Unified Device Driver Framework (UDDF)](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/HSL-UDDF-Overview.html);
+[Unified Device Driver Framework (UDDF)](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/HSL-UDDF-Overview.html);
 these drivers are not provided by the HSB repo.
 
 NVIDIA's reference UDDF drivers are installed with JetPack as prebuilt binaries, and the
 source code for these drivers are also included with the SIPL Camera SDK package. For
-example, for the `vb1940` reference driver included with JetPack 7.0:
+example, for the `vb1940` reference driver included with JetPack 7.1:
 
 - The prebuilt driver library is installed to
   `/usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so`
@@ -49,7 +49,7 @@ UDDF driver's version of Hololink core with the latest in the HSB repo (e.g. fro
 `src/hololink/core`) and then rebuilding/installing using the commands above.
 
 Note that Hololink compatibility is only guaranteed with the Hololink tag corresponding
-to the JetPack release that is being used (i.e. `JetPack_7.0`); that is the version of
+to the JetPack release that is being used (i.e. `JetPack_7.1`); that is the version of
 the code as it was originally copied to the UDDF driver code. Newer versions of Hololink
 may not be compatible as-is and may require other updates to be made to the UDDF driver
 code.
@@ -67,6 +67,6 @@ interactions with HSB. Any updates to `hololink::core` within the driver may res
 corresponding changes to `HsbTransportDriver`.
 
 For more information on SIPL and how to write and use UDDF drivers, see the
-[Camera Development using CoE](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment.html)
+[Camera Development using CoE](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment.html)
 section of the
-[Jetson Linux Developer Guide](https://docs.nvidia.com/jetson/archives/r38.2.1/DeveloperGuide/index.html).
+[Jetson Linux Developer Guide](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/index.html).

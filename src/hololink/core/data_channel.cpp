@@ -117,6 +117,11 @@ void DataChannel::initialize(const Metadata& metadata, std::shared_ptr<Hololink>
     metadata["broadcast_port"] = static_cast<int64_t>(port);
 }
 
+/* static */ void DataChannel::use_mtu(Metadata& metadata, uint32_t mtu)
+{
+    metadata["mtu"] = static_cast<int64_t>(mtu);
+}
+
 std::shared_ptr<Hololink> DataChannel::hololink() const { return hololink_; }
 
 const std::string& DataChannel::peer_ip() const { return peer_ip_; }
@@ -127,24 +132,32 @@ void DataChannel::authenticate(uint32_t qp_number, uint32_t rkey)
     rkey_ = rkey;
 }
 
-static uint32_t compute_payload_size(uint32_t frame_size, uint32_t header_size)
+static uint32_t compute_payload_size(uint32_t frame_size, uint32_t overhead, uint32_t mtu)
 {
-    const uint32_t mtu = 1472; // TCP/IP illustrated vol 1 (1994), section 11.6, page 151
     const uint32_t page_size = hololink::core::PAGE_SIZE;
-    uint32_t payload_size = ((mtu - header_size + page_size - 1) / page_size) * page_size;
+    // Round down
+    if ((overhead + page_size) >= mtu) {
+        throw std::runtime_error(fmt::format("mtu={} is too small.", mtu));
+    }
+    uint32_t payload_size = ((mtu - overhead) / page_size) * page_size;
     if (payload_size > mtu) {
-        /* Max payload size is 1408 bytes. */
-        payload_size = 1408;
+        throw std::runtime_error(fmt::format("payload_size={} and mtu={}.", payload_size, mtu));
     }
     const uint64_t packets = (frame_size + payload_size - 1) / payload_size; // round up
     HSB_LOG_INFO(
-        "header_size={} payload_size={} packets={}", header_size, payload_size, packets);
+        "mtu={} overhead={} payload_size={} packets={}", mtu, overhead, payload_size, packets);
     return payload_size;
 }
 
-void DataChannel::configure_common(uint32_t frame_size, uint32_t header_size, uint32_t local_data_port)
+void DataChannel::configure_common(uint32_t frame_size, uint32_t overhead, uint32_t local_data_port)
 {
-    uint32_t payload_size = compute_payload_size(frame_size, header_size);
+    // Get MTU from metadata if specified
+    uint32_t mtu = hololink::core::DEFAULT_MTU;
+    auto mtu_opt = enumeration_metadata_.get<int64_t>("mtu");
+    if (mtu_opt) {
+        mtu = static_cast<uint32_t>(mtu_opt.value());
+    }
+    uint32_t payload_size = compute_payload_size(frame_size, overhead, mtu);
 
     const std::string& peer_ip = this->peer_ip();
     auto [local_ip, local_device, local_mac] = core::local_ip_and_mac(peer_ip);
@@ -215,8 +228,8 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     // sure we're not transmitting anything while we update.
     hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
 
-    const uint32_t header_size = 78;
-    configure_common(frame_size, header_size, local_data_port);
+    const uint32_t roce_overhead = 74;
+    configure_common(frame_size, roce_overhead, local_data_port);
     hololink_->write_uint32(vp_address_ + DP_QP, qp_number_);
     hololink_->write_uint32(vp_address_ + DP_RKEY, rkey_);
     hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, (pages > 0) ? PAGES(frame_memory) : 0);
@@ -247,11 +260,11 @@ void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pix
     // sure we're not transmitting anything while we update.
     hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
 
-    size_t header_size = 46U; // 14 Ethernet + 12 avtpdu + 12 gisf + 8 coe
+    size_t coe_overhead = 46U; // 14 Ethernet + 12 avtpdu + 12 gisf + 8 coe
     if (vlan_enabled) {
-        header_size += 4U; // 4 VLAN header
+        coe_overhead += 4U; // 4 VLAN header
     }
-    configure_common(frame_size, header_size);
+    configure_common(frame_size, coe_overhead);
     const uint32_t enable_1722B = 1;
     uint32_t line_threshold_log2 = 0;
     while (true) {

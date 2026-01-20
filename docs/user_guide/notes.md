@@ -141,3 +141,43 @@ Orin devkit** 10G Ethernet port:
 All Cables and adapters are available for purchase online - please note that the links
 above are **only for demonstration purposes** and should not be considered as a purchase
 recommendation.
+
+## MTU Settings
+
+A new channel enumeration metadata parameter "mtu" is added, which can be adjusted by
+calling the `DataChannel.use_mtu()` method. By default, the 1500 Ethernet MTU is used.
+If the application suggests a different value, then the code will do one of these
+things:
+
+- use the specific value you've passed in
+- use an adjusted value based on e.g. GPU page size, NIC constraints, or RDMA
+  requirements
+- or stick with its default value, ignoring this suggestion entirely
+
+If a new size is used, then it's guaranteed to be no larger than the suggested MTU. Note
+that if HSB sends packets with an MTU that is outside the receiver's acceptable size
+(e.g. due to hardware or OS configured limits) then it's likely that no data plane
+traffic would be observed. This also applies for data plane packets traversing switches
+or other network interconnects: all the components in the data path must support the MTU
+being requested.
+
+Configuring the receiver to accept larger MTUs usually require OS level configuration of
+MTU on the receiving network interface. [Host setup instructions](setup.html) now
+include recommendations to execute e.g.
+`sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096`, for all HSB
+connected interfaces, to allow for a larger receiver MTU. Note that you must
+reinitialize that network interface (e.g. `sudo nmcli con down hololink-$EN0` and
+`sudo nmcli con up hololink-$EN0`) for that setting to take effect.
+
+ConnectX-7, included in IGX configurations, only supports a maximum MTU of 4096--it does
+not support the industry standard 9000 byte jumbo size. For this reason, larger packets
+than 4k have not been tested. AGX Orin's network interface doesn't support an MTU larger
+than 1500.
+
+When choosing an MTU value, note that HSB data plane packets include some overhead: 74
+bytes for ROCE or 46 for P1722B COE, and the remainder of the MTU is available for
+payload. If you want 256 bytes of payload in a ROCE configuration, you need to specify
+an MTU of 330, which is the payload size plus the 74 bytes of overhead. HSB host code
+normally reduces the requested MTU so that the payload size aligns with GPU cache pages
+(128 bytes); so payload sizes that aren't even multiples of 128 are usually reduced to
+meet that alignment.

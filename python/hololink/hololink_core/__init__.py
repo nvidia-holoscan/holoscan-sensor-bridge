@@ -28,6 +28,7 @@ if hasattr(sys, "getdlopenflags"):
     sys.setdlopenflags(os.RTLD_LAZY | os.RTLD_GLOBAL)
 
 from ._hololink_core import (
+    DEFAULT_MTU,
     PAGE_SIZE,
     UDP_PACKET_SIZE,
     ArpWrapper,
@@ -48,6 +49,7 @@ if hasattr(sys, "getdlopenflags"):
 __all__ = [
     "ArpWrapper",
     "Deserializer",
+    "DEFAULT_MTU",
     "PAGE_SIZE",
     "Reactor",
     "Serializer",
