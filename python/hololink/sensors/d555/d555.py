@@ -79,12 +79,14 @@ class RealsenseCamD555:
 
         data_high = (self._stream_id.value << 8) | RealSense_StreamCommand.SET_PROFILE.value
         data_low = self._stream_profile
-        self.set_register(address=MUX_I2C_ADDR, register=data_low, value=data_high,\
+        self.set_register(
+            address=MUX_I2C_ADDR, register=data_low, value=data_high,
             reg_size=DataWidth.BITS_16, val_size=DataWidth.BITS_16, endian=Endianness.LITTLE)
 
         data_high = (self._stream_id.value << 8) | RealSense_StreamCommand.START_STREAM.value
         data_low = 0
-        self.set_register(address=MUX_I2C_ADDR, register=data_low, value=data_high,\
+        self.set_register(
+            address=MUX_I2C_ADDR, register=data_low, value=data_high,
             reg_size=DataWidth.BITS_16, val_size=DataWidth.BITS_16, endian=Endianness.LITTLE)
 
         return True
@@ -94,7 +96,8 @@ class RealsenseCamD555:
         logging.info("RealSenseCam: stop_camera_stream()")
         data_high = (self._stream_id.value << 8) | RealSense_StreamCommand.STOP_STREAM.value
         data_low = 0
-        self.set_register(address=MUX_I2C_ADDR, register=data_low, value=data_high,\
+        self.set_register(
+            address=MUX_I2C_ADDR, register=data_low, value=data_high,
             reg_size=DataWidth.BITS_16, val_size=DataWidth.BITS_16, endian=Endianness.LITTLE)
 
 
@@ -164,14 +167,13 @@ class RealsenseCamD555:
         elif val_size == DataWidth.BITS_8:
             serializer.append_uint8(value)
 
-
-        reg_data_buffer_ =  self._i2c_controller_address + 16 # Offset for register data buffer
-        value = int.from_bytes(write_bytes[: serializer.length()], byteorder='little') 
-        self._hololink.write_uint32(reg_data_buffer_, value, timeout=None)
+        reg_data_buffer = self._i2c_controller_address + 16  # Offset for register data buffer
+        packed_value = int.from_bytes(write_bytes[: serializer.length()], byteorder='little')
+        self._hololink.write_uint32(reg_data_buffer, packed_value, timeout=None)
 
 
     def configure_converter(self, converter):
-        logging.debug(f"[Realsense] Configuring converter")
+        logging.debug("[Realsense] Configuring converter")
 
         converter.configure(
             self._width,
