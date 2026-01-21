@@ -41,7 +41,7 @@ target_compile_options(sig_gen PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
 
 # If CUDA has multiple include dirs, use the first.
 list(GET CUDAToolkit_INCLUDE_DIRS 0 CUDA_TOOLKIT_INCLUDE_PATH)
-target_compile_definitions(sig_gen PUBLIC CUDA_TOOLKIT_INCLUDE_PATH="${CUDA_TOOLKIT_INCLUDE_PATH}")
+target_compile_definitions(sig_gen PUBLIC CUDA_TOOLKIT_INCLUDE_PATHS="${CUDA_TOOLKIT_INCLUDE_PATH}:${_libcudacxx_INCLUDE_DIR}")
 
 target_link_libraries(sig_gen
   PRIVATE
