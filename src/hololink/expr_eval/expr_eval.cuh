@@ -115,7 +115,7 @@ class Parser {
   /**
    * To use the curand (random) functions, the path to cuda toolkit include folder should be provided
    */
-  void set_cuda_toolkit_include_path(const std::string& cuda_toolkit_include_path);
+  void set_cuda_toolkit_include_paths(const std::string& cuda_toolkit_include_paths);
 
  private:
   Token current_token() const;  // Returns the current token
@@ -151,7 +151,7 @@ class Parser {
 
   size_t current_token_index_;
   Tokens tokens_;
-  std::string cuda_toolkit_include_path_;
+  std::string cuda_toolkit_include_paths_;
 };
 
 }  // namespace hololink::expr_eval

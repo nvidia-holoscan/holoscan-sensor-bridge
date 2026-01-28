@@ -101,7 +101,7 @@ PYBIND11_MODULE(_sig_gen, m)
             "sampling_interval"_a,
             "in_phase"_a,
             "quadrature"_a,
-            "cuda_toolkit_include_path"_a = CUDA_TOOLKIT_INCLUDE_PATH,
+            "cuda_toolkit_include_path"_a = CUDA_TOOLKIT_INCLUDE_PATHS,
             "name"_a);
 
 } // PYBIND11_MODULE
