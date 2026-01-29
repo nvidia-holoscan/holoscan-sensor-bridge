@@ -168,13 +168,9 @@ void FusaCoeCaptureOp::stop()
 void FusaCoeCaptureOp::acquire_buffer_thread_func()
 {
     while (in_flight_captures_.size() > 0) {
-        // Use a reasonably short timeout here so that we don't block too
-        // long when thread termination is requested.
-        uint32_t timeout_ms = 100;
-
         // Acquire the next capture.
         auto buffer = in_flight_captures_.front();
-        auto status = coe_handler_->getCaptureStatus(buffer->sci_buf_, timeout_ms);
+        auto status = coe_handler_->getCaptureStatus(buffer->sci_buf_, timeout_.get());
         if (status != NvFusaCaptureStatus::OK) {
             throw std::runtime_error(fmt::format("CoE capture failed (error = {})", static_cast<int>(status)));
         }
