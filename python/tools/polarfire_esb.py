@@ -243,7 +243,7 @@ def main():
 
     # Get a handle to the Hololink device
 
-    if not args.flash and not args.program:
+    if not args.flash:
         raise Exception(
             "Choose option '--flash' to transfer bit file to SPI flash memory"
         )

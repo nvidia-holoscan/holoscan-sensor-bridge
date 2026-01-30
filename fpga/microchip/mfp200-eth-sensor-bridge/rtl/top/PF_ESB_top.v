@@ -212,11 +212,11 @@ wire          VCC_net;
 // Bus Interface Nets Declarations - Unequal Pin Widths
 //--------------------------------------------------------------------
 wire   [3:0]  IMX477_IF_TOP_0_BIF_1_TUSER;
-wire   [0:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0;
-wire   [0:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0;
+wire   [1:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0;
+wire   [1:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0;
 wire   [3:0]  IMX477_IF_TOP_1_BIF_1_TUSER;
-wire   [0:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0;
-wire   [0:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0;
+wire   [1:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0;
+wire   [1:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0;
 //--------------------------------------------------------------------
 // Constant assignments
 //--------------------------------------------------------------------
@@ -260,11 +260,11 @@ assign pps_stretch_o          = pps_stretch_o_net_1;
 //--------------------------------------------------------------------
 // Bus Interface Nets Assignments - Unequal Pin Widths
 //--------------------------------------------------------------------
-assign IMX477_IF_TOP_0_BIF_1_TUSER_0 = { IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0 };
-assign IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0 = IMX477_IF_TOP_0_BIF_1_TUSER[0:0];
+assign IMX477_IF_TOP_0_BIF_1_TUSER_0 = { IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0 };
+assign IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0 = IMX477_IF_TOP_0_BIF_1_TUSER[1:0];
 
-assign IMX477_IF_TOP_1_BIF_1_TUSER_0 = { IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0 };
-assign IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0 = IMX477_IF_TOP_1_BIF_1_TUSER[0:0];
+assign IMX477_IF_TOP_1_BIF_1_TUSER_0 = { IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0 };
+assign IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0 = IMX477_IF_TOP_1_BIF_1_TUSER[1:0];
 
 //--------------------------------------------------------------------
 // Component instances

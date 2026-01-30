@@ -76,12 +76,12 @@ input         REF_CLK_PAD_P;
 input  [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 input  [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 input         SIF_TARGET_0_i_sif_axis_tlast_0;
-input  [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+input  [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 input         SIF_TARGET_0_i_sif_axis_tvalid_0;
 input  [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 input  [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 input         SIF_TARGET_1_i_sif_axis_tlast_1;
-input  [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+input  [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 input         SIF_TARGET_1_i_sif_axis_tvalid_1;
 input         i_sif_clk;
 //--------------------------------------------------------------------
@@ -202,13 +202,13 @@ wire   [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 wire   [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 wire          SIF_TARGET_0_i_sif_axis_tlast_0;
 wire          SIF_TARGET_0_TREADY;
-wire   [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+wire   [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 wire          SIF_TARGET_0_i_sif_axis_tvalid_0;
 wire   [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 wire   [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 wire          SIF_TARGET_1_i_sif_axis_tlast_1;
 wire          SIF_TARGET_1_TREADY;
-wire   [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+wire   [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 wire          SIF_TARGET_1_i_sif_axis_tvalid_1;
 wire          SS;
 wire          CAM2_TRNG_RSTN_net_1;
@@ -498,7 +498,7 @@ MAC_BaseR MAC_BaseR_0(
         .LANE0_TX_CLK_STABLE               ( MAC_BaseR_0_LANE0_TX_CLK_STABLE ),
         .AXI4S_INITR_AXI4S_DT_INITR_TDATA  ( MAC_BaseR_0_AXI4S_INITR_TDATA ),
         .AXI4S_INITR_AXI4S_DT_INITR_TKEEP  ( MAC_BaseR_0_AXI4S_INITR_TKEEP ),
-        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_0_AXI4S_INITR_TUSER )
+        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_0_AXI4S_INITR_TUSER ) 
         );
 
 //--------MAC_BaseR
@@ -529,7 +529,7 @@ MAC_BaseR MAC_BaseR_1(
         .LANE0_TX_CLK_STABLE               ( MAC_BaseR_1_LANE0_TX_CLK_STABLE ),
         .AXI4S_INITR_AXI4S_DT_INITR_TDATA  ( MAC_BaseR_1_AXI4S_INITR_TDATA ),
         .AXI4S_INITR_AXI4S_DT_INITR_TKEEP  ( MAC_BaseR_1_AXI4S_INITR_TKEEP ),
-        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_1_AXI4S_INITR_TUSER )
+        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_1_AXI4S_INITR_TUSER ) 
         );
 
 //--------PF_CCC_C1
@@ -541,7 +541,7 @@ PF_CCC_C1 PF_CCC_C1_0(
         .OUT1_FABCLK_0 ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
         .OUT2_FABCLK_0 ( PF_CCC_C1_0_OUT2_FABCLK_0 ),
         .OUT3_FABCLK_0 ( OUT3_FABCLK_0_net_0 ),
-        .PLL_LOCK_0    ( PLL_LOCK_0_net_0 )
+        .PLL_LOCK_0    ( PLL_LOCK_0_net_0 ) 
         );
 
 //--------PF_SYSTEM_SERVICES_C0
@@ -562,7 +562,7 @@ PF_SYSTEM_SERVICES_C0 PF_SYSTEM_SERVICES_C0_0(
         .SYSSERV_INIT_REQ (  ),
         .APBS_PREADY      ( CoreAPB3_C1_0_APBmslave1_PREADY ),
         .APBS_PSLVERR     ( CoreAPB3_C1_0_APBmslave1_PSLVERR ),
-        .APBS_PRDATA      ( CoreAPB3_C1_0_APBmslave1_PRDATA )
+        .APBS_PRDATA      ( CoreAPB3_C1_0_APBmslave1_PRDATA ) 
         );
 
 //--------PF_XCVR_REF_CLK_C0
@@ -581,7 +581,7 @@ pps_stretch pps_stretch_0(
         .rstn_i        ( CORERESET_PF_C1_0_FABRIC_RESET_N ),
         .pps_i         ( HoloLink_SD_0_o_pps ),
         // Outputs
-        .pps_stretch_o ( pps_stretch_o_net_0 )
+        .pps_stretch_o ( pps_stretch_o_net_0 ) 
         );
 
 

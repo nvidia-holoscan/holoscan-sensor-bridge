@@ -56,18 +56,18 @@ package HOLOLINK_pkg;
 
   `define SENSOR_RX_IF_INST  2                  // Sensor interface instantiation number
   //----------------------------------------------------------------------------------
-  //If no Sensor RX Interfaces are used, then comment out "`define SENSOR_RX_IF_INST"
+  //If no Sensor RX Interfaces are used, then comment out "`define SENSOR_RX_IF_INST" 
   //This will remove Sensor RX IF I/Os from HOLOLINK_top module.
   //The same applies for "SENSOR_TX_IF_INST", "SPI_INST", and "I2C_INST" definitions.
   //----------------------------------------------------------------------------------
 
   `ifdef SENSOR_RX_IF_INST
-    //`define SIF_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up.
+    //`define SIF_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up. 
 
     localparam integer  SIF_RX_WIDTH        [`SENSOR_RX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH};
     //--------------------------------------------------------------------------------
     // Sensor RX Packetizer Parameters
-    // If RX_PACKETIZER_EN is set to 0, then Packetizer is disabled for that Sensor RX interface.
+    // If RX_PACKETIZER_EN is set to 0, then Packetizer is disabled for that Sensor RX interface. 
     // Example of how array index matches to Sensor is:
     //                    {Sensor[1], Sensor[0]}
     // RX_PACKETIZER_EN = {        1,         1}
@@ -87,7 +87,7 @@ package HOLOLINK_pkg;
 
   `ifdef SENSOR_TX_IF_INST
     localparam integer  SIF_TX_WIDTH        [`SENSOR_TX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH};
-    localparam integer  SIF_TX_BUF_SIZE     [`SENSOR_TX_IF_INST-1:0] = '{default : 4096};          // Define buffer size for each interface.
+    localparam integer  SIF_TX_BUF_SIZE     [`SENSOR_TX_IF_INST-1:0] = '{default : 4096};          // Define buffer size for each interface. 
   `endif
 
 //-----------------------------------------------------
@@ -125,25 +125,20 @@ package HOLOLINK_pkg;
 // established between the FPGA and the Host
 //------------------------------------------------------------------------------
 
-  `define N_INIT_REG 9
+  `define N_INIT_REG 1
 
   localparam logic [63:0] init_reg [`N_INIT_REG] = '{
     // 32b Addr   | 32b Data
     //-----------------------------------------------
     // Add register writes to Ethernet MAC/PCS here
     //-----------------------------------------------
-    // Hololink Internal Reg Initialization // TODO To be removed (not required, can be done by sw)
-    {32'h0300_0210, 32'h004C_4B40}, // i2c timeout
-    {32'h0200_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
-    {32'h0200_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
-    {32'h0200_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
-    {32'h0200_0108, 32'h0000_0064}, // eth_pkt_0 , Eth pkt data plane priority
-
-    {32'h0201_0020, 32'h0000_2000}, // inst_dec_0, ecb_udp_port
-    {32'h0201_0304, 32'h0000_05CE}, // dp_pkt_0  , dp_pkt_len
-    {32'h0201_0308, 32'h0000_3000}, // dp_pkt_0  , dp_pkt_fpga_udp_port
-    {32'h0201_0108, 32'h0000_0064}  // eth_pkt_0 , Eth pkt data plane priority
+    {32'h0300_0210, 32'h004C_4B40} // i2c timeout
   };
 
 endpackage: HOLOLINK_pkg
 `endif
+
+
+
+
+

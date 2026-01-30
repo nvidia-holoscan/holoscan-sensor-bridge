@@ -17,17 +17,7 @@
 /////////////////////////////////////////////////////////////////////////////////////////////////// 
 
 //`timescale <time_units> / <precision>
-`define SENSOR_RX_IF_INST 2
-`define HOST_IF_INST 2
-`define DATAPATH_WIDTH 64
-`define DATAKEEP_WIDTH `DATAPATH_WIDTH/8
-`define DATAUSER_WIDTH 1
-`define HOST_WIDTH     64
-`define HOSTKEEP_WIDTH 8
-`define HOSTUSER_WIDTH 1
-`define SPI_INST  1
-`define I2C_INST  3
-`define GPIO_INST 16
+`include "HOLOLINK_def.svh"
 module HOLOLINK_top_wrapper(
   input                        i_sys_rst,
 //------------------------------------------------------------------------------
@@ -197,7 +187,7 @@ HOLOLINK_top HOLOLINK_top_0(
         .i_sif_axis_tdata  ( sif_axis_tdata ),
         .i_sif_axis_tkeep  ( sif_axis_tkeep ),
         .i_sif_axis_tuser  ( sif_axis_tuser ),
-        //.i_sif_axis_tready ( 2'b11 ),
+        //.i_sif_axis_tready ( 2'b11 ), 
         .i_sif_event       ( i_sif_event ),
         //HIF
         .i_hif_clk         ( i_hif_clk ),
