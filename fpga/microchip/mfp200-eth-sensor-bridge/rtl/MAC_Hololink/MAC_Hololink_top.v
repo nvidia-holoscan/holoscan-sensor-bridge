@@ -1,5 +1,5 @@
 //////////////////////////////////////////////////////////////////////
-// Created by SmartDesign Wed Aug 13 10:29:16 2025
+// Created by SmartDesign Tue Nov  4 14:40:21 2025
 // Version: 2025.1 2025.1.0.14
 //////////////////////////////////////////////////////////////////////
 
@@ -29,7 +29,6 @@ module MAC_Hololink(
     SIF_TARGET_1_i_sif_axis_tlast_1,
     SIF_TARGET_1_i_sif_axis_tuser_1,
     SIF_TARGET_1_i_sif_axis_tvalid_1,
-    i_ptp_clk,
     i_sif_clk,
     // Outputs
     CAM1_EN,
@@ -37,13 +36,14 @@ module MAC_Hololink(
     CAM2_EN,
     CAM2_TRNG_RSTN,
     DO,
-    LANE0_RX_CLK_R,
     LANE0_TXD_N,
     LANE0_TXD_N_0,
     LANE0_TXD_P,
     LANE0_TXD_P_0,
     LED1,
     OUT2_FABCLK_0,
+    OUT3_FABCLK_0,
+    PLL_LOCK_0,
     SIF_TARGET_0_o_sif_axis_tready_0,
     SIF_TARGET_1_o_sif_axis_tready_1,
     pps_stretch_o,
@@ -76,14 +76,13 @@ input         REF_CLK_PAD_P;
 input  [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 input  [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 input         SIF_TARGET_0_i_sif_axis_tlast_0;
-input  [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+input  [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 input         SIF_TARGET_0_i_sif_axis_tvalid_0;
 input  [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 input  [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 input         SIF_TARGET_1_i_sif_axis_tlast_1;
-input  [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+input  [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 input         SIF_TARGET_1_i_sif_axis_tvalid_1;
-input         i_ptp_clk;
 input         i_sif_clk;
 //--------------------------------------------------------------------
 // Output
@@ -93,13 +92,14 @@ output        CAM1_TRNG_RSTN;
 output        CAM2_EN;
 output        CAM2_TRNG_RSTN;
 output        DO;
-output        LANE0_RX_CLK_R;
 output        LANE0_TXD_N;
 output        LANE0_TXD_N_0;
 output        LANE0_TXD_P;
 output        LANE0_TXD_P_0;
 output        LED1;
 output        OUT2_FABCLK_0;
+output        OUT3_FABCLK_0;
+output        PLL_LOCK_0;
 output        SIF_TARGET_0_o_sif_axis_tready_0;
 output        SIF_TARGET_1_o_sif_axis_tready_1;
 output        pps_stretch_o;
@@ -122,11 +122,11 @@ wire          AND2_0_Y;
 wire          AND2_1_Y;
 wire          AND2_2_Y;
 wire          AND2_3_Y;
-wire          CAM1_EN_net_0;
 wire          CAM1_SCL;
 wire          CAM1_SDA;
 wire          CAM2_SCL;
 wire          CAM2_SDA;
+wire          CAM2_TRNG_RSTN_net_0;
 wire          CLK;
 wire   [31:0] CoreAPB3_C1_0_APBmslave1_PADDR;
 wire          CoreAPB3_C1_0_APBmslave1_PENABLE;
@@ -163,10 +163,9 @@ wire          HoloLink_SD_0_HIF_INITIATOR_1_TLAST;
 wire          HoloLink_SD_0_HIF_INITIATOR_1_TREADY;
 wire          HoloLink_SD_0_HIF_INITIATOR_1_TVALID;
 wire          HoloLink_SD_0_o_pps;
-wire          i_ptp_clk;
 wire          i_sif_clk;
 wire          IFACE;
-wire          LANE0_RX_CLK_R_net_0;
+wire          LANE0_RX_CLK_R;
 wire          LANE0_RXD_N;
 wire          LANE0_RXD_N_0;
 wire          LANE0_RXD_P;
@@ -175,7 +174,6 @@ wire          LANE0_TXD_N_net_0;
 wire          LANE0_TXD_N_0_net_0;
 wire          LANE0_TXD_P_net_0;
 wire          LANE0_TXD_P_0_net_0;
-wire          LED1_net_0;
 wire   [63:0] MAC_BaseR_0_AXI4S_INITR_TDATA;
 wire   [7:0]  MAC_BaseR_0_AXI4S_INITR_TKEEP;
 wire          MAC_BaseR_0_AXI4S_INITR_TLAST;
@@ -190,11 +188,13 @@ wire          MAC_BaseR_1_AXI4S_INITR_TREADY;
 wire          MAC_BaseR_1_AXI4S_INITR_TVALID;
 wire          MAC_BaseR_1_LANE0_RX_VAL;
 wire          MAC_BaseR_1_LANE0_TX_CLK_STABLE;
-wire          OUT2_FABCLK_0_net_0;
-wire          PF_CCC_C1_0_OUT0_FABCLK_0;
+wire          OUT2_FABCLK_0_0;
+wire          OUT3_FABCLK_0_net_0;
 wire          PF_CCC_C1_0_OUT1_FABCLK_0;
-wire          PF_CCC_C1_0_PLL_LOCK_0;
+wire          PF_CCC_C1_0_OUT2_FABCLK_0;
 wire          PF_XCVR_REF_CLK_C0_0_REF_CLK;
+wire          PLL_LOCK_0_net_0;
+wire          pps_stretch_o_net_0;
 wire          REF_CLK_0;
 wire          REF_CLK_PAD_N;
 wire          REF_CLK_PAD_P;
@@ -202,30 +202,31 @@ wire   [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 wire   [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 wire          SIF_TARGET_0_i_sif_axis_tlast_0;
 wire          SIF_TARGET_0_TREADY;
-wire   [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+wire   [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 wire          SIF_TARGET_0_i_sif_axis_tvalid_0;
 wire   [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 wire   [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 wire          SIF_TARGET_1_i_sif_axis_tlast_1;
 wire          SIF_TARGET_1_TREADY;
-wire   [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+wire   [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 wire          SIF_TARGET_1_i_sif_axis_tvalid_1;
 wire          SS;
-wire          CAM1_EN_net_1;
-wire          CAM1_EN_net_2;
-wire          CAM1_EN_net_3;
-wire          CAM1_EN_net_4;
+wire          CAM2_TRNG_RSTN_net_1;
+wire          CAM2_TRNG_RSTN_net_2;
+wire          CAM2_TRNG_RSTN_net_3;
+wire          CAM2_TRNG_RSTN_net_4;
 wire          DO_net_1;
 wire          LANE0_TXD_N_0_net_1;
 wire          LANE0_TXD_N_net_1;
 wire          LANE0_TXD_P_0_net_1;
 wire          LANE0_TXD_P_net_1;
-wire          LED1_net_1;
-wire          OUT2_FABCLK_0_net_1;
-wire          LED1_net_2;
+wire          pps_stretch_o_net_1;
+wire          OUT2_FABCLK_0_0_net_0;
 wire          SIF_TARGET_0_TREADY_net_0;
 wire          SIF_TARGET_1_TREADY_net_0;
-wire          LANE0_RX_CLK_R_net_1;
+wire          pps_stretch_o_net_2;
+wire          OUT3_FABCLK_0_net_1;
+wire          PLL_LOCK_0_net_1;
 //--------------------------------------------------------------------
 // TiedOff Nets
 //--------------------------------------------------------------------
@@ -266,14 +267,14 @@ assign i_sys_rst_IN_POST_INV0_0 = ~ CORERESET_PF_C1_0_FABRIC_RESET_N;
 //--------------------------------------------------------------------
 // Top level output port assignments
 //--------------------------------------------------------------------
-assign CAM1_EN_net_1                    = CAM1_EN_net_0;
-assign CAM1_EN                          = CAM1_EN_net_1;
-assign CAM1_EN_net_2                    = CAM1_EN_net_0;
-assign CAM1_TRNG_RSTN                   = CAM1_EN_net_2;
-assign CAM1_EN_net_3                    = CAM1_EN_net_0;
-assign CAM2_EN                          = CAM1_EN_net_3;
-assign CAM1_EN_net_4                    = CAM1_EN_net_0;
-assign CAM2_TRNG_RSTN                   = CAM1_EN_net_4;
+assign CAM2_TRNG_RSTN_net_1             = CAM2_TRNG_RSTN_net_0;
+assign CAM1_EN                          = CAM2_TRNG_RSTN_net_1;
+assign CAM2_TRNG_RSTN_net_2             = CAM2_TRNG_RSTN_net_0;
+assign CAM1_TRNG_RSTN                   = CAM2_TRNG_RSTN_net_2;
+assign CAM2_TRNG_RSTN_net_3             = CAM2_TRNG_RSTN_net_0;
+assign CAM2_EN                          = CAM2_TRNG_RSTN_net_3;
+assign CAM2_TRNG_RSTN_net_4             = CAM2_TRNG_RSTN_net_0;
+assign CAM2_TRNG_RSTN                   = CAM2_TRNG_RSTN_net_4;
 assign DO_net_1                         = DO_net_0;
 assign DO                               = DO_net_1;
 assign LANE0_TXD_N_0_net_1              = LANE0_TXD_N_0_net_0;
@@ -284,18 +285,20 @@ assign LANE0_TXD_P_0_net_1              = LANE0_TXD_P_0_net_0;
 assign LANE0_TXD_P_0                    = LANE0_TXD_P_0_net_1;
 assign LANE0_TXD_P_net_1                = LANE0_TXD_P_net_0;
 assign LANE0_TXD_P                      = LANE0_TXD_P_net_1;
-assign LED1_net_1                       = LED1_net_0;
-assign LED1                             = LED1_net_1;
-assign OUT2_FABCLK_0_net_1              = OUT2_FABCLK_0_net_0;
-assign OUT2_FABCLK_0                    = OUT2_FABCLK_0_net_1;
-assign LED1_net_2                       = LED1_net_0;
-assign pps_stretch_o                    = LED1_net_2;
+assign pps_stretch_o_net_1              = pps_stretch_o_net_0;
+assign LED1                             = pps_stretch_o_net_1;
+assign OUT2_FABCLK_0_0_net_0            = OUT2_FABCLK_0_0;
+assign OUT2_FABCLK_0                    = OUT2_FABCLK_0_0_net_0;
 assign SIF_TARGET_0_TREADY_net_0        = SIF_TARGET_0_TREADY;
 assign SIF_TARGET_0_o_sif_axis_tready_0 = SIF_TARGET_0_TREADY_net_0;
 assign SIF_TARGET_1_TREADY_net_0        = SIF_TARGET_1_TREADY;
 assign SIF_TARGET_1_o_sif_axis_tready_1 = SIF_TARGET_1_TREADY_net_0;
-assign LANE0_RX_CLK_R_net_1             = LANE0_RX_CLK_R_net_0;
-assign LANE0_RX_CLK_R                   = LANE0_RX_CLK_R_net_1;
+assign pps_stretch_o_net_2              = pps_stretch_o_net_0;
+assign pps_stretch_o                    = pps_stretch_o_net_2;
+assign OUT3_FABCLK_0_net_1              = OUT3_FABCLK_0_net_0;
+assign OUT3_FABCLK_0                    = OUT3_FABCLK_0_net_1;
+assign PLL_LOCK_0_net_1                 = PLL_LOCK_0_net_0;
+assign PLL_LOCK_0                       = PLL_LOCK_0_net_1;
 //--------------------------------------------------------------------
 // Bus Interface Nets Assignments - Unequal Pin Widths
 //--------------------------------------------------------------------
@@ -381,11 +384,11 @@ CoreAPB3_C1 CoreAPB3_C1_0(
 //--------CORERESET_PF_C1
 CORERESET_PF_C1 CORERESET_PF_C1_0(
         // Inputs
-        .CLK                ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
+        .CLK                ( OUT2_FABCLK_0_0 ),
         .EXT_RST_N          ( VCC_net ),
         .BANK_x_VDDI_STATUS ( VCC_net ),
         .BANK_y_VDDI_STATUS ( VCC_net ),
-        .PLL_LOCK           ( PF_CCC_C1_0_PLL_LOCK_0 ),
+        .PLL_LOCK           ( PLL_LOCK_0_net_0 ),
         .SS_BUSY            ( GND_net ),
         .INIT_DONE          ( Device_Init_Done ),
         .FF_US_RESTORE      ( GND_net ),
@@ -398,63 +401,63 @@ CORERESET_PF_C1 CORERESET_PF_C1_0(
 //--------HoloLink_SD
 HoloLink_SD HoloLink_SD_0(
         // Inputs
-        .DI                                  ( DI ),
-        .FLASH                               ( FLASH ),
-        .IFACE                               ( IFACE ),
-        .i_apb_clk                           ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
-        .i_hif_clk                           ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
-        .i_sif_clk                           ( i_sif_clk ),
-        .i_sys_rst                           ( i_sys_rst_IN_POST_INV0_0 ),
-        .HIF_INITIATOR_0_i_hif_axis_tready_0 ( HoloLink_SD_0_HIF_INITIATOR_0_TREADY ),
-        .HIF_TARGET_0_i_hif_axis_tvalid_0    ( MAC_BaseR_0_AXI4S_INITR_TVALID ),
-        .HIF_TARGET_0_i_hif_axis_tlast_0     ( MAC_BaseR_0_AXI4S_INITR_TLAST ),
-        .SIF_TARGET_0_i_sif_axis_tvalid_0    ( SIF_TARGET_0_i_sif_axis_tvalid_0 ),
-        .SIF_TARGET_0_i_sif_axis_tlast_0     ( SIF_TARGET_0_i_sif_axis_tlast_0 ),
-        .HIF_INITIATOR_1_i_hif_axis_tready_1 ( HoloLink_SD_0_HIF_INITIATOR_1_TREADY ),
-        .HIF_TARGET_1_i_hif_axis_tvalid_1    ( MAC_BaseR_1_AXI4S_INITR_TVALID ),
-        .HIF_TARGET_1_i_hif_axis_tlast_1     ( MAC_BaseR_1_AXI4S_INITR_TLAST ),
-        .SIF_TARGET_1_i_sif_axis_tvalid_1    ( SIF_TARGET_1_i_sif_axis_tvalid_1 ),
-        .SIF_TARGET_1_i_sif_axis_tlast_1     ( SIF_TARGET_1_i_sif_axis_tlast_1 ),
         .APB_INITIATOR_i_apb_pready          ( HoloLink_SD_0_APB_INITIATOR_PREADY ),
         .APB_INITIATOR_i_apb_pserr           ( HoloLink_SD_0_APB_INITIATOR_PSLVERR ),
-        .i_ptp_clk                           ( i_ptp_clk ),
+        .DI                                  ( DI ),
+        .FLASH                               ( FLASH ),
+        .HIF_INITIATOR_0_i_hif_axis_tready_0 ( HoloLink_SD_0_HIF_INITIATOR_0_TREADY ),
+        .HIF_INITIATOR_1_i_hif_axis_tready_1 ( HoloLink_SD_0_HIF_INITIATOR_1_TREADY ),
+        .HIF_TARGET_0_i_hif_axis_tlast_0     ( MAC_BaseR_0_AXI4S_INITR_TLAST ),
+        .HIF_TARGET_0_i_hif_axis_tvalid_0    ( MAC_BaseR_0_AXI4S_INITR_TVALID ),
+        .HIF_TARGET_1_i_hif_axis_tlast_1     ( MAC_BaseR_1_AXI4S_INITR_TLAST ),
+        .HIF_TARGET_1_i_hif_axis_tvalid_1    ( MAC_BaseR_1_AXI4S_INITR_TVALID ),
+        .IFACE                               ( IFACE ),
+        .SIF_TARGET_0_i_sif_axis_tlast_0     ( SIF_TARGET_0_i_sif_axis_tlast_0 ),
+        .SIF_TARGET_0_i_sif_axis_tvalid_0    ( SIF_TARGET_0_i_sif_axis_tvalid_0 ),
+        .SIF_TARGET_1_i_sif_axis_tlast_1     ( SIF_TARGET_1_i_sif_axis_tlast_1 ),
+        .SIF_TARGET_1_i_sif_axis_tvalid_1    ( SIF_TARGET_1_i_sif_axis_tvalid_1 ),
+        .i_apb_clk                           ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
+        .i_hif_clk                           ( OUT2_FABCLK_0_0 ),
+        .i_ptp_clk                           ( PF_CCC_C1_0_OUT2_FABCLK_0 ),
+        .i_sif_clk                           ( i_sif_clk ),
+        .i_sys_rst                           ( i_sys_rst_IN_POST_INV0_0 ),
+        .APB_INITIATOR_i_apb_prdata          ( HoloLink_SD_0_APB_INITIATOR_PRDATA ),
         .HIF_TARGET_0_i_hif_axis_tdata_0     ( MAC_BaseR_0_AXI4S_INITR_TDATA ),
         .HIF_TARGET_0_i_hif_axis_tkeep_0     ( MAC_BaseR_0_AXI4S_INITR_TKEEP ),
         .HIF_TARGET_0_i_hif_axis_tuser_0     ( MAC_BaseR_0_AXI4S_INITR_TUSER_0 ),
-        .SIF_TARGET_0_i_sif_axis_tdata_0     ( SIF_TARGET_0_i_sif_axis_tdata_0 ),
-        .SIF_TARGET_0_i_sif_axis_tuser_0     ( SIF_TARGET_0_i_sif_axis_tuser_0 ),
-        .SIF_TARGET_0_i_sif_axis_tkeep_0     ( SIF_TARGET_0_i_sif_axis_tkeep_0 ),
         .HIF_TARGET_1_i_hif_axis_tdata_1     ( MAC_BaseR_1_AXI4S_INITR_TDATA ),
         .HIF_TARGET_1_i_hif_axis_tkeep_1     ( MAC_BaseR_1_AXI4S_INITR_TKEEP ),
         .HIF_TARGET_1_i_hif_axis_tuser_1     ( MAC_BaseR_1_AXI4S_INITR_TUSER_0 ),
+        .SIF_TARGET_0_i_sif_axis_tdata_0     ( SIF_TARGET_0_i_sif_axis_tdata_0 ),
+        .SIF_TARGET_0_i_sif_axis_tkeep_0     ( SIF_TARGET_0_i_sif_axis_tkeep_0 ),
+        .SIF_TARGET_0_i_sif_axis_tuser_0     ( SIF_TARGET_0_i_sif_axis_tuser_0 ),
         .SIF_TARGET_1_i_sif_axis_tdata_1     ( SIF_TARGET_1_i_sif_axis_tdata_1 ),
-        .SIF_TARGET_1_i_sif_axis_tuser_1     ( SIF_TARGET_1_i_sif_axis_tuser_1 ),
         .SIF_TARGET_1_i_sif_axis_tkeep_1     ( SIF_TARGET_1_i_sif_axis_tkeep_1 ),
-        .APB_INITIATOR_i_apb_prdata          ( HoloLink_SD_0_APB_INITIATOR_PRDATA ),
+        .SIF_TARGET_1_i_sif_axis_tuser_1     ( SIF_TARGET_1_i_sif_axis_tuser_1 ),
         // Outputs
-        .DO                                  ( DO_net_0 ),
-        .o_init_done                         ( CAM1_EN_net_0 ),
-        .o_pps                               ( HoloLink_SD_0_o_pps ),
-        .HIF_INITIATOR_0_o_hif_axis_tvalid_0 ( HoloLink_SD_0_HIF_INITIATOR_0_TVALID ),
-        .HIF_INITIATOR_0_o_hif_axis_tlast_0  ( HoloLink_SD_0_HIF_INITIATOR_0_TLAST ),
-        .HIF_TARGET_0_o_hif_axis_tready_0    ( MAC_BaseR_0_AXI4S_INITR_TREADY ),
-        .SIF_TARGET_0_o_sif_axis_tready_0    ( SIF_TARGET_0_TREADY ),
-        .HIF_INITIATOR_1_o_hif_axis_tvalid_1 ( HoloLink_SD_0_HIF_INITIATOR_1_TVALID ),
-        .HIF_INITIATOR_1_o_hif_axis_tlast_1  ( HoloLink_SD_0_HIF_INITIATOR_1_TLAST ),
-        .HIF_TARGET_1_o_hif_axis_tready_1    ( MAC_BaseR_1_AXI4S_INITR_TREADY ),
-        .SIF_TARGET_1_o_sif_axis_tready_1    ( SIF_TARGET_1_TREADY ),
         .APB_INITIATOR_o_apb_penable         ( HoloLink_SD_0_APB_INITIATOR_PENABLE ),
-        .APB_INITIATOR_o_apb_pwrite          ( HoloLink_SD_0_APB_INITIATOR_PWRITE ),
         .APB_INITIATOR_o_apb_psel            ( HoloLink_SD_0_APB_INITIATOR_PSELx ),
+        .APB_INITIATOR_o_apb_pwrite          ( HoloLink_SD_0_APB_INITIATOR_PWRITE ),
+        .DO                                  ( DO_net_0 ),
+        .HIF_INITIATOR_0_o_hif_axis_tlast_0  ( HoloLink_SD_0_HIF_INITIATOR_0_TLAST ),
+        .HIF_INITIATOR_0_o_hif_axis_tvalid_0 ( HoloLink_SD_0_HIF_INITIATOR_0_TVALID ),
+        .HIF_INITIATOR_1_o_hif_axis_tlast_1  ( HoloLink_SD_0_HIF_INITIATOR_1_TLAST ),
+        .HIF_INITIATOR_1_o_hif_axis_tvalid_1 ( HoloLink_SD_0_HIF_INITIATOR_1_TVALID ),
+        .HIF_TARGET_0_o_hif_axis_tready_0    ( MAC_BaseR_0_AXI4S_INITR_TREADY ),
+        .HIF_TARGET_1_o_hif_axis_tready_1    ( MAC_BaseR_1_AXI4S_INITR_TREADY ),
+        .SIF_TARGET_0_o_sif_axis_tready_0    ( SIF_TARGET_0_TREADY ),
+        .SIF_TARGET_1_o_sif_axis_tready_1    ( SIF_TARGET_1_TREADY ),
+        .o_init_done                         ( CAM2_TRNG_RSTN_net_0 ),
+        .o_pps                               ( HoloLink_SD_0_o_pps ),
         .o_ptp_rst                           (  ),
+        .APB_INITIATOR_o_apb_paddr           ( HoloLink_SD_0_APB_INITIATOR_PADDR ),
+        .APB_INITIATOR_o_apb_pwdata          ( HoloLink_SD_0_APB_INITIATOR_PWDATA ),
         .HIF_INITIATOR_0_o_hif_axis_tdata_0  ( HoloLink_SD_0_HIF_INITIATOR_0_TDATA ),
         .HIF_INITIATOR_0_o_hif_axis_tkeep_0  ( HoloLink_SD_0_HIF_INITIATOR_0_TKEEP ),
         .HIF_INITIATOR_0_o_hif_axis_tuser_0  ( HoloLink_SD_0_HIF_INITIATOR_0_TUSER ),
         .HIF_INITIATOR_1_o_hif_axis_tdata_1  ( HoloLink_SD_0_HIF_INITIATOR_1_TDATA ),
         .HIF_INITIATOR_1_o_hif_axis_tkeep_1  ( HoloLink_SD_0_HIF_INITIATOR_1_TKEEP ),
         .HIF_INITIATOR_1_o_hif_axis_tuser_1  ( HoloLink_SD_0_HIF_INITIATOR_1_TUSER ),
-        .APB_INITIATOR_o_apb_paddr           ( HoloLink_SD_0_APB_INITIATOR_PADDR ),
-        .APB_INITIATOR_o_apb_pwdata          ( HoloLink_SD_0_APB_INITIATOR_PWDATA ),
         // Inouts
         .CAM1_SCL                            ( CAM1_SCL ),
         .CAM1_SDA                            ( CAM1_SDA ),
@@ -474,13 +477,12 @@ MAC_BaseR MAC_BaseR_0(
         .AXI4S_TRGT_AXI4S_DT_TARG_TLAST    ( HoloLink_SD_0_HIF_INITIATOR_0_TLAST ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TVALID   ( HoloLink_SD_0_HIF_INITIATOR_0_TVALID ),
         .Device_Init_Done                  ( Device_Init_Done ),
-        .I_SYS_CLK                         ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
+        .I_SYS_CLK                         ( OUT2_FABCLK_0_0 ),
         .I_SYS_RX_SRESETN                  ( AND2_1_Y ),
         .I_SYS_TX_SRESETN                  ( AND2_0_Y ),
         .LANE0_RXD_N                       ( LANE0_RXD_N ),
         .LANE0_RXD_P                       ( LANE0_RXD_P ),
         .PCLK                              ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
-        .PRESETN                           ( CORERESET_PF_C1_0_FABRIC_RESET_N ),
         .REF_CLK                           ( PF_XCVR_REF_CLK_C0_0_REF_CLK ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TDATA    ( HoloLink_SD_0_HIF_INITIATOR_0_TDATA ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TKEEP    ( HoloLink_SD_0_HIF_INITIATOR_0_TKEEP ),
@@ -489,14 +491,14 @@ MAC_BaseR MAC_BaseR_0(
         .AXI4S_INITR_AXI4S_DT_INITR_TLAST  ( MAC_BaseR_0_AXI4S_INITR_TLAST ),
         .AXI4S_INITR_AXI4S_DT_INITR_TVALID ( MAC_BaseR_0_AXI4S_INITR_TVALID ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TREADY   ( HoloLink_SD_0_HIF_INITIATOR_0_TREADY ),
+        .LANE0_RX_CLK_R                    ( LANE0_RX_CLK_R ),
         .LANE0_RX_VAL                      ( MAC_BaseR_0_LANE0_RX_VAL ),
         .LANE0_TXD_N                       ( LANE0_TXD_N_net_0 ),
         .LANE0_TXD_P                       ( LANE0_TXD_P_net_0 ),
         .LANE0_TX_CLK_STABLE               ( MAC_BaseR_0_LANE0_TX_CLK_STABLE ),
         .AXI4S_INITR_AXI4S_DT_INITR_TDATA  ( MAC_BaseR_0_AXI4S_INITR_TDATA ),
         .AXI4S_INITR_AXI4S_DT_INITR_TKEEP  ( MAC_BaseR_0_AXI4S_INITR_TKEEP ),
-        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_0_AXI4S_INITR_TUSER ),
-        .LANE0_RX_CLK_R                    ( LANE0_RX_CLK_R_net_0 ) 
+        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_0_AXI4S_INITR_TUSER ) 
         );
 
 //--------MAC_BaseR
@@ -506,13 +508,12 @@ MAC_BaseR MAC_BaseR_1(
         .AXI4S_TRGT_AXI4S_DT_TARG_TLAST    ( HoloLink_SD_0_HIF_INITIATOR_1_TLAST ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TVALID   ( HoloLink_SD_0_HIF_INITIATOR_1_TVALID ),
         .Device_Init_Done                  ( Device_Init_Done ),
-        .I_SYS_CLK                         ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
+        .I_SYS_CLK                         ( OUT2_FABCLK_0_0 ),
         .I_SYS_RX_SRESETN                  ( AND2_3_Y ),
         .I_SYS_TX_SRESETN                  ( AND2_2_Y ),
         .LANE0_RXD_N                       ( LANE0_RXD_N_0 ),
         .LANE0_RXD_P                       ( LANE0_RXD_P_0 ),
         .PCLK                              ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
-        .PRESETN                           ( CORERESET_PF_C1_0_FABRIC_RESET_N ),
         .REF_CLK                           ( PF_XCVR_REF_CLK_C0_0_REF_CLK ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TDATA    ( HoloLink_SD_0_HIF_INITIATOR_1_TDATA ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TKEEP    ( HoloLink_SD_0_HIF_INITIATOR_1_TKEEP ),
@@ -521,25 +522,26 @@ MAC_BaseR MAC_BaseR_1(
         .AXI4S_INITR_AXI4S_DT_INITR_TLAST  ( MAC_BaseR_1_AXI4S_INITR_TLAST ),
         .AXI4S_INITR_AXI4S_DT_INITR_TVALID ( MAC_BaseR_1_AXI4S_INITR_TVALID ),
         .AXI4S_TRGT_AXI4S_DT_TARG_TREADY   ( HoloLink_SD_0_HIF_INITIATOR_1_TREADY ),
+        .LANE0_RX_CLK_R                    (  ),
         .LANE0_RX_VAL                      ( MAC_BaseR_1_LANE0_RX_VAL ),
         .LANE0_TXD_N                       ( LANE0_TXD_N_0_net_0 ),
         .LANE0_TXD_P                       ( LANE0_TXD_P_0_net_0 ),
         .LANE0_TX_CLK_STABLE               ( MAC_BaseR_1_LANE0_TX_CLK_STABLE ),
         .AXI4S_INITR_AXI4S_DT_INITR_TDATA  ( MAC_BaseR_1_AXI4S_INITR_TDATA ),
         .AXI4S_INITR_AXI4S_DT_INITR_TKEEP  ( MAC_BaseR_1_AXI4S_INITR_TKEEP ),
-        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_1_AXI4S_INITR_TUSER ),
-        .LANE0_RX_CLK_R                    (  ) 
+        .AXI4S_INITR_AXI4S_DT_INITR_TUSER  ( MAC_BaseR_1_AXI4S_INITR_TUSER ) 
         );
 
 //--------PF_CCC_C1
 PF_CCC_C1 PF_CCC_C1_0(
         // Inputs
-        .REF_CLK_0     ( REF_CLK_0 ),
+        .REF_CLK_0     ( LANE0_RX_CLK_R ),
         // Outputs
-        .OUT0_FABCLK_0 ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
+        .OUT0_FABCLK_0 ( OUT2_FABCLK_0_0 ),
         .OUT1_FABCLK_0 ( PF_CCC_C1_0_OUT1_FABCLK_0 ),
-        .OUT2_FABCLK_0 ( OUT2_FABCLK_0_net_0 ),
-        .PLL_LOCK_0    ( PF_CCC_C1_0_PLL_LOCK_0 ) 
+        .OUT2_FABCLK_0 ( PF_CCC_C1_0_OUT2_FABCLK_0 ),
+        .OUT3_FABCLK_0 ( OUT3_FABCLK_0_net_0 ),
+        .PLL_LOCK_0    ( PLL_LOCK_0_net_0 ) 
         );
 
 //--------PF_SYSTEM_SERVICES_C0
@@ -575,11 +577,11 @@ PF_XCVR_REF_CLK_C0 PF_XCVR_REF_CLK_C0_0(
 //--------pps_stretch
 pps_stretch pps_stretch_0(
         // Inputs
-        .hif_clk_i     ( PF_CCC_C1_0_OUT0_FABCLK_0 ),
+        .hif_clk_i     ( OUT2_FABCLK_0_0 ),
         .rstn_i        ( CORERESET_PF_C1_0_FABRIC_RESET_N ),
         .pps_i         ( HoloLink_SD_0_o_pps ),
         // Outputs
-        .pps_stretch_o ( LED1_net_0 ) 
+        .pps_stretch_o ( pps_stretch_o_net_0 ) 
         );
 
 

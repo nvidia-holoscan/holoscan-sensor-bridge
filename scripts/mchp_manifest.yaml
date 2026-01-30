@@ -1,0 +1,16 @@
+hololink:
+  archive:
+    enrollment_date: '2026-01-09T15:36:27.990174+00:00'
+    version: '2510'
+  content:
+    PF_ESB_HSB2510_v2025p1_01272026.spi:
+      filename: PF_ESB_HSB2510_v2025p1_01272026.spi
+      md5: 5e227944bd3e280ae9af58dea8725cbc
+      size: 6135712
+      url: https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/PF_ESB_HSB2510_v2025p1.zip
+  fpga_uuid:
+  - ed6a9292-debf-40ac-b603-a24e025309c1
+  images:
+  - content: PF_ESB_HSB2510_v2025p1_01272026.spi
+    context: mchp
+  strategy: sensor_bridge_10

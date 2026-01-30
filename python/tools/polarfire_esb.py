@@ -23,6 +23,7 @@ import time
 import zipfile
 
 import requests
+import yaml
 
 import hololink as hololink_module
 
@@ -47,64 +48,27 @@ PFSRV_MBX_WDATA = 0x28
 
 SPI_CONN_ADDR = 0x03000000
 
-filename_2412 = "PF_HL_2412.spi"
-fname_2412 = "Holoscan_PF_HL_2412.zip"
-expected_md5_2412 = "9be0f5566b6368620392a4ffa0548d7e"
-url_2412 = (
-    "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
-    + fname_2412
-)
 
-filename_2407 = "PF_HL_2407_bid4.spi"
-fname_2407 = "Holoscan_PF_HL_2407.zip"
-expected_md5_2407 = "b248817710c09f3461b09dde229b89e3"
-url_2407 = (
-    "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
-    + fname_2407
-)
+def download_extract(current_file_cfg):
+    current_url = current_file_cfg.get("url", None)
+    filename = current_file_cfg.get("filename", None)
+    expected_md5 = current_file_cfg.get("md5", None)
 
-filename_2507 = "PF_ESB_HSB2507_v2025p1/PF_ESB_HSB2507_v2025p1.spi"
-fname_2507 = "PF_ESB_HSB2507_v2025p1.zip"
-expected_md5_2507 = "e27289503290a3a0aa709830a50cf111"
-url_2507 = (
-    "https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/"
-    + fname_2507
-)
-
-
-def download_extract(args):
-    if args == "2412":
-        r = requests.get(url_2412)
-        open(fname_2412, "wb").write(r.content)
-        with zipfile.ZipFile(fname_2412) as zip_ref:
+    if current_url:
+        r = requests.get(current_url, timeout=300)
+        # parse URL to get last set of / before zip
+        zipname = current_url.split("/")[-1]
+        with open(zipname, "wb") as f:
+            f.write(r.content)
+        with zipfile.ZipFile(zipname) as zip_ref:
             zip_ref.extractall(".")
-        with open(filename_2412, "rb") as file_to_check:
-            data = file_to_check.read()
-            md5_returned = hashlib.md5(data).hexdigest()
-        if md5_returned != expected_md5_2412:
-            raise Exception("md5 Hash mismatch")
-
-    elif args == "2407":
-        r = requests.get(url_2407)
-        open(fname_2407, "wb").write(r.content)
-        with zipfile.ZipFile(fname_2407) as zip_ref:
-            zip_ref.extractall(".")
-        with open(filename_2407, "rb") as file_to_check:
-            data = file_to_check.read()
-            md5_returned = hashlib.md5(data).hexdigest()
-        if md5_returned != expected_md5_2407:
-            raise Exception("md5 Hash mismatch")
-
-    elif args == "2507":
-        r = requests.get(url_2507)
-        open(fname_2507, "wb").write(r.content)
-        with zipfile.ZipFile(fname_2507) as zip_ref:
-            zip_ref.extractall(".")
-        with open(filename_2507, "rb") as file_to_check:
-            data = file_to_check.read()
-            md5_returned = hashlib.md5(data).hexdigest()
-        if md5_returned != expected_md5_2507:
-            raise Exception("md5 Hash mismatch")
+    with open(filename, "rb") as file_to_check:
+        data = file_to_check.read()
+        md5_returned = hashlib.md5(data).hexdigest()
+    if md5_returned != expected_md5:
+        raise ValueError(
+            f"MD5 hash mismatch: expected {expected_md5}, got {md5_returned}"
+        )
 
 
 def _spi_command(in_spi, command, w_data=[], read_count=0):
@@ -131,19 +95,37 @@ def _spi_program(hololink):
     hololink.write_uint32(PFSRV_ADDR + PFSRV_MBX_WDATA, IAP_IMG_START_ADDR)
 
 
-def _spi_flash(spi_con_addr, hololink, fpga_bit_version, channel_metadata):
-    if fpga_bit_version == "2412":
-        lfilename = filename_2412
-        lfname = fname_2412
-    elif fpga_bit_version == "2407":
-        lfilename = filename_2407
-        lfname = fname_2407
-    elif fpga_bit_version == "2507":
-        lfilename = filename_2507
-        lfname = fname_2507
-    else:
-        raise Exception("In correct FPGA bit version")
-    download_extract(fpga_bit_version)
+def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
+
+    yaml_path = os.path.join(os.getcwd(), cfg_file)
+    try:
+        with open(yaml_path, "r") as file:
+            default_config = yaml.safe_load(file)
+    except FileNotFoundError:
+        logging.error(f"YAML configuration file not found: {yaml_path}")
+        raise
+    except yaml.YAMLError as e:
+        logging.error(f"Failed to parse YAML file: {e}")
+        raise
+
+    try:
+        images = default_config["hololink"]["images"]
+        if not images:
+            raise ValueError("No images defined in YAML manifest")
+        fname = images[0]["content"]
+        current_file_cfg = default_config["hololink"]["content"][fname]
+        filename = current_file_cfg.get("filename", None)
+        current_url = current_file_cfg.get("url", None)
+        if current_url:
+            zipname = current_url.split("/")[-1]
+            archive_filename = zipname
+        else:
+            archive_filename = None
+        spi_filename = filename
+    except (KeyError, IndexError) as e:
+        logging.error(f"Invalid YAML structure: missing required key {e}")
+        raise ValueError(f"YAML manifest is missing required fields: {e}")
+    download_extract(current_file_cfg)
     hsb_ip_version = channel_metadata["hsb_ip_version"]
     if hsb_ip_version < 0x2506:
         in_spi = hololink_module.get_traditional_spi(
@@ -164,8 +146,8 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version, channel_metadata):
             width=1,
             prescaler=0x4,
         )
-    f = open(lfilename, "rb")
-    content = list(f.read())
+    with open(spi_filename, "rb") as f:
+        content = list(f.read())
     con_len = len(content) + START_ADDR
     tot_len = len(content)
     _spi_command(in_spi, [0x01, 0])
@@ -198,20 +180,18 @@ def _spi_flash(spi_con_addr, hololink, fpga_bit_version, channel_metadata):
             print(f"writing to spi: {offset}/{tot_len}", end="\r")
             _wait_for_spi_ready(in_spi)
     _wait_for_spi_ready(in_spi)
-    f.close()
     _spi_command(in_spi, [ENABLE_RESET])
     _spi_command(in_spi, [RESET])
     _wait_for_spi_ready(in_spi)
-    if os.path.exists(lfilename):
-        os.remove(lfilename)
+    if os.path.exists(spi_filename):
+        os.remove(spi_filename)
     else:
-        print("file" + lfilename + "doesn't exists")
+        logging.warning(f"SPI file {spi_filename} doesn't exist for cleanup")
 
-    if os.path.exists(lfname):
-        os.remove(lfname)
+    if archive_filename and os.path.exists(archive_filename):
+        os.remove(archive_filename)
     else:
-        print("file" + lfname + "doesn't exists")
-    hololink.stop()
+        logging.warning(f"Archive file {archive_filename} doesn't exist for cleanup")
 
 
 def manual_enumeration(args):
@@ -223,6 +203,7 @@ def manual_enumeration(args):
         "serial_number": "100",
         "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
         "ptp_enable": 0,
+        "block_enable": 0,
     }
     metadata = hololink_module.Metadata(m)
     hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
@@ -232,12 +213,6 @@ def manual_enumeration(args):
 
 def main():
     parser = argparse.ArgumentParser()
-
-    parser.add_argument(
-        "--program",
-        action="store_true",
-        help="Program the board with BIT file present in SPI flash",
-    )
 
     parser.add_argument(
         "--force",
@@ -257,20 +232,10 @@ def main():
         help="IP address of Hololink board",
     )
 
-    subparsers = parser.add_subparsers(help="Subcommands", dest="flash", required=False)
-
-    flash = subparsers.add_parser(
-        "flash",
-        help="Transfer the BIT file to SPI flash.",
-    )
-
-    flash.add_argument(
-        "--fpga-bit-version",
+    parser.add_argument(
+        "--flash",
         type=str,
-        help="FPGA bit file version to be flashed. Currently supported versions 2507, 2412 and 2407",
-        default="2507",
-        choices=("2412", "2407", "2507"),
-        required=True,
+        help="Yaml configuration file to load.",
     )
 
     args = parser.parse_args()
@@ -278,14 +243,11 @@ def main():
 
     # Get a handle to the Hololink device
 
-    if not args.flash and not args.program:
+    if not args.flash:
         raise Exception(
-            "Choose option 'flash' to transfer bit file to SPI flash memory or choose option '--program' to program FPGA with bit file in SPI flash memory"
+            "Choose option '--flash' to transfer bit file to SPI flash memory"
         )
-    elif args.flash and args.program:
-        raise Exception("Choose either 'flash' option or '--program' option")
-    else:
-        logging.info("Initializing.")
+    logging.info("Initializing.")
 
     if args.force:
         channel_metadata = manual_enumeration(args)
@@ -299,9 +261,12 @@ def main():
     hololink.start()
 
     if args.flash:
-        _spi_flash(SPI_CONN_ADDR, hololink, args.fpga_bit_version, channel_metadata)
-    elif args.program:
+        _spi_flash(SPI_CONN_ADDR, hololink, args.flash, channel_metadata)
         _spi_program(hololink)
+        # Wait for FPGA programming to complete and stabilize
+        time.sleep(45)
+        logging.info("Please power cycle the board to finish programming process")
+    hololink.stop()
 
 
 if __name__ == "__main__":

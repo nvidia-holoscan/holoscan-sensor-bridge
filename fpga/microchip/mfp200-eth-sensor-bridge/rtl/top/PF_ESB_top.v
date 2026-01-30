@@ -130,6 +130,7 @@ inout         SS;
 // Nets
 //--------------------------------------------------------------------
 wire          c1_frame_valid_o_net_0;
+wire          CAM1_CLK_net_0;
 wire          CAM1_EN_net_0;
 wire          CAM1_RX_CLK_N;
 wire          CAM1_RX_CLK_N_0;
@@ -137,7 +138,6 @@ wire          CAM1_RX_CLK_P;
 wire          CAM1_RX_CLK_P_0;
 wire          CAM1_SCL;
 wire          CAM1_SDA;
-wire          CAM2_CLK_net_0;
 wire          CAM2_EN_net_0;
 wire          CAM2_SCL;
 wire          CAM2_SDA;
@@ -174,10 +174,8 @@ wire          LANE0_TXD_P_0_net_0;
 wire          LED1_net_0;
 wire          MAC_Hololink_0_CAM1_TRNG_RSTN;
 wire          MAC_Hololink_0_CAM2_TRNG_RSTN;
-wire          MAC_Hololink_0_LANE0_RX_CLK_R;
 wire          MAC_Hololink_0_OUT2_FABCLK_0;
-wire          PF_CCC_C3_0_OUT1_FABCLK_0;
-wire          PF_CCC_C3_0_PLL_LOCK_0;
+wire          MAC_Hololink_0_PLL_LOCK_0;
 wire          PF_INIT_MONITOR_C0_0_AUTOCALIB_DONE;
 wire          PF_INIT_MONITOR_C0_0_DEVICE_INIT_DONE;
 wire          PF_INIT_MONITOR_C0_0_FABRIC_POR_N;
@@ -191,9 +189,9 @@ wire   [3:0]  RXD_0;
 wire   [3:0]  RXD_N;
 wire   [3:0]  RXD_N_0;
 wire          SS;
-wire          CAM2_CLK_net_1;
+wire          CAM1_CLK_net_1;
 wire          CAM1_EN_net_1;
-wire          CAM2_CLK_net_2;
+wire          CAM1_CLK_net_2;
 wire          CAM2_EN_net_1;
 wire          DO_net_1;
 wire          LANE0_TXD_N_0_net_1;
@@ -214,11 +212,11 @@ wire          VCC_net;
 // Bus Interface Nets Declarations - Unequal Pin Widths
 //--------------------------------------------------------------------
 wire   [3:0]  IMX477_IF_TOP_0_BIF_1_TUSER;
-wire   [0:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0;
-wire   [0:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0;
+wire   [1:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0;
+wire   [1:0]  IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0;
 wire   [3:0]  IMX477_IF_TOP_1_BIF_1_TUSER;
-wire   [0:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0;
-wire   [0:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0;
+wire   [1:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0;
+wire   [1:0]  IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0;
 //--------------------------------------------------------------------
 // Constant assignments
 //--------------------------------------------------------------------
@@ -231,12 +229,12 @@ assign TEN                    = 1'b0;
 //--------------------------------------------------------------------
 // Top level output port assignments
 //--------------------------------------------------------------------
-assign CAM2_CLK_net_1         = CAM2_CLK_net_0;
-assign CAM1_CLK               = CAM2_CLK_net_1;
+assign CAM1_CLK_net_1         = CAM1_CLK_net_0;
+assign CAM1_CLK               = CAM1_CLK_net_1;
 assign CAM1_EN_net_1          = CAM1_EN_net_0;
 assign CAM1_EN                = CAM1_EN_net_1;
-assign CAM2_CLK_net_2         = CAM2_CLK_net_0;
-assign CAM2_CLK               = CAM2_CLK_net_2;
+assign CAM1_CLK_net_2         = CAM1_CLK_net_0;
+assign CAM2_CLK               = CAM1_CLK_net_2;
 assign CAM2_EN_net_1          = CAM2_EN_net_0;
 assign CAM2_EN                = CAM2_EN_net_1;
 assign DO_net_1               = DO_net_0;
@@ -262,11 +260,11 @@ assign pps_stretch_o          = pps_stretch_o_net_1;
 //--------------------------------------------------------------------
 // Bus Interface Nets Assignments - Unequal Pin Widths
 //--------------------------------------------------------------------
-assign IMX477_IF_TOP_0_BIF_1_TUSER_0 = { IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0 };
-assign IMX477_IF_TOP_0_BIF_1_TUSER_0_0to0 = IMX477_IF_TOP_0_BIF_1_TUSER[0:0];
+assign IMX477_IF_TOP_0_BIF_1_TUSER_0 = { IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0 };
+assign IMX477_IF_TOP_0_BIF_1_TUSER_0_1to0 = IMX477_IF_TOP_0_BIF_1_TUSER[1:0];
 
-assign IMX477_IF_TOP_1_BIF_1_TUSER_0 = { IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0 };
-assign IMX477_IF_TOP_1_BIF_1_TUSER_0_0to0 = IMX477_IF_TOP_1_BIF_1_TUSER[0:0];
+assign IMX477_IF_TOP_1_BIF_1_TUSER_0 = { IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0 };
+assign IMX477_IF_TOP_1_BIF_1_TUSER_0_1to0 = IMX477_IF_TOP_1_BIF_1_TUSER[1:0];
 
 //--------------------------------------------------------------------
 // Component instances
@@ -278,7 +276,7 @@ CORERESET_PF_C1 CORERESET_PF_C1_0(
         .EXT_RST_N          ( VCC_net ),
         .BANK_x_VDDI_STATUS ( VCC_net ),
         .BANK_y_VDDI_STATUS ( VCC_net ),
-        .PLL_LOCK           ( PF_CCC_C3_0_PLL_LOCK_0 ),
+        .PLL_LOCK           ( MAC_Hololink_0_PLL_LOCK_0 ),
         .SS_BUSY            ( GND_net ),
         .INIT_DONE          ( PF_INIT_MONITOR_C0_0_DEVICE_INIT_DONE ),
         .FF_US_RESTORE      ( GND_net ),
@@ -352,12 +350,11 @@ MAC_Hololink MAC_Hololink_0(
         .REF_CLK_0                        ( CLK_IN ),
         .REF_CLK_PAD_N                    ( REF_CLK_PAD_N ),
         .REF_CLK_PAD_P                    ( REF_CLK_PAD_P ),
-        .i_sif_clk                        ( MAC_Hololink_0_OUT2_FABCLK_0 ),
-        .SIF_TARGET_0_i_sif_axis_tvalid_0 ( IMX477_IF_TOP_0_BIF_1_TVALID ),
         .SIF_TARGET_0_i_sif_axis_tlast_0  ( IMX477_IF_TOP_0_BIF_1_TLAST ),
-        .SIF_TARGET_1_i_sif_axis_tvalid_1 ( IMX477_IF_TOP_1_BIF_1_TVALID ),
+        .SIF_TARGET_0_i_sif_axis_tvalid_0 ( IMX477_IF_TOP_0_BIF_1_TVALID ),
         .SIF_TARGET_1_i_sif_axis_tlast_1  ( IMX477_IF_TOP_1_BIF_1_TLAST ),
-        .i_ptp_clk                        ( PF_CCC_C3_0_OUT1_FABCLK_0 ),
+        .SIF_TARGET_1_i_sif_axis_tvalid_1 ( IMX477_IF_TOP_1_BIF_1_TVALID ),
+        .i_sif_clk                        ( MAC_Hololink_0_OUT2_FABCLK_0 ),
         .SIF_TARGET_0_i_sif_axis_tdata_0  ( IMX477_IF_TOP_0_BIF_1_TDATA ),
         .SIF_TARGET_0_i_sif_axis_tkeep_0  ( IMX477_IF_TOP_0_BIF_1_TKEEP ),
         .SIF_TARGET_0_i_sif_axis_tuser_0  ( IMX477_IF_TOP_0_BIF_1_TUSER_0 ),
@@ -376,10 +373,11 @@ MAC_Hololink MAC_Hololink_0(
         .LANE0_TXD_P                      ( LANE0_TXD_P_net_0 ),
         .LED1                             ( LED1_net_0 ),
         .OUT2_FABCLK_0                    ( MAC_Hololink_0_OUT2_FABCLK_0 ),
-        .pps_stretch_o                    ( pps_stretch_o_net_0 ),
         .SIF_TARGET_0_o_sif_axis_tready_0 ( IMX477_IF_TOP_0_BIF_1_TREADY ),
         .SIF_TARGET_1_o_sif_axis_tready_1 ( IMX477_IF_TOP_1_BIF_1_TREADY ),
-        .LANE0_RX_CLK_R                   ( MAC_Hololink_0_LANE0_RX_CLK_R ),
+        .pps_stretch_o                    ( pps_stretch_o_net_0 ),
+        .OUT3_FABCLK_0                    ( CAM1_CLK_net_0 ),
+        .PLL_LOCK_0                       ( MAC_Hololink_0_PLL_LOCK_0 ),
         // Inouts
         .CAM1_SCL                         ( CAM1_SCL ),
         .CAM1_SDA                         ( CAM1_SDA ),
@@ -390,16 +388,6 @@ MAC_Hololink MAC_Hololink_0(
         .EEPROM_SDA                       ( EEPROM_SDA ),
         .SS                               ( SS ),
         .GPIO                             ( GPIO ) 
-        );
-
-//--------PF_CCC_C3
-PF_CCC_C3 PF_CCC_C3_0(
-        // Inputs
-        .REF_CLK_0     ( MAC_Hololink_0_LANE0_RX_CLK_R ),
-        // Outputs
-        .OUT0_FABCLK_0 ( CAM2_CLK_net_0 ),
-        .OUT1_FABCLK_0 ( PF_CCC_C3_0_OUT1_FABCLK_0 ),
-        .PLL_LOCK_0    ( PF_CCC_C3_0_PLL_LOCK_0 ) 
         );
 
 //--------PF_INIT_MONITOR_C0
