@@ -10,23 +10,17 @@ Programming MPF200-ETH-SENSOR-BRIDGE FPGA design using Holoscan sensor bridge so
 	a. ping 192.168.0.2
 2. In new terminal. Issue the following command to change directory to hololink-sensor-bridge folder
 	a.	cd <PATH/TO/hololink-sensor-bridge>
-3. Run the below commands to transfer .spi(job/RTL design) file to on board SPI flash of MPF200-ETH-SENSOR-BRIDGE board.
+3. Run the below commands to transfer and program the .spi(job/RTL design) file to on board SPI flash of MPF200-ETH-SENSOR-BRIDGE board.
 	a. 	xhost + <enter>
 	b.	sh docker/demo.sh <enter>
 			b.1:The above command runs holoscan-sensor-bridge docker container
-	c.	polarfire_esb flash --fpga-bit-version 2506
-			c.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
-	d.	polarfire_esb --force flash --fpga-bit-version 2506
-			d.1 The above command flashes(Transfers to on board SPI flash) 2506 version bit file.
-			d.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407 or 2412
-4. Step 3.c(or 3.d) downloads FPGA design file from internet and takes around 50 minutes to transfer the design file to on-board flash.
-5. To program the FPGA with the .spi that is in the on-board SPI flash run the below command within the holoscan-sensor-bridge docker container
-	a.	polarfire_esb --program
- 			a.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA
-	b.	polarfire_esb --force --program
- 			b.1 programs FPGA with design file in SPI flash. It takes around 1 minute to program the FPGA.
- 			b.2 Note: Use command switch "--force" when FPGA is running older version of bit file like 2407
-6. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software is not unable to detect ethernet packets. This situation arise if FPGA is running older bit file and NVIDIA
+	c.	hololink-enumerate
+			c.1 Shows the current hsb_ip_version running on the FPGA (This only works on IP versions 0x2412 or newer)
+	d.	polarfire_esb --flash scripts/mchp_manifest.yaml
+			d.1 The above command flashes and programs the SPI flash referenced in the YAML file.
+			d.2 Note: Add command switch "--force" prior to "--flash" when FPGA is running older version of bit file like 0x2407 or 0x2412
+4. Step 3.d downloads FPGA design file from internet, transfers the SPI flash to the FPGA, and programs it. A power cycle of the FPGA is recommended after the process is complete
+5. Use the new "--force" switch if (new/latest) holoscan ethernet sensor bridge software cannot detect ethernet packets. This situation arises if FPGA is running older bit file and NVIDIA
    AGX/IGX running newer holoscan sensor bridge software.
 
 Running imx477 applications - single camera

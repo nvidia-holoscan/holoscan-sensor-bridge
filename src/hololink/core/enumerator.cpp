@@ -674,6 +674,7 @@ void Enumerator::configure_default_enumeration_strategies()
 
     Metadata microchip_polarfire_metadata;
     microchip_polarfire_metadata["board_description"] = "Microchip Polarfire";
+    microchip_polarfire_metadata["gpio_pin_count"] = 16;
     unsigned microchip_polarfire_total_sensors = 2;
     unsigned microchip_polarfire_total_dataplanes = 2;
     unsigned microchip_polarfire_sifs_per_sensor = 1;
