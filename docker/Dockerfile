@@ -24,10 +24,17 @@ FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_dg
 
 # generic l4t igpu (Orin/NX/Nano/Thor) specific configuration goes here.
 FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu
-RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
-    && curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O \
-    && dpkg -i cuda-keyring_1.1-1_all.deb \
-    && apt-get update && \
+
+RUN set -eux; \
+    UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g'); \
+    . /etc/os-release; \
+    if [ "$UBUNTU_VERSION" = "2404" ]; then \
+      curl -fL https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O; \
+      dpkg -i cuda-keyring_1.1-1_all.deb; \
+      rm -f cuda-keyring_1.1-1_all.deb; \
+    else \
+      echo "Skipping CUDA keyring install: Ubuntu VERSION_ID=$VERSION_ID"; \
+    fi; \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev && \
     echo "deb https://repo.download.nvidia.com/jetson/common r38.4 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
