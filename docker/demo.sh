@@ -58,7 +58,11 @@ docker run \
     --net host \
     --gpus all \
     --runtime=nvidia \
+    --cap-add CAP_SYS_PTRACE \
+    --ipc=host \
     --shm-size=1gb \
+    --ulimit memlock=-1 \
+    --ulimit stack=67108864 \
     --privileged \
     --name "$NAME" \
     -v $PWD:$PWD \
