@@ -24,12 +24,14 @@ FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_dg
 
 # generic l4t igpu (Orin/NX/Nano/Thor) specific configuration goes here.
 FROM nvcr.io/nvidia/clara-holoscan/holoscan:${HSDK_CONTAINER_CONFIG} AS build_igpu
-RUN \
-    # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
+RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update && \
     apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev && \
-    echo "deb https://repo.download.nvidia.com/jetson/common r36.3 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
-    echo "deb https://repo.download.nvidia.com/jetson/t234 r36.3 main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
+    echo "deb https://repo.download.nvidia.com/jetson/common r38.4 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
+    echo "deb https://repo.download.nvidia.com/jetson/t234 r38.4 main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list && \
     wget -O - https://repo.download.nvidia.com/jetson/jetson-ota-public.asc | apt-key add - && \
     apt-get update && \
     # we do not have the permission to ./mm-api/DEBIAN/postinst \
