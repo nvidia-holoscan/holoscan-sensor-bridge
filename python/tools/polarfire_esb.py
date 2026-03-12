@@ -263,8 +263,6 @@ def main():
     if args.flash:
         _spi_flash(SPI_CONN_ADDR, hololink, args.flash, channel_metadata)
         _spi_program(hololink)
-        # Wait for FPGA programming to complete and stabilize
-        time.sleep(45)
         logging.info("Please power cycle the board to finish programming process")
     hololink.stop()
 
