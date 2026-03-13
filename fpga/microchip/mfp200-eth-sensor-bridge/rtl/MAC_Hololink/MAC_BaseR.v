@@ -1,5 +1,5 @@
 //////////////////////////////////////////////////////////////////////
-// Created by SmartDesign Wed Aug 13 10:29:00 2025
+// Created by SmartDesign Fri Oct 31 11:30:33 2025
 // Version: 2025.1 2025.1.0.14
 //////////////////////////////////////////////////////////////////////
 
@@ -21,7 +21,6 @@ module MAC_BaseR(
     LANE0_RXD_N,
     LANE0_RXD_P,
     PCLK,
-    PRESETN,
     REF_CLK,
     // Outputs
     AXI4S_INITR_AXI4S_DT_INITR_TDATA,
@@ -53,7 +52,6 @@ input         I_SYS_TX_SRESETN;
 input         LANE0_RXD_N;
 input         LANE0_RXD_P;
 input         PCLK;
-input         PRESETN;
 input         REF_CLK;
 //--------------------------------------------------------------------
 // Output
@@ -104,6 +102,7 @@ wire          COREABC_C0_0_APB3Initiator_PSELx;
 wire          COREABC_C0_0_APB3Initiator_PSLVERR;
 wire   [31:0] COREABC_C0_0_APB3Initiator_PWDATA;
 wire          COREABC_C0_0_APB3Initiator_PWRITE;
+wire          COREABC_C0_0_PRESETN;
 wire          CoreAPB3_C0_0_APBmslave0_PENABLE;
 wire   [31:0] CoreAPB3_C0_0_APBmslave0_PRDATA;
 wire          CoreAPB3_C0_0_APBmslave0_PREADY;
@@ -136,11 +135,11 @@ wire          PF_XCVR_ERM_C0_0_LANE0_RX_HDR_VAL;
 wire          PF_XCVR_ERM_C0_0_LANE0_RX_SOS;
 wire          PF_XCVR_ERM_C0_0_LANE0_STATUS_LOCK;
 wire          PF_XCVR_ERM_C0_0_LANE0_TX_CLK_R;
-wire          PRESETN;
 wire          REF_CLK;
 wire          AXI4S_INITR_TLAST_net_0;
 wire          AXI4S_INITR_TVALID_net_0;
 wire          AXI4S_TRGT_TREADY_net_0;
+wire          LANE0_RX_CLK_R_net_1;
 wire          LANE0_RX_VAL_net_1;
 wire          LANE0_TXD_N_net_1;
 wire          LANE0_TXD_P_net_1;
@@ -148,7 +147,6 @@ wire          LANE0_TX_CLK_STABLE_net_1;
 wire   [63:0] AXI4S_INITR_TDATA_net_0;
 wire   [7:0]  AXI4S_INITR_TKEEP_net_0;
 wire   [7:0]  AXI4S_INITR_TUSER_net_0;
-wire          LANE0_RX_CLK_R_net_1;
 wire   [7:3]  O_SYS_MAC_RX_BC_slice_0;
 wire   [7:0]  I_SYS_MAC_TX_BC_net_0;
 wire   [7:0]  O_SYS_MAC_RX_BC_net_0;
@@ -203,6 +201,8 @@ assign AXI4S_INITR_TVALID_net_0               = AXI4S_INITR_TVALID;
 assign AXI4S_INITR_AXI4S_DT_INITR_TVALID      = AXI4S_INITR_TVALID_net_0;
 assign AXI4S_TRGT_TREADY_net_0                = AXI4S_TRGT_TREADY;
 assign AXI4S_TRGT_AXI4S_DT_TARG_TREADY        = AXI4S_TRGT_TREADY_net_0;
+assign LANE0_RX_CLK_R_net_1                   = LANE0_RX_CLK_R_net_0;
+assign LANE0_RX_CLK_R                         = LANE0_RX_CLK_R_net_1;
 assign LANE0_RX_VAL_net_1                     = LANE0_RX_VAL_net_0;
 assign LANE0_RX_VAL                           = LANE0_RX_VAL_net_1;
 assign LANE0_TXD_N_net_1                      = LANE0_TXD_N_net_0;
@@ -217,8 +217,6 @@ assign AXI4S_INITR_TKEEP_net_0                = AXI4S_INITR_TKEEP;
 assign AXI4S_INITR_AXI4S_DT_INITR_TKEEP[7:0]  = AXI4S_INITR_TKEEP_net_0;
 assign AXI4S_INITR_TUSER_net_0                = AXI4S_INITR_TUSER;
 assign AXI4S_INITR_AXI4S_DT_INITR_TUSER[7:0]  = AXI4S_INITR_TUSER_net_0;
-assign LANE0_RX_CLK_R_net_1                   = LANE0_RX_CLK_R_net_0;
-assign LANE0_RX_CLK_R                         = LANE0_RX_CLK_R_net_1;
 //--------------------------------------------------------------------
 // Slices assignments
 //--------------------------------------------------------------------
@@ -279,7 +277,7 @@ CORE10GMAC_C0 CORE10GMAC_C0_0(
         .I_CFG_PCS49_RX_TEST_PATTERN_TYPE_SEL ( GND_net ),
         .I_CFG_PCS49_RX_TEST_PATTERN_DATA_SEL ( GND_net ),
         .PCLK                                 ( PCLK ),
-        .PRESETN                              ( PRESETN ),
+        .PRESETN                              ( COREABC_C0_0_PRESETN ),
         .I_PMA49_RX_GRBX_LOCK                 ( PF_XCVR_ERM_C0_0_LANE0_STATUS_LOCK ),
         .I_PMA49_RX_GRBX_SOS                  ( PF_XCVR_ERM_C0_0_LANE0_RX_SOS ),
         .I_PMA49_RX_GRBX_HDR_EN               ( PF_XCVR_ERM_C0_0_LANE0_RX_HDR_VAL ),
@@ -346,7 +344,7 @@ COREABC_C0 COREABC_C0_0(
         .IO_IN     ( GND_net ),
         .PRDATA_M  ( COREABC_C0_0_APB3Initiator_PRDATA ),
         // Outputs
-        .PRESETN   (  ),
+        .PRESETN   ( COREABC_C0_0_PRESETN ),
         .PSEL_M    ( COREABC_C0_0_APB3Initiator_PSELx ),
         .PENABLE_M ( COREABC_C0_0_APB3Initiator_PENABLE ),
         .PWRITE_M  ( COREABC_C0_0_APB3Initiator_PWRITE ),

@@ -1,5 +1,5 @@
 //////////////////////////////////////////////////////////////////////
-// Created by SmartDesign Tue Aug 12 12:27:35 2025
+// Created by SmartDesign Fri Oct 31 11:32:48 2025
 // Version: 2025.1 2025.1.0.14
 //////////////////////////////////////////////////////////////////////
 
@@ -101,12 +101,12 @@ input         IFACE;
 input  [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 input  [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 input         SIF_TARGET_0_i_sif_axis_tlast_0;
-input  [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+input  [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 input         SIF_TARGET_0_i_sif_axis_tvalid_0;
 input  [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 input  [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 input         SIF_TARGET_1_i_sif_axis_tlast_1;
-input  [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+input  [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 input         SIF_TARGET_1_i_sif_axis_tvalid_1;
 input         i_apb_clk;
 input         i_hif_clk;
@@ -227,18 +227,19 @@ wire   [63:0] SIF_TARGET_0_i_sif_axis_tdata_0;
 wire   [7:0]  SIF_TARGET_0_i_sif_axis_tkeep_0;
 wire          SIF_TARGET_0_i_sif_axis_tlast_0;
 wire          SIF_TARGET_0_TREADY;
-wire   [0:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
+wire   [1:0]  SIF_TARGET_0_i_sif_axis_tuser_0;
 wire          SIF_TARGET_0_i_sif_axis_tvalid_0;
 wire   [63:0] SIF_TARGET_1_i_sif_axis_tdata_1;
 wire   [7:0]  SIF_TARGET_1_i_sif_axis_tkeep_1;
 wire          SIF_TARGET_1_i_sif_axis_tlast_1;
 wire          SIF_TARGET_1_TREADY;
-wire   [0:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
+wire   [1:0]  SIF_TARGET_1_i_sif_axis_tuser_1;
 wire          SIF_TARGET_1_i_sif_axis_tvalid_1;
 wire          SS;
 wire          DO_net_1;
 wire          o_init_done_net_1;
 wire          o_pps_net_1;
+wire          o_ptp_rst_net_1;
 wire          HIF_INITIATOR_0_TVALID_net_0;
 wire   [63:0] HIF_INITIATOR_0_TDATA_net_0;
 wire   [7:0]  HIF_INITIATOR_0_TKEEP_net_0;
@@ -258,7 +259,6 @@ wire          APB_INITIATOR_PENABLE_net_0;
 wire          APB_INITIATOR_PWRITE_net_0;
 wire   [31:0] APB_INITIATOR_PWDATA_net_0;
 wire          APB_INITIATOR_PSELx_net_0;
-wire          o_ptp_rst_net_1;
 wire   [3:1]  o_spi_sdio_slice_0;
 wire   [3:0]  i_spi_sdio_net_0;
 wire   [3:0]  o_spi_sdio_net_0;
@@ -307,6 +307,8 @@ assign o_init_done_net_1                        = o_init_done_net_0;
 assign o_init_done                              = o_init_done_net_1;
 assign o_pps_net_1                              = o_pps_net_0;
 assign o_pps                                    = o_pps_net_1;
+assign o_ptp_rst_net_1                          = o_ptp_rst_net_0;
+assign o_ptp_rst                                = o_ptp_rst_net_1;
 assign HIF_INITIATOR_0_TVALID_net_0             = HIF_INITIATOR_0_TVALID;
 assign HIF_INITIATOR_0_o_hif_axis_tvalid_0      = HIF_INITIATOR_0_TVALID_net_0;
 assign HIF_INITIATOR_0_TDATA_net_0              = HIF_INITIATOR_0_TDATA;
@@ -345,8 +347,6 @@ assign APB_INITIATOR_PWDATA_net_0               = APB_INITIATOR_PWDATA;
 assign APB_INITIATOR_o_apb_pwdata[31:0]         = APB_INITIATOR_PWDATA_net_0;
 assign APB_INITIATOR_PSELx_net_0                = APB_INITIATOR_PSELx;
 assign APB_INITIATOR_o_apb_psel                 = APB_INITIATOR_PSELx_net_0;
-assign o_ptp_rst_net_1                          = o_ptp_rst_net_0;
-assign o_ptp_rst                                = o_ptp_rst_net_1;
 //--------------------------------------------------------------------
 // Slices assignments
 //--------------------------------------------------------------------

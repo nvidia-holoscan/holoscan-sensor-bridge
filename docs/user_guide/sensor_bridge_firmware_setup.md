@@ -56,14 +56,14 @@ The Holoscan Sensor Bridge FPGA firmware can be remotely flashed over Ethernet.
 1. For Microchip MPF200-ETH-SENSOR-BRIDGE devices
 
    ```sh
-   polarfire_esb flash --fpga-bit-version <version>
+   polarfire_esb --flash scripts/mchp_manifest.yaml
    ```
 
    Use "--force" command switch when FPGA is running older version of bit file like 2407
    or 2412.
 
    ```sh
-   polarfire_esb --force flash --fpga-bit-version <version>
+   polarfire_esb --force --flash scripts/mchp_manifest.yaml
    ```
 
 ### Leopard imaging VB1940 Eagle Camera
