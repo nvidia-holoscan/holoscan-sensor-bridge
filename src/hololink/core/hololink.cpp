@@ -40,14 +40,14 @@
 namespace hololink {
 
 // SPI control flags
-constexpr uint32_t SPI_START = 0b0000'0000'0000'0001;
+static constexpr uint32_t SPI_START = 0b0000'0000'0000'0001;
 // SPI status flags
-constexpr uint32_t SPI_BUSY = 0b0000'0000'0000'0001;
+static constexpr uint32_t SPI_BUSY = 0b0000'0000'0000'0001;
 [[maybe_unused]] constexpr uint32_t SPI_FSM_ERR = 0b0000'0000'0000'0010;
-constexpr uint32_t SPI_DONE = 0b0000'0000'0001'0000;
+static constexpr uint32_t SPI_DONE = 0b0000'0000'0001'0000;
 // SPI_CFG
-constexpr uint32_t SPI_CFG_CPOL = 0b0000'0000'0001'0000;
-constexpr uint32_t SPI_CFG_CPHA = 0b0000'0000'0010'0000;
+static constexpr uint32_t SPI_CFG_CPOL = 0b0000'0000'0001'0000;
+static constexpr uint32_t SPI_CFG_CPHA = 0b0000'0000'0010'0000;
 
 // uart registers
 //  address Ranges:
