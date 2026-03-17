@@ -29,6 +29,7 @@ option(HOLOLINK_BUILD_PVA "Build PVA CRC components" OFF)
 option(HOLOLINK_BUILD_CPACK "Build DEB package" OFF)
 option(HOLOLINK_BUILD_EXPORT "Install Hololink targets" ON)
 option(HOLOLINK_BUILD_ROCE "Build Hololink with RoCE support" ON)
+option(HOLOLINK_BUILD_GPUNETIO_ROCE "Build DOCA GPUNetIO RoCE transceiver (requires DOCA gpunetio/verbs)" ON)
 option(HOLOLINK_BUILD_SOCKET "Build Hololink with Linux Socket support" ON)
 
 if (HOLOLINK_BUILD_PYTHON AND NOT HOLOLINK_BUILD_EMULATOR)
