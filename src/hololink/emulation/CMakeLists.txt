@@ -43,7 +43,7 @@ else()
     set(HSB_EMULATOR_CUPY OFF)
     set(HSB_EMULATOR_BUILD_PYTHON ${HOLOLINK_BUILD_PYTHON})
     set(HSB_EMULATOR_TOT_BUILD TRUE)
-    set(HOLOLINK_REL_PATH "${CMAKE_SOURCE_DIR}")
+    set(HOLOLINK_REL_PATH "${hololink_SOURCE_DIR}")
 endif()
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-missing-field-initializers")
 
