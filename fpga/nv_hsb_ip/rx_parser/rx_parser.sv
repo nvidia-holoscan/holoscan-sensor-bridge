@@ -240,6 +240,7 @@ always_ff @(posedge host_clk) begin
   if (host_rst) begin
     proc_pipeline               <= '0;
     axis_rx_tlast_prev          <= '0;
+    one_cycle                   <= '0;
   end
   else begin
     proc_pipeline[IPV4_STAGES-1:1] <= {proc_pipeline[IPV4_STAGES-2:0]};

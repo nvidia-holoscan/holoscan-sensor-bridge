@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+fpga_uuid:
+  - f1627640-b4dc-48af-a360-c55b09b3d230
+
+firmware_versions:
+  - version: 0x2507
+    cpnx:
+      - location: https://www.dropbox.com/scl/fi/6wujqmyshay1skucokqt4/LI-CERTUS-BRG-V1.0-V2.bit?rlkey=58a02jt1r3hxs2mgs1628dzop&dl=1
+        md5: bd90fcd6d815fa1d7c8c6ba72d289685
+        size: 1953682
+
+  - version: 0x2510
+    cpnx:
+      - location: https://www.dropbox.com/scl/fi/a67gd40s1wziwqzg1zu54/LI-CERTUS-BRG-V1.0-V3.bit?rlkey=5uqdrugsu6o4ccq3u86hnbwhx&e=1&dl=1
+        md5: db0534e45d95628af3b8b355560e7d6d
+        size: 1953683
+
+  - version: 0x2603
+    cpnx:
+      - location: https://www.dropbox.com/scl/fi/cc43z8gtno5wh0bdptsg4/LI-CERTUS-BRG-V1.0-V5.bit?rlkey=lk9hyle2qnz9zob2q2vmycsi4&dl=1
+        md5: 5a6dc6e7e9a8a03b7bbbfee4bdbe023d
+        size: 1954403

@@ -88,6 +88,13 @@ ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 FROM nvcr.io/nvidia/cuda:13.0.0-devel-ubuntu24.04 AS build_cuda13
 ENV CUDA_VERSION="${CUDA_VERSION:-13.0.0}"
 
+# cuda13 on L4T (e.g. IGX Thor): add NvSciBuf from host for PVA CRC wheel build.
+FROM build_cuda13 AS build_cuda13_l4t
+COPY --from=l4t-libs \
+    libnvscibuf.so \
+    libnvscicommon.so.1 \
+    /usr/lib/aarch64-linux-gnu/nvidia/
+
 # AGX Thor/SIPL/FUSA specific configuration goes here.
 FROM build_cuda13 AS build_cuda13_sipl
 ARG L4T_VERSION=invalid
@@ -187,7 +194,6 @@ ENV IBV_DEVICES=${IBV_DEVICES}
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # run as root user...ignore warnings about installing as root inside container
 ENV PIP_ROOT_USER_ACTION=ignore
-ENV CONTAINER_TYPE=${CONTAINER_TYPE}
 ENV CUDA_NATIVE_ARCH=${CUDA_NATIVE_ARCH}
 ENV CUDA_VERSION_MAJOR="${CUDA_VERSION%%.*}"
 ENV CUDA_VERSION_MINOR_PATCH="${CUDA_VERSION#*.}"

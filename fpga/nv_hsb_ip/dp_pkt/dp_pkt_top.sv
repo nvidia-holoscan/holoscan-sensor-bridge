@@ -688,6 +688,7 @@ always_ff @(posedge i_pclk) begin
     tlast_aligned      <= '0;
     sts_ram_wren       <= '0;
     sif_gnt_unchanged  <= '0;
+    sif_tlast_done     <= '0;
   end
   else begin
     case (roce_state)
@@ -830,6 +831,8 @@ always_ff @(posedge i_pclk) begin
     r_threshold_idx           <= '0;
     roce_buf_offset           <= '0;
     roce_buf_addr             <= '0;
+    roce_nxt_vaddr2           <= '0;
+    md_disable                <= '0;
   end
   else begin
     roce_buf_offset           <= (BUFFER_4K_REG) ? (roce_buf_inc * buf_ptr) : '0;
@@ -1244,7 +1247,7 @@ generate
           dp_axis_tlast_r[n]  <= dp_axis_tlast[n];
           dp_axis_tvalid_r[n] <= dp_axis_tvalid[n];
         end
-        if (n==hif_gnt_idx_r && hdr_axis_tvalid) begin
+        if (n==hif_gnt_idx_r && (hdr_axis_tvalid || (cycle_32byte && hdr_trigger))) begin
           dp_axis_tkeep_r[n] <= (hdr_type[0] ? COE_HDR_TKEEP : is_data_wr_imm ? 
                                 (cycle_32byte ? ROCE_IMM_HDR_TKEEP_32B : ROCE_IMM_HDR_TKEEP) :
                                 (cycle_32byte ? ROCE_HDR_TKEEP_32B : ROCE_HDR_TKEEP));

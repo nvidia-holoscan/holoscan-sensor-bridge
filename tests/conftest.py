@@ -15,6 +15,7 @@
 
 # See README.md for detailed information.
 
+import gc
 import json
 import logging
 import logging.handlers
@@ -280,6 +281,12 @@ def pytest_addoption(parser):
         default=None,
         help="Path to the JSON configuration file to use, e.g. for SIPL capture.",
     )
+    parser.addoption(
+        "--cuda-subprocesses",
+        action="store_true",
+        default=False,
+        help="Allow multiple CUDA subprocesses to be used in tests.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -337,6 +344,13 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_hsb_nano" in item.keywords:
                 item.add_marker(skip_hsb_nano)
+    if not config.getoption("--cuda-subprocesses"):
+        skip_cuda_subprocesses = pytest.mark.skip(
+            reason="Tests only run in --cuda-subprocesses mode."
+        )
+        for item in items:
+            if "skip_unless_cuda_subprocesses" in item.keywords:
+                item.add_marker(skip_cuda_subprocesses)
     if not config.getoption("--vb1940"):
         skip_vb1940 = pytest.mark.skip(reason="Tests only run in --vb1940 mode.")
         for item in items:
@@ -546,3 +560,8 @@ def pytest_generate_tests(metafunc):
 def report_test_name(request):
     test_name = request.node.name
     hololink_module.hsb_log_info(f"Starting {test_name}")
+
+
+@pytest.fixture(autouse=True)
+def python_gc():
+    gc.collect()

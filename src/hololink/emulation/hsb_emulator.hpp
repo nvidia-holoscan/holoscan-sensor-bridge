@@ -48,11 +48,11 @@ enum ECB_CMD_CODE {
 };
 
 enum ECB_RESPONSE_CODE {
-    SUCCESS = 0x00,
-    ADDRESS_ERROR = 0x03,
-    COMMAND_ERROR = 0x04,
-    FLAG_ERROR = 0x06,
-    SEQUENCE_ERROR = 0x0B
+    ECB_SUCCESS = 0x00,
+    ECB_ADDRESS_ERROR = 0x03,
+    ECB_COMMAND_ERROR = 0x04,
+    ECB_FLAG_ERROR = 0x06,
+    ECB_SEQUENCE_ERROR = 0x0B
 };
 
 template <typename T>

@@ -114,7 +114,7 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -179,7 +179,7 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             # storage_type of 1 is device memory
             storage_type=1,
             block_size=rgba_image_size,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -447,7 +447,7 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 block_size=camera._width
                 * ctypes.sizeof(ctypes.c_uint16)
                 * camera._height,
-                num_blocks=2,
+                num_blocks=4,
             )
             csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
                 self,
@@ -513,7 +513,7 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 # storage_type of 1 is device memory
                 storage_type=1,
                 block_size=rgba_image_size,
-                num_blocks=2,
+                num_blocks=4,
             )
             demosaic = holoscan.operators.BayerDemosaicOp(
                 self,

@@ -379,9 +379,9 @@ class Watchdog:
         os.kill(self._pid, signal.SIGUSR1)
         time.sleep(2)
         # We only get here if we weren't closed up by _sigusr1.
-        logging.error("Sending SIGABORT to the local process group.")
+        logging.error("Sending SIGABRT to the local process group.")
         local_process_group = 0
-        os.kill(local_process_group, signal.SIGABORT)
+        os.kill(local_process_group, signal.SIGABRT)
 
     def update(self, timeout=None, initial_timeout=None, tap=True):
         """Reconfigure how the next tap() works."""

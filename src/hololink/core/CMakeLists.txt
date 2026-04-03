@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -27,8 +27,6 @@ add_library(hololink_core STATIC
   packetizer_program.cpp
   reactor.cpp
   timeout.cpp
-  traditional_spi.cpp
-  traditional_i2c.cpp
   )
 add_library(hololink::core ALIAS hololink_core)
 
@@ -56,6 +54,7 @@ install(TARGETS hololink_core
 install(FILES
         arp_wrapper.hpp
         csi_controller.hpp
+        named_lock.hpp
         csi_formats.hpp
         data_channel.hpp
         deserializer.hpp

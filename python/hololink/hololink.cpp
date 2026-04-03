@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +22,7 @@
 #include <hololink/core/enumerator.hpp>
 #include <hololink/core/jesd.hpp>
 #include <hololink/core/logging_internal.hpp>
+#include <hololink/core/named_lock.hpp>
 #include <hololink/core/nvtx_trace.hpp>
 #include <hololink/core/timeout.hpp>
 
@@ -154,17 +155,6 @@ public:
         PYBIND11_OVERRIDE(void, Hololink::AsyncEventListener, on_sif1_frame_end_event, state, timestamp_s, timestamp_ns);
     }
 };
-
-// This is only included here for flash memory programming on
-// older (2502 and older) FPGAs; so this prototype isn't included
-// in a public header file anywhere.
-std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t spi_address, uint32_t chip_select,
-    uint32_t clock_divisor, uint32_t cpol, uint32_t cpha, uint32_t width);
-
-// This is only included here for FPGAs with older I2C interfaces
-// (like the MPF200 from Microchip); because this interface is deprecated
-// we don't have it in a public header file anywhere.
-std::shared_ptr<Hololink::I2c> get_traditional_i2c(Hololink& hololink, uint32_t i2c_address);
 
 // Python wrapper functions for HSB_LOG macros
 namespace logging_wrappers {
@@ -550,6 +540,7 @@ PYBIND11_MODULE(_hololink, m)
                                    "address"_a, "timeout"_a = std::shared_ptr<Timeout>(), py::call_guard<py::gil_scoped_release>())
                                .def("setup_clock", &Hololink::setup_clock, "clock_profile"_a, py::call_guard<py::gil_scoped_release>())
                                .def("get_i2c", &Hololink::get_i2c, "i2c_bus"_a, "i2c_address"_a = I2C_CTRL)
+                               .def("i2c_lock", &Hololink::i2c_lock, py::return_value_policy::reference_internal)
                                .def("get_spi", &Hololink::get_spi, "bus_number"_a, "chip_select"_a,
                                    "prescaler"_a = 0x0F, "cpol"_a = 1, "cpha"_a = 1, "width"_a = 1, "spi_address"_a = SPI_CTRL)
                                .def("get_uart", &Hololink::get_uart,
@@ -749,16 +740,6 @@ PYBIND11_MODULE(_hololink, m)
                              .def("receiver_start_byte", &csi::CsiConverter::receiver_start_byte)
                              .def("received_line_bytes", &csi::CsiConverter::received_line_bytes, "line_bytes"_a)
                              .def("transmitted_line_bytes", &csi::CsiConverter::transmitted_line_bytes, "pixel_format"_a, "pixel_width"_a);
-
-    // Support for legacy I2C interfaces; we only use this on FPGAs
-    // that aren't updated (e.g. MPF200)
-    m.def("get_traditional_i2c", &get_traditional_i2c, "hololink"_a, "i2c_address"_a);
-
-    // Support for legacy SPI interfaces; we only use this to write
-    // the flash memory of older HSB FPGAs (0x2502 and earlier)
-    m.def("get_traditional_spi", &get_traditional_spi,
-        "hololink"_a, "spi_address"_a, "chip_select"_a, "clock_divisor"_a,
-        "cpol"_a, "cpha"_a, "width"_a);
 
     auto sequencer = py::class_<Hololink::Sequencer, std::shared_ptr<Hololink::Sequencer>>(m, "Sequencer")
                          .def("write_uint32", &Hololink::Sequencer::write_uint32, "address"_a, "data"_a)

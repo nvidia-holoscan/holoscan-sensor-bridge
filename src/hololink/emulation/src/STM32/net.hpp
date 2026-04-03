@@ -31,6 +31,9 @@
 #define TX_BUFFER_SIZE ETH_TX_BUF_SIZE
 #endif
 
+// this is the size of the ethernet frame, but not including the CRC or vlan (not supported yet)
+#define MTU_SIZE 1514u
+
 #define ETH_ALEN 6u /* Ethernet address length */
 #define ETHER_ADDR_LEN ETH_ALEN
 #define ETHER_TYPE_LEN 2u
@@ -167,6 +170,37 @@ struct udphdr {
     uint16_t check;
 };
 
+#define IB_OPCODE_WRITE 0x2A
+#define IB_OPCODE_WRITE_IMMEDIATE 0x2B
+
+#define BT_HDR_LEN 12u
+#define BT_HDR_OFFSET UDP_PAYLOAD_OFFSET
+#define BT_PAYLOAD_OFFSET (BT_HDR_OFFSET + BT_HDR_LEN)
+#define NET_GET_BT_PAYLOAD(hdr) ((uint8_t*)(hdr) + BT_HDR_LEN)
+
+// from Infiniband specification
+struct bthdr {
+    uint8_t opcode; // opcode {= 0x2A for write, 0x2B for write immediate}
+    // Note we should be paying attention to the pad count flag in bits 5:4
+    // if we want to have non-4-byte boundary payloads.
+    uint8_t flags; // flags {= 0}.
+    uint16_t p_key; // partition {= 0xFFFF}
+    uint32_t destqp; // destination qp (lower 24 bits only) {= 0xFF << 24 | qp}
+    uint32_t psn; // psn only lower 24 bits are used. ack bit on 31.
+};
+
+#define RET_HDR_LEN 16u
+#define RET_HDR_OFFSET BT_PAYLOAD_OFFSET
+#define RET_PAYLOAD_OFFSET (RET_HDR_OFFSET + RET_HDR_LEN)
+#define NET_GET_RET_PAYLOAD(hdr) ((uint8_t*)(hdr) + RET_HDR_LEN)
+
+// from Infiniband specification
+struct rethdr {
+    uint64_t va; // virtual address where data is stored on receiver side
+    uint32_t r_key; // rkey
+    uint32_t dmalen; // dma length of the payload. Does not include headers or iCRC
+};
+
 typedef uint32_t in_addr_t;
 
 // network/host conversion functions to match corresponding posix functions
@@ -240,6 +274,9 @@ void set_mac_address(const uint8_t* mac_address);
 
 // generate a mac address for the system. NOT for production use
 void generate_mac_address(void);
+
+// get the system mac address
+const uint8_t* get_mac_address(void);
 
 // set the IP address for the system. Note only one interface is effectively supported.
 void net_set_ip_address(in_addr_t ip_address);

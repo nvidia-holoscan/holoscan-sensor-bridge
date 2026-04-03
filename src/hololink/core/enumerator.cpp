@@ -378,7 +378,7 @@ void Enumerator::enumeration_packets(
     while (!done) {
         // if there had been a timeout provided check if it had expired, if not set the timeout of
         // the select() call to the remaining time
-        timeval* select_timeout;
+        timeval* select_timeout = nullptr;
         if (timeout) {
             if (timeout->expired()) {
                 return;
@@ -391,8 +391,6 @@ void Enumerator::enumeration_packets(
             timeout_value.tv_usec
                 = (__suseconds_t)(fractional * std::micro().den / std::micro().num);
             select_timeout = &timeout_value;
-        } else {
-            select_timeout = nullptr;
         }
 
         std::array<int, 1> fds { { bootp_socket.get() } };
@@ -409,6 +407,10 @@ void Enumerator::enumeration_packets(
         num_fds++;
         const int result = select(num_fds, &r, nullptr, &x, select_timeout);
         if (result == -1) {
+            if (errno == EINTR) {
+                // Go back and try it again.
+                continue;
+            }
             throw std::runtime_error(fmt::format("select failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
         for (auto&& fd : fds) {
@@ -495,14 +497,18 @@ void Enumerator::send_bootp_reply(
     }
 }
 
-// Static variable definitions
-std::shared_ptr<std::map<std::string, std::shared_ptr<EnumerationStrategy>>> Enumerator::uuid_strategies()
+/* static */ std::shared_ptr<Enumerator::EnumerationStrategyMap> Enumerator::uuid_strategies()
 {
     // Intentionally leaked to avoid static destruction order fiasco
-    static auto instance = std::make_shared<std::map<std::string, std::shared_ptr<EnumerationStrategy>>>();
-    return instance;
+    static auto* instance_ptr = new std::shared_ptr<Enumerator::EnumerationStrategyMap>();
+    static std::once_flag init_flag;
+
+    std::call_once(init_flag, []() {
+        *instance_ptr = std::shared_ptr<Enumerator::EnumerationStrategyMap>(new Enumerator::EnumerationStrategyMap());
+    });
+
+    return *instance_ptr;
 }
-std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::reactor_enumerator_;
 
 EnumerationStrategy::~EnumerationStrategy()
 {
@@ -513,7 +519,7 @@ void EnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::De
     // By default, don't do anything.
 }
 
-std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy)
+/* static */ std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy)
 {
     Enumerator::configure_default_enumeration_strategies();
     std::shared_ptr<EnumerationStrategy> previous_strategy = nullptr;
@@ -526,7 +532,7 @@ std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string u
     return previous_strategy;
 }
 
-std::shared_ptr<EnumerationStrategy> Enumerator::get_uuid_strategy(std::string uuid)
+/* static */ std::shared_ptr<EnumerationStrategy> Enumerator::get_uuid_strategy(std::string uuid)
 {
     auto strategies = uuid_strategies();
     auto it = strategies->find(uuid);
@@ -792,14 +798,17 @@ std::tuple<Metadata, std::vector<uint8_t>> Enumerator::handle_bootp_fd(int fd)
 // ReactorEnumerator implementation
 std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::ReactorEnumerator::get_reactor_enumerator()
 {
-    static std::mutex mutex;
-    std::lock_guard<std::mutex> lock(mutex);
+    // Use a leaked static pointer to avoid destruction order issues
+    // This ensures the shared_ptr control block survives until program exit
+    static auto* instance_ptr = new std::shared_ptr<ReactorEnumerator>();
+    static std::once_flag init_flag;
 
-    if (!Enumerator::reactor_enumerator_) {
-        Enumerator::reactor_enumerator_ = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
-        Enumerator::reactor_enumerator_->start();
-    }
-    return Enumerator::reactor_enumerator_;
+    std::call_once(init_flag, []() {
+        *instance_ptr = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
+        (*instance_ptr)->start();
+    });
+
+    return *instance_ptr;
 }
 
 Enumerator::ReactorEnumerator::ReactorEnumerator()

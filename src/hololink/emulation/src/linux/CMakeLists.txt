@@ -65,8 +65,8 @@ install(TARGETS emulationcoe
 )
 
 add_library(emulationroce STATIC
-    linux_data_plane.cpp
-    linux_transmitter.cpp
+    rocev2_data_plane.cpp
+    rocev2_transmitter.cpp
 )
 
 target_include_directories(emulationroce 

@@ -4,68 +4,21 @@
 # version (either via CMake config or header discovery).
 
 include_guard(GLOBAL)
-set(HOLOLINK_FMT_VERSION "10.1.1")
 
-# Already exists?
-if(TARGET fmt::fmt-header-only)
-  return()
+# in case the include is moved before finding HSDK, try to find it, but not required and no need to configure
+if (NOT holoscan_FOUND)
+  find_package(holoscan 4.0 PATHS "/opt/nvidia/holoscan")
 endif()
 
-# Try CMake config package
-find_package(fmt ${HOLOLINK_FMT_VERSION} QUIET CONFIG)
-if(fmt_FOUND)
-  message(STATUS "Found fmt: (version ${HOLOLINK_FMT_VERSION})")
-  return()
+# try to find HSDK's version first.
+find_package(fmt 11 QUIET)
+if (NOT fmt_FOUND) 
+  # fallback to the system version
+  find_package(fmt 8 QUIET)
 endif()
 
-# Find via path discovery
-set(_fmt_hint_paths
-  /opt/nvidia/holoscan
-  ${CMAKE_PREFIX_PATH}
-  $ENV{CMAKE_PREFIX_PATH}
-  /usr
-  /usr/local
-)
-unset(FMT_INCLUDE_DIR CACHE)
-find_path(FMT_INCLUDE_DIR
-  NAMES fmt/format.h
-  PATHS ${_fmt_hint_paths}
-  PATH_SUFFIXES include
-  NO_DEFAULT_PATH
-  DOC "Path to directory containing fmt/format.h"
-)
-
-# Create imported interface target from path if found
-if(FMT_INCLUDE_DIR)
-  message(STATUS "Found fmt: ${FMT_INCLUDE_DIR}")
-  add_library(fmt::fmt-header-only INTERFACE IMPORTED)
-  set_target_properties(fmt::fmt-header-only PROPERTIES
-    INTERFACE_INCLUDE_DIRECTORIES "${FMT_INCLUDE_DIR}"
-    INTERFACE_COMPILE_DEFINITIONS "FMT_HEADER_ONLY=1"
-  )
-  # to be compatible with HSDK4.0 providing fmt and defining the fmt::fmt target
-  if (NOT TARGET fmt::fmt)
-    find_library(FMT_LIBRARY PATHS ${_fmt_hint_paths}
-      NAMES fmt libfmt
-      PATH_SUFFIXES lib lib64
-      NO_DEFAULT_PATH
-      DOC "Path to fmt library")
-    add_library(fmt::fmt INTERFACE IMPORTED)
-    set_target_properties(fmt::fmt PROPERTIES
-      INTERFACE_INCLUDE_DIRECTORIES "${FMT_INCLUDE_DIR}"
-      INTERFACE_LINK_LIBRARIES "${FMT_LIBRARY}"
-    )
-  endif()
-  return()
+if (NOT fmt_FOUND)
+  message(FATAL_ERROR "fmt targets not found. Make sure either HSDK 4.0+ or libfmt-dev is installed in environment")
+else()
+  message(STATUS "Found fmt: ${fmt_DIR} (found version \"${fmt_VERSION}\")")
 endif()
-
-# Fetch
-message(STATUS "fmt: Fetching v${HOLOLINK_FMT_VERSION}")
-include(FetchContent)
-FetchContent_Declare(
-  fmt_src
-  GIT_REPOSITORY https://github.com/fmtlib/fmt.git
-  GIT_TAG        ${HOLOLINK_FMT_VERSION}
-  GIT_SHALLOW    TRUE
-)
-FetchContent_MakeAvailable(fmt_src)

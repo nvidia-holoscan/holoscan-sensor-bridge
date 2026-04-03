@@ -20,39 +20,11 @@
 #ifndef LINUX_DATA_PLANE_HPP
 #define LINUX_DATA_PLANE_HPP
 
-#include "data_plane.hpp"
+#include "rocev2_data_plane.hpp"
 
 namespace hololink::emulation {
 
-/**
- * @brief The DataPlane implementation for RoCEv2 UDP transport.
- */
-class LinuxDataPlane : public DataPlane {
-public:
-    /**
-     * python:
-     *
-     * `def __init__(self: hemu.LinuxDataPlane, hsb_emulator: hemu.HSBEmulator, source_ip: hemu.IPAddress, data_plane_id: int, sensor_id: int)`
-     *
-     * @brief Construct a new LinuxDataPlane object
-     * @param hsb_emulator The HSBEmulator object to attach to.
-     * @param source_ip The IP address of the DataPlane.
-     * @param data_plane_id The identifying index of the DataPlane.
-     * @param sensor_id The identifying index of the sensor interface associated with the DataPlane.
-     */
-    LinuxDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id);
-    ~LinuxDataPlane();
-
-protected:
-    /**
-     * @brief Update the TransmissionMetadata for the LinuxDataPlane.
-     *
-     * @note Only one thread may call LinuxDataPlane::send at a time. DataPlane::send() ensures thread safety.
-     */
-    void update_metadata() override;
-
-    uint32_t page_ { 0 };
-};
+using LinuxDataPlane = RoCEv2DataPlane;
 
 } // namespace hololink::emulation
 

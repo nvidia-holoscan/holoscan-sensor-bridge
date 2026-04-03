@@ -58,8 +58,8 @@ public:
         spec.output<Tensor>(output_name);
 
         // Register converters for arguments not defined by Holoscan.
-        // Use DataPtr instead of std::function to avoid bad_any_cast with std::function<void()>
-        // registered in hololink's base_receiver_op.
+        // Use DataPtr instead of std::function<Data()> because holoscan::Arg wraps any nullary
+        // callable as std::function<void()> (Arg::set_value_ in arg.hpp), which breaks the param.
         register_converter<DataPtr>();
 
         spec.param(data_, "data", "Data", "Data to emit");

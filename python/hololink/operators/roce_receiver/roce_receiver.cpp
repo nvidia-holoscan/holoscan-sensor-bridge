@@ -80,7 +80,7 @@ public:
     PyRoceReceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
         const std::string& ibv_name, uint32_t ibv_port, py::object rename_metadata, bool trim,
-        bool use_frame_ready_condition, uint32_t pages, uint32_t queue_size, const std::string& name)
+        bool use_frame_ready_condition, uint32_t pages, uint32_t queue_size, const std::string& name, size_t metadata_offset)
         : RoceReceiverOp(holoscan::ArgList {
             holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
             holoscan::Arg { "device_start", std::function<void()>([this]() {
@@ -99,7 +99,8 @@ public:
             holoscan::Arg { "trim", trim },
             holoscan::Arg { "use_frame_ready_condition", use_frame_ready_condition },
             holoscan::Arg { "pages", pages },
-            holoscan::Arg { "queue_size", queue_size } })
+            holoscan::Arg { "queue_size", queue_size },
+            holoscan::Arg { "metadata_offset", metadata_offset } })
         , device_(device)
     {
         add_positional_condition_and_resource_args(this, args);
@@ -207,11 +208,11 @@ PYBIND11_MODULE(_roce_receiver, m)
     py::class_<RoceReceiverOp, PyRoceReceiverOp, holoscan::Operator,
         std::shared_ptr<RoceReceiverOp>>(m, "RoceReceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, const std::string&, uint32_t, py::object, bool, bool, uint32_t, uint32_t, const std::string&>(),
+                 size_t, const std::string&, uint32_t, py::object, bool, bool, uint32_t, uint32_t, const std::string&, size_t>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
             "ibv_name"_a = "roceP5p3s0f0", "ibv_port"_a = 1, "rename_metadata"_a = py::none(),
             "trim"_a = true, "use_frame_ready_condition"_a = true, "pages"_a = 2, "queue_size"_a = 1,
-            "name"_a = "roce_receiver"s)
+            "name"_a = "roce_receiver"s, "metadata_offset"_a = 0)
         .def("get_next_frame", &RoceReceiverOp::get_next_frame, "timeout_ms"_a, "cuda_stream"_a, py::call_guard<py::gil_scoped_release>())
         .def("frames_ready", &RoceReceiverOp::frames_ready, py::call_guard<py::gil_scoped_release>())
         .def("setup", &RoceReceiverOp::setup, "spec"_a)

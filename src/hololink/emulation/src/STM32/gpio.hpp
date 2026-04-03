@@ -53,16 +53,63 @@ LED_BLUE         0x1E         0x40000000
 #define GPIO_LOW 0
 #define GPIO_HIGH 1
 
+/**
+ * @brief Initialize GPIO.
+ *
+ * @param ctxt The context pointer.
+ *
+ * @return 0 on success, non-zero on failure
+ */
 int GPIO_init(void* ctxt);
 
 namespace hololink::emulation {
 
+/**
+ * @brief Get the value of the GPIO.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_vals The address-value pair. Each bit in values corresponds to high/low state of the GPIO pin at the address.
+ *                   Each address supports 32 pins with the 0 pin at GPIO_STATUS_BASE_REGISTER + 0 and the 31 pin at GPIO_STATUS_BASE_REGISTER + 31.
+ * @param max_count The maximum number of address-value pairs to get.
+ *
+ * @return The number of address-value pairs got.
+ */
 int GPIO_get_value(void* ctxt, struct AddressValuePair* addr_vals, int max_count);
 
+/**
+ * @brief Get the direction of the GPIO.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_vals The address-value pair. Each bit in values corresponds to direction of the GPIO pin at the address.
+ *                   Each address supports 32 pins with the 0 pin at GPIO_DIRECTION_BASE_REGISTER + 0 and the 31 pin at GPIO_DIRECTION_BASE_REGISTER + 31.
+ * @param max_count The maximum number of address-value pairs to get.
+ *
+ * @return The number of address-value pairs got.
+ */
 int GPIO_get_direction(void* ctxt, struct AddressValuePair* addr_vals, int max_count);
 
+/**
+ * @brief Set the value of the GPIO.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_vals The address-value pair. Each bit in values corresponds to high/low state of the GPIO pin at the address.
+ *                   Each address supports 32 pins with the 0 pin at GPIO_OUTPUT_BASE_REGISTER + 0 and the 31 pin at GPIO_OUTPUT_BASE_REGISTER + 31.
+ * @param max_count The maximum number of address-value pairs to set.
+ *
+ * @return The number of address-value pairs set.
+ */
 int GPIO_set_value(void* ctxt, struct AddressValuePair* addr_vals, int max_count);
 
+/**
+ * @brief Set the direction of the GPIO.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_vals The address-value pair. Each bit in values corresponds to direction of the GPIO pin at the address.
+ *                   Each address supports 32 pins with the 0 pin at GPIO_DIRECTION_BASE_REGISTER + 0 and the 31 pin at GPIO_DIRECTION_BASE_REGISTER + 31.
+ * @param max_count The maximum number of address-value pairs to set.
+ *
+ * @return The number of address-value pairs set.
+ */
 int GPIO_set_direction(void* ctxt, struct AddressValuePair* addr_vals, int max_count);
 }
 #endif /* STM32_GPIO_HPP */

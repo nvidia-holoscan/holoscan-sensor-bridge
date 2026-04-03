@@ -1,20 +1,20 @@
 hololink:
   archive:
-    enrollment_date: '2026-03-04T19:49:48.227397+00:00'
+    enrollment_date: '2026-04-03T16:59:57.580599+00:00'
     version: '2603'
   content:
     fpga_clnx_v2603_3ac.bit:
       md5: 0035bf5a62a41c4b9dda6267e06b2c11
       size: 377554
-      url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603/fpga_clnx_v2603_3ac.bit
-    fpga_cpnx_v2603_d3b.bit:
-      md5: 34f27fcbddffe0bf87f93a260e1ced51
+      url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603-EA2/fpga_clnx_v2603_3ac.bit
+    fpga_cpnx_v2603_a67.bit:
+      md5: 639d377f8ec52806007bd8c18f0e7e52
       size: 1965683
-      url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603/fpga_cpnx_v2603_d3b.bit
+      url: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603-EA2/fpga_cpnx_v2603_a67.bit
   fpga_uuid:
   - 889b7ce3-65a5-4247-8b05-4ff1904c3359
   images:
-  - content: fpga_cpnx_v2603_d3b.bit
+  - content: fpga_cpnx_v2603_a67.bit
     context: cpnx
   - content: fpga_clnx_v2603_3ac.bit
     context: clnx

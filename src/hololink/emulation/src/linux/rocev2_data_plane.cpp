@@ -19,26 +19,26 @@
 
 #include <stdexcept>
 
-#include "linux_data_plane.hpp"
-#include "linux_transmitter.hpp"
+#include "rocev2_data_plane.hpp"
+#include "rocev2_transmitter.hpp"
 
 namespace hololink::emulation {
 
-LinuxDataPlane::LinuxDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id)
+RoCEv2DataPlane::RoCEv2DataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id)
     : DataPlane(hsb_emulator, source_ip, data_plane_id, sensor_id)
 {
     // allocate transmitter and its metadata
-    transmitter_ = new LinuxTransmitter(source_ip);
+    transmitter_ = new RoCEv2Transmitter(source_ip);
     metadata_ = (TransmissionMetadata*)calloc(1, sizeof(LinuxTransmissionMetadata));
 }
 
-LinuxDataPlane::~LinuxDataPlane()
+RoCEv2DataPlane::~RoCEv2DataPlane()
 {
     delete transmitter_;
     free(metadata_);
 }
 
-void LinuxDataPlane::update_metadata()
+void RoCEv2DataPlane::update_metadata()
 {
     struct AddressValuePair address_value_pairs[] = {
         /* TransmissionMetadata */

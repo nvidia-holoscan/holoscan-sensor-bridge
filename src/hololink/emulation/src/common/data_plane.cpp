@@ -56,12 +56,4 @@ DataPlane::~DataPlane()
     stop();
 }
 
-bool DataPlane::packetizer_enabled() const
-{
-    constexpr uint32_t PACKETIZER_MODE = 0x0C;
-    struct AddressValuePair address_value = { sif_address_ + PACKETIZER_MODE, 0 };
-    registers_->read(address_value);
-    return (address_value.value >> 28) & 0x1;
-}
-
 } // namespace hololink::emulation

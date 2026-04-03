@@ -21,6 +21,7 @@ if(NOT DEFINED STM32_PATH OR STM32_PATH STREQUAL "")
   message(WARNING "STM32_PATH is not set - searching ~/STM32. If not found, set it to your STM32CubeF7 (or SDK) root for STM32F767ZI, e.g. -DSTM32_PATH=/path/to/STM32CubeF7")
   set(STM32_PATH "$ENV{HOME}/STM32")
 endif()
+
 # CMake does not expand ~ in file(GLOB)/find_path; use $ENV{HOME} and make absolute
 if(STM32_PATH MATCHES "^~")
   string(REPLACE "~" "$ENV{HOME}" STM32_PATH "${STM32_PATH}")
@@ -56,6 +57,8 @@ endif()
 # check dependencies
 include("${HOLOLINK_REL_PATH}/cmake/hololink_deps/dlpack.cmake")
 include("${CMAKE_SOURCE_DIR}/cmake/deps/stm32mcu.cmake")
+include("${CMAKE_SOURCE_DIR}/cmake/deps/zlib_crc32.cmake")
+
 
 set(STM32_STARTUP_FILE "${STM32_CMSIS_DEVICE_PATH}/Source/Templates/gcc/startup_stm32f767xx.s")
 message(STATUS "startup file = ${STM32_STARTUP_FILE}")

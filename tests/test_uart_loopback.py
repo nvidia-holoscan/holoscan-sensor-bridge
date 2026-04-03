@@ -139,6 +139,14 @@ class UartLoopbackOp(holoscan.core.Operator):
                     f"String collected so far: {rx_str!r}"
                 )
             logging.info(f"UartLoopbackOp: Read {len(rx_str)} total bytes: {rx_str!r}")
+            if rx_str != self._test_string:
+                logging.error(
+                    "UART loopback mismatch: expected %d bytes %r, got %d bytes %r",
+                    len(self._test_string),
+                    self._test_string,
+                    len(rx_str),
+                    rx_str,
+                )
             logging.info(
                 "\n\n============================================================================================================================\n\n"
             )
@@ -238,7 +246,7 @@ _DEFAULT_TEST_STRING = _TEST_PATTERN * 32
 
 
 @pytest.mark.skip_unless_hsb_nano
-def test_uart_loopback(hololink_address, frame_limit, capsys):
+def test_uart_loopback(hololink_address, frame_limit, caplog):
     """Run UART loopback (GPIO 10 TX to GPIO 11 RX). Uses frame_limit as cycle limit."""
     config_path = os.path.join(
         os.path.dirname(__file__), "..", "examples", "example_configuration.yaml"
@@ -265,7 +273,11 @@ def test_uart_loopback(hololink_address, frame_limit, capsys):
     hololink = hololink_channel.hololink()
     hololink.start()
     hololink.reset()
-    application.run()
+    with caplog.at_level(logging.ERROR):
+        application.run()
     hololink.stop()
-    captured = capsys.readouterr()
-    assert captured.err == ""
+    error_logs = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
+    assert not error_logs, (
+        f"UART loopback logged {len(error_logs)} error(s); "
+        f"first: {error_logs[0].getMessage()}"
+    )

@@ -26,6 +26,34 @@ target_link_libraries(hsb_control PRIVATE
     hololink::emulation
 )
 
+if (${HSB_EMULATOR_TARGET} STREQUAL "STM32F767ZI")
+    add_executable(gpio_send_roce
+        gpio_send_roce.cpp
+    )
+ 
+    target_include_directories(gpio_send_roce PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/../
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+    )
+    target_link_libraries(gpio_send_roce PRIVATE
+        hololink::emulation
+        hololink::emulation::roce
+    )
+
+    add_executable(gpio_trigger_send_roce
+        gpio_trigger_send_roce.cpp
+    )
+ 
+    target_include_directories(gpio_trigger_send_roce PRIVATE 
+        ${CMAKE_CURRENT_SOURCE_DIR}/../
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+    )
+    target_link_libraries(gpio_trigger_send_roce PRIVATE
+        hololink::emulation
+        hololink::emulation::roce
+    )
+endif()
+
 if (${HSB_EMULATOR_TARGET} STREQUAL "linux")
 
 # Create emulator_utils library for common functionality

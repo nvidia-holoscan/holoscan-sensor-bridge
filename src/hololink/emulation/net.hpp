@@ -48,6 +48,9 @@ namespace hololink::emulation {
 
 #define HSB_PAGE_SIZE 128u
 
+#define IB_PSN_MASK 0xFFFFFu
+#define IB_PSN_SHIFT 12u
+
 /**
  * python (limited API):
  *

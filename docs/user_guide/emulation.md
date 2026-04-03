@@ -58,7 +58,7 @@ The features that are supported in provided code are
    - HSB Emulator itself has no built-in knowledge of any given sensor.
    - Sensors and drivers that do not depend on state change queries, e.g. the HSB
      example "stateless" imx drivers, are compatible by default
-1. `LinuxTransmitter` for RoCEv2 UDP-based transport
+1. `RoCEv2Transmitter` for RoCEv2 UDP-based transport
    - Name is to be consistent with the rest of HSB where the implementation is via Linux
      interface access and sockets
 1. `COETransmitter` for IEEE 1722B link layer transport (Camera-over-Ethernet, CoE)
@@ -233,6 +233,7 @@ prerequisites are not met or not in expected locations
 | Python virtual environment location <br> (ignored if Python build is `OFF`) | `-DHSB_EMULATOR_PYTHON_VENV=path/to/virtual_environment` | `${CMAKE_BINARY_DIR}/env` | Emulator-only for Linux   |
 | non Linux targets                                                           | `-DHSB_EMULATOR_TARGET=target_name`                      | `linux`                   | `target_name` must have a configuration in `src/hololink/emulation/cmake/targets/*` and acceptable targets in `src/hololink/emulation/CMakeLists.txt` |
 | STM32CubeF7 not in `~/Documents/STM32`                                      | `-DSTM32_PATH=/path/to/STM32CubeF7/repo`                 | `~/STM32`       | Emulator-only for STM32 targets |
+| zlib source available locally | `-DZLIB_PATH=/path/to/zlib | downloads required files | Emulator-only for STM32 targets |
 
 Note for cmake version < 3.24 (`apt` default available in Ubuntu 22.04 or earlier),
 cmake does not allow setting a native architecture and a default
@@ -262,6 +263,8 @@ sudo build/env/bin/python3 src/hololink/emulation/examples/serve_coe_stereo_vb19
 | example | sample invocation | brief description | HSB sample camera <br> driver compatibility | Compatible HSB receivers | Notes |
 | ------- | ----------------- | ----------------- | ------------------------------------------- | ------------------------ | ----- |
 | `hsb_control`      | `./hsb_control` | send and receive basic control plane commands to/from HSB | None | None | available on all target platforms |
+| `gpio_send_roce` | N/A | send board-specific gpio pin status over RoCEv2 from MCU | None | `LinuxReceiver`, `RoceReceiver` | STM32 targets only |
+| `gpio_trigger_send_roce` | N/A | send timestamp triggered by gpio pin over RoCEv2 from MCU | None | `LinuxReceiver`, `RoceReceiver` | STM32 targets only |
 | `serve_linux_file` | `./serve_linux_file 192.168.0.2 imx_single_raw_frame.dat`| serve frames from a file | imx cameras |`LinuxReceiver`, `RoceReceiver` |  |
 | `serve_coe_file` | `./serve_coe_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file | imx cameras | `LinuxCoeReceiver` |  |
 | `serve_coe_vb1940_file` | `./serve_coe_vb1940_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureOp`, ``FusaCaptureOp` | Compatible with AGX Thor platform |
@@ -442,14 +445,14 @@ the `DataPlane` object in the hosted environment
 
 ```
 
-Two implementations of the `DataPlane` interface provided are `LinuxDataPlane` and
-`COEDataPlane`. They are currently only available on linux target platforms.
+Two implementations of the `DataPlane` interface provided are `RoCEv2DataPlane` and
+`COEDataPlane`. The `COEDataPlane` is currently only available on linux target platforms.
 
 RoCEv2 UDP-based transport implementation.
 
 ```{eval-rst}
-.. doxygenclass:: hololink::emulation::LinuxDataPlane
-   :members: LinuxDataPlane
+.. doxygenclass:: hololink::emulation::RoCEv2DataPlane
+   :members: RoCEv2DataPlane
 ```
 
 ```{eval-rst}
@@ -473,12 +476,12 @@ not interact directly with these objects
    :members: send
 ```
 
-Two implementations of the `BaseTransmitter` interface provided are `LinuxTransmitter`
+Two implementations of the `BaseTransmitter` interface provided are `RoCEv2Transmitter`
 and `COETransmitter`
 
 ```{eval-rst}
-.. doxygenclass:: hololink::emulation::LinuxTransmitter
-   :members: LinuxTransmitter, send
+.. doxygenclass:: hololink::emulation::RoCEv2Transmitter
+   :members: RoCEv2Transmitter, send
 ```
 
 ```{eval-rst}
@@ -524,7 +527,7 @@ sockets.
 
 // including the appropriate header for the implementation of the
 // DataPlane is sufficient for a minimal application 
-#include "hololink/emulation/linux_data_plane.hpp"
+#include "hololink/emulation/data_plane.hpp"
 
 // OPTIONAL: import the target sensor emulator 
 #include "hololink/emulation/sensors/vb1940_emulator.hpp"
@@ -547,7 +550,7 @@ HSBEmulator hsb(HSB_LEOPARD_EAGLE_CONFIG);
 // their configurations may override each other
 uint8_t data_plane_id = 0; 
 uint8_t sensor_id = 0; 
-LinuxDataPlane linux_data_plane(hsb, IPAddress_from_string(ip_address), 
+RoCEv2DataPlane data_plane(hsb, IPAddress_from_string(ip_address), 
    data_plane_id, sensor_id);
 
 // Optional for stateful sensor emulation or driver bridge declare the sensor instance 
@@ -566,7 +569,7 @@ hsb.start();
 // client code in a loop. Passing the DataPlane implementation gives the loop access
 // to send data to the host application and sending the sensor instance (if needed)
 // provides access to sensor-specific/state data
-application_specific_data_loop(LinuxDataPlane, vb1940, ...user configuration data)
+application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
 
 // OPTIONAL: Stop the emulator if the application needed to be able to restart the 
 // HSBEmulator instance without exiting. All registered elements will receive a call
@@ -605,7 +608,7 @@ hsb = hemu.HSBEmulator(hemu.HSB_LEOPARD_EAGLE_CONFIG)
 # configurations may override each other
 data_plane_id = 0
 sensor_id = 0
-data_plane = hemu.LinuxDataPlane( hsb, hemu.IPAddress(args.ip_address), 
+data_plane = hemu.RoCEv2DataPlane( hsb, hemu.IPAddress(args.ip_address), 
    data_plane_id, sensor_id)
 
 # Optional for stateful sensor emulation or driver bridge declare the sensor instance 
@@ -625,7 +628,7 @@ hsb.start()
 # sensor client code in a loop. Passing the DataPlane implementation gives the loop access to
 # send data to the host application
 # and sending the sensor instance (if needed) provides access to sensor-specific/state data
-application_specific_data_loop(LinuxDataPlane, vb1940, ...user configuration data)
+application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
 
 # OPTIONAL: Stop the emulator if the application needed to be able to restart the HSBEmulator
 # instance without exiting. All registered elements will receive a call to their `stop()`

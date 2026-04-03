@@ -93,16 +93,19 @@ uint32_t NativeImx274Sensor::get_version() const
 uint8_t NativeImx274Sensor::get_register(uint16_t reg)
 {
     HSB_LOG_DEBUG("get_register(register={}(0x{:X}))", reg, reg);
-    i2c_expander_->configure(i2c_expander_configuration_);
 
     std::vector<uint8_t> write_bytes(2);
     core::Serializer serializer(write_bytes.data(), write_bytes.size());
     serializer.append_uint16_be(static_cast<uint16_t>(reg));
 
+    // Read one byte
     const uint32_t read_byte_count = 1;
 
-    // Read one byte
+    auto& i2c_lock = hololink_->i2c_lock();
+    i2c_lock.lock();
+    i2c_expander_->configure(i2c_expander_configuration_);
     auto reply = i2c_->i2c_transaction(I2C_ADDRESS, write_bytes, read_byte_count);
+    i2c_lock.unlock();
 
     // Deserialize the reply
     core::Deserializer deserializer(reply.data(), reply.size());
@@ -121,15 +124,17 @@ void NativeImx274Sensor::set_register(uint16_t reg, uint8_t value,
 {
     HSB_LOG_DEBUG("set_register(register={}(0x{:X}), value={}(0x{:X}))", reg, reg, value, value);
 
-    i2c_expander_->configure(i2c_expander_configuration_);
-
     std::vector<uint8_t> write_bytes(3);
     core::Serializer serializer(write_bytes.data(), write_bytes.size());
     serializer.append_uint16_be(static_cast<uint16_t>(reg));
     serializer.append_uint8(value);
 
     const uint32_t read_byte_count = 0;
+    auto& i2c_lock = hololink_->i2c_lock();
+    i2c_lock.lock();
+    i2c_expander_->configure(i2c_expander_configuration_);
     i2c_->i2c_transaction(I2C_ADDRESS, write_bytes, read_byte_count, timeout);
+    i2c_lock.unlock();
 }
 
 void NativeImx274Sensor::start()

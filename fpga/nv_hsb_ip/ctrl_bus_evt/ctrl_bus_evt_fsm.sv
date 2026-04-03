@@ -253,6 +253,9 @@ always_ff @(posedge i_aclk) begin
     r_evt_idx <= '0;
     opcode    <= OPCODE_NOP;
     fsm_error <= 1'b0;
+    cmd       <= '0;
+    seq       <= '0;
+    rd_data   <= '0;
   end
   else begin
     if (fsm_timeout || fsm_error) begin

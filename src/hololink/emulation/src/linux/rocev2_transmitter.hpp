@@ -47,12 +47,12 @@ struct RETHeader {
 };
 
 // structure for storing header information
-// there is a global instance that has defaults for the general LinuxTransmitter implementation
+// there is a global instance that has defaults for the general RoCEv2Transmitter implementation
 // and an instance copy that is used for instance-local values filled in on construction but not
 // shared between instances - mostly the source port and ip address
 // all data is assumed to be in host byte order in this structure. Serialization will handle conversion to network byte order
 // see DEFAULT_LINUX_HEADERS in linux_transmitter.cpp for default values and comments on when elements are expected to be updated
-struct LinuxHeaders {
+struct RoCEv2Headers {
     iphdr ip_h;
     udphdr udp_h;
     BTHeader bt_h;
@@ -60,10 +60,10 @@ struct LinuxHeaders {
 };
 // reference values and magic numbers for headers.
 // explanations of which fields are overwritten and when
-extern const LinuxHeaders DEFAULT_LINUX_HEADERS;
+extern const RoCEv2Headers DEFAULT_LINUX_HEADERS;
 
 /**
- * Metadata for a transmission that is specific to the LinuxTransmitter.
+ * Metadata for a transmission that is specific to the RoCEv2Transmitter.
  *
  * This contains the data for RoCEv2 that is liable to change every frame of data that is sent
  */
@@ -79,22 +79,22 @@ struct LinuxTransmissionMetadata {
 };
 
 /**
- * @brief The LinuxTransmitter implements the BaseTransmitter interface and encapsulates the transport over RoCEv2
+ * @brief The RoCEv2Transmitter implements the BaseTransmitter interface and encapsulates the transport over RoCEv2
  */
-class LinuxTransmitter : public BaseTransmitter {
+class RoCEv2Transmitter : public BaseTransmitter {
 public:
     /**
-     * @brief Construct a new LinuxTransmitter object
+     * @brief Construct a new RoCEv2Transmitter object
      * @param source_ip The IP address to be used as the source address of the transmitter.
      * @note The MAC address is derived from the interface name using the mac_from_if function in net.hpp.
      */
-    LinuxTransmitter(const IPAddress& source_ip);
+    RoCEv2Transmitter(const IPAddress& source_ip);
     /**
-     * @brief Construct a new LinuxTransmitter object
+     * @brief Construct a new RoCEv2Transmitter object
      * @param headers The fully configurable headers to use. See source code for details
      */
-    LinuxTransmitter(const LinuxHeaders& headers);
-    ~LinuxTransmitter();
+    RoCEv2Transmitter(const RoCEv2Headers& headers);
+    ~RoCEv2Transmitter();
 
     /**
      * @brief Send a tensor to the destination using the TransmissionMetadata provided. Implementation of BaseTransmitter::send interface method.
@@ -102,14 +102,15 @@ public:
      * @param tensor The tensor to send. See dlpack.h for its contents and semantics.
      * @return The number of bytes sent or < 0 on error
      */
-    int64_t send(const TransmissionMetadata* metadata, const DLTensor& tensor) override;
+    int64_t send(TransmissionMetadata* metadata, const DLTensor& tensor, FrameMetadata* frame_metadata = nullptr) override;
+    int64_t send(TransmissionMetadata* metadata, const uint8_t* content, size_t n_bytes, FrameMetadata* frame_metadata = nullptr) override;
 
 private:
     void init_socket();
     int data_socket_fd_ { -1 };
 
     // state data that is not thread safe without the DataPlane::send level synchronization
-    LinuxHeaders linux_headers_;
+    RoCEv2Headers linux_headers_;
     uint32_t psn_ { 0 };
     uint32_t frame_number_ { 0 };
     // double buffering is for GPU inputs currently

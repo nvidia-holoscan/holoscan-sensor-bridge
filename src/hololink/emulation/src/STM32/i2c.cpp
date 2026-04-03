@@ -220,6 +220,8 @@ void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value)
         i2c_ctxt->status = I2C_DONE;
         return;
     }
+#else
+    (void)general_call_address;
 #endif
     if (HAL_I2C_IsDeviceReady(&i2c_ctxt->hi2c, peripheral_address, 2, I2C_TIMEOUT) != HAL_OK) {
         i2c_ctxt->status = I2C_I2C_NAK;

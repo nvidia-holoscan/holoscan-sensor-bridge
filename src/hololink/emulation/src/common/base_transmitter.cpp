@@ -21,6 +21,8 @@
 
 namespace hololink::emulation {
 
+struct FrameMetadata DEFAULT_FRAME_METADATA_STRUCT = {};
+struct FrameMetadata* DEFAULT_FRAME_METADATA = &DEFAULT_FRAME_METADATA_STRUCT;
 // returns 0 on failure or the number of bytes written on success.
 // Note that on failure, serializer and buffer contents are in indeterminate state.
 size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMetadata& frame_metadata)
@@ -29,11 +31,14 @@ size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMet
     return serializer.append_uint32_be(frame_metadata.flags)
             && serializer.append_uint32_be(frame_metadata.psn)
             && serializer.append_uint32_be(frame_metadata.crc)
-            && serializer.append_uint64_be(frame_metadata.timestamp_s)
+            && serializer.append_uint32_be(frame_metadata.timestamp_s_high)
+            && serializer.append_uint32_be(frame_metadata.timestamp_s_low)
             && serializer.append_uint32_be(frame_metadata.timestamp_ns)
-            && serializer.append_uint64_be(frame_metadata.bytes_written)
+            && serializer.append_uint32_be(frame_metadata.bytes_written_high)
+            && serializer.append_uint32_be(frame_metadata.bytes_written_low)
             && serializer.append_uint32_be(frame_metadata.frame_number)
-            && serializer.append_uint64_be(frame_metadata.metadata_s)
+            && serializer.append_uint32_be(frame_metadata.metadata_s_high)
+            && serializer.append_uint32_be(frame_metadata.metadata_s_low)
             && serializer.append_uint32_be(frame_metadata.metadata_ns)
             && serializer.append_buffer(frame_metadata.reserved, sizeof(frame_metadata.reserved))
         ? serializer.length() - start

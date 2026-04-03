@@ -132,7 +132,8 @@ public:
      * @param tensor The tensor to send. See dlpack.h for its contents and semantics.
      * @return The number of bytes sent or < 0 on error
      */
-    int64_t send(const TransmissionMetadata* metadata, const DLTensor& tensor) override;
+    int64_t send(TransmissionMetadata* metadata, const DLTensor& tensor, FrameMetadata* frame_metadata = nullptr) override;
+    int64_t send(TransmissionMetadata* metadata, const uint8_t* content, size_t n_bytes, FrameMetadata* frame_metadata = nullptr) override;
 
 private:
     void init_socket(const std::string& if_name);

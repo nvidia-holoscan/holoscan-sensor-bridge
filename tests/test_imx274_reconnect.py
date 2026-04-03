@@ -19,6 +19,7 @@ import ctypes
 import dataclasses
 import logging
 import os
+import threading
 
 import applications
 import holoscan
@@ -28,6 +29,11 @@ import pytest
 import utils
 
 import hololink as hololink_module
+
+hololink_state = {}
+UNKNOWN = "UNKNOWN"
+CLOCK_UP = "CLOCK_UP"
+hololink_state_lock = threading.Lock()
 
 
 @dataclasses.dataclass
@@ -93,27 +99,29 @@ class Imx274SensorFactory(hololink_module.hsb_controller.SensorFactory):
             self._hololink_channel,
             expander_configuration=self._instance,
         )
-        # Separate out initialization steps so we can hook into these
-        # later in the test.
-        # This clock is shared between both cameras
-        # so only set it on the first one.
-        if self._device.connected_count() == 1:
-            self._configure_first()
-        self._configure()
-        return self._camera
-
-    def _configure_first(self):
-        """Configuration for shared resources on HSB
-        which executes only before the first device
-        is initialized.  This is important, e.g. a single
-        clock device drives all sensors on the board.
-        """
-        self._camera.setup_clock()
-
-    def _configure(self):
+        # Configuration for shared resources on HSB
+        # which executes only before the first device
+        # is initialized.  This is important, e.g. a single
+        # clock device drives all sensors on the board.
+        with hololink_state_lock:
+            if hololink_state[self._hololink] is UNKNOWN:
+                self._camera.setup_clock()
+                hololink_state[self._hololink] = CLOCK_UP
         self._camera.configure(self._camera_mode)
         self._camera.set_digital_gain_reg(0x4)
         self._camera.test_pattern(self._pattern)
+        return self._camera
+
+    def new_data_channel(self):
+        with hololink_state_lock:
+            super().new_data_channel()
+            hololink_state[self._hololink] = UNKNOWN
+            self._hololink.on_reset(self._reset)
+
+    def _reset(self):
+        logging.info("device is reset.")
+        with hololink_state_lock:
+            hololink_state[self._hololink] = UNKNOWN
 
 
 class StatusOp(holoscan.core.Operator):
@@ -277,7 +285,7 @@ class ReconnectTestApplication(holoscan.core.Application):
             # storage_type of 1 is device memory
             storage_type=1,
             block_size=csi_pool_block_size,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -321,7 +329,7 @@ class ReconnectTestApplication(holoscan.core.Application):
             # storage_type of 1 is device memory
             storage_type=1,
             block_size=bayer_size,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -632,7 +640,7 @@ class StereoReconnectTestApplication(holoscan.core.Application):
                 # storage_type of 1 is device memory
                 storage_type=1,
                 block_size=csi_pool_block_size,
-                num_blocks=2,
+                num_blocks=4,
             )
             csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
                 self,
@@ -679,7 +687,7 @@ class StereoReconnectTestApplication(holoscan.core.Application):
                 # storage_type of 1 is device memory
                 storage_type=1,
                 block_size=bayer_size,
-                num_blocks=2,
+                num_blocks=4,
             )
             demosaic = holoscan.operators.BayerDemosaicOp(
                 self,
@@ -989,9 +997,9 @@ class InstrumentedImx274CamContext:
     def set_register(self, camera, register, value, timeout=None):
         self._set_register_calls += 1
         if self._set_register_calls == self._set_registers_trigger:
-            self._reset(camera._hololink)
+            self.trigger_reset(camera._hololink)
 
-    def _reset(self, hololink):
+    def trigger_reset(self, hololink):
         logging.info("Triggering reset.")
         hololink.trigger_reset()
 

@@ -18,6 +18,7 @@
 #include <hololink/core/arp_wrapper.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/deserializer.hpp>
+#include <hololink/core/named_lock.hpp>
 #include <hololink/core/networking.hpp>
 #include <hololink/core/reactor.hpp>
 #include <hololink/core/serializer.hpp>
@@ -348,6 +349,14 @@ PYBIND11_MODULE(_hololink_core, m)
             "context"_a, "size"_a)
         .def("get", &hololink::ReceiverMemoryDescriptor::get,
             "Get the CUdeviceptr for the allocated memory");
+
+    py::class_<hololink::NamedLock>(m, "NamedLock")
+        .def(py::init([](const std::string& name) {
+            return new hololink::NamedLock(name);
+        }),
+            "name"_a)
+        .def("lock", &hololink::NamedLock::lock, "Block until this lock is acquired", py::call_guard<py::gil_scoped_release>())
+        .def("unlock", &hololink::NamedLock::unlock, "Release this lock");
 
 } // PYBIND11_MODULE
 

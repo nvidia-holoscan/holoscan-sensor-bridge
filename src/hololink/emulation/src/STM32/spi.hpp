@@ -45,8 +45,23 @@ namespace hololink::emulation {
 
 // SPIController constructor placeholder
 void spi_constructor(SpiControllerCtxt* spi_ctxt, uint32_t controller_address);
-// spi callbacks
+
+/**
+ * @brief Callback function for SPI readback.
+ * @param ctxt The context pointer.
+ * @param addr_val The address-value pair. Addresses are those written to the SPI controller registers at SPI_CTRL.
+ * @param max_count The maximum number of address-value pairs to read.
+ * @return The number of address-value pairs read.
+ */
 int spi_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count);
+
+/**
+ * @brief Callback function for SPI configuration.
+ * @param ctxt The context pointer.
+ * @param addr_val The address-value pair. Addresses are those written to the SPI controller registers at SPI_CTRL.
+ * @param max_count The maximum number of address-value pairs to configure.
+ * @return The number of address-value pairs configured.
+ */
 int spi_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count);
 }
 

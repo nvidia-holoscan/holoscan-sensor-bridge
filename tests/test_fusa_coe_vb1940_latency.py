@@ -29,7 +29,7 @@ pytest.importorskip("hololink.operators.fusa_coe_capture")
 
 from examples import fusa_coe_vb1940_latency  # noqa: E402
 
-all_vb1940_camera_modes = [
+vb1940_camera_mode = [
     hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
 ]
 
@@ -37,7 +37,7 @@ all_vb1940_camera_modes = [
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_vb1940
 @pytest.mark.skip_unless_coe
-@pytest.mark.parametrize("camera_mode", all_vb1940_camera_modes)
+@pytest.mark.parametrize("camera_mode", vb1940_camera_mode)
 def test_fusa_coe_vb1940_latency(
     camera_mode, headless, frame_limit, hololink_address, coe_interfaces, capsys
 ):

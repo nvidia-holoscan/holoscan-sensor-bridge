@@ -101,12 +101,15 @@ int GPIO_init(__attribute__((unused)) void* ctxt)
     gpio_cfg.Pull = GPIO_NOPULL;
     gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOC, &gpio_cfg);
-    // User Button Pin
+    // User Button Pin (EXTI13)
     gpio_cfg.Pin = GPIO_PIN_13;
     gpio_cfg.Mode = GPIO_MODE_IT_RISING;
     gpio_cfg.Pull = GPIO_NOPULL;
     gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOC, &gpio_cfg);
+
+    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
 
     // Configure GPIO port D
     // analog input pins
@@ -123,24 +126,50 @@ int GPIO_init(__attribute__((unused)) void* ctxt)
     gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
         | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7
         | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+        | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_15;
     gpio_cfg.Mode = GPIO_MODE_ANALOG;
     gpio_cfg.Pull = GPIO_NOPULL;
     gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
+    HAL_GPIO_Init(GPIOE, &gpio_cfg);
+    // generic input, 0 when disconnected
+    gpio_cfg.Pin = GPIO_PIN_14;
+    gpio_cfg.Mode = GPIO_MODE_INPUT;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
     HAL_GPIO_Init(GPIOE, &gpio_cfg);
 
     // Configure GPIO port F
     gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
         | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7
         | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
+        | GPIO_PIN_12;
     gpio_cfg.Mode = GPIO_MODE_ANALOG;
     gpio_cfg.Pull = GPIO_NOPULL;
     gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOF, &gpio_cfg);
+    // it rising
+    gpio_cfg.Pin = GPIO_PIN_15;
+    gpio_cfg.Mode = GPIO_MODE_IT_RISING;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOF, &gpio_cfg);
+    // it falling
+    gpio_cfg.Pin = GPIO_PIN_14;
+    gpio_cfg.Mode = GPIO_MODE_IT_FALLING;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOF, &gpio_cfg);
+    // it rising & falling
+    gpio_cfg.Pin = GPIO_PIN_12;
+    gpio_cfg.Mode = GPIO_MODE_IT_RISING_FALLING;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    HAL_GPIO_Init(GPIOF, &gpio_cfg);
+    // output medium speed
+    gpio_cfg.Pin = GPIO_PIN_13;
+    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    gpio_cfg.Speed = GPIO_SPEED_FREQ_MEDIUM;
+    HAL_GPIO_Init(GPIOF, &gpio_cfg);
 
     // configure GPIO bank G
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
+    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1
         | GPIO_PIN_4 | GPIO_PIN_5
         | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
         | GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
@@ -154,9 +183,29 @@ int GPIO_init(__attribute__((unused)) void* ctxt)
     gpio_cfg.Pull = GPIO_NOPULL;
     gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
     HAL_GPIO_Init(GPIOG, &gpio_cfg);
+    // output high speed
+    gpio_cfg.Pin = GPIO_PIN_2;
+    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
+    HAL_GPIO_Init(GPIOG, &gpio_cfg);
+    // output very high speed
+    gpio_cfg.Pin = GPIO_PIN_3;
+    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
+    gpio_cfg.Pull = GPIO_PULLDOWN;
+    gpio_cfg.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
+    HAL_GPIO_Init(GPIOG, &gpio_cfg);
 
     GPIO_initialized = true;
     return 0;
+}
+
+extern "C" void EXTI15_10_IRQHandler(void)
+{
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12);
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13);
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_14);
+    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);
 }
 
 const uint32_t GPIO_SUPPORTED_PIN_NUM = (GPIO_BANK_COUNT * GPIO_PIN_PER_BANK);

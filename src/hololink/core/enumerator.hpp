@@ -209,10 +209,8 @@ private:
     const uint32_t bootp_reply_port_;
 
     // Static map to store UUID strategies (uses construct-on-first-use idiom to avoid static destruction order fiasco)
-    static std::shared_ptr<std::map<std::string, std::shared_ptr<EnumerationStrategy>>> uuid_strategies();
-
-    // Static ReactorEnumerator instance
-    static std::shared_ptr<ReactorEnumerator> reactor_enumerator_;
+    using EnumerationStrategyMap = std::map<std::string, std::shared_ptr<EnumerationStrategy>>;
+    static std::shared_ptr<EnumerationStrategyMap> uuid_strategies();
 };
 
 /**

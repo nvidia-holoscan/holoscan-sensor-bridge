@@ -130,7 +130,7 @@ void handle_reply_message(ControlMessage& message, uint8_t* message_buffer, size
 // built-in I2C peripheral for Renesas I2C devices
 class RenesasI2CPeripheral : public I2CPeripheral {
 public:
-    static constexpr uint8_t PERIPHERAL_ADDRESS = 0x09;
+    static constexpr uint16_t PERIPHERAL_ADDRESS = 0x09u;
     RenesasI2CPeripheral() = default;
 
     I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override
@@ -697,7 +697,7 @@ void control_listen(HSBEmulatorCtxt* ctxt)
                     //  perform sequence check handling if enabled
                     if (message.flags & REQUEST_FLAGS_SEQUENCE_CHECK) {
                         fprintf(stderr, "sequence check failed on command %u\n", message.cmd_code);
-                        message.status = ECB_RESPONSE_CODE::SEQUENCE_ERROR;
+                        message.status = ECB_RESPONSE_CODE::ECB_SEQUENCE_ERROR;
                         handle_reply_message(message, message_buffer, message_buffer_length, control_socket, &host_addr, host_addr_len);
                         continue;
                     }
@@ -720,7 +720,7 @@ void control_listen(HSBEmulatorCtxt* ctxt)
                     break;
                 }
                 default: {
-                    message.status = ECB_RESPONSE_CODE::COMMAND_ERROR;
+                    message.status = ECB_RESPONSE_CODE::ECB_COMMAND_ERROR;
                     break;
                 }
                 }
@@ -929,7 +929,7 @@ void handle_read_message(HSBEmulator& hsb_emulator, ControlMessage& message, int
     }
 
     message.cmd_code = 0x80 | message.cmd_code;
-    message.status = ECB_RESPONSE_CODE::SUCCESS;
+    message.status = ECB_RESPONSE_CODE::ECB_SUCCESS;
 }
 
 void handle_write_message(HSBEmulator& hsb_emulator, ControlMessage& message, int control_socket, struct sockaddr_in* host_addr, uint32_t host_addr_len, uint32_t& last_read_address)
@@ -940,7 +940,7 @@ void handle_write_message(HSBEmulator& hsb_emulator, ControlMessage& message, in
     last_read_address = message.addresses[message.num_addresses - 1]; // needed for polling
 
     message.cmd_code = 0x80 | message.cmd_code;
-    message.status = ECB_RESPONSE_CODE::SUCCESS;
+    message.status = ECB_RESPONSE_CODE::ECB_SUCCESS;
 }
 
 } // namespace hololink::emulation

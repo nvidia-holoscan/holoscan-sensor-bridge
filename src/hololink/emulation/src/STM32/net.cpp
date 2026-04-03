@@ -59,6 +59,11 @@ void set_mac_address(const uint8_t* mac_address)
     memcpy(MAC_ADDRESS, mac_address, 6);
 }
 
+const uint8_t* get_mac_address(void)
+{
+    return &MAC_ADDRESS[0];
+}
+
 void generate_mac_address(void)
 {
     char* uid = get_uid();

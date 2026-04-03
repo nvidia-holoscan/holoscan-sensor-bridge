@@ -179,24 +179,31 @@ static size_t serialize_packet(COEHeaders& headers, uint8_t* __restrict__ buffer
 }
 
 // returns 0 on failure or the number of bytes written to buffer on success
-static size_t write_frame_metadata(uint8_t* __restrict__ buffer, size_t buffer_size, const struct timespec& frame_start_timestamp, const struct timespec& metadata_timestamp, size_t n_bytes_sent, uint32_t frame_number, uint32_t psn)
+static size_t write_frame_metadata(uint8_t* __restrict__ buffer, size_t buffer_size, const struct timespec& frame_start_timestamp, const struct timespec& metadata_timestamp, size_t n_bytes_sent, uint32_t frame_number, uint32_t psn, FrameMetadata* frame_metadata)
 {
-    FrameMetadata frame_metadata = {
-        .flags = 0,
-        .psn = psn,
-        .crc = 0,
-        // Time when the first sample data for the frame was received
-        .timestamp_s = (uint64_t)frame_start_timestamp.tv_sec,
-        .timestamp_ns = (uint32_t)frame_start_timestamp.tv_nsec,
-        .bytes_written = n_bytes_sent,
-        .frame_number = frame_number & 0xFFFF, // only use lower 16 bits of frame number. 0-padded to 32 bits
-        // Time at which the metadata packet was sent
-        .metadata_s = (uint64_t)metadata_timestamp.tv_sec,
-        .metadata_ns = (uint32_t)metadata_timestamp.tv_nsec,
-    };
+    FrameMetadata frame_metadata_;
+    if (frame_metadata == DEFAULT_FRAME_METADATA) {
+        frame_metadata_ = (struct FrameMetadata) {
+            .flags = 0,
+            .psn = psn,
+            .crc = 0,
+            // Time when the first sample data for the frame was received
+            .timestamp_s_high = (uint32_t)(frame_start_timestamp.tv_sec >> 32),
+            .timestamp_s_low = (uint32_t)(frame_start_timestamp.tv_sec & 0xFFFFFFFF),
+            .timestamp_ns = (uint32_t)frame_start_timestamp.tv_nsec,
+            .bytes_written_high = (uint32_t)(n_bytes_sent >> 32),
+            .bytes_written_low = (uint32_t)(n_bytes_sent & 0xFFFFFFFF),
+            .frame_number = frame_number & 0xFFFF, // only use lower 16 bits of frame number. 0-padded to 32 bits
+            // Time at which the metadata packet was sent
+            .metadata_s_high = (uint32_t)(metadata_timestamp.tv_sec >> 32),
+            .metadata_s_low = (uint32_t)(metadata_timestamp.tv_sec & 0xFFFFFFFF),
+            .metadata_ns = (uint32_t)metadata_timestamp.tv_nsec,
+        };
+        frame_metadata = &frame_metadata_;
+    }
 
     hololink::core::Serializer serializer = hololink::core::Serializer(buffer, buffer_size);
-    return serialize_frame_metadata(serializer, frame_metadata);
+    return serialize_frame_metadata(serializer, *frame_metadata);
 }
 
 void COETransmitter::init_socket(const std::string& if_name)
@@ -220,35 +227,14 @@ void COETransmitter::init_socket(const std::string& if_name)
     }
 }
 
-int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTensor& tensor)
+int64_t COETransmitter::send(TransmissionMetadata* metadata, const DLTensor& tensor, FrameMetadata* frame_metadata)
 {
-    uint8_t mesg[MAX_MESSAGE_SIZE];
     COETransmissionMetadata* coe_metadata = (COETransmissionMetadata*)metadata;
     if (!coe_metadata->enable_1722b) {
         return 0;
     }
-
-    // initialize locals for hot-loop
-    uint8_t* content = (uint8_t*)tensor.data;
-    int64_t offset = 0;
-    size_t line_offset = 0;
-    int64_t n_bytes_sent = 0;
     const int64_t n_bytes = DLTensor_n_bytes(tensor);
-    uint8_t psn = 0;
-
-    const int64_t payload_size = metadata->payload_size;
-    if (!payload_size) {
-        throw std::runtime_error("payload_size is 0");
-    }
-    struct timespec frame_start_timestamp;
-    clock_gettime(FRAME_METADATA_CLOCK, &frame_start_timestamp);
-    size_t line_threshold = 1u << (coe_metadata->line_threshold_log2_enable_1722b);
-
-    // set header values, if any
-    memcpy(headers_.mac_header.mac_dest, coe_metadata->mac_dest, sizeof(headers_.mac_header.mac_dest));
-    headers_.acf_user0c_header.sensor_info = coe_metadata->sensor_info;
-    headers_.acf_user0c_header.channel = coe_metadata->channel;
-
+    uint8_t* content = (uint8_t*)tensor.data;
     // set the copy function to be used based on content's device location
     switch (tensor.device.device_type) {
     case kDLCPU:
@@ -281,6 +267,36 @@ int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTenso
         fprintf(stderr, "Unsupported device memory type: %d\n", (int)tensor.device.device_type);
         return -1;
     }
+
+    return send(metadata, content, n_bytes, frame_metadata);
+}
+
+int64_t COETransmitter::send(TransmissionMetadata* metadata, const uint8_t* content, size_t n_bytes, FrameMetadata* frame_metadata)
+{
+    COETransmissionMetadata* coe_metadata = (COETransmissionMetadata*)metadata;
+    if (!coe_metadata->enable_1722b) {
+        return 0;
+    }
+    uint8_t mesg[MAX_MESSAGE_SIZE];
+
+    int64_t offset = 0;
+    size_t line_offset = 0;
+    int64_t n_bytes_sent = 0;
+
+    uint8_t psn = 0;
+
+    const int64_t payload_size = metadata->payload_size;
+    if (!payload_size) {
+        throw std::runtime_error("payload_size is 0");
+    }
+    struct timespec frame_start_timestamp;
+    clock_gettime(FRAME_METADATA_CLOCK, &frame_start_timestamp);
+    size_t line_threshold = 1u << (coe_metadata->line_threshold_log2_enable_1722b);
+
+    // set header values, if any
+    memcpy(headers_.mac_header.mac_dest, coe_metadata->mac_dest, sizeof(headers_.mac_header.mac_dest));
+    headers_.acf_user0c_header.sensor_info = coe_metadata->sensor_info;
+    headers_.acf_user0c_header.channel = coe_metadata->channel;
 
     const uint32_t packet_frame_number = (frame_number_ & 0x3) << 28; // pre-shift for | operation
 
@@ -323,7 +339,7 @@ int64_t COETransmitter::send(const TransmissionMetadata* metadata, const DLTenso
     // write metadata
     struct timespec packet_timestamp;
     clock_gettime(FRAME_METADATA_CLOCK, &packet_timestamp);
-    size_t n_bytes_to_send = write_frame_metadata(&mesg[COE_PAYLOAD_OFFSET], MAX_MESSAGE_SIZE - COE_PAYLOAD_OFFSET, frame_start_timestamp, packet_timestamp, n_bytes_sent, frame_number_, psn);
+    size_t n_bytes_to_send = write_frame_metadata(&mesg[COE_PAYLOAD_OFFSET], MAX_MESSAGE_SIZE - COE_PAYLOAD_OFFSET, frame_start_timestamp, packet_timestamp, n_bytes_sent, frame_number_, psn, frame_metadata);
     if (n_bytes_to_send != FRAME_METADATA_SIZE) {
         fprintf(stderr, "could not write frame metadata. found %zu expected %u\n", n_bytes_to_send, FRAME_METADATA_SIZE);
     }

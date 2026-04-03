@@ -37,8 +37,15 @@ US_PER_SEC = 1000.0 * MS_PER_SEC
 NS_PER_SEC = 1000.0 * US_PER_SEC
 SEC_PER_NS = 1.0 / NS_PER_SEC
 
-all_vb1940_camera_modes = [
+vb1940_camera_modes_30fps = [
     hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
+    hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_1920X1080_30FPS,
+    hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT,
+]
+
+all_vb1940_camera_modes = [
+    *vb1940_camera_modes_30fps,
+    hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_60FPS,
 ]
 
 
@@ -75,7 +82,7 @@ def test_vb1940_linux_player(
 @pytest.mark.skip_unless_vb1940
 @pytest.mark.parametrize(
     "camera_mode",
-    all_vb1940_camera_modes,
+    vb1940_camera_modes_30fps,
 )
 def test_vb1940_linux_single_network_stereo_player(
     camera_mode, headless, frame_limit, hololink_address, capsys
@@ -139,7 +146,7 @@ def test_vb1940_player(
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode",
-    all_vb1940_camera_modes,
+    vb1940_camera_modes_30fps,
 )
 def test_vb1940_single_network_stereo_player(
     camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, capsys

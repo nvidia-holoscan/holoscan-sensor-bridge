@@ -206,7 +206,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic_left = holoscan.operators.BayerDemosaicOp(
             self,
@@ -227,7 +227,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic_right = holoscan.operators.BayerDemosaicOp(
             self,
@@ -523,7 +523,7 @@ class CoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,

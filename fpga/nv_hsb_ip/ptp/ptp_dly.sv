@@ -291,6 +291,7 @@ always_ff @(posedge i_pclk) begin
     logMessageInterval  <= '0;
     ptp_tx_len          <= '0;
     pdly_req_state      <= WAIT_FOR_PDLY_REQ_EN;
+    controlField        <= '0;
   end
   else begin
   case (pdly_req_state)

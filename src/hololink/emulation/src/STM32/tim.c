@@ -55,7 +55,9 @@ int tim_init(__attribute__((unused)) void * ctxt)
 }
 
 _Bool timer_initialized[N_TIMERS] = {0};
+_Bool timer_running[N_TIMERS] = {0};
 TIM_TypeDef * timer_map[N_TIMERS] = {TIM2, TIM3, TIM4, TIM5, TIM6, TIM7};
+IRQn_Type timer_irq[N_TIMERS] = {TIM2_IRQn, TIM3_IRQn, TIM4_IRQn, TIM5_IRQn, TIM6_DAC_IRQn, TIM7_IRQn};
 
 int get_timer_index(TIM_TypeDef* instance) {
     for (int i = 0; i < N_TIMERS; i++) {
@@ -67,7 +69,7 @@ int get_timer_index(TIM_TypeDef* instance) {
 }
 
 // returns -2 on invalid timer instance, -1 if timer already initialized, 0 on success
-int timer_init(TIM_HandleTypeDef* htim, TIM_MasterConfigTypeDef* sMasterConfig) {
+int timer_init(TIM_HandleTypeDef* htim, uint32_t PreemptPriority, uint32_t SubPriority) {
     int index = get_timer_index(htim->Instance);
     if (index == -1) {
         return -2;
@@ -75,16 +77,66 @@ int timer_init(TIM_HandleTypeDef* htim, TIM_MasterConfigTypeDef* sMasterConfig) 
     if (timer_initialized[index]) {
         return -1;
     }
+    
     HAL_TIM_Base_MspInit(htim);
     if (HAL_TIM_Base_Init(htim) != HAL_OK)
     {
         Error_Handler();
     }
-    if (HAL_TIMEx_MasterConfigSynchronization(htim, sMasterConfig) != HAL_OK)
-    {
-        Error_Handler();
-    }
+
+    HAL_NVIC_SetPriority(timer_irq[index], PreemptPriority, SubPriority);
+    HAL_NVIC_EnableIRQ(timer_irq[index]);
+    
     timer_initialized[index] = 1;
+    return 0;
+}
+
+int timer_start(TIM_HandleTypeDef* htim) {
+    int index = get_timer_index(htim->Instance);
+    if (index == -1) {
+        return -1;
+    }
+    if (!timer_initialized[index]) {
+        return -2;
+    }
+    if (HAL_TIM_Base_Start_IT(htim) != HAL_OK) {
+        return -3;
+    }
+    timer_running[index] = 1;
+    return 0;
+}
+
+int timer_stop(TIM_HandleTypeDef* htim) {
+    int index = get_timer_index(htim->Instance);
+    if (index == -1) {
+        return -1;
+    }
+    if (!timer_running[index]) {
+        return 0;
+    }
+    if (HAL_TIM_Base_Stop_IT(htim) != HAL_OK) {
+        return -3;
+    }
+    timer_running[index] = 0;
+    return 0;
+}
+
+int timer_deinit(TIM_HandleTypeDef* htim) {
+    int index = get_timer_index(htim->Instance);
+    if (index == -1) {
+        return -1;
+    }
+    if (!timer_initialized[index]) {
+        return -2;
+    }
+
+    if (timer_stop(htim)) {
+        return -3;
+    }
+    HAL_NVIC_DisableIRQ(timer_irq[index]);
+    HAL_TIM_Base_DeInit(htim);
+    HAL_TIM_Base_MspDeInit(htim);
+    timer_initialized[index] = 0;
     return 0;
 }
 

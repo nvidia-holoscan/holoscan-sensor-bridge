@@ -9,8 +9,18 @@ for CRC computation, comparing nvCOMP CRC against camera FPGA-embedded CRC value
 
 This version uses FUSA CoE (Camera over Ethernet) capture instead of ROCE for data transfer.
 
+CSI layout for nvCOMP (start_byte, full_frame_size, etc.) is computed by
+``_vb1940_csi_frame_layout``, using the same rules as ``Vb1940Cam.configure_converter`` in
+``vb1940.py``, with line packing and 64-byte alignment taken from the capture converter
+(``FusaCoeCaptureOp``) rather than duplicated RAW width formulas.
+
 nvCOMP computes CRC32/JAMCRC using GPU acceleration, which is mathematically
 equivalent to streaming CRC32/JAMCRC when processing the same data.
+
+Pipeline: ``ComputeCrcOp`` / ``CheckCrcOp`` on the **full CSI** buffer run before unpack
+and ISP so nvCOMP and the FPGA CRC use the same byte range. ``RecordMetadataOp`` (after
+demosaic) snapshots ``crc`` and ``check_crc`` for the summary; metadata propagates through
+the graph.
 """
 
 import argparse
@@ -20,6 +30,7 @@ import logging
 import math
 import queue
 import threading
+from types import SimpleNamespace
 
 import cupy as cp
 import holoscan
@@ -36,9 +47,8 @@ SEC_PER_NS = 1.0 / NS_PER_SEC
 recorder_queue_lock = threading.Lock()
 
 
-# Helper operators for metadata recording
 class PassThroughOperator(holoscan.core.Operator):
-    """Pass through operator that optionally renames tensors"""
+    """Tensor pass-through with optional input/output tensor names."""
 
     def __init__(self, *args, in_tensor_name="", out_tensor_name="", **kwargs):
         super().__init__(*args, **kwargs)
@@ -51,9 +61,10 @@ class PassThroughOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         in_message = op_input.receive("input")
+        if not in_message:
+            return
         tensor = in_message.get(self._in_tensor_name)
-        # Preserve input metadata by copying to output metadata
-        # In Holoscan, metadata flows automatically, but we ensure it's available
+        # Propagate entity metadata (e.g. crc) for downstream operators and RecordMetadataOp.
         if hasattr(in_message, "metadata") and in_message.metadata:
             for key, value in in_message.metadata.items():
                 self.metadata[key] = value
@@ -61,7 +72,7 @@ class PassThroughOperator(holoscan.core.Operator):
 
 
 class RecordMetadataOp(PassThroughOperator):
-    """Records metadata values for post-run validation"""
+    """Append selected metadata fields per frame for post-run validation."""
 
     def __init__(self, *args, metadata_names=None, **kwargs):
         super().__init__(*args, **kwargs)
@@ -74,25 +85,62 @@ class RecordMetadataOp(PassThroughOperator):
     def compute(self, op_input, op_output, context):
         super().compute(op_input, op_output, context)
         metadata = self.metadata
-        value = []
-        for name in self._metadata_names:
-            value.append(metadata[name])
+        value = [metadata[name] for name in self._metadata_names]
         self._record.append(value)
 
-        # Log CRC comparison every 20th frame (and first 5 frames) - only if DEBUG level
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             if self._frame_count < 5 or self._frame_count % 20 == 0:
                 camera_crc = metadata.get("crc", 0)
-                nvcomp_crc = metadata.get("nvcomp_frame_crc", 0)
+                nvcomp_crc = metadata.get("check_crc", 0)
                 match_str = "MATCH" if camera_crc == nvcomp_crc else "MISMATCH"
-                logging.info(
-                    f"Frame {self._frame_count}: Camera=0x{camera_crc:08x}, nvCOMP=0x{nvcomp_crc:08x} {match_str}"
+                logging.debug(
+                    f"Frame {self._frame_count}: Camera=0x{camera_crc:08x}, "
+                    f"nvCOMP=0x{nvcomp_crc:08x} {match_str}"
                 )
 
         self._frame_count += 1
 
     def get_record(self):
         return self._record
+
+
+def _vb1940_csi_frame_layout(camera, converter):
+    """Full CSI buffer layout — same steps as ``Vb1940Cam.configure_converter`` (vb1940.py).
+
+    Uses ``converter.transmitted_line_bytes`` / ``received_line_bytes`` (e.g. FusaCoeCaptureOp)
+    so packing and 64-byte alignment match the capture path.
+
+    Returns:
+        SimpleNamespace: start_byte, bytes_per_line, trailing_bytes, status_line_bytes,
+        pixel_data_size, full_frame_size.
+    """
+    PixelFormat = hololink_module.sensors.csi.PixelFormat
+    start_byte = converter.receiver_start_byte()
+    pf = camera.pixel_format()
+    w = camera.width()
+    h = camera.height()
+    transmitted_line_bytes = converter.transmitted_line_bytes(pf, w)
+    received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+    status_line_bytes = 0
+    if pf == PixelFormat.RAW_8:
+        status_line_bytes = int(w)
+    elif pf == PixelFormat.RAW_10:
+        status_line_bytes = int(w * 10 / 8)
+    elif pf == PixelFormat.RAW_12:
+        status_line_bytes = int(w * 12 / 8)
+    status_line_bytes = converter.received_line_bytes(status_line_bytes)
+    start_byte += status_line_bytes
+    trailing_bytes = status_line_bytes * 2
+    pixel_data_size = received_line_bytes * h
+    full_frame_size = start_byte + pixel_data_size + trailing_bytes
+    return SimpleNamespace(
+        start_byte=start_byte,
+        bytes_per_line=received_line_bytes,
+        trailing_bytes=trailing_bytes,
+        status_line_bytes=status_line_bytes,
+        pixel_data_size=pixel_data_size,
+        full_frame_size=full_frame_size,
+    )
 
 
 class FullFrameAccessOp(holoscan.core.Operator):
@@ -123,24 +171,16 @@ class FullFrameAccessOp(holoscan.core.Operator):
         if not in_message:
             return
 
-        # Get the pixel data tensor (FUSA output)
         pixel_tensor = cp.asarray(in_message.get(""))
 
-        # The tensor's data pointer is offset by start_byte from the full buffer start
-        # To access the full frame, we need to subtract start_byte from the pointer
-        # Use ctypes for safe pointer arithmetic
-        pixel_ptr = pixel_tensor.data.ptr
-        # Convert to int for arithmetic, then back to pointer
-        pixel_ptr_int = ctypes.cast(pixel_ptr, ctypes.c_void_p).value
+        # Full buffer base address = FUSA pixel tensor base minus header offset (see class docstring).
+        pixel_ptr_int = ctypes.cast(pixel_tensor.data.ptr, ctypes.c_void_p).value
         full_buffer_ptr_int = pixel_ptr_int - self._start_byte
 
-        # Create a new cupy array pointing to the full buffer
-        # Use UnownedMemory to reference the existing buffer without copying
-        # UnownedMemory accepts an integer pointer value
         full_buffer_mem = cp.cuda.UnownedMemory(
             full_buffer_ptr_int,
             self._full_frame_size,
-            pixel_tensor,  # Keep reference to original tensor to prevent deallocation
+            pixel_tensor,  # Pin lifetime of underlying allocation
         )
         full_buffer_memptr = cp.cuda.MemoryPointer(full_buffer_mem, 0)
 
@@ -148,20 +188,19 @@ class FullFrameAccessOp(holoscan.core.Operator):
             (self._full_frame_size,), dtype=cp.uint8, memptr=full_buffer_memptr
         )
 
-        # Emit the full frame tensor
         op_output.emit({"": full_frame_array}, "output")
 
 
 def get_timestamp(metadata, name):
-    """Get timestamp from metadata, handling both ROCE and FUSA formats"""
-    # FUSA uses timestamp_s/ns and metadata_s/ns
-    # ROCE uses timestamp_s/ns, metadata_s/ns, received_s/ns, etc.
+    """Return UTC timestamp from ``{name}_s`` / ``{name}_ns`` (Hololink timestamp fields).
+
+    If either component is missing, returns current UTC time (fallback for incomplete metadata).
+    """
     s_key = f"{name}_s"
     ns_key = f"{name}_ns"
 
     if s_key not in metadata or ns_key not in metadata:
-        # Return current time as fallback for missing timestamps
-        return datetime.datetime.now(datetime.UTC).timestamp()
+        return datetime.datetime.now(datetime.timezone.utc).timestamp()
 
     s = metadata[s_key]
     f = metadata[ns_key]
@@ -174,19 +213,15 @@ def validate_frame(recorder_queue, expected_fps=30):
         # slice out only the relevant data from the recorder queue for frame validation
         # use shared lock for thread safety when accessing internal deque
         with recorder_queue_lock:
-            internal_q = list(recorder_queue.queue)  # Access internal deque (as list)
-            recorder_queue_raw = internal_q[-5:]  # Get last 5 records (peek only)
-            sliced_recorder_queue = [
-                sublist[-5:] for sublist in recorder_queue_raw
-            ]  # slice out the last 5 elements from each record
-
-        # get the last 2 frames of data and unpack the list items to variables
+            internal_q = list(recorder_queue.queue)
+            recorder_queue_raw = internal_q[-5:]
+            sliced_recorder_queue = [sublist[-5:] for sublist in recorder_queue_raw]
         (
             prev_complete_timestamp_s,
             prev_frame_number,
             prev_crc32_errors,
-            _,  # prev_received_frame_size (unused)
-            _,  # prev_calculated_frame_size (unused)
+            _,
+            _,
         ) = sliced_recorder_queue[-2]
 
         (
@@ -197,33 +232,28 @@ def validate_frame(recorder_queue, expected_fps=30):
             calculated_frame_size,
         ) = sliced_recorder_queue[-1]
 
-        # make sure frame numbers of current and last frames are in order
         if frame_number != prev_frame_number + 1:
             logging.info(
                 f"Frame number is not in order, last frame number={prev_frame_number}, current frame number={frame_number}"
             )
 
-        # check if the frame size is the same as the calculated frame size
         if received_frame_size != calculated_frame_size:
             logging.info(
                 f"Frame size is not the same as the calculated frame size, received frame size={received_frame_size}, calculated frame size={calculated_frame_size}"
             )
 
-        # Compare the timestamps of the current and last frames
         complete_timestamp = datetime.datetime.fromtimestamp(complete_timestamp_s)
         prev_complete_timestamp = datetime.datetime.fromtimestamp(
             prev_complete_timestamp_s
         )
         time_difference = complete_timestamp - prev_complete_timestamp
 
-        # convert time difference to a float in milliseconds
         time_difference_ms = time_difference.total_seconds() * 1000
         logging.debug(
             f"Time difference between current and last frame is {time_difference_ms} ms"
         )
 
-        # Calculate frame time threshold dynamically based on expected FPS
-        # Frame time = 1000ms / FPS, we allow 2x frame time before calling an error
+        # Allow up to 2× nominal frame interval before flagging timestamp gap
         expected_frame_time_ms = 1000.0 / expected_fps
         frame_time_threshold_ms = 2 * expected_frame_time_ms
 
@@ -232,53 +262,44 @@ def validate_frame(recorder_queue, expected_fps=30):
                 f"Frame timestamp mismatch, last frame timestamp={prev_complete_timestamp_s}, current frame timestamp={complete_timestamp_s},Diff[ms]={time_difference_ms}"
             )
 
-        # check for CRC errors
         if crc32_errors is not None and prev_crc32_errors is not None:
-            if crc32_errors > prev_crc32_errors:  # print only on new error
+            if crc32_errors > prev_crc32_errors:
                 logging.info(f"CRC32 errors found so far: {crc32_errors}")
 
 
 def record_times(recorder_queue, metadata, expected_fps=30):
-    now = datetime.datetime.now(datetime.UTC)
+    """Append one timing row to ``recorder_queue`` for latency / validation statistics."""
+    now = datetime.datetime.now(datetime.timezone.utc)
     frame_number = metadata.get("frame_number", 0)
 
-    # get frame crc errors (nvCOMP errors for this pipeline)
-    crc32_errors = metadata.get("nvcomp_errors", 0)
+    # Optional; reserved if a future path sets cumulative crc_errors in metadata
+    crc32_errors = metadata.get("crc_errors", 0)
 
-    # frame_start_s is the time that the first data arrived at the FPGA;
-    # FUSA and ROCE both provide "timestamp" (timestamp_s/ns)
+    # First sensor packet (timestamp) and FPGA metadata packet (metadata) times
     frame_start_s = get_timestamp(metadata, "timestamp")
-
-    # After the FPGA sends the last sensor data packet for a frame, it follows
-    # that with a 128-byte metadata packet. FUSA and ROCE both provide "metadata" (metadata_s/ns)
     frame_end_s = get_timestamp(metadata, "metadata")
 
-    # received_timestamp_s is the host time after the background thread woke up
-    # FUSA doesn't provide this, so use frame_end_s as fallback
+    # Host receive time; FUSA often omits this — use metadata time
     if "received_s" in metadata:
         received_timestamp_s = get_timestamp(metadata, "received")
     else:
-        received_timestamp_s = frame_end_s  # FUSA: use metadata timestamp
+        received_timestamp_s = frame_end_s
 
-    # operator_timestamp_s is the time when the next pipeline element woke up
-    # This is set by InstrumentedTimeProfiler operator
+    # Set by InstrumentedTimeProfiler
     if "operator_timestamp_s" in metadata:
         operator_timestamp_s = get_timestamp(metadata, "operator_timestamp")
     else:
-        operator_timestamp_s = received_timestamp_s  # Fallback if not set
+        operator_timestamp_s = received_timestamp_s
 
-    # complete_timestamp_s is the time when visualization finished.
-    # This is set by MonitorOperator
+    # Set by MonitorOperator when the frame leaves Holoviz
     if "complete_timestamp_s" in metadata:
         complete_timestamp_s = get_timestamp(metadata, "complete_timestamp")
     else:
-        complete_timestamp_s = now.timestamp()  # Use current time as fallback
+        complete_timestamp_s = now.timestamp()
 
-    # get the frame size and calculated frame size from the metadata
     received_frame_size = metadata.get("received_frame_size")
     calculated_frame_size = metadata.get("calculated_frame_size")
 
-    # Use thread-safe put() operation instead of append()
     recorder_queue.put(
         (
             now,
@@ -294,7 +315,6 @@ def record_times(recorder_queue, metadata, expected_fps=30):
         )
     )
 
-    # validate the frame
     validate_frame(recorder_queue, expected_fps)
 
 
@@ -324,13 +344,12 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
         spec.output("output")
 
     def compute(self, op_input, op_output, context):
-        # What time is it now?
-        operator_timestamp = datetime.datetime.now(datetime.UTC)
+        operator_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         in_message = op_input.receive("input")
         cp_frame = cp.asarray(in_message.get(""))
 
-        # Save the number of bytes in the frame to compare to CSI calculated frame size
+        # Compared in validate_frame() against CSI layout (full-frame byte count)
         self.metadata["received_frame_size"] = cp_frame.nbytes
         self.metadata["calculated_frame_size"] = self._calculated_frame_size
 
@@ -357,12 +376,11 @@ class MonitorOperator(holoscan.core.Operator):
         spec.input("input")
 
     def compute(self, op_input, op_output, context):
-        # What time is it now?
-        complete_timestamp = datetime.datetime.now(datetime.UTC)
+        complete_timestamp = datetime.datetime.now(datetime.timezone.utc)
         _ = op_input.receive("input")
 
-        # save the complete timestamp and record the times
         save_timestamp(self.metadata, "complete_timestamp", complete_timestamp)
+        # Enqueue row for end-of-run latency report and validate_frame()
         record_times(self._recorder_queue, self.metadata, self._expected_fps)
 
 
@@ -382,8 +400,7 @@ class HoloscanApplication(holoscan.core.Application):
         timeout,
     ):
         super().__init__()
-        # Enable metadata to ensure operators can access frame metadata (including CRC)
-        # This is required for FusaCoeCaptureOp to read and set metadata
+        # FUSA capture and CRC fields require pipeline metadata on entities
         self.enable_metadata(True)
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
@@ -399,6 +416,7 @@ class HoloscanApplication(holoscan.core.Application):
         self._recorder_queue = recorder_queue
         self._timeout = timeout
         self.record_metadata_op = None
+        self.compute_crc_op = None
 
     def compose(self):
         logging.info("Composing FUSA + nvCOMP CRC validation pipeline")
@@ -414,7 +432,7 @@ class HoloscanApplication(holoscan.core.Application):
 
         self._camera.set_mode(self._camera_mode)
 
-        # Get network interface information for FUSA
+        # Ethernet interface and HSB MAC for FUSA CoE
         metadata = self._hololink_channel.enumeration_metadata()
         interface = self._interface
         if interface is None:
@@ -430,7 +448,6 @@ class HoloscanApplication(holoscan.core.Application):
         logging.info(f"  HSB IP:    {hsb_ip}")
         logging.info(f"  HSB MAC:   {hsb_mac}")
 
-        # FUSA CoE Capture operator replaces RoceReceiverOp
         fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
             self,
             condition,
@@ -443,63 +460,23 @@ class HoloscanApplication(holoscan.core.Application):
         )
         self._camera.configure_converter(fusa_coe_capture)
 
-        # Get frame size from FUSA capture for nvCOMP configuration
-        # The camera CRC is computed over the FULL CSI frame (including CSI header and trailing bytes)
-        # We need to compute the full frame size to match the camera CRC
+        layout = _vb1940_csi_frame_layout(self._camera, fusa_coe_capture)
+        start_byte = layout.start_byte
+        full_frame_size = layout.full_frame_size
+        pixel_data_size = layout.pixel_data_size
         pixel_width = self._camera.width()
         pixel_height = self._camera.height()
         pixel_format = self._camera.pixel_format()
 
-        # Calculate bytes_per_line using the same method as FUSA's transmitted_line_bytes
-        # For RAW10: 3 pixels per 4 bytes, then round up to 64-byte alignment
-        if pixel_format == hololink_module.PixelFormat.RAW_10:
-            # Packed RAW10: 3 pixels per 4 bytes
-            transmitted_line_bytes = ((pixel_width + 2) // 3) * 4
-        elif pixel_format == hololink_module.PixelFormat.RAW_12:
-            # Packed RAW12: 2 pixels per 3 bytes
-            transmitted_line_bytes = ((pixel_width + 1) // 2) * 3
-        elif pixel_format == hololink_module.PixelFormat.RAW_8:
-            # RAW8: 1 pixel per byte
-            transmitted_line_bytes = pixel_width
-        else:
-            transmitted_line_bytes = pixel_width
-
-        # Round up to 64-byte boundary (FUSA does this in received_line_bytes)
-        bytes_per_line = ((transmitted_line_bytes + 63) // 64) * 64
-
-        # Calculate status line bytes (for CSI header and trailing bytes)
-        # VB1940 has 1 line of status before image data and 2 lines after
-        if pixel_format == hololink_module.PixelFormat.RAW_8:
-            status_line_bytes = pixel_width
-        elif pixel_format == hololink_module.PixelFormat.RAW_10:
-            status_line_bytes = int(pixel_width * 10 / 8)
-        elif pixel_format == hololink_module.PixelFormat.RAW_12:
-            status_line_bytes = int(pixel_width * 12 / 8)
-        else:
-            status_line_bytes = 0
-
-        # Round status line bytes to 64-byte boundary (same as received_line_bytes)
-        status_line_bytes = ((status_line_bytes + 63) // 64) * 64
-
-        # Calculate CSI frame structure (matching vb1940.py configure_converter logic)
-        # start_byte = receiver_start_byte() + status_line_bytes (1 line before image)
-        start_byte = 0 + status_line_bytes
-        # trailing_bytes = status_line_bytes * 2 (2 lines after image)
-        trailing_bytes = status_line_bytes * 2
-
-        # Pixel data size (what FUSA outputs)
-        pixel_data_size = bytes_per_line * pixel_height
-
-        # Full CSI frame size (what camera CRC is computed on)
-        full_frame_size = start_byte + pixel_data_size + trailing_bytes
-
-        logging.debug("Frame size calculation for VB1940 FUSA:")
+        logging.debug("CSI layout (_vb1940_csi_frame_layout, same rules as vb1940.py):")
         logging.debug(f"  Pixel dimensions: {pixel_width} × {pixel_height}")
         logging.debug(f"  Pixel format: {pixel_format}")
-        logging.debug(f"  Bytes per line (packed, 64-byte aligned): {bytes_per_line:,}")
-        logging.debug(f"  Status line bytes (64-byte aligned): {status_line_bytes:,}")
-        logging.debug(f"  Start byte (CSI header): {start_byte:,}")
-        logging.debug(f"  Trailing bytes: {trailing_bytes:,}")
+        logging.debug(f"  Bytes per line (from converter): {layout.bytes_per_line:,}")
+        logging.debug(
+            f"  Status line bytes (64-byte aligned): {layout.status_line_bytes:,}"
+        )
+        logging.debug(f"  Start byte (CSI header): {layout.start_byte:,}")
+        logging.debug(f"  Trailing bytes: {layout.trailing_bytes:,}")
         logging.debug(f"  Pixel data size: {pixel_data_size:,} bytes")
         logging.debug(f"  Full CSI frame size: {full_frame_size:,} bytes")
         logging.debug(
@@ -523,8 +500,10 @@ class HoloscanApplication(holoscan.core.Application):
             f"to match camera CRC computation."
         )
 
-        # Create operator to access full frame buffer (FUSA buffer contains full frame,
-        # but tensor only wraps pixel data portion)
+        self._csi_full_frame_size = full_frame_size
+        self._csi_start_byte = start_byte
+
+        # View full CSI buffer for nvCOMP; FUSA tensor is pixel-only (see FullFrameAccessOp)
         full_frame_access = FullFrameAccessOp(
             self,
             name="full_frame_access",
@@ -532,28 +511,23 @@ class HoloscanApplication(holoscan.core.Application):
             full_frame_size=full_frame_size,
         )
 
-        # CRC operators using nvCOMP 5.0
+        # Full-frame CRC before unpack; CheckCrcOp writes check_crc into metadata
         compute_crc = hololink_module.operators.ComputeCrcOp(
             self,
             name="compute_crc",
             frame_size=full_frame_size,
         )
-
-        check_crc = hololink_module.operators.CheckCrcOp(
+        self.compute_crc_op = compute_crc
+        check_crc_raw = hololink_module.operators.CheckCrcOp(
             self,
-            name="check_crc",
+            name="check_crc_raw",
             compute_crc_op=compute_crc,
-            computed_crc_metadata_name="nvcomp_frame_crc",
+            computed_crc_metadata_name="check_crc",
         )
 
-        # Record both camera CRC and nvCOMP CRC for post-run validation
-        self.record_metadata_op = RecordMetadataOp(
-            self,
-            name="record_metadata",
-            metadata_names=["crc", "nvcomp_frame_crc"],
+        logging.debug(
+            "nvCOMP: ComputeCrcOp -> CheckCrcOp -> profiler -> unpack -> ISP -> demosaic"
         )
-
-        logging.debug("nvCOMP CRC validation enabled")
 
         profiler = InstrumentedTimeProfiler(
             self,
@@ -577,7 +551,14 @@ class HoloscanApplication(holoscan.core.Application):
             name="packed_format_converter",
             allocator=packed_format_converter_pool,
         )
-        fusa_coe_capture.configure_converter(packed_format_converter)
+        # Vb1940Cam path: full-frame sizing. (FusaCoeCaptureOp alone uses pixel-offset tensors.)
+        self._camera.configure_converter(packed_format_converter)
+        packed_sz = packed_format_converter.get_frame_size()
+        if packed_sz != layout.full_frame_size:
+            raise RuntimeError(
+                f"CSI frame size mismatch: PackedFormatConverter.get_frame_size()={packed_sz} "
+                f"vs layout.full_frame_size={layout.full_frame_size}"
+            )
 
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
@@ -591,15 +572,18 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         rgba_components_per_pixel = 4
+        bayer_rgba_size = (
+            self._camera.width()
+            * rgba_components_per_pixel
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera.height()
+        )
         bayer_pool = holoscan.resources.BlockMemoryPool(
             self,
             name="bayer_pool",
             storage_type=1,
-            block_size=self._camera.width()
-            * rgba_components_per_pixel
-            * 2
-            * self._camera.height(),  # 4 channels * 2 bytes per uint16
-            num_blocks=2,
+            block_size=bayer_rgba_size,
+            num_blocks=4,
         )
 
         demosaic = holoscan.operators.BayerDemosaicOp(
@@ -612,6 +596,12 @@ class HoloscanApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
+        self.record_metadata_op = RecordMetadataOp(
+            self,
+            name="record_metadata",
+            metadata_names=["crc", "check_crc"],
+        )
+
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
@@ -622,7 +612,6 @@ class HoloscanApplication(holoscan.core.Application):
             camera_pose_output_type="extrinsics_model",
         )
 
-        # Get frame rate from vb1940_frame_format
         camera_fps = hololink_module.sensors.vb1940.vb1940_mode.vb1940_frame_format[
             self._camera_mode.value
         ].framerate
@@ -634,20 +623,17 @@ class HoloscanApplication(holoscan.core.Application):
             expected_fps=camera_fps,
         )
 
-        # Pipeline with nvCOMP CRC validation
-        # Full frame access extracts full buffer from FUSA pixel data tensor
         self.add_flow(fusa_coe_capture, full_frame_access, {("output", "input")})
         self.add_flow(full_frame_access, compute_crc, {("output", "input")})
-        self.add_flow(compute_crc, profiler, {("output", "input")})
+        self.add_flow(compute_crc, check_crc_raw, {("output", "input")})
+        self.add_flow(check_crc_raw, profiler, {("output", "input")})
         self.add_flow(profiler, packed_format_converter, {("output", "input")})
         self.add_flow(
             packed_format_converter, image_processor_operator, {("output", "input")}
         )
-        # Check nvCOMP results after image processing
-        self.add_flow(image_processor_operator, check_crc, {("output", "input")})
-        self.add_flow(check_crc, self.record_metadata_op, {("output", "input")})
-        self.add_flow(self.record_metadata_op, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
+        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
+        self.add_flow(demosaic, self.record_metadata_op, {("transmitter", "input")})
+        self.add_flow(self.record_metadata_op, visualizer, {("output", "receivers")})
         self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})
 
 
@@ -703,7 +689,7 @@ def main():
     hololink_module.logging_level(args.log_level)
     logging.info("VB1940 Frame Validation with FUSA CoE and nvCOMP CRC")
 
-    # Initialize CUDA
+    # CUDA primary context for operators and Cupy
     (cu_result,) = cuda.cuInit(0)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_device_ordinal = 0
@@ -712,16 +698,14 @@ def main():
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
-    # Initialize Hololink
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     logging.info(f"Hololink channel: {channel_metadata}")
 
-    # Create channel for specified sensor
+    # Data channel and VB1940 camera for selected sensor
     channel_metadata_obj = hololink_module.Metadata(channel_metadata)
     hololink_module.DataChannel.use_sensor(channel_metadata_obj, args.sensor)
     hololink_channel = hololink_module.DataChannel(channel_metadata_obj)
 
-    # Initialize camera
     camera = hololink_module.sensors.vb1940.vb1940.Vb1940Cam(hololink_channel)
     camera_mode = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode(
         args.camera_mode
@@ -729,7 +713,6 @@ def main():
 
     recorder_queue = queue.Queue(maxsize=30_000)
 
-    # Create application
     application = HoloscanApplication(
         args.headless,
         args.fullscreen,
@@ -744,7 +727,6 @@ def main():
         args.timeout,
     )
 
-    # Start Hololink
     hololink = hololink_channel.hololink()
     hololink.start()
     if not args.skip_reset:
@@ -768,11 +750,11 @@ def main():
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
-    # Validate CRCs after pipeline completes
-    SKIP_INITIAL_FRAMES = 10  # Skip first N frames during pipeline initialization
-    SKIP_FINAL_FRAMES = 10  # Skip last N frames during pipeline shutdown
+    # Skip startup/shutdown frames when scoring CRC agreement (warmup / teardown artifacts)
+    SKIP_INITIAL_FRAMES = 10
+    SKIP_FINAL_FRAMES = 10
 
-    if hasattr(application, "record_metadata_op"):
+    if hasattr(application, "record_metadata_op") and application.record_metadata_op:
         crcs = application.record_metadata_op.get_record()
         total_frames = len(crcs)
 
@@ -781,15 +763,12 @@ def main():
         else:
             logging.info(f"Captured {total_frames} frames")
 
-            # Validate CRCs (skip initial and final frames to avoid artifacts)
             skip_frames = SKIP_INITIAL_FRAMES
             nvcomp_errors = 0
 
             for frame_idx, (camera_crc, nvcomp_crc) in enumerate(crcs):
-                # Skip validation for first N frames (initialization artifacts)
                 if frame_idx < skip_frames:
                     continue
-                # Skip validation for last N frames (shutdown artifacts)
                 if frame_idx >= (total_frames - SKIP_FINAL_FRAMES):
                     continue
 
@@ -807,8 +786,15 @@ def main():
                 else 0
             )
 
-            if nvcomp_errors == 0:
-                logging.info(f"Validated {validated_frames} CRCs - all matched!")
+            if validated_frames == 0:
+                logging.warning(
+                    "Insufficient frames for CRC validation after skipping first "
+                    f"{skip_frames} and last {SKIP_FINAL_FRAMES} (captured "
+                    f"{total_frames}); need more than "
+                    f"{skip_frames + SKIP_FINAL_FRAMES} frames total."
+                )
+            elif nvcomp_errors == 0:
+                logging.info(f"OK: Validated {validated_frames} CRCs - all matched!")
 
             logging.info("\n" + "=" * 80)
             logging.info("nvCOMP CRC VALIDATION SUMMARY (FUSA CoE)")
@@ -819,33 +805,63 @@ def main():
             )
             logging.info("")
 
-            # nvCOMP vs Camera analysis
-            logging.info("nvCOMP GPU CRC vs Camera FPGA CRC:")
-            logging.info(f"  Matches:    {validated_frames - nvcomp_errors}")
-            logging.info(f"  Mismatches: {nvcomp_errors}")
-            logging.info(f"  Success:    {nvcomp_success:.2f}%")
+            logging.debug("FRAME DIMENSIONS:")
+            if hasattr(application, "_camera"):
+                camera = application._camera
+                logging.debug("  Camera:")
+                logging.debug(f"    Width:           {camera._width:,} pixels")
+                logging.debug(f"    Height:          {camera._height:,} pixels")
+            if hasattr(application, "compute_crc_op") and application.compute_crc_op:
+                logging.debug("  nvCOMP (full CSI buffer):")
+                fs = getattr(application, "_csi_full_frame_size", None)
+                sb = getattr(application, "_csi_start_byte", None)
+                if fs is not None:
+                    logging.debug(f"    Frame size:      {fs:,} bytes")
+                if sb is not None:
+                    logging.debug(f"    Start byte:      {sb:,}")
+            logging.info("")
+
+            logging.info("nvCOMP CRC vs Camera FPGA CRC:")
+            if validated_frames > 0:
+                logging.info(f"  Matches:    {validated_frames - nvcomp_errors}")
+                logging.info(f"  Mismatches: {nvcomp_errors}")
+                logging.info(f"  Success:    {nvcomp_success:.2f}%")
+            else:
+                logging.info("  Matches:    (none scored)")
+                logging.info("  Mismatches: (none scored)")
+                logging.info("  Success:    N/A (no frames in validation window)")
             logging.info("")
 
             logging.info("INTERPRETATION:")
             logging.info("-" * 50)
-            if nvcomp_errors == 0:
-                logging.info("SUCCESS! nvCOMP matches camera perfectly (100%)")
+            if validated_frames == 0:
+                logging.info(
+                    "SKIP: No CRC agreement was scored (insufficient frames after skip window)."
+                )
+                logging.info(
+                    "   - Increase total capture length or reduce initial/final skip counts."
+                )
+            elif nvcomp_errors == 0:
+                logging.info("SUCCESS: nvCOMP matches camera perfectly (100%)")
+                logging.info("   - nvCOMP CRC validation is working correctly")
+                logging.info("   - FUSA CoE capture is delivering data intact")
             else:
                 logging.info(
-                    f"nvCOMP has {nvcomp_errors} mismatches ({100-nvcomp_success:.2f}% error rate)"
+                    f"FAIL: nvCOMP has {nvcomp_errors} mismatches ({100 - nvcomp_success:.2f}% error rate)"
                 )
-                logging.info("   → Check nvCOMP configuration and data alignment")
-                logging.info("   → Verify FUSA CoE capture configuration")
+                logging.info(
+                    "   - Check nvCOMP / full-frame alignment and buffer layout"
+                )
+                logging.info("   - Verify FUSA CoE capture configuration")
             logging.info("=" * 80)
 
-    # Report stats at the end of the application
+    # Latency breakdown from queued samples (see record_times tuple layout)
     frame_time_dts = []
     cpu_latency_dts = []
     operator_latency_dts = []
     processing_time_dts = []
     overall_time_dts = []
 
-    # Extract all items from the thread-safe queue for processing
     with recorder_queue_lock:
         recorder_queue_items = list(recorder_queue.queue)
 

@@ -1,0 +1,68 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+fpga_uuid:
+  - 889b7ce3-65a5-4247-8b05-4ff1904c3359
+
+firmware_versions:
+  - version: 0x2506
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2506/fpga_clnx_v2506.bit
+        md5: d98f61500f49b40ef6eb935eb535fa05
+        size: 376082
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2506/fpga_cpnx_v2506.bit
+        md5: 30b970489fecb0ff205bdc8bb11daf2f
+        size: 1962227
+
+  - version: 0x2507
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2507/fpga_clnx_v2507.bit
+        md5: edc29bdb1924e5d04baf53f076413123
+        size: 377554
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2507/fpga_cpnx_v2507.bit
+        md5: bda589884de672de8ca76321c793b4f0
+        size: 1962051
+
+  - version: 0x2510
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2510/fpga_clnx_v2510_ea.bit
+        md5: 1d53c3b4c02de5b52444932236212795
+        size: 377555
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2510/fpga_cpnx_v2510_ea.bit
+        md5: b10705cda930ce6f496a93ea4cd205b4
+        size: 1965700
+
+  - version: 0x2511
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2511/fpga_clnx_v2511.bit
+        md5: a82a1a9c2013e0e0a5f030e40ff7edb5
+        size: 377554
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2511/fpga_cpnx_v2511.bit
+        md5: 043b36cb9ba3d127ee6263cfa7574fd8
+        size: 1965699
+
+  - version: 0x2603
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603/fpga_clnx_v2603_3ac.bit
+        md5: 0035bf5a62a41c4b9dda6267e06b2c11
+        size: 377554
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2603/fpga_cpnx_v2603_d3b.bit
+        md5: 34f27fcbddffe0bf87f93a260e1ced51
+        size: 1965683

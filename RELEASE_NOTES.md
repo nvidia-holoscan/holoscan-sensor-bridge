@@ -1,6 +1,6 @@
 # Release Notes
 
-## 2.6-EA, March 2026
+## 2.6-EA2, April 2026
 
 ### Dependencies
 
@@ -15,6 +15,20 @@ Be sure and follow the installation instructions included with the release, incl
 PTP configuration and HSB device firmware updates. To generate documentation, in the
 host system, run `sh docs/make_docs.sh`, then use your browser to look at
 `docs/user_guide/_build/html/index.html`.
+
+### Updates 2.6-EA
+
+- Numerous stability improvements
+- `hsb_flasher` is included but is still underdevelopment; continue to use the
+  traditional FPGA programming tools
+- Emulator updates
+- FPGA IP block stability updates
+
+NOTE an important stability improvement affects application code: An update to HSDK
+results in operators holding on to buffers longer, which can result in BlockMemoryPool
+instances running out of buffer space. For this reason, you'll see many of the examples
+and tests have been updated with increased values for `num_blocks`-- you may have to
+apply this same fix to your application code.
 
 ### Updates from 2.5-GA
 

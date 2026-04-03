@@ -22,7 +22,6 @@ copy_hololink_python_files(
         __init__.py
         csi.py
         imx477.py
-        linux_camera.py
         v4l2_ids.py
 )
 

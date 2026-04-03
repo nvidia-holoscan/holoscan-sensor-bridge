@@ -31625,12 +31625,64 @@ vb1940_mode_2560X1984_30fps_8bit = [
     (0xCA3, 0x01),
 ]
 
+vb1940_mode_2560X1984_60fps = [
+    # MIPI_DATA_RATE(1140MHz)
+    (0x738, 0x00),
+    (0x739, 0x05),
+    (0x73A, 0xF3),
+    (0x73B, 0x43),
+    # ROI_B
+    (0x916, 0x00),
+    (0x917, 0x00),  # width offset
+    (0x918, 0x00),
+    (0x919, 0x00),  # height offset
+    (0x91A, 0x00),
+    (0x91B, 0x0A),  # width:2560
+    (0x91C, 0xC0),
+    (0x91D, 0x07),  # height:1984
+    (0x91E, 0x2B),  # data type
+    # master mode
+    (0xAC6, 0x00),  # 0:master mode, 1:EXTSYNC
+    (0xAD4, 0x05),  # GPIO0 FSYNC_IN
+    (0xAD6, 0x00),  # GPIO2 strobe
+    (0xAD7, 0x00),  # GPIO3 strobe
+    # context switch configuration
+    (0xADC, 0x01),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_0
+    (0xADD, 0x00),
+    (0xADE, 0x00),
+    (0xADF, 0x00),
+    (0xAE0, 0x00),  # CONTEXT_SWITCH_SEQUENCE_VECTOR_1
+    (0xAE1, 0x00),
+    (0xAE2, 0x00),
+    (0xAE3, 0x00),
+    (0xAE4, 0x00),  # CONTEXT_SWITCH_LOOP_ELEMENT
+    # stream static global
+    (0x934, 0x50),  # LINE_LENGTH 0xD2C = 4176d, line time = 4176/372 = 11.23us
+    (0x935, 0x10),
+    (0x937, 0x00),  # ORIENTATION (0=normal)
+    # stream static ctx1
+    (
+        0xB88,
+        0x06,
+    ),  # CONFIG6_GS_OP_RGB_PWLOFF_SINGLE_EXP_VTSS1_DESCSS1_CFA_BAYER_RAW10_31
+    (0xB8E, 0xCC),  # FRAME_LENGTH(frame time = 1484*11.23us=16665us)
+    (0xB8F, 0x05),
+    (0xB8C, 0x00),  # vc0
+    (0xB90, 0x02),  # roi selection(2= Enable ROI_B)
+    (0xB91, 0x30),  # disable GPIO0-3
+    # stream dynamic ctx1
+    (0xCA1, 0x00),  # analog gain(1)
+    (0xCA2, 0xF4),  # INTEGRATION_TIME_PRIMARY
+    (0xCA3, 0x01),
+]
+
 
 class Vb1940_Mode(Enum):
     VB1940_MODE_2560X1984_30FPS = 0
     VB1940_MODE_1920X1080_30FPS = 1
     VB1940_MODE_2560X1984_30FPS_8BIT = 2
-    Unknown = 3
+    VB1940_MODE_2560X1984_60FPS = 3
+    Unknown = 4
 
 
 frame_format = namedtuple(
@@ -31649,4 +31701,8 @@ vb1940_frame_format.insert(
 vb1940_frame_format.insert(
     Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT.value,
     frame_format(2560, 1984, 30, hololink.sensors.csi.PixelFormat.RAW_8),
+)
+vb1940_frame_format.insert(
+    Vb1940_Mode.VB1940_MODE_2560X1984_60FPS.value,
+    frame_format(2560, 1984, 60, hololink.sensors.csi.PixelFormat.RAW_10),
 )

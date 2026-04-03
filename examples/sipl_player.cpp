@@ -174,7 +174,7 @@ public:
 
                 // Convert packed RAW to 16-bit Bayer.
                 const int32_t storage_type_device_memory = 1;
-                const size_t num_blocks = 2;
+                const size_t num_blocks = 4;
                 size_t size = info.width * info.height * 2; // 16-bit Bayer
                 auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
                     fmt::format("converter_pool_{}", info.output_name),

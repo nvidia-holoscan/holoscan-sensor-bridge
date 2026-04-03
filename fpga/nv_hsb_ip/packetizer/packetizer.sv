@@ -107,7 +107,8 @@ for (k=0;k<NUM_RAM;k=k+1) begin: PACK_CONFIG
   (* ram_style = "distributed" *) logic [31:0] cfg_mem [16] /*synthesis syn_ramstyle = "distributed"*/;
   always @ (posedge i_sclk) begin
     if (i_srst) begin
-      cfg_mem <= '{default:'0};
+      cfg_mem                                <= '{default:'0};
+      w_ram_dout[k*RAM_D_WIDTH+:RAM_D_WIDTH] <= '0;
     end
     else begin
       if (ram_we[k]) begin

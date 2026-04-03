@@ -525,7 +525,7 @@ def argus_isp(
         * rgba_components_per_pixel
         * ctypes.sizeof(ctypes.c_uint16)
         * pixel_height,
-        num_blocks=2,
+        num_blocks=4,
     )
     # 60fps is 16.67ms
     exposure_time_ms = 16.67

@@ -44,6 +44,7 @@ assign start_count              = debounce_reg[1] ^ debounce_reg[0];
 always_ff @(posedge clk) begin
   if (rst) begin
     debounce_counter            <= 0;
+    debounce_out                <= 0;
   end
   else begin
     if (start_count) begin

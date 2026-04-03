@@ -393,7 +393,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * 2
             * self._camera._height,  # 2 bytes per uint16
-            num_blocks=2,
+            num_blocks=4,
         )
 
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
@@ -509,7 +509,7 @@ class HoloscanApplication(holoscan.core.Application):
             * 4
             * 2
             * self._camera._height,  # 4 channels * 2 bytes per uint16
-            num_blocks=2,
+            num_blocks=4,
         )
 
         demosaic = holoscan.operators.BayerDemosaicOp(

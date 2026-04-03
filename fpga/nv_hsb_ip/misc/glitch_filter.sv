@@ -34,6 +34,7 @@ generate
     always @(posedge clk or negedge rst_n) begin
       if (!rst_n) begin
         filter_pipe[s_idx] <= {DATA_WIDTH{RESET_VALUE}};
+        sync_out   [s_idx] <= RESET_VALUE;
       end
       else begin
         if (&filter_pipe[s_idx]) begin

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,12 +15,12 @@
  * limitations under the License.
  */
 
-#include "hololink.hpp"
+#include <hololink/core/hololink.hpp>
 
 #include <cassert>
 #include <cstdint>
 
-#include "logging_internal.hpp"
+#include <hololink/core/logging_internal.hpp>
 
 namespace hololink {
 
@@ -76,7 +76,7 @@ public:
         return r;
     }
 
-    Hololink::NamedLock& spi_lock()
+    NamedLock& spi_lock()
     {
         return hololink_.spi_lock();
     }

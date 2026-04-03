@@ -69,13 +69,12 @@ class Device:
         self._state = None
         self._reactor = hololink_module.Reactor.get_reactor()
         self._hololink = None
-        self._controllers = set()
         self._connected = set()
 
     def goto(self, state):
         logging.info(f"device={self._serial_number} {state=}")
         self._state = state
-        for controller in self._controllers:
+        for controller in list(self._connected):
             controller.device_state(state)
 
     def start(self):
@@ -89,9 +88,9 @@ class Device:
         logging.trace(f"Received {enumeration_metadata=}")
         assert self._reactor.is_current_thread()
         now = time.monotonic()
-        if controller not in self._controllers:
+        if controller not in self._connected:
             controller.device_state(self._state)
-            self._controllers.add(controller)
+            self._connected.add(controller)
         # Since ECB is directed toward self._peer_ip,
         # don't progress from NOT_FOUND if we're enumerated
         # from another port first.
@@ -171,20 +170,10 @@ class Device:
         # Keep polling.
         self._ptp_alarm = self._reactor.add_alarm_s(self._ptp_poll_time, self.check_ptp)
 
-    def connect(self, controller):
-        self._connected.add(controller)
-
-    def connected_count(self):
-        return len(self._connected)
-
-    def lost(self, controller=None):
+    def lost(self):
         self._reactor.cancel_alarm(self._ptp_alarm)
-        if controller is not None:
-            self._connected.remove(controller)
-        else:
-            self._connected = set()
-        if len(self._connected) == 0:
-            self.goto(Device.State.NOT_FOUND)
+        self.goto(Device.State.NOT_FOUND)
+        self._connected = set()
 
 
 class SensorFactory:
@@ -205,7 +194,7 @@ class SensorFactory:
         logging.trace(f"{self} start")
         self._hsb_controller = hsb_controller
         self._enumeration_handle = hololink_module.Enumerator.register_ip(
-            self._channel_ip, self.enumerated
+            self._channel_ip, self._enumerated
         )
 
     def stop(self):
@@ -213,7 +202,7 @@ class SensorFactory:
         self._reactor.cancel_alarm(self._watchdog)
         hololink_module.Enumerator.unregister_ip(self._enumeration_handle)
 
-    def enumerated(self, metadata):
+    def _enumerated(self, metadata):
         logging.trace(f"{self} enumerated {metadata=}")
         assert self._reactor.is_current_thread()
         self._enumeration_metadata = metadata
@@ -237,40 +226,44 @@ class SensorFactory:
 
     def found(self):
         logging.trace(f"{self} found.")
-        self._device.connect(self)
         try:
             if self._hololink_channel is None:
-                self._hololink_channel = hololink_module.DataChannel(
-                    self._enumeration_metadata
-                )
-                self._hololink = self._hololink_channel.hololink()
+                self.new_data_channel()
             self._sensor = self.new_sensor()
         except hololink_module.TransactionError as transaction_error:
             logging.info(f"Caught {transaction_error=} during configuration.")
-            self._device.lost(self)
+            self._device.lost()
             return
         self._hsb_controller.found(
             self._enumeration_metadata, self._hololink_channel, self._sensor
         )
+
+    def new_data_channel(self):
+        self._hololink_channel = hololink_module.DataChannel(self._enumeration_metadata)
+        self._hololink = self._hololink_channel.hololink()
 
     def new_sensor(self):
         raise NotImplementedError()
 
     def run(self):
         logging.trace(f"{self} run")
-        self._watchdog = self._reactor.add_alarm_s(self._watchdog_timeout, self.lost)
+        self._watchdog = self._reactor.add_alarm_s(
+            self._watchdog_timeout, self.watchdog_timeout
+        )
         self._hsb_controller.run()
 
     def tap(self):
         logging.trace(f"{self} tap")
         self._reactor.cancel_alarm(self._watchdog)
-        self._watchdog = self._reactor.add_alarm_s(self._watchdog_timeout, self.lost)
+        self._watchdog = self._reactor.add_alarm_s(
+            self._watchdog_timeout, self.watchdog_timeout
+        )
 
-    def lost(self):
+    def watchdog_timeout(self):
         self._reactor.cancel_alarm(self._watchdog)
-        logging.info(f"{self} device lost.")
+        logging.info(f"{self} device watchdog timeout.")
         self._sensor = None
-        self._device.lost(self)
+        self._device.lost()
         self._hsb_controller.lost()
 
 

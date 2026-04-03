@@ -17,26 +17,22 @@
  * See README.md for detailed information.
  */
 
-#include "data_plane.hpp"
+#include "STM32/data_plane.hpp"
 #include "STM32/hsb_emulator.hpp"
 #include "STM32/net.hpp"
 #include "STM32/stm32_system.h"
 #include "STM32/tim.h"
+#include "utils.hpp"
 #include <string.h>
 
 namespace hololink::emulation {
 
 #define BOOTP_PACKET_SIZE 342u
+#define PACKETIZER_MODE 0x0Cu
+#define PACKETIZER_RAM 0x04u
+#define PACKETIZER_DATA 0x08u
 
-struct DataPlaneCtxt {
-    // metadata protection
-    uint8_t bootp_buffer[sizeof(BootpPacket) + ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN];
-    ETH_BufferTypeDef tx_buffers;
-    ETH_TxPacketConfigTypeDef tx_config;
-    ETH_HandleTypeDef* eth_handle;
-    bool running;
-    struct timespec start_time;
-} DATA_PLANE_CTXT[MAX_DATA_PLANES];
+struct DataPlaneCtxt DATA_PLANE_CTXT[MAX_DATA_PLANES];
 
 // this is a subset of the HSBConfiguration struct that is part of the BootpPacket
 // but it is kept separate because it must be packed.
@@ -78,7 +74,7 @@ void init_bootp_packet(uint8_t* bootp_buffer, IPAddress& ip_address, HSBConfigur
         ip_header->protocol = IPPROTO_UDP, // UDP
         ip_header->check = 0;
     ip_header->saddr = ip_address.ip_address;
-    ip_header->daddr = INADDR_BROADCAST;
+    ip_header->daddr = ip_address.broadcast_address;
 
     struct udphdr* udp_header = (struct udphdr*)(bootp_buffer + ETHER_HDR_LEN + IP_HDR_LEN);
     udp_header->source = htons(BOOTP_REPLY_PORT);
@@ -145,6 +141,39 @@ void DataPlane_deleter(__attribute__((unused)) struct DataPlaneCtxt* ctxt)
     // do nothing
 }
 
+int packetizer_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
+{
+    DataPlaneCtxt* data_plane_ctxt = (DataPlaneCtxt*)ctxt;
+    int n = 0;
+    while (n < max_count) {
+        uint32_t address = AVP_GET_ADDRESS(addr_val);
+        if (address == data_plane_ctxt->sif_address + PACKETIZER_MODE) {
+            AVP_SET_VALUE(addr_val, data_plane_ctxt->packetizer_mode);
+        } else {
+            return n;
+        }
+        addr_val++;
+        n++;
+    }
+    return n;
+}
+int packetizer_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
+{
+    DataPlaneCtxt* data_plane_ctxt = (DataPlaneCtxt*)ctxt;
+    int n = 0;
+    while (n < max_count) {
+        uint32_t address = AVP_GET_ADDRESS(addr_val);
+        if (address == data_plane_ctxt->sif_address + PACKETIZER_MODE) {
+            data_plane_ctxt->packetizer_mode = AVP_GET_VALUE(addr_val);
+        } else {
+            return n;
+        }
+        addr_val++;
+        n++;
+    }
+    return n;
+}
+
 // HSBEmulator must remain alive for as long as the longest-lived DataPlane object it was used to construct
 // IPAddress is both the source IP address and subnet mask to be able to set the appropriate broadcast address (!cannot use INADDR_BROADCAST!)
 DataPlane::DataPlane(HSBEmulator& hsb_emulator, const IPAddress& ip_address, uint8_t data_plane_id, uint8_t sensor_id)
@@ -182,6 +211,11 @@ DataPlane::DataPlane(HSBEmulator& hsb_emulator, const IPAddress& ip_address, uin
     data_plane_ctxt_.reset(&DATA_PLANE_CTXT[data_plane_id_]);
     data_plane_ctxt_.get_deleter() = DataPlane_deleter;
     data_plane_ctxt_->eth_handle = &(hsb_emulator.ctxt_->eth_handle);
+    data_plane_ctxt_->sif_address = sif_address_;
+    data_plane_ctxt_->new_frame = true;
+
+    CHECK_CP_MAP_SET(hsb_emulator.register_read_callback(sif_address_ + PACKETIZER_MODE, sif_address_ + PACKETIZER_MODE + REGISTER_SIZE, packetizer_readback_cb, data_plane_ctxt_.get()));
+    CHECK_CP_MAP_SET(hsb_emulator.register_write_callback(sif_address_ + PACKETIZER_MODE, sif_address_ + PACKETIZER_MODE + REGISTER_SIZE, packetizer_configure_cb, data_plane_ctxt_.get()));
 
     // register the DataPlane with the HSBEmulator so that it can be started/stopped
     hsb_emulator.add_data_plane(*this);
@@ -222,18 +256,37 @@ void DataPlane::update_metadata()
 {
 }
 
-int64_t DataPlane::send(const DLTensor& tensor)
+int64_t DataPlane::send(const DLTensor& tensor, FrameMetadata* frame_metadata)
 {
     if (!transmitter_) {
         fprintf(stderr, "DataPlane::send() no transmitter\n");
         return -1;
     }
 
-    update_metadata(); // call the abstract method under the protection of the lock. Transmitter is assured to have synchronized access to the metadata
-    int64_t n_bytes = transmitter_->send(metadata_, tensor);
-    if (n_bytes < 0) {
-        fprintf(stderr, "DataPlane::send() error sending tensor\n");
+    if (frame_metadata == nullptr) {
+        frame_metadata = DEFAULT_FRAME_METADATA;
     }
+    return send((uint8_t*)tensor.data, DLTensor_n_bytes(tensor), frame_metadata);
+}
+
+int64_t DataPlane::send(const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata)
+{
+    if (!transmitter_) {
+        fprintf(stderr, "DataPlane::send_packet() no transmitter\n");
+        return -1;
+    }
+
+    if (data_plane_ctxt_->new_frame) {
+        update_metadata();
+        data_plane_ctxt_->new_frame = false;
+    }
+
+    int64_t n_bytes = transmitter_->send(metadata_, buffer, buffer_size, frame_metadata);
+
+    if (n_bytes > 0 && frame_metadata) {
+        data_plane_ctxt_->new_frame = true;
+    }
+
     return n_bytes;
 }
 
@@ -252,6 +305,11 @@ int DataPlane::broadcast_bootp()
     }
     int last_bootp_tx_status = send_bootp(data_plane_ctxt_.get());
     return last_bootp_tx_status;
+}
+
+bool DataPlane::packetizer_enabled() const
+{
+    return (data_plane_ctxt_->packetizer_mode >> 28u) & 0x1u;
 }
 
 }

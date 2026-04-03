@@ -34,7 +34,8 @@ class HsbControllerOp(holoscan.core.Operator):
         self._controller = hololink_module.hsb_controller.HsbController(
             sensor_factory, network_receiver
         )
-        self._fallback_image = fallback_image.csi_image()
+        self._fallback_image = fallback_image
+        self._fallback_csi_image = self._fallback_image.csi_image()
         self._out_tensor_name = ""
         #
         self._frame_ready_condition = holoscan.conditions.AsynchronousCondition(
@@ -65,10 +66,13 @@ class HsbControllerOp(holoscan.core.Operator):
         )
 
     def compute(self, op_input, op_output, context):
+        tensor = None
         if self._controller.connected():
+            # This may time out if we lost connection to HSB.
             tensor = self._controller.get_next_frame()
-        else:
-            tensor = self._fallback_image
+        if tensor is None:
+            logging.info(f"{self.name} Using fallback image.")
+            tensor = self._fallback_csi_image
         op_output.emit({self._out_tensor_name: tensor}, "output")
         self._frame_ready_condition.event_state = (
             holoscan.conditions.AsynchronousEventState.EVENT_WAITING

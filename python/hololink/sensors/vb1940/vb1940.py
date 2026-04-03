@@ -754,6 +754,10 @@ class Vb1940Cam(hololink_module.Synchronizable):
             == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT.value
         ):
             mode_list = vb1940_mode.vb1940_mode_2560X1984_30fps_8bit
+        elif (
+            mode_set.value == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_60FPS.value
+        ):
+            mode_list = vb1940_mode.vb1940_mode_2560X1984_60fps
         else:
             logging.error(f"{mode_set} mode is not present.")
 

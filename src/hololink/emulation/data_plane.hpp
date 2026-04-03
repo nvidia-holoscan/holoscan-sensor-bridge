@@ -34,6 +34,8 @@
 #include "net.hpp"
 
 // registers (taken from data_channel.hpp)
+#define DP_QP 0x00u
+#define DP_RKEY 0x04u
 #define DP_PAGE_LSB 0x08u
 #define DP_PAGE_MSB 0x0Cu
 #define DP_PAGE_INC 0x10u
@@ -46,8 +48,6 @@
 #define DP_PACKET_SIZE 0x04u
 #define DP_PACKET_UDP_PORT 0x08u
 #define DP_VP_MASK 0x0Cu
-#define DP_QP 0x00u
-#define DP_RKEY 0x04u
 
 #define BOOTP_PORT 8192u
 #define BOOTP_BUFFER_SIZE 1500u
@@ -141,11 +141,21 @@ public:
     /**
      * @brief Send a tensor over the DataPlane.
      * @param tensor The tensor object reference to send. Supported device types are kDLCPU, kDLCUDA, kDLCUDAHost (host pinned), and kDLCUDAManaged (Unified Memory)
+     * @param frame_metadata The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
      * @return The number of bytes sent or < 0 if error occurred.
      *
      * @note This method is synchronous. It will block and metadata will be protected by a mutex until the send is complete.
      */
-    int64_t send(const DLTensor& tensor);
+    int64_t send(const DLTensor& tensor, FrameMetadata* frame_metadata = DEFAULT_FRAME_METADATA);
+
+    /**
+     * @brief Send a buffer over the DataPlane.
+     * @param buffer The buffer to send.
+     * @param buffer_size The size of the buffer.
+     * @param frame_metadata The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
+     * @return The number of bytes sent or < 0 if error occurred.
+     */
+    int64_t send(const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata = nullptr);
 
     /**
      * @brief Get the sensor ID associated with the DataPlane.
@@ -189,9 +199,6 @@ protected:
     uint32_t sif_address_ { 0 };
     uint32_t vp_address_ { 0 };
 
-private:
-    // we have a functional deleter so that we have the unique_ptr guarantees of std::unique_ptr but we can have a different
-    // or custom deleters
     std::unique_ptr<struct DataPlaneCtxt, std::function<void(DataPlaneCtxt*)>> data_plane_ctxt_ { nullptr };
 };
 

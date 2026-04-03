@@ -73,7 +73,7 @@ public:
             // storage_type of 1 is device memory
             1, // storage_type
             camera_->get_width() * sizeof(uint16_t) * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
         auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
             "csi_to_bayer", holoscan::Arg("allocator", csi_to_bayer_pool),
@@ -103,7 +103,7 @@ public:
             1, // storage_type
             camera_->get_width() * rgba_components_per_pixel * sizeof(uint16_t)
                 * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
         auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>("demosaic",
             holoscan::Arg("pool", bayer_pool), holoscan::Arg("generate_alpha", true),
@@ -137,12 +137,13 @@ private:
 
 int main(int argc, char** argv)
 {
+    const std::string default_hololink_ip("192.168.0.2");
     auto camera_mode = hololink::sensors::imx274_mode::IMX274_MODE_1920X1080_60FPS;
     bool headless = false;
     bool fullscreen = false;
     int64_t frame_limit = 0;
     std::string configuration;
-    std::string hololink_ip = "192.168.0.2";
+    std::string hololink_ip = default_hololink_ip;
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
     uint32_t ibv_port = 1;
     int32_t expander_configuration = 0;
@@ -228,7 +229,7 @@ int main(int argc, char** argv)
                           << "Options:" << std::endl
                           << "  -h, --help     display this information" << std::endl
                           << "  --hololink     IP address of Hololink board (default `"
-                          << hololink_ip << "`" << std::endl
+                          << default_hololink_ip << "`)" << std::endl
                           << std::endl;
                 return EXIT_SUCCESS;
 

@@ -28,9 +28,7 @@ _MODULES = [
     "vb1940",
 ]
 
-_OBJECTS = {
-    "LinuxCamera": "linux_camera",
-}
+_OBJECTS = {}
 
 __all__ = [
     "csi",

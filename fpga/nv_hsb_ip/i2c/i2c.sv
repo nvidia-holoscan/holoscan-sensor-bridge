@@ -96,6 +96,8 @@ always_ff @(posedge clk) begin
     peri_ack   <= '1;
     idle_delay <= '0;
     is_busy    <= '0;
+    dout_r     <= '0;
+    idx        <= '0;
   end
   else begin
     idle_delay <= (state_prev == I2C_IDLE);  // Delay in Idle state for 1 extra cycle

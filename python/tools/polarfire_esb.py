@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,7 @@ import time
 import zipfile
 
 import requests
+import traditional_peripherals_py
 import yaml
 
 import hololink as hololink_module
@@ -128,7 +129,7 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
     download_extract(current_file_cfg)
     hsb_ip_version = channel_metadata["hsb_ip_version"]
     if hsb_ip_version < 0x2506:
-        in_spi = hololink_module.get_traditional_spi(
+        in_spi = traditional_peripherals_py.get_traditional_spi(
             hololink,
             spi_con_addr,
             chip_select=0,

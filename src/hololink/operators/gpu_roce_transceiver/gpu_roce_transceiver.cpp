@@ -245,7 +245,8 @@ bool GpuRoceTransceiver::start()
     umem_cpu = false;
     if (prop.integrated)
         umem_cpu = true;
-    HSB_LOG_INFO("Device {} GPU type {}", gpu_id_, prop.integrated ? "iGPU" : "dGPU");
+
+    HSB_LOG_INFO("Device {} GPU type {} umem_cpu={} cpu_ring_buffers={}", gpu_id_, prop.integrated ? "iGPU" : "dGPU", umem_cpu, cpu_ring_buffers_);
 
     result = doca_gpu_create(gpu_bus_id, &doca_gpu_device_);
     if (result != DOCA_SUCCESS) {
@@ -338,11 +339,20 @@ bool GpuRoceTransceiver::start()
         return false;
     }
 
+    // cpu_ring_buffers_: force CPU_GPU allocation for ring flags and data only,
+    // without changing CQ/QP UMEMs or TX kernel handler mode.
+    if (cpu_ring_buffers_ && !umem_cpu)
+        doca_qp->umem_cpu = true;
+
     result = doca_qp->create_ring(cu_page_size_, pages_, ibv_pd);
     if (result != DOCA_SUCCESS) {
         HSB_LOG_ERROR("Failed to create ring buffers: {}", doca_error_get_descr(result));
         return false;
     }
+
+    // Restore original umem_cpu so TX kernel handler uses BlueFlame on dGPU.
+    if (cpu_ring_buffers_ && !umem_cpu)
+        doca_qp->umem_cpu = false;
 
     // Ger RX buffer rkey
     rkey_ = doca_qp->gpu_rx_ring.addr_mr->rkey;

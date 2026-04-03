@@ -96,6 +96,7 @@ always_ff @(posedge i_pclk) begin
     sif_tlast   <= '0;
     unsync_cnt  <= '0;
     unsync      <= '0;
+    pkt_len     <= '0;
   end
   else begin
     unsync_cnt     <= pkt_pad_cnt + last_cycle_pad;

@@ -20,11 +20,13 @@ if(HOLOLINK_BUILD_ROCE)
     imx274_player.cpp
     )
 
-  add_test(NAME imx274_player_test
-            COMMAND imx274_player --frame-limit=10 --headless
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-  set_tests_properties(imx274_player_test PROPERTIES
-                        FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+  if(HOLOLINK_BUILD_TESTS)
+    add_test(NAME imx274_player_test
+              COMMAND imx274_player --frame-limit=10 --headless
+              WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(imx274_player_test PROPERTIES
+                          FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+  endif()
 
   target_link_libraries(imx274_player
     PRIVATE
@@ -46,11 +48,13 @@ if(HOLOLINK_BUILD_SOCKET)
     linux_imx274_player.cpp
     )
 
-  add_test(NAME linux_imx274_player_test
-            COMMAND linux_imx274_player --frame-limit=10 --headless
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-  set_tests_properties(linux_imx274_player_test PROPERTIES
-                        FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+  if(HOLOLINK_BUILD_TESTS)
+    add_test(NAME linux_imx274_player_test
+              COMMAND linux_imx274_player --frame-limit=10 --headless
+              WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+    set_tests_properties(linux_imx274_player_test PROPERTIES
+                          FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+  endif()
 
   target_link_libraries(linux_imx274_player
     PRIVATE
@@ -126,7 +130,6 @@ if(HOLOLINK_BUILD_FUSA)
 endif() # HOLOLINK_BUILD_FUSA
 
 if(HOLOLINK_BUILD_ROCE)
-  include(hololink_deps/pybind11)
   add_executable(single_network_stereo_vb1940_player
     single_network_stereo_vb1940_player.cpp
     )
@@ -181,7 +184,6 @@ if(HOLOLINK_BUILD_SIPL)
       holoscan::core
       holoscan::ops::bayer_demosaic
       holoscan::ops::holoviz
-      gxf_multimedia
   )
 
   list(APPEND EXAMPLE_INSTALL_TARGETS sipl_player)
@@ -206,59 +208,68 @@ if(HOLOLINK_BUILD_SOCKET)
 
   list(APPEND EXAMPLE_INSTALL_TARGETS linux_single_network_stereo_imx274_player)
 
-  add_executable(linux_sub_frame_imx274_player
-    linux_sub_frame_imx274_player.cpp
-    )
-  
-  add_test(NAME linux_sub_frame_imx274_player_test
-            COMMAND linux_sub_frame_imx274_player --frame-limit=10 --headless --sub-frame-rows=1080
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-  set_tests_properties(linux_sub_frame_imx274_player_test PROPERTIES
-                        FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
-  
-  target_link_libraries(linux_sub_frame_imx274_player
-    PRIVATE
-      hololink
-      hololink::operators::csi_to_bayer
-      hololink::operators::image_processor
-      hololink::operators::linux_receiver_op
-      hololink::operators::sub_frame_combiner
-      holoscan::core
-      holoscan::ops::bayer_demosaic
-      holoscan::ops::holoviz
-      holoscan::pybind11
-      pybind11::embed
-    )
-  
-  list(APPEND EXAMPLE_INSTALL_TARGETS linux_sub_frame_imx274_player)
+  if(HOLOLINK_BUILD_PYTHON)
+    include(hololink_deps/pybind11)
+    add_executable(linux_sub_frame_imx274_player
+      linux_sub_frame_imx274_player.cpp
+      )
+
+    if(HOLOLINK_BUILD_TESTS)
+      add_test(NAME linux_sub_frame_imx274_player_test
+                COMMAND linux_sub_frame_imx274_player --frame-limit=10 --headless --sub-frame-rows=1080
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+      set_tests_properties(linux_sub_frame_imx274_player_test PROPERTIES
+                            FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+    endif()
+
+    target_link_libraries(linux_sub_frame_imx274_player
+      PRIVATE
+        hololink
+        hololink::operators::csi_to_bayer
+        hololink::operators::image_processor
+        hololink::operators::linux_receiver_op
+        hololink::operators::sub_frame_combiner
+        holoscan::core
+        holoscan::ops::bayer_demosaic
+        holoscan::ops::holoviz
+        holoscan::pybind11
+        pybind11::embed
+      )
+
+    list(APPEND EXAMPLE_INSTALL_TARGETS linux_sub_frame_imx274_player)
+  endif() # HOLOLINK_BUILD_PYTHON
 endif() # HOLOLINK_BUILD_SOCKET
 
 if(HOLOLINK_BUILD_ROCE)
-  add_executable(sub_frame_imx274_player
-    sub_frame_imx274_player.cpp
-    )
-  
-  add_test(NAME sub_frame_imx274_player_test
-            COMMAND sub_frame_imx274_player --frame-limit=10 --headless --sub-frame-rows=1080
-            WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
-  set_tests_properties(sub_frame_imx274_player_test PROPERTIES
-                        FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
-  
-  target_link_libraries(sub_frame_imx274_player
-    PRIVATE
-      hololink
-      hololink::operators::csi_to_bayer
-      hololink::operators::image_processor
-      hololink::operators::roce_receiver
-      hololink::operators::sub_frame_combiner
-      holoscan::core
-      holoscan::ops::bayer_demosaic
-      holoscan::ops::holoviz
-      holoscan::pybind11
-      pybind11::embed
-    )
-  
-  list(APPEND EXAMPLE_INSTALL_TARGETS sub_frame_imx274_player)
+  if(HOLOLINK_BUILD_PYTHON)
+    add_executable(sub_frame_imx274_player
+      sub_frame_imx274_player.cpp
+      )
+
+    if(HOLOLINK_BUILD_TESTS)
+      add_test(NAME sub_frame_imx274_player_test
+                COMMAND sub_frame_imx274_player --frame-limit=10 --headless --sub-frame-rows=1080
+                WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})
+      set_tests_properties(sub_frame_imx274_player_test PROPERTIES
+                            FAIL_REGULAR_EXPRESSION "ERROR;\\[error\\]")
+    endif()
+
+    target_link_libraries(sub_frame_imx274_player
+      PRIVATE
+        hololink
+        hololink::operators::csi_to_bayer
+        hololink::operators::image_processor
+        hololink::operators::roce_receiver
+        hololink::operators::sub_frame_combiner
+        holoscan::core
+        holoscan::ops::bayer_demosaic
+        holoscan::ops::holoviz
+        holoscan::pybind11
+        pybind11::embed
+      )
+
+    list(APPEND EXAMPLE_INSTALL_TARGETS sub_frame_imx274_player)
+  endif() # HOLOLINK_BUILD_PYTHON
 
 endif() # HOLOLINK_BUILD_ROCE
 

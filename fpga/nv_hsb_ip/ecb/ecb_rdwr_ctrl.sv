@@ -155,6 +155,7 @@ always_ff @(posedge i_pclk) begin
     tuser           <= '0;
     udp_len         <= '0;
     total_pairs     <= '0;
+    roce_opcode     <= '0;
   end
   else begin
     total_pairs <= (ecb_is_roce) ? (udp_len-'d38)>>3 : (udp_len-'d22)>>3; // UDP header + RoCE header + ICRC + 1 pair
@@ -242,6 +243,8 @@ always_ff @(posedge i_pclk) begin
     response_sent                                         <= '0;
     num_pairs                                             <= '0;
     ecb_is_roce                                           <= '0;
+    byte_cnt                                              <= '0;
+    data_cnt                                              <= '0;
   end
   else begin
     case (decode_state)
@@ -344,6 +347,9 @@ always_ff @(posedge i_aclk) begin
     o_apb_m2s.penable                                 <= '0;
     cmd_err                                           <= '0;
     r_ecb_error                                       <= '0;
+    ecb_seq_chk_error_latched                         <= '0;
+    prev_seq_num_latch                                <= '0;
+    resp_data                                         <= '0;
   end
   else begin
     case (cmd_state)

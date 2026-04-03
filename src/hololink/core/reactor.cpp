@@ -272,31 +272,30 @@ namespace core {
             }
 
             // Handle ready file descriptors
-            for (size_t i = 0; i < poll_fds.size() && ready_count > 0; ++i) {
-                if (poll_fds[i].revents != 0) {
-                    ready_count--;
-                    int fd = fd_list[i];
-
-                    if (fd == wakeup_read_fd_) {
-                        HSB_LOG_TRACE("poll(...) fd={} is wakeup_read_fd_", fd);
-                        // Clear the wakeup pipe
-                        char buffer[1024];
-                        ssize_t bytes_read = read(wakeup_read_fd_, buffer, sizeof(buffer));
-                        (void)bytes_read; // Suppress unused variable warning
-                    } else {
-                        // Call the callback for this file descriptor
-                        FdCallback callback;
-                        {
-                            std::lock_guard<std::mutex> lock(lock_);
-                            auto it = fd_callbacks_.find(fd);
-                            if (it != fd_callbacks_.end()) {
-                                callback = it->second.first; // Get callback from pair
-                            }
+            for (size_t i = 0; i < poll_fds.size(); ++i) {
+                if (poll_fds[i].revents == 0) {
+                    continue;
+                }
+                int fd = fd_list[i];
+                if (fd == wakeup_read_fd_) {
+                    HSB_LOG_TRACE("poll(...) fd={} is wakeup_read_fd_", fd);
+                    // Clear the wakeup pipe
+                    char buffer[1024];
+                    ssize_t bytes_read = read(wakeup_read_fd_, buffer, sizeof(buffer));
+                    (void)bytes_read; // Suppress unused variable warning
+                } else {
+                    // Call the callback for this file descriptor
+                    FdCallback callback;
+                    {
+                        std::lock_guard<std::mutex> lock(lock_);
+                        auto it = fd_callbacks_.find(fd);
+                        if (it != fd_callbacks_.end()) {
+                            callback = it->second.first; // Get callback from pair
                         }
+                    }
 
-                        if (callback) {
-                            callback(fd, poll_fds[i].revents);
-                        }
+                    if (callback) {
+                        callback(fd, poll_fds[i].revents);
                     }
                 }
             }

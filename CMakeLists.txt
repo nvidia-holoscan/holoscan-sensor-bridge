@@ -29,6 +29,7 @@ option(HOLOLINK_BUILD_PVA "Build PVA CRC components" OFF)
 option(HOLOLINK_BUILD_CPACK "Build DEB package" OFF)
 option(HOLOLINK_BUILD_EXPORT "Install Hololink targets" ON)
 option(HOLOLINK_BUILD_ROCE "Build Hololink with RoCE support" ON)
+option(HOLOLINK_BUILD_GPUNETIO_ROCE "Build DOCA GPUNetIO RoCE transceiver (requires DOCA gpunetio/verbs)" ON)
 option(HOLOLINK_BUILD_SOCKET "Build Hololink with Linux Socket support" ON)
 
 if (HOLOLINK_BUILD_PYTHON AND NOT HOLOLINK_BUILD_EMULATOR)
@@ -52,8 +53,6 @@ project(hololink
 list(APPEND CMAKE_MODULE_PATH ${hololink_SOURCE_DIR}/cmake)
 
 # Find globally required dependencies
-include(hololink_deps/fmt)
-
 if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
   # Find Holoscan if it is not already defined for source build with FetchContent
   if(NOT holoscan_SOURCE_DIR)
@@ -68,6 +67,10 @@ if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
   endif()
 endif()
 
+# if HSDK is present/used, fmt should discover HSDK's version, which is cleaner
+# if fmt discovery is after HSDK; especially after HSDK 4.0 provides fmt targets downstream.
+include(hololink_deps/fmt)
+
 if(NOT CMAKE_INSTALL_LIBDIR)
   set(CMAKE_INSTALL_LIBDIR lib)
 endif()
@@ -80,6 +83,9 @@ endif()
 
 # Add subdirectories based on the build options
 add_subdirectory(src)
+if(HOLOLINK_BUILD_TESTS)
+  enable_testing()
+endif()
 if(HOLOLINK_BUILD_TOOLS)
   add_subdirectory(tools)
 endif()
@@ -88,7 +94,6 @@ if(HOLOLINK_BUILD_EXAMPLES)
 endif()
 if(NOT HOLOLINK_BUILD_ONLY_NATIVE)
   if(HOLOLINK_BUILD_TESTS)
-    enable_testing()
     add_subdirectory(tests)
   endif()
   if(HOLOLINK_BUILD_PYTHON)

@@ -55,6 +55,7 @@ private:
     holoscan::Parameter<uint32_t> ibv_port_;
     holoscan::Parameter<uint32_t> pages_;
     holoscan::Parameter<uint32_t> queue_size_;
+    holoscan::Parameter<size_t> metadata_offset_;
 
     std::function<std::string(const std::string&)> rename_metadata_;
 

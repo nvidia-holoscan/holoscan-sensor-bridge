@@ -32,6 +32,7 @@
 
 #include "enumerator.hpp"
 #include "metadata.hpp"
+#include "named_lock.hpp"
 #include "networking.hpp"
 #include "timeout.hpp"
 
@@ -383,36 +384,6 @@ public:
      * @param clock_profile
      */
     void setup_clock(const std::vector<std::vector<uint8_t>>& clock_profile);
-
-    /**
-     * Used to guarantee serialized access to I2C or SPI controllers.  The FPGA
-     * only has a single I2C controller-- what looks like independent instances
-     * are really just pin-muxed outputs from a single I2C controller block within
-     * the device-- the same is true for SPI.
-     */
-    class NamedLock {
-    public:
-        /** Constructs a lock using the shm_open() call to access a named
-         * semaphore with the given name.
-         */
-        NamedLock(Hololink& hololink, std::string name);
-        ~NamedLock() noexcept(false);
-
-        /**
-         * Blocks until no other process owns this lock; then takes it.
-         */
-        void lock();
-
-        /**
-         * Unlocks this lock, allowing another process blocked in
-         * a call to lock() to proceed.
-         */
-        void unlock();
-
-    protected:
-        int fd_;
-    };
-    friend class NamedLock;
 
     typedef enum {
         I2C_BUSY = 0,

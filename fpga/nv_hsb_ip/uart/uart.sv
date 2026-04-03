@@ -148,11 +148,13 @@ endfunction
     
 always_ff @(posedge clk) begin
   if (!rst_n) begin
-    tx_state          <= TX_IDLE;
-    tx_oversample_cnt <= 0;
-    tx_bit_cnt        <= 0;
-    tx_shift_reg      <= 0;
-    tx_reg            <= 1; // Idle high
+    tx_state           <= TX_IDLE;
+    tx_oversample_cnt  <= 0;
+    tx_bit_cnt         <= 0;
+    tx_shift_reg       <= 0;
+    tx_reg             <= 1; // Idle high
+    tx_parity_bit      <= '0;
+    tx_stop_bit_cycles <= '0;
   end
   else if (tx_en) begin
     case (tx_state)
@@ -484,6 +486,7 @@ always_ff @(posedge clk) begin
     rx_frame_error_reg <= 0;
     rx_discard_frame  <= 0;
     rx_sampled_bit    <= 1'b1;
+    rx_stop_bit_cycles <= '0;
   end
   else if (rx_en) begin
     case (rx_state)

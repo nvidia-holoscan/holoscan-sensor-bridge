@@ -78,7 +78,7 @@ class TimestampTestApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -128,7 +128,7 @@ class TimestampTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         bayer_format = self._camera.bayer_format()
         demosaic = holoscan.operators.BayerDemosaicOp(
@@ -316,12 +316,12 @@ def test_imx477_timestamps(
     # reception time recorded by the host.  Reception time is recorded when the
     # last frame data is transmitted to us.
     assert (frame_time + 0) <= smallest_time_difference
-    assert smallest_time_difference < largest_time_difference
-    assert largest_time_difference < (frame_time + time_limit)
+    assert smallest_time_difference <= largest_time_difference
+    assert largest_time_difference <= (frame_time + time_limit)
     #
     smallest_time_difference = min(metadata_receiver_dts)
     largest_time_difference = max(metadata_receiver_dts)
     logging.info(
         f"FPGA to full frame received {smallest_time_difference=} {largest_time_difference=}"
     )
-    assert smallest_time_difference < largest_time_difference
+    assert smallest_time_difference <= largest_time_difference

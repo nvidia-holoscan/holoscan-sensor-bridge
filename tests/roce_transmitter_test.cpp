@@ -18,6 +18,7 @@
 #include "gtest/gtest.h"
 
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <random>
@@ -77,6 +78,10 @@ using Tensor = std::shared_ptr<holoscan::Tensor>;
 using Data = std::vector<float>;
 namespace ibv = hololink::operators::ibv;
 
+// Tag parameter so the generator is not nullary: holoscan::Arg otherwise stores any nullary
+// callable as std::function<void()> (Arg::set_value_ in holoscan arg.hpp).
+struct DataGenTag { };
+
 static Tensor create_tensor(void* context, gxf_uid_t allocator_uid, const Data& data)
 {
     nvidia::gxf::Tensor gxf_tensor;
@@ -94,7 +99,7 @@ static Tensor create_tensor(void* context, gxf_uid_t allocator_uid, const Data& 
 
 class DataGeneratorOp : public holoscan::Operator {
 public:
-    using DataGenerator = std::function<Data()>;
+    using DataGenerator = std::function<Data(DataGenTag)>;
     HOLOSCAN_OPERATOR_FORWARD_ARGS(DataGeneratorOp)
     DataGeneratorOp() = default;
 
@@ -122,7 +127,7 @@ public:
     void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
         holoscan::ExecutionContext& context) override
     {
-        auto data = data_generator_.get()();
+        auto data = data_generator_.get()(DataGenTag {});
         auto tensor = create_tensor(context.context(), allocator_->gxf_cid(), data);
         op_output.emit(tensor);
     }
@@ -301,7 +306,7 @@ TEST(RoceTransmitterTest, float_8)
     Data d(generate_data(8));
     RoceTransmitterTestApp app(
         d.size() * sizeof(Data::value_type),
-        DataGeneratorOp::DataGenerator([&d] {
+        DataGeneratorOp::DataGenerator([&d](DataGenTag) {
             return d;
         }),
         RoceReceiver::DataValidator([&d](const Data& data) {
@@ -320,7 +325,7 @@ TEST(RoceTransmitterTest, float_4K)
     Data d(generate_data(4 * 1024));
     RoceTransmitterTestApp app(
         d.size() * sizeof(Data::value_type),
-        DataGeneratorOp::DataGenerator([&d] {
+        DataGeneratorOp::DataGenerator([&d](DataGenTag) {
             return d;
         }),
         RoceReceiver::DataValidator([&d](const Data& data) {
@@ -339,7 +344,7 @@ TEST(RoceTransmitterTest, float_1M)
     Data d(generate_data(4 * 1024));
     RoceTransmitterTestApp app(
         d.size() * sizeof(Data::value_type),
-        DataGeneratorOp::DataGenerator([&d] {
+        DataGeneratorOp::DataGenerator([&d](DataGenTag) {
             return d;
         }),
         RoceReceiver::DataValidator([&d](const Data& data) {

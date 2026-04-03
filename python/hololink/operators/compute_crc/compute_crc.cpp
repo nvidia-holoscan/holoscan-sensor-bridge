@@ -126,7 +126,8 @@ PYBIND11_MODULE(_compute_crc, m)
             "fragment"_a,
             "compute_crc_op"_a,
             "name"_a,
-            "computed_crc_metadata_name"_a = "computed_crc"s)
+            "computed_crc_metadata_name"_a = "computed_crc"s,
+            py::keep_alive<0, 3>()) // keep compute_crc_op alive while CheckCrcOp lives
         .def("setup", &CheckCrcOp::setup, "spec"_a);
 } // PYBIND11_MODULE
 

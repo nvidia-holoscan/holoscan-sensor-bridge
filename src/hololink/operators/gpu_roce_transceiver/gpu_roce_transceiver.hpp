@@ -217,6 +217,13 @@ public:
     uint32_t get_tx_ring_stride_num();
     uint64_t* get_tx_ring_flag_addr();
 
+    /// Force CPU+GPU accessible allocation for ring flags and data only
+    /// (DOCA_GPU_MEM_TYPE_CPU_GPU) even on dGPU systems.  Must be called
+    /// before start().  Does NOT affect CQ/QP UMEMs or TX kernel handler.
+    /// Required when a CPU thread needs to read ring flags/data directly
+    /// (e.g. HOST_LOOP dispatcher on Grace-Blackwell).
+    void set_cpu_ring_buffers(bool enable) { cpu_ring_buffers_ = enable; }
+
     /** Blocks until close(); returns false (no CPU frame stream; kernel owns datapath). */
     bool get_next_frame(unsigned timeout_ms, CUstream cuda_stream);
 
@@ -288,6 +295,7 @@ private:
     std::mutex& get_lock();
 
     bool umem_cpu;
+    bool cpu_ring_buffers_ = false;
 
     CUdevice cuDevice;
     CUcontext cuContext;

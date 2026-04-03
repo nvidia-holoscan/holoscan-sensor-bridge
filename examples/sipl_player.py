@@ -110,7 +110,7 @@ class HoloscanApplication(holoscan.core.Application):
                     name=f"converter_pool_{info.output_name}",
                     storage_type=1,  # Device memory
                     block_size=(info.width * info.height * 2),  # 16-bit Bayer
-                    num_blocks=2,
+                    num_blocks=4,
                 )
                 format_converter = hololink_module.operators.PackedFormatConverterOp(
                     self,
@@ -142,7 +142,7 @@ class HoloscanApplication(holoscan.core.Application):
                     name=f"demosaic_pool_{info.output_name}",
                     storage_type=1,  # Device memory
                     block_size=(info.width * info.height * 2 * 4),  # 16-bit RGBA
-                    num_blocks=2,
+                    num_blocks=4,
                 )
                 demosaic = holoscan.operators.BayerDemosaicOp(
                     self,

@@ -312,11 +312,12 @@ end
 
 always @(posedge i_aclk) begin
   if (i_arst) begin
-    state           <=  SPI_IDLE ;
-    transaction_cnt <= '0;
-    cmd_ack_prev    <= '0;
-    cmd_err         <= '0;
-    busy            <= '0;
+    state              <=  SPI_IDLE ;
+    transaction_cnt    <= '0;
+    cmd_ack_prev       <= '0;
+    cmd_err            <= '0;
+    busy               <= '0;
+    rd_transaction_cnt <= '0;
   end
   else begin
     state              <= ((ack_rise) || ((state == SPI_IDLE) || (state == SPI_DONE))) ? state_nxt : state;

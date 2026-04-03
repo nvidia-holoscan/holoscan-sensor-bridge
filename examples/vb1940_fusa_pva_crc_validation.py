@@ -9,16 +9,23 @@ hardware for CRC computation, comparing PVA CRC against camera FPGA-embedded CRC
 
 This version uses FUSA CoE (Camera over Ethernet) capture instead of ROCE for data transfer.
 
+CSI layout for PVA (start_byte, full_frame_size, etc.) is computed by
+``_vb1940_csi_frame_layout``, using the same rules as ``Vb1940Cam.configure_converter`` in
+``vb1940.py``, with line packing and 64-byte alignment taken from the capture converter
+(``FusaCoeCaptureOp``) rather than duplicated RAW width formulas.
+
 PVA computes line-based CRC with GF(2) polynomial merging, which is mathematically
 equivalent to streaming CRC32/JAMCRC when processing the same data.
 """
 
 import argparse
+import ctypes
 import datetime
 import logging
 import math
 import queue
 import threading
+from types import SimpleNamespace
 
 import cupy as cp
 import holoscan
@@ -33,6 +40,45 @@ SEC_PER_NS = 1.0 / NS_PER_SEC
 
 # Shared lock for thread-safe access to recorder_queue internals
 recorder_queue_lock = threading.Lock()
+
+
+def _vb1940_csi_frame_layout(camera, converter):
+    """Full CSI buffer layout — same steps as ``Vb1940Cam.configure_converter`` (vb1940.py).
+
+    Uses ``converter.transmitted_line_bytes`` / ``received_line_bytes`` (e.g. FusaCoeCaptureOp)
+    so packing and 64-byte alignment match the capture path.
+
+    Returns:
+        SimpleNamespace: start_byte, bytes_per_line, trailing_bytes, status_line_bytes,
+        pixel_data_size, full_frame_size.
+    """
+    PixelFormat = hololink_module.sensors.csi.PixelFormat
+    start_byte = converter.receiver_start_byte()
+    pf = camera.pixel_format()
+    w = camera.width()
+    h = camera.height()
+    transmitted_line_bytes = converter.transmitted_line_bytes(pf, w)
+    received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+    status_line_bytes = 0
+    if pf == PixelFormat.RAW_8:
+        status_line_bytes = int(w)
+    elif pf == PixelFormat.RAW_10:
+        status_line_bytes = int(w * 10 / 8)
+    elif pf == PixelFormat.RAW_12:
+        status_line_bytes = int(w * 12 / 8)
+    status_line_bytes = converter.received_line_bytes(status_line_bytes)
+    start_byte += status_line_bytes
+    trailing_bytes = status_line_bytes * 2
+    pixel_data_size = received_line_bytes * h
+    full_frame_size = start_byte + pixel_data_size + trailing_bytes
+    return SimpleNamespace(
+        start_byte=start_byte,
+        bytes_per_line=received_line_bytes,
+        trailing_bytes=trailing_bytes,
+        status_line_bytes=status_line_bytes,
+        pixel_data_size=pixel_data_size,
+        full_frame_size=full_frame_size,
+    )
 
 
 # Helper operators for metadata recording
@@ -92,9 +138,6 @@ class FullFrameAccessOp(holoscan.core.Operator):
 
         # The tensor's data pointer is offset by start_byte from the full buffer start
         # To access the full frame, we need to subtract start_byte from the pointer
-        # Use ctypes for safe pointer arithmetic
-        import ctypes
-
         pixel_ptr = pixel_tensor.data.ptr
         # Convert to int for arithmetic, then back to pointer
         pixel_ptr_int = ctypes.cast(pixel_ptr, ctypes.c_void_p).value
@@ -143,7 +186,7 @@ class RecordMetadataOp(PassThroughOperator):
                 camera_crc = metadata.get("crc", 0)
                 pva_crc = metadata.get("pva_frame_crc", 0)
                 match_str = "✓ MATCH" if camera_crc == pva_crc else "✗ MISMATCH"
-                logging.info(
+                logging.debug(
                     f"Frame {self._frame_count}: Camera=0x{camera_crc:08x}, PVA=0x{pva_crc:08x} {match_str}"
                 )
 
@@ -483,63 +526,23 @@ class HoloscanApplication(holoscan.core.Application):
         )
         self._camera.configure_converter(fusa_coe_capture)
 
-        # Get frame size from FUSA capture for PVA configuration
-        # The camera CRC is computed over the FULL CSI frame (including CSI header and trailing bytes)
-        # We need to compute the full frame size to match the camera CRC
-        pixel_width = self._camera._width
-        pixel_height = self._camera._height
+        layout = _vb1940_csi_frame_layout(self._camera, fusa_coe_capture)
+        start_byte = layout.start_byte
+        full_frame_size = layout.full_frame_size
+        pixel_data_size = layout.pixel_data_size
+        pixel_width = self._camera.width()
+        pixel_height = self._camera.height()
         pixel_format = self._camera.pixel_format()
 
-        # Calculate bytes_per_line using the same method as FUSA's transmitted_line_bytes
-        # For RAW10: 3 pixels per 4 bytes, then round up to 64-byte alignment
-        if pixel_format == hololink_module.PixelFormat.RAW_10:
-            # Packed RAW10: 3 pixels per 4 bytes
-            transmitted_line_bytes = ((pixel_width + 2) // 3) * 4
-        elif pixel_format == hololink_module.PixelFormat.RAW_12:
-            # Packed RAW12: 2 pixels per 3 bytes
-            transmitted_line_bytes = ((pixel_width + 1) // 2) * 3
-        elif pixel_format == hololink_module.PixelFormat.RAW_8:
-            # RAW8: 1 pixel per byte
-            transmitted_line_bytes = pixel_width
-        else:
-            transmitted_line_bytes = pixel_width
-
-        # Round up to 64-byte boundary (FUSA does this in received_line_bytes)
-        bytes_per_line = ((transmitted_line_bytes + 63) // 64) * 64
-
-        # Calculate status line bytes (for CSI header and trailing bytes)
-        # VB1940 has 1 line of status before image data and 2 lines after
-        if pixel_format == hololink_module.PixelFormat.RAW_8:
-            status_line_bytes = pixel_width
-        elif pixel_format == hololink_module.PixelFormat.RAW_10:
-            status_line_bytes = int(pixel_width * 10 / 8)
-        elif pixel_format == hololink_module.PixelFormat.RAW_12:
-            status_line_bytes = int(pixel_width * 12 / 8)
-        else:
-            status_line_bytes = 0
-
-        # Round status line bytes to 64-byte boundary (same as received_line_bytes)
-        status_line_bytes = ((status_line_bytes + 63) // 64) * 64
-
-        # Calculate CSI frame structure (matching vb1940.py configure_converter logic)
-        # start_byte = receiver_start_byte() + status_line_bytes (1 line before image)
-        start_byte = 0 + status_line_bytes
-        # trailing_bytes = status_line_bytes * 2 (2 lines after image)
-        trailing_bytes = status_line_bytes * 2
-
-        # Pixel data size (what FUSA outputs)
-        pixel_data_size = bytes_per_line * pixel_height
-
-        # Full CSI frame size (what camera CRC is computed on)
-        full_frame_size = start_byte + pixel_data_size + trailing_bytes
-
-        logging.debug("Frame size calculation for VB1940 FUSA:")
+        logging.debug("CSI layout (_vb1940_csi_frame_layout, same rules as vb1940.py):")
         logging.debug(f"  Pixel dimensions: {pixel_width} × {pixel_height}")
         logging.debug(f"  Pixel format: {pixel_format}")
-        logging.debug(f"  Bytes per line (packed, 64-byte aligned): {bytes_per_line:,}")
-        logging.debug(f"  Status line bytes (64-byte aligned): {status_line_bytes:,}")
-        logging.debug(f"  Start byte (CSI header): {start_byte:,}")
-        logging.debug(f"  Trailing bytes: {trailing_bytes:,}")
+        logging.debug(f"  Bytes per line (from converter): {layout.bytes_per_line:,}")
+        logging.debug(
+            f"  Status line bytes (64-byte aligned): {layout.status_line_bytes:,}"
+        )
+        logging.debug(f"  Start byte (CSI header): {layout.start_byte:,}")
+        logging.debug(f"  Trailing bytes: {layout.trailing_bytes:,}")
         logging.debug(f"  Pixel data size: {pixel_data_size:,} bytes")
         logging.debug(f"  Full CSI frame size: {full_frame_size:,} bytes")
         logging.debug(
@@ -612,8 +615,6 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         # Convert packed RAW to 16-bit Bayer.
-        import ctypes
-
         packed_format_converter_pool = holoscan.resources.BlockMemoryPool(
             self,
             name="packed_format_converter_pool",
@@ -628,7 +629,17 @@ class HoloscanApplication(holoscan.core.Application):
             name="packed_format_converter",
             allocator=packed_format_converter_pool,
         )
-        fusa_coe_capture.configure_converter(packed_format_converter)
+        # Full-frame tensor from FullFrameAccessOp starts at buffer base. Use camera
+        # configure_converter (non-zero start_byte + trailing_bytes) — not
+        # fusa_coe_capture.configure_converter, which forces start_byte=0 for FUSA's
+        # pixel-offset tensor (see Vb1940Cam.configure_converter vs FusaCoeCaptureOp::configure_converter).
+        self._camera.configure_converter(packed_format_converter)
+        packed_sz = packed_format_converter.get_frame_size()
+        if packed_sz != layout.full_frame_size:
+            raise RuntimeError(
+                f"CSI frame size mismatch: PackedFormatConverter.get_frame_size()={packed_sz} "
+                f"vs layout.full_frame_size={layout.full_frame_size}"
+            )
 
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
@@ -650,7 +661,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * 2
             * self._camera._height,  # 4 channels * 2 bytes per uint16
-            num_blocks=2,
+            num_blocks=4,
         )
 
         demosaic = holoscan.operators.BayerDemosaicOp(

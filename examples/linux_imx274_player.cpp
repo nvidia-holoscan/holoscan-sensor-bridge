@@ -73,7 +73,7 @@ public:
             1, // storage_type
             camera_->get_width() * sizeof(uint16_t)
                 * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
         auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
             "csi_to_bayer", holoscan::Arg("allocator", csi_to_bayer_pool),
@@ -106,7 +106,7 @@ public:
             1, // storage_type
             camera_->get_width() * rgba_components_per_pixel * sizeof(uint16_t)
                 * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
         auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>("demosaic",
             holoscan::Arg("pool", bayer_pool), holoscan::Arg("generate_alpha", true),

@@ -96,7 +96,7 @@ public:
             "pool",
             1, // storage_type of 1 is device memory
             camera_->get_width() * sizeof(uint16_t) * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
 
         auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
@@ -134,7 +134,7 @@ public:
             "pool",
             1, // storage_type of 1 is device memory
             camera_->get_width() * rgba_components_per_pixel * sizeof(uint16_t) * camera_->get_height(), // block_size
-            2 // num_blocks
+            4 // num_blocks
         );
 
         auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>(

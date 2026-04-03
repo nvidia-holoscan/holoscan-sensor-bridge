@@ -1009,7 +1009,7 @@ public:
         return hololink_.read_uint32(address, count, in_timeout);
     }
 
-    Hololink::NamedLock& spi_lock()
+    NamedLock& spi_lock()
     {
         return hololink_.spi_lock();
     }
@@ -2154,7 +2154,7 @@ public:
     /**
      *
      */
-    Hololink::NamedLock& i2c_lock()
+    NamedLock& i2c_lock()
     {
         return hololink_.i2c_lock();
     }
@@ -2400,7 +2400,7 @@ uint32_t Hololink::GPIO::get_supported_pin_num(void)
 /** Constructs a lock using the shm_open() call to access a named
  * semaphore with the given name.
  */
-Hololink::NamedLock::NamedLock(Hololink& hololink, std::string name)
+NamedLock::NamedLock(std::string name)
     : fd_(-1)
 {
     // We use lockf on this file as our interprocess locking
@@ -2408,18 +2408,17 @@ Hololink::NamedLock::NamedLock(Hololink& hololink, std::string name)
     // we don't leave the lock held.  (An earlier implementation
     // using shm_open didn't guarantee releasing the lock if we exited due
     // to the user pressing control/C.)
-    std::string formatted_name = hololink.device_specific_filename(name);
     int permissions = 0666; // make sure other processes can write
-    fd_ = open(formatted_name.c_str(), O_WRONLY | O_CREAT, permissions);
+    fd_ = open(name.c_str(), O_WRONLY | O_CREAT, permissions);
     if (fd_ >= 0) {
         fchmod(fd_, permissions); // Make sure requested permissions aren't masked by umask
     } else {
         throw std::runtime_error(
-            fmt::format("open({}, ...) failed with errno={}: \"{}\"", formatted_name, errno, strerror(errno)));
+            fmt::format("open({}, ...) failed with errno={}: \"{}\"", name, errno, strerror(errno)));
     }
 }
 
-Hololink::NamedLock::~NamedLock() noexcept(false)
+NamedLock::~NamedLock() noexcept(false)
 {
     int r = close(fd_);
     if (r != 0) {
@@ -2428,9 +2427,18 @@ Hololink::NamedLock::~NamedLock() noexcept(false)
     }
 }
 
-void Hololink::NamedLock::lock()
+void NamedLock::lock()
 {
-    // Block until we're the owner.
+    // Lock out other threads; this can be called
+    // multiple times by the same thread.
+    process_mutex_.lock();
+    // Then lock the public lock, so that others
+    // are stopped too.  We may block here, no problem.
+    // Note that lockf is recursive too, we won't
+    // block if we already held this.  process_mutex_
+    // is also necessary because this lock isn't thread
+    // specific-- any thread in the program can add
+    // to the lock count and not block.
     int r = lockf(fd_, F_LOCK, 0);
     if (r != 0) {
         throw std::runtime_error(
@@ -2438,37 +2446,42 @@ void Hololink::NamedLock::lock()
     }
 }
 
-void Hololink::NamedLock::unlock()
+void NamedLock::unlock()
 {
-    // Let another process take ownership.
+    // We only get here with both fd_ and process_mutex_ locked.
     int r = lockf(fd_, F_ULOCK, 0);
     if (r != 0) {
         throw std::runtime_error(
             fmt::format("lockf failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
+    process_mutex_.unlock();
 }
 
-Hololink::NamedLock& Hololink::i2c_lock()
+NamedLock& Hololink::i2c_lock()
 {
-    static NamedLock lock(this[0], "hololink-i2c-lock");
+    static std::string lock_name = device_specific_filename("hololink-i2c-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
-Hololink::NamedLock& Hololink::spi_lock()
+NamedLock& Hololink::spi_lock()
 {
-    static NamedLock lock(this[0], "hololink-spi-lock");
+    static std::string lock_name = device_specific_filename("hololink-spi-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
-Hololink::NamedLock& Hololink::uart_lock()
+NamedLock& Hololink::uart_lock()
 {
-    static NamedLock lock(this[0], "hololink-uart-lock");
+    static std::string lock_name = device_specific_filename("hololink-uart-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
-Hololink::NamedLock& Hololink::lock()
+NamedLock& Hololink::lock()
 {
-    static NamedLock lock(this[0], "hololink-lock");
+    static std::string lock_name = device_specific_filename("hololink-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 

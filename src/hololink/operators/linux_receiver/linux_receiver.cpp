@@ -104,6 +104,7 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     , exit_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
     , ready_condition_(PTHREAD_COND_INITIALIZER)
+    , consumer_ready_(false)
     , qp_number_(next_qp_number_++)
     , rkey_(0xBEEF)
     , local_(NULL)

@@ -68,6 +68,7 @@ public:
     RegisterMemory() = default;
     ~RegisterMemory() override = default;
 
+    // see address_memory.hpp for documentation
     int write(AddressValuePair& address_value) override;
     int read(AddressValuePair& address_value) override;
     int write_many(AddressValuePair* address_values, int num_addresses) override;

@@ -503,8 +503,13 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
 
     if (umem_cpu)
         memset(gpu_rx_ring.addr, 0, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num);
-    else
-        cudaMemset(gpu_rx_ring.addr, 0, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num);
+    else {
+        result_cuda = cudaMemset(gpu_rx_ring.addr, 0, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            goto exit;
+        }
+    }
 
     gpu_rx_ring.addr_mr = nullptr;
     if (umem_cpu == false) {
@@ -528,21 +533,34 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         return DOCA_ERROR_NOT_SUPPORTED;
     }
 
-    result = doca_gpu_mem_alloc(gdev,
-        sizeof(uint64_t) * gpu_rx_ring.stride_num,
-        get_page_size(),
-        DOCA_GPU_MEM_TYPE_GPU,
-        (void**)&(gpu_rx_ring.flag),
-        nullptr);
+    if (umem_cpu) {
+        result = doca_gpu_mem_alloc(gdev,
+            sizeof(uint64_t) * gpu_rx_ring.stride_num,
+            get_page_size(),
+            DOCA_GPU_MEM_TYPE_CPU_GPU,
+            (void**)&(gpu_rx_ring.flag),
+            (void**)&(gpu_rx_ring.flag));
+    } else {
+        result = doca_gpu_mem_alloc(gdev,
+            sizeof(uint64_t) * gpu_rx_ring.stride_num,
+            get_page_size(),
+            DOCA_GPU_MEM_TYPE_GPU,
+            (void**)&(gpu_rx_ring.flag),
+            nullptr);
+    }
     if (result != DOCA_SUCCESS || gpu_rx_ring.flag == nullptr) {
         HSB_LOG_ERROR("Failed to alloc rx flag ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
 
-    result_cuda = cudaMemset(gpu_rx_ring.flag, 0, sizeof(uint64_t) * gpu_rx_ring.stride_num);
-    if (result_cuda != cudaSuccess) {
-        HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
-        goto exit;
+    if (umem_cpu) {
+        memset(gpu_rx_ring.flag, 0, sizeof(uint64_t) * gpu_rx_ring.stride_num);
+    } else {
+        result_cuda = cudaMemset(gpu_rx_ring.flag, 0, sizeof(uint64_t) * gpu_rx_ring.stride_num);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            goto exit;
+        }
     }
 
     gpu_tx_ring.stride_sz = stride_sz;
@@ -571,8 +589,13 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
 
     if (umem_cpu)
         memset(gpu_tx_ring.addr, 0, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num);
-    else
-        cudaMemset(gpu_tx_ring.addr, 0, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num);
+    else {
+        result_cuda = cudaMemset(gpu_tx_ring.addr, 0, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            goto exit;
+        }
+    }
 
     // Tx ring MR is not needed in case of send inline but it can be used in case of tx_only and non-inline send mode
     gpu_tx_ring.addr_mr = nullptr;
@@ -597,18 +620,35 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         return DOCA_ERROR_NOT_SUPPORTED;
     }
 
-    result = doca_gpu_mem_alloc(gdev,
-        sizeof(uint64_t) * gpu_tx_ring.stride_num,
-        get_page_size(),
-        DOCA_GPU_MEM_TYPE_GPU,
-        (void**)&(gpu_tx_ring.flag),
-        nullptr);
+    if (umem_cpu) {
+        result = doca_gpu_mem_alloc(gdev,
+            sizeof(uint64_t) * gpu_tx_ring.stride_num,
+            get_page_size(),
+            DOCA_GPU_MEM_TYPE_CPU_GPU,
+            (void**)&(gpu_tx_ring.flag),
+            (void**)&(gpu_tx_ring.flag));
+    } else {
+        result = doca_gpu_mem_alloc(gdev,
+            sizeof(uint64_t) * gpu_tx_ring.stride_num,
+            get_page_size(),
+            DOCA_GPU_MEM_TYPE_GPU,
+            (void**)&(gpu_tx_ring.flag),
+            nullptr);
+    }
     if (result != DOCA_SUCCESS || gpu_tx_ring.flag == nullptr) {
         HSB_LOG_ERROR("Failed to alloc tx flag ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
 
-    cudaMemset(gpu_tx_ring.flag, 0, sizeof(uint64_t) * gpu_tx_ring.stride_num);
+    if (umem_cpu)
+        memset(gpu_tx_ring.flag, 0, sizeof(uint64_t) * gpu_tx_ring.stride_num);
+    else {
+        result_cuda = cudaMemset(gpu_tx_ring.flag, 0, sizeof(uint64_t) * gpu_tx_ring.stride_num);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            goto exit;
+        }
+    }
 
     return DOCA_SUCCESS;
 

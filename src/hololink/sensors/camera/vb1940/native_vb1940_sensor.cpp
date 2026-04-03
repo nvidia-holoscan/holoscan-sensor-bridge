@@ -579,6 +579,13 @@ void NativeVb1940Sensor::initialize_supported_modes()
         1984,
         30,
         csi::PixelFormat::RAW_8);
+
+    mode_frame_formats_[vb1940_mode::VB1940_MODE_2560X1984_60FPS] = std::make_shared<Vb1940FrameFormat>(vb1940_mode::VB1940_MODE_2560X1984_60FPS,
+        "VB1940_MODE_2560X1984_60FPS",
+        2560,
+        1984,
+        60,
+        csi::PixelFormat::RAW_10);
 }
 
 void NativeVb1940Sensor::set_exposure_reg(int32_t value)
@@ -626,6 +633,9 @@ void NativeVb1940Sensor::configure_camera(CameraMode mode)
         break;
     case vb1940_mode::VB1940_MODE_2560X1984_30FPS_8BIT:
         apply_register_settings(vb1940_mode::VB1940_MODE_2560X1984_30FPS_8BIT_SEQUENCE);
+        break;
+    case vb1940_mode::VB1940_MODE_2560X1984_60FPS:
+        apply_register_settings(vb1940_mode::VB1940_MODE_2560X1984_60FPS_SEQUENCE);
         break;
     default:
         HSB_LOG_ERROR("Unsupported camera mode: {}", mode_.value());

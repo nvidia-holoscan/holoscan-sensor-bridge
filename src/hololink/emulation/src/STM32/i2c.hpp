@@ -25,12 +25,37 @@
 
 #define I2C_DATA_BUFFER_SIZE 0x100u
 
+/**
+ * @brief Initialize I2C.
+ *
+ * @param hi2c The I2C handle.
+ *
+ * @return The result of the initialization.
+ */
 int i2c_init(I2C_HandleTypeDef* hi2c);
 
 namespace hololink::emulation {
 
-// i2c callbacks
+/**
+ * @brief Callback function for I2C readback.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_val The address-value pair. Addresses are those written to the i2c controller registers at 0x30000200.
+ * @param max_count The maximum number of address-value pairs to read.
+ *
+ * @return The number of address-value pairs read.
+ */
 int i2c_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count);
+
+/**
+ * @brief Callback function for I2C configuration.
+ *
+ * @param ctxt The context pointer.
+ * @param addr_val The address-value pair. Addresses are those written to the i2c controller registers at 0x30000200.
+ * @param max_count The maximum number of address-value pairs to configure.
+ *
+ * @return The number of address-value pairs configured.
+ */
 int i2c_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count);
 
 }

@@ -23,6 +23,14 @@
 #include "STM32/stm32_system.h"
 #include <time.h>
 
+// constants for time conversions
+#define MSEC_PER_SEC 1000U
+#define USEC_PER_SEC 1000000U
+#define NSEC_PER_SEC 1000000000U
+#define USEC_PER_MSEC MSEC_PER_SEC
+#define NSEC_PER_MSEC USEC_PER_SEC
+#define NSEC_PER_USEC MSEC_PER_SEC
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -34,15 +42,35 @@ extern "C" {
  */
 int tim_init(void * ctxt);
 
-// returns -2 on invalid timer instance, -1 if timer already initialized, 0 on success
-int timer_init(TIM_HandleTypeDef* htim, TIM_MasterConfigTypeDef* sMasterConfig);
+/**
+ * @brief Initialize the timer.
+ * @param htim The timer handle.
+ * @param PreemptPriority The preempt priority.
+ * @param SubPriority The subpriority.
+ * @return -2 on invalid timer instance, -1 if timer already initialized, 0 on success
+ */
+int timer_init(TIM_HandleTypeDef* htim, uint32_t PreemptPriority, uint32_t SubPriority);
 
 /**
- * @brief Set GPIO used by 2 kHz pulse callback (called from tim_2khz_gpulse_start).
- * @param port GPIO port (e.g. GPIOB). Must not be NULL.
- * @param pin GPIO pin mask (e.g. GPIO_PIN_7).
+ * @brief Start the timer.
+ * @param htim The timer handle.
+ * @return 0 on success, else error code.
  */
-void tim_2khz_gpulse_set_gpio(GPIO_TypeDef* port, uint16_t pin);
+int timer_start(TIM_HandleTypeDef* htim);
+
+/**
+ * @brief Stop the timer.
+ * @param htim The timer handle.
+ * @return 0 on success, else error code.
+ */
+int timer_stop(TIM_HandleTypeDef* htim);
+
+/**
+ * @brief Deinitialize the timer.
+ * @param htim The timer handle.
+ * @return 0 on success, else error code.
+ */
+int timer_deinit(TIM_HandleTypeDef* htim);
 
 /**
  * @brief Initialize the timer MSP.
@@ -52,7 +80,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* tim_baseHandle);
 void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle);
 
 /**
- * @brief Get the current time. Signature meant to match the corresponding posix function
+ * @brief Get the current time. Signature meant to match the corresponding posix function, but uses SysTick by default which means resolution is 1ms.
  * @param clock_id The clock ID. Note, only CLOCK_REALTIME is supported
  * @param tp The timespec to write the time to.
  * @return 0 on success, < 0 on error.
@@ -66,11 +94,11 @@ static inline uint32_t get_delta_msecs(const struct timespec* start_time, const 
     uint32_t delta_nsec = 0;
     if (start_time->tv_nsec > end_time->tv_nsec) {
         delta_sec--;
-        delta_nsec = 1000000000 + end_time->tv_nsec - start_time->tv_nsec;
+        delta_nsec = NSEC_PER_SEC + end_time->tv_nsec - start_time->tv_nsec;
     } else {
         delta_nsec = end_time->tv_nsec - start_time->tv_nsec;
     }
-    return delta_sec * 1000 + delta_nsec/1000000;
+    return delta_sec * MSEC_PER_SEC + delta_nsec/NSEC_PER_MSEC;
 }
 
 #ifdef __cplusplus

@@ -239,6 +239,11 @@ then
     fi
 fi
 
+# On L4T with default cuda13, use stage that has libnvscibuf so PVA CRC wheel builds
+if [ -f /etc/nv_tegra_release ] && [ "$CONTAINER_TYPE" = "cuda13" ]; then
+    CONTAINER_TYPE=cuda13_l4t
+fi
+
 # For Jetson Nano devices, which have very limited memory,
 # limit the number of CPUs so we don't run out of RAM.
 INSTALL_ENVIRONMENT=""

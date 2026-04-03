@@ -112,22 +112,40 @@ void DataPlane::update_metadata()
 {
 }
 
-int64_t DataPlane::send(const DLTensor& tensor)
+int64_t DataPlane::send(const DLTensor& tensor, FrameMetadata* frame_metadata)
 {
     if (!transmitter_) {
         fprintf(stderr, "DataPlane::send() no transmitter\n");
         return -1;
     }
 
+    if (frame_metadata == nullptr) {
+        frame_metadata = DEFAULT_FRAME_METADATA;
+    }
+
     std::scoped_lock<std::mutex> lock(data_plane_ctxt_->metadata_mutex_); // locks metadata for the duration of the send
     update_metadata(); // call the abstract method under the protection of the lock. Transmitter is assured to have synchronized access to the metadata
-    int64_t n_bytes = transmitter_->send(metadata_, tensor);
+    int64_t n_bytes = transmitter_->send(metadata_, tensor, frame_metadata);
     if (n_bytes < 0) {
         fprintf(stderr, "DataPlane::send() error sending tensor\n");
     }
     return n_bytes;
 }
 
+int64_t DataPlane::send(const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata)
+{
+    if (!transmitter_) {
+        fprintf(stderr, "DataPlane::send() no transmitter\n");
+        return -1;
+    }
+    std::scoped_lock<std::mutex> lock(data_plane_ctxt_->metadata_mutex_); // locks metadata for the duration of the send
+    update_metadata(); // call the abstract method under the protection of the lock. Transmitter is assured to have synchronized access to the metadata
+    int64_t n_bytes = transmitter_->send(metadata_, buffer, buffer_size, frame_metadata);
+    if (n_bytes < 0) {
+        fprintf(stderr, "DataPlane::send() error sending buffer\n");
+    }
+    return n_bytes;
+}
 // returns 0 on failure or the number of bytes written on success
 // Note that on failure, serializer and buffer contents are in indeterminate state.
 static inline size_t serialize_vendor_info(hololink::core::Serializer& serializer, HSBConfiguration& configuration)
@@ -308,6 +326,14 @@ int DataPlane::broadcast_bootp()
     }
     close(bootp_socket_);
     return 0;
+}
+
+bool DataPlane::packetizer_enabled() const
+{
+    constexpr uint32_t PACKETIZER_MODE = 0x0C;
+    struct AddressValuePair address_value = { sif_address_ + PACKETIZER_MODE, 0 };
+    registers_->read(address_value);
+    return (address_value.value >> 28) & 0x1;
 }
 
 }

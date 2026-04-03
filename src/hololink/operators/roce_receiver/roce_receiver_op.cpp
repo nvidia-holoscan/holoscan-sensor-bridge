@@ -71,6 +71,7 @@ void RoceReceiverOp::setup(holoscan::OperatorSpec& spec)
     spec.param(queue_size_, "queue_size", "QueueSize",
         "The number of buffers that can be queued up for the receiver, has to be less or equal to the number of pages",
         1u);
+    spec.param(metadata_offset_, "metadata_offset", "MetadataOffset", "Where to find metadata in the received buffer", size_t { 0 });
     // Note: rename_metadata is handled programmatically via set_rename_metadata() method
     // to avoid YAML-CPP serialization issues with std::function
 }
@@ -90,6 +91,9 @@ void RoceReceiverOp::start_receiver()
     }
 
     size_t metadata_address = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
+    if (metadata_offset_ == 0) {
+        metadata_offset_ = metadata_address;
+    }
     // received_frame_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
     // Prove that PAGE_SIZE is a power of two
     static_assert((hololink::core::PAGE_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
@@ -111,7 +115,7 @@ void RoceReceiverOp::start_receiver()
         frame_size_.get(),
         received_frame_size,
         pages_.get(),
-        metadata_address,
+        metadata_offset_,
         peer_ip.c_str(),
         queue_size_.get()));
     receiver_->set_frame_ready([this](const RoceReceiver&) {

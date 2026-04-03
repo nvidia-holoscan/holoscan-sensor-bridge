@@ -59,6 +59,8 @@ void SysTick_Handler(void);
 void SystemClock_Config(void);
 void MPU_Config(void);
 void HAL_MspInit(void);
+
+// generic error handler for system. usually just an infinite loop.
 void Error_Handler(void);
 
 #ifdef __cplusplus

@@ -21,7 +21,7 @@
 #include "hololink/emulation/hsb_config.hpp"
 #include "hololink/emulation/hsb_emulator.hpp"
 #include "hololink/emulation/i2c_interface.hpp"
-#include "hololink/emulation/linux_data_plane.hpp"
+#include "hololink/emulation/rocev2_data_plane.hpp"
 #include <cstring>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -223,9 +223,9 @@ PYBIND11_MODULE(_emulation, m)
         .def("update_metadata", &DataPlanePublicist::update_metadata, "update DataPlane metadata")
         .def("packetizer_enabled", &DataPlane::packetizer_enabled, "check if packetizer is enabled");
 
-    py::class_<LinuxDataPlane, DataPlane>(m, "LinuxDataPlane")
+    py::class_<RoCEv2DataPlane, DataPlane>(m, "RoCEv2DataPlane")
         .def(py::init<HSBEmulator&, IPAddress, uint8_t, uint8_t>(), py::arg("hsb_emulator"), py::arg("source_ip"), py::arg("data_plane_id"), py::arg("sensor_id"));
-    /* not including update_metadata in a trampoline class for LinuxDataPlanebecause we are not allowing subclassing extensions of DataPlane subclasses yet */
+    /* not including update_metadata in a trampoline class for RoCEv2DataPlane because we are not allowing subclassing extensions of DataPlane subclasses yet */
 
     py::class_<COEDataPlane, DataPlane>(m, "COEDataPlane")
         .def(py::init<HSBEmulator&, IPAddress, uint8_t, uint8_t>(), py::arg("hsb_emulator"), py::arg("source_ip"), py::arg("data_plane_id"), py::arg("sensor_id"));

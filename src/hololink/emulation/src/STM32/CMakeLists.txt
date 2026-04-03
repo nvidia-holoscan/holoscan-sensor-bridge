@@ -89,3 +89,29 @@ target_link_libraries(emulation_host
 )
 
 set_property(TARGET emulation_host PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+add_library(emulationroce STATIC
+    rocev2_data_plane.cpp
+    rocev2_transmitter.cpp
+    ${ZLIB_PATH}/crc32.c
+)
+
+target_include_directories(emulationroce 
+    PUBLIC
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
+        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../>
+        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
+    PRIVATE
+        ${ZLIB_PATH}
+)
+target_link_libraries(emulationroce 
+    PUBLIC 
+        emulation_host
+        emulation_common
+        stm32_hal_driver
+        dlpack::dlpack
+)
+#target_compile_definitions(emulationroce PRIVATE "-Dlocal")
+set_property(TARGET emulationroce PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+add_library(hololink::emulation::roce ALIAS emulationroce)

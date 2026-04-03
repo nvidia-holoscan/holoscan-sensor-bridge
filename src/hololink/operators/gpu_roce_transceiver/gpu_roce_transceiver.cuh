@@ -28,7 +28,6 @@
 
 #include "gpu_roce_transceiver_common.hpp"
 
-
 __device__ void prepare_receive_send(struct doca_gpu_dev_verbs_qp* qp, const size_t frame_size, const uint32_t mkey)
 {
     doca_gpu_dev_verbs_ticket_t out_ticket;

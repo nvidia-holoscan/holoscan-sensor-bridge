@@ -342,16 +342,16 @@ uint8_t handle_read_message(HSBEmulatorCtxt* ctxt, struct ControlMessage& messag
         uint32_t address = AVP_GET_ADDRESS(message.addr_vals + i);
         const ControlPlaneCallback* handler = cp_read_map.get(address);
         if (!handler) {
-            return ADDRESS_ERROR;
+            return ECB_ADDRESS_ERROR;
         }
         int count = message.num_addresses - i;
         int ret = handler->callback(handler->ctxt, message.addr_vals + i, count);
         if (ret <= 0) {
-            return ADDRESS_ERROR;
+            return ECB_ADDRESS_ERROR;
         }
         i += ret;
     }
-    return SUCCESS;
+    return ECB_SUCCESS;
 }
 
 uint8_t handle_write_message(HSBEmulatorCtxt* ctxt, struct ControlMessage& message)
@@ -362,16 +362,16 @@ uint8_t handle_write_message(HSBEmulatorCtxt* ctxt, struct ControlMessage& messa
         uint32_t address = AVP_GET_ADDRESS(message.addr_vals + i);
         const ControlPlaneCallback* handler = cp_write_map.get(address);
         if (!handler) {
-            return ADDRESS_ERROR;
+            return ECB_ADDRESS_ERROR;
         }
         int count = message.num_addresses - i;
         int ret = handler->callback(handler->ctxt, message.addr_vals + i, count);
         if (ret <= 0) {
-            return ADDRESS_ERROR;
+            return ECB_ADDRESS_ERROR;
         }
         i += ret;
     }
-    return SUCCESS;
+    return ECB_SUCCESS;
 }
 
 #if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
@@ -446,7 +446,7 @@ void handle_control_packet(HSBEmulatorCtxt* ctxt, ETH_BufferTypeDef* buffer)
         break;
     }
     default: {
-        message.ctrl_hdr->status = COMMAND_ERROR;
+        message.ctrl_hdr->status = ECB_COMMAND_ERROR;
         break;
     }
     }

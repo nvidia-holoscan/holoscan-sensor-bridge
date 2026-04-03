@@ -197,7 +197,7 @@ always_ff @(posedge i_pclk) begin
         end
         else if (i_trigger) begin
           sample_addr <= sample_addr + i_wr_en;
-          if (sample_addr == (DEPTH-1)) begin
+          if ((sample_addr == (DEPTH-1)) && i_wr_en) begin
             ila_state <= ILA_DONE;
             wr_state  <= '0;
           end
