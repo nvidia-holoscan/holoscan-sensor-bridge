@@ -22,6 +22,12 @@ including instructions for setup on
 configurations. Please see the user guide for host configuration and instructions on
 running unit tests.
 
+## FPGA IP Source Files
+
+The FPGA IP source code for the Holoscan sensor bridge is available at the following
+link:
+[FPGA IP Source](https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/)
+
 ## Troubleshooting
 
 Be sure and check the
