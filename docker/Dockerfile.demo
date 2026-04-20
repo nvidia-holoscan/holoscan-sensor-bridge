@@ -21,7 +21,10 @@ FROM ${CONTAINER_VERSION} AS base
 # build container
 FROM base AS builder
 
-RUN apt-get update \
+RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
     && apt-get install -y python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -53,12 +56,11 @@ RUN pip3 install pytest pytest-timeout
 
 # net-tools gives us the "arp" command
 # iputils-ping gives us the "ping" command
-RUN apt-get update \
-    && apt-get install -y net-tools iputils-ping iproute2 \
-    && rm -rf /var/lib/apt/lists/*
-
-RUN apt-get update \
-    && apt-get install -y python3-requests python3-yaml \
+RUN UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && curl -L https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/sbsa/cuda-keyring_1.1-1_all.deb -O \
+    && dpkg -i cuda-keyring_1.1-1_all.deb \
+    && apt-get update \
+    && apt-get install -y net-tools iputils-ping iproute2 python3-requests python3-yaml \
     && rm -rf /var/lib/apt/lists/*
 
 # install the wheel we build before

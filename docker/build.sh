@@ -26,7 +26,7 @@ dgpu=0
 usage=1
 GPU_CONFIG=
 # HSDK follows Major.Minor.Patch versioning scheme
-HSDK_VERSION="3.9.0"
+HSDK_VERSION="3.11.0"
 
 # detected and populated in script and used in docker build command
 PROTOTYPE_OPTIONS=""
