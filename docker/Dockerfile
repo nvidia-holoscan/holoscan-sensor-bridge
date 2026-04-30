@@ -260,8 +260,8 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     iproute2 \
     # Build tools
     build-essential \
-    cmake="3.31.*" \
-    cmake-data="3.31.*" \
+    cmake="3.31.11*" \
+    cmake-data="3.31.11*" \
     ninja-build \
     pkg-config \
     # Development libraries

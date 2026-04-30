@@ -202,19 +202,11 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device
-    if args.cam == 0:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip=args.hololink[0]
-        )
-    elif args.cam == 1:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip=args.hololink[1]
-        )
-    else:
-        raise Exception(f"Unexpected camera={args.cam}")
-
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     # Get a handle to the camera
+    md = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(md, args.cam)
+    hololink_channel = hololink_module.DataChannel(md)
     camera = hololink_module.sensors.imx477.Imx477(
         hololink_channel, args.cam, args.resolution
     )

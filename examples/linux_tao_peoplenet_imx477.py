@@ -196,6 +196,11 @@ def main():
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
     )
     parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
+    parser.add_argument(
         "--frame-limit",
         type=int,
         default=None,

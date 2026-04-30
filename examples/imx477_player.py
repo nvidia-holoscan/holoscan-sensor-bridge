@@ -224,9 +224,10 @@ def main():
 
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
+    # get a handle to the camera
+    md = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(md, args.camera)
+    hololink_channel = hololink_module.DataChannel(md)
     camera = hololink_module.sensors.imx477.Imx477(
         hololink_channel, args.camera, args.resolution
     )
