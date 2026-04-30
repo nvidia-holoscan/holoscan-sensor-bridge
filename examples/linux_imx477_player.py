@@ -185,7 +185,7 @@ def main():
     )
     parser.add_argument(
         "--hololink",
-        default=["192.168.0.2", "192.168.0.3"],
+        default="192.168.0.2",
         nargs="+",
         help="IP addresses of the IMX477 camera channels (separated by commas) of Hololink board",
     )
