@@ -245,6 +245,8 @@ RUN ${APT_CACHE_MOUNT} \
 # iputils-ping gives us the "ping" command
 # iproute2 gives us the "ip" command
 # For Holoviz: vulkan-tools, glslang-tools, vulkan-validationlayers, libvulkan-dev
+#
+# Pin to CMake 3.31.11 to work around 3.31.12 installation error (CMake Issue#27775).
 RUN ${APT_CACHE_MOUNT} apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
     # Container tools
