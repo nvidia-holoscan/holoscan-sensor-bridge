@@ -126,7 +126,8 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
     except (KeyError, IndexError) as e:
         logging.error(f"Invalid YAML structure: missing required key {e}")
         raise ValueError(f"YAML manifest is missing required fields: {e}")
-    download_extract(current_file_cfg)
+    if not os.path.exists(spi_filename) and current_url:
+        download_extract(current_file_cfg)
     hsb_ip_version = channel_metadata["hsb_ip_version"]
     if hsb_ip_version < 0x2506:
         in_spi = traditional_peripherals_py.get_traditional_spi(
@@ -184,7 +185,7 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
     _spi_command(in_spi, [ENABLE_RESET])
     _spi_command(in_spi, [RESET])
     _wait_for_spi_ready(in_spi)
-    if os.path.exists(spi_filename):
+    if os.path.exists(spi_filename) and current_url:
         os.remove(spi_filename)
     else:
         logging.warning(f"SPI file {spi_filename} doesn't exist for cleanup")
