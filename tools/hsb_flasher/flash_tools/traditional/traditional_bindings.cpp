@@ -24,7 +24,7 @@ namespace py = pybind11;
 using namespace pybind11::literals;
 using namespace hololink;
 
-namespace hololink{
+namespace hololink {
 std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t spi_address, uint32_t chip_select,
     uint32_t clock_divisor, uint32_t cpol, uint32_t cpha, uint32_t width);
 

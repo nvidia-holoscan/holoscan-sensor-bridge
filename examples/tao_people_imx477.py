@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,10 +21,203 @@ import logging
 import os
 
 import cuda.bindings.driver as cuda
+import cupy as cp
 import holoscan
-from tao_peoplenet import FormatInferenceInputOp, PostprocessorOp
+import numpy as np
 
 import hololink as hololink_module
+
+
+class FormatInferenceInputOp(holoscan.core.Operator):
+    """Operator to format input image for inference"""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def setup(self, spec):
+        spec.input("in")
+        spec.output("out")
+
+    def compute(self, op_input, op_output, context):
+        # Get input message
+        in_message = op_input.receive("in")
+
+        # Transpose
+        tensor = cp.asarray(in_message.get("preprocessed")).get()
+        # OBS: Numpy conversion and moveaxis is needed to avoid strange
+        # strides issue when doing inference
+        tensor = np.moveaxis(tensor, 2, 0)[None]
+        tensor = cp.asarray(tensor)
+
+        # Output tensor
+        op_output.emit({"preprocessed": tensor}, "out")
+
+
+class PostprocessorOp(holoscan.core.Operator):
+    """Operator to post-process inference output:
+    * Reparameterize bounding boxes
+    * Non-max suppression
+    * Make boxes compatible with Holoviz
+
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def setup(self, spec):
+        spec.input("in")
+        spec.output("out")
+        spec.param("iou_threshold", 0.15)
+        spec.param("score_threshold", 0.5)
+        spec.param("image_width", None)
+        spec.param("image_height", None)
+        spec.param("box_scale", None)
+        spec.param("box_offset", None)
+        spec.param("grid_height", None)
+        spec.param("grid_width", None)
+
+    def compute(self, op_input, op_output, context):
+        # Get input message
+        in_message = op_input.receive("in")
+
+        # Convert input to cupy array
+        # ONNX models produce a singleton batch dimension that we skip.
+        boxes = cp.asarray(in_message.get("boxes"))[0, ...]
+        scores = cp.asarray(in_message.get("scores"))[0, ...]
+
+        # PeopleNet has three classes:
+        # 0. Person
+        # 1. Bag
+        # 2. Face
+        # Here we only keep the Person and Face classes
+        boxes = boxes[[0, 1, 2, 3, 8, 9, 10, 11], ...][None]
+        scores = scores[[0, 2], ...][None]
+
+        # Loop over label classes
+        out = {"person": None, "faces": None}
+        for i, label in enumerate(out):
+            # Reparameterize boxes
+            out[label], scores_nms = self.reparameterize_boxes(
+                boxes[:, 0 + i * 4 : 4 + i * 4, ...],
+                scores[:, i, ...][None],
+            )
+
+            # Non-max suppression
+            out[label], _ = self.nms(out[label], scores_nms)
+
+            # Reshape for HoloViz
+            if len(out[label]) == 0:
+                out[label] = np.zeros([1, 2, 2]).astype(np.float32)
+            else:
+                out[label][:, [0, 2]] /= self.image_width
+                out[label][:, [1, 3]] /= self.image_height
+                out[label] = cp.reshape(out[label][None], (1, -1, 2))
+                out[label] = cp.asnumpy(out[label])
+
+        # Output tensor
+        op_output.emit({"person": out["person"], "faces": out["faces"]}, "out")
+
+    def nms(self, boxes, scores):
+        """Non-max suppression (NMS)
+
+        Parameters
+        ----------
+        boxes : array (4, n)
+        scores : array (n,)
+
+        Returns
+        ----------
+        boxes : array (m, 4)
+        scores : array (m,)
+
+        """
+        if len(boxes) == 0:
+            return cp.asarray([]), cp.asarray([])
+
+        # Get coordinates
+        x0, y0, x1, y1 = boxes[0, :], boxes[1, :], boxes[2, :], boxes[3, :]
+
+        # Area of bounding boxes
+        area = (x1 - x0 + 1) * (y1 - y0 + 1)
+
+        # Get indices of sorted scores
+        indices = cp.argsort(scores)
+
+        # Output boxes and scores
+        boxes_out, scores_out = [], []
+
+        # Iterate over bounding boxes
+        while len(indices) > 0:
+            # Get index with highest score from remaining indices
+            index = indices[-1]
+
+            # Pick bounding box with highest score
+            boxes_out.append(boxes[:, index])
+            scores_out.append(scores[index])
+
+            # Get coordinates
+            x00 = cp.maximum(x0[index], x0[indices[:-1]])
+            x11 = cp.minimum(x1[index], x1[indices[:-1]])
+            y00 = cp.maximum(y0[index], y0[indices[:-1]])
+            y11 = cp.minimum(y1[index], y1[indices[:-1]])
+
+            # Compute IOU
+            width = cp.maximum(0, x11 - x00 + 1)
+            height = cp.maximum(0, y11 - y00 + 1)
+            overlap = width * height
+            union = area[index] + area[indices[:-1]] - overlap
+            iou = overlap / union
+
+            # Threshold and prune
+            left = cp.where(iou < self.iou_threshold)
+            indices = indices[left]
+
+        # To array
+        boxes = cp.asarray(boxes_out)
+        scores = cp.asarray(scores_out)
+
+        return boxes, scores
+
+    def reparameterize_boxes(self, boxes, scores):
+        """Reparameterize boxes from corner+width+height to corner+corner.
+
+        Parameters
+        ----------
+        boxes : array (1, 4, grid_height, grid_width)
+        scores : array (1, 1, grid_height, grid_width)
+
+        Returns
+        ----------
+        boxes : array (4, n)
+        scores : array (n,)
+
+        """
+        cell_height = self.image_height / self.grid_height
+        cell_width = self.image_width / self.grid_width
+
+        # Generate the grid coordinates
+        mx, my = cp.meshgrid(cp.arange(self.grid_width), cp.arange(self.grid_height))
+        mx = mx.astype(np.float32).reshape((1, 1, self.grid_height, self.grid_width))
+        my = my.astype(np.float32).reshape((1, 1, self.grid_height, self.grid_width))
+
+        # Compute the box corners
+        xmin = -(boxes[0, 0, ...] + self.box_offset) * self.box_scale + mx * cell_width
+        ymin = -(boxes[0, 1, ...] + self.box_offset) * self.box_scale + my * cell_height
+        xmax = (boxes[0, 2, ...] + self.box_offset) * self.box_scale + mx * cell_width
+        ymax = (boxes[0, 3, ...] + self.box_offset) * self.box_scale + my * cell_height
+        boxes = cp.concatenate([xmin, ymin, xmax, ymax], axis=1)
+
+        # Select the scores that are above the threshold
+        scores_mask = scores > self.score_threshold
+        scores = scores[scores_mask]
+        scores_mask = cp.repeat(scores_mask, 4, axis=1)
+        boxes = boxes[scores_mask]
+
+        # Reshape after masking
+        n = int(boxes.size / 4)
+        boxes = boxes.reshape(4, n)
+
+        return boxes, scores
 
 
 class HoloscanApplication(holoscan.core.Application):
@@ -35,6 +228,8 @@ class HoloscanApplication(holoscan.core.Application):
         cuda_context,
         cuda_device_ordinal,
         hololink_channel,
+        ibv_name,
+        ibv_port,
         camera,
         frame_limit,
         engine,
@@ -46,9 +241,18 @@ class HoloscanApplication(holoscan.core.Application):
         self._cuda_context = cuda_context
         self._cuda_device_ordinal = cuda_device_ordinal
         self._hololink_channel = hololink_channel
+        self._ibv_name = ibv_name
+        self._ibv_port = ibv_port
         self._camera = camera
         self._frame_limit = frame_limit
         self._engine = engine
+        # These are HSDK controls-- because we have both the
+        # image data and postprocessor output
+        # going into the same visualizer, don't
+        # raise an error when each path present metadata
+        # with the same names.  Because we don't use that metadata,
+        # it's easiest to just ignore new items with the same
+        # names as existing items.
         self.is_metadata_enabled = True
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
@@ -87,12 +291,14 @@ class HoloscanApplication(holoscan.core.Application):
 
         frame_size = csi_to_bayer_operator.get_csi_length()
         frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.LinuxReceiverOperator(
+        receiver_operator = hololink_module.operators.RoceReceiverOp(
             self,
             condition,
             name="receiver",
             frame_size=frame_size,
             frame_context=frame_context,
+            ibv_name=self._ibv_name,
+            ibv_port=self._ibv_port,
             hololink_channel=self._hololink_channel,
             device=self._camera,
         )
@@ -102,9 +308,14 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
+            # Optical black value for imx477 is 100
             optical_black=100,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
+        )
+
+        image_shift = hololink_module.operators.ImageShiftToUint8Operator(
+            self, name="image_shift", shift=8
         )
 
         rgb_components_per_pixel = 3
@@ -126,10 +337,6 @@ class HoloscanApplication(holoscan.core.Application):
             generate_alpha=False,
             bayer_grid_pos=bayer_format.value,
             interpolation_mode=0,
-        )
-
-        image_shift = hololink_module.operators.ImageShiftToUint8Operator(
-            self, name="image_shift", shift=8
         )
 
         visualizer = holoscan.operators.HolovizOp(
@@ -191,14 +398,21 @@ class HoloscanApplication(holoscan.core.Application):
 
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--camera",
+        type=int,
+        default=0,
+        choices=(0, 1),
+        help="which camera to stream: 0 to stream camera connected to j14 or 1 to stream camera connected to j17 (default is 0)",
+    )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
     )
     parser.add_argument(
-        "--hololink",
-        default="192.168.0.2",
-        help="IP address of Hololink board",
+        "--resolution",
+        default="4k",
+        help="4k or 1080p",
     )
     parser.add_argument(
         "--frame-limit",
@@ -212,7 +426,11 @@ def main():
     parser.add_argument(
         "--configuration", default=default_configuration, help="Configuration file"
     )
-
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
     default_engine = os.path.join(
         os.path.dirname(__file__), "resnet34_peoplenet_int8.onnx"
     )
@@ -227,17 +445,24 @@ def main():
         default=20,
         help="Logging level to display",
     )
+    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
-        "--cam",
+        "--ibv-name",
+        default=infiniband_devices[0],
+        help="IBV device to use",
+    )
+    parser.add_argument(
+        "--ibv-port",
+        type=int,
+        default=1,
+        help="Port number of IBV device",
+    )
+    parser.add_argument(
+        "--expander-configuration",
         type=int,
         default=0,
         choices=(0, 1),
-        help="which camera to stream: 0 to stream camera connected to j14 or 1 to stream camera connected to j17 (default is 0)",
-    )
-    parser.add_argument(
-        "--resolution",
-        default="4k",
-        help="4k or 1080p",
+        help="I2C Expander configuration",
     )
     parser.add_argument(
         "--exposure",
@@ -256,23 +481,12 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the Hololink device
-
-    if args.cam == 0:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.2"
-        )
-    elif args.cam == 1:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.3"
-        )
-    else:
-        raise Exception(f"Unexpected camera={args.cam}")
-
+    # Get a handle to the data source
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     hololink_channel = hololink_module.DataChannel(channel_metadata)
-
+    # Get a handle to the camera
     camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.cam, args.resolution
+        hololink_channel, args.camera, args.resolution
     )
 
     # Set up the application
@@ -282,6 +496,8 @@ def main():
         cu_context,
         cu_device_ordinal,
         hololink_channel,
+        args.ibv_name,
+        args.ibv_port,
         camera,
         args.frame_limit,
         args.engine,

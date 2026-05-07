@@ -100,7 +100,7 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
-            optical_black=50,
+            optical_black=100,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
         )

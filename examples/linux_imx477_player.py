@@ -185,7 +185,7 @@ def main():
     )
     parser.add_argument(
         "--hololink",
-        default="192.168.0.2",
+        default=["192.168.0.2", "192.168.0.3"],
         nargs="+",
         help="IP addresses of the IMX477 camera channels (separated by commas) of Hololink board",
     )
@@ -202,7 +202,9 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=args.hololink[0]
+    )
     # Get a handle to the camera
     md = hololink_module.Metadata(channel_metadata)
     hololink_module.DataChannel.use_sensor(md, args.cam)
