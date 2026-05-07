@@ -32,6 +32,7 @@ IMX477_TABLE_END = "(end)"
 IMX477_WAIT_MS = 1
 
 # Camera Reg
+"""
 imx477_mode_3840X2160_60fps = [
     (IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS),
     (0xE000, 0x00),
@@ -469,7 +470,7 @@ imx477_mode_3840X2160_60fps = [
     (0x0609, 0x00),
     (IMX477_TABLE_END, IMX477_WAIT_MS),
 ]
-
+"""
 
 imx477_mode_1920X1080_60fps = [
     (IMX477_TABLE_WAIT_MS, IMX477_WAIT_MS),
@@ -911,7 +912,9 @@ imx477_mode_1920X1080_60fps = [
 
 
 class Imx477:
-    def __init__(self, hololink_channel, camera_id=0, resolution="4k"):
+    def __init__(
+        self, hololink_channel, camera_id=0, resolution="4k", register_mod=False
+    ):
         self._hololink = hololink_channel.hololink()
         if camera_id == 0:
             self._i2c = self._hololink.get_i2c(hololink_module.CAM_I2C_BUS)
@@ -921,11 +924,13 @@ class Imx477:
         if resolution == "1080p":
             self._width = 1920
             self._height = 1080
-            self._mode = imx477_mode_1920X1080_60fps
+        elif resolution == "720p":
+            self._width = 1280
+            self._height = 720
         else:
             self._width = 3840
             self._height = 2160
-            self._mode = imx477_mode_3840X2160_60fps
+        self._mode = self.resolution_conf(resolution, register_mod)
 
     def configure(self):
         self.set_mode()
@@ -934,6 +939,49 @@ class Imx477:
                 time.sleep(val / 1000)  # the val is in ms
             else:
                 self.set_register(reg, val)
+
+    def resolution_conf(self, resolution="4k", register_mod=False):
+        match resolution:
+            case "1080p":
+                camera_register_adjustment = [
+                    (0x034C, 0x07),
+                    (0x034D, 0x80),
+                    (0x034E, 0x04),
+                    (0x034F, 0x38),
+                    (0x0401, 0x02),
+                    (0x0405, 0x20),
+                ]
+            case "720p":
+                camera_register_adjustment = [
+                    (0x034C, 0x05),
+                    (0x034D, 0x00),
+                    (0x034E, 0x02),
+                    (0x034F, 0xD0),
+                    (0x0401, 0x02),
+                    (0x0405, 0x30),
+                ]
+            case _:  # default to "4k"
+                camera_register_adjustment = [
+                    (0x034C, 0x0F),
+                    (0x034D, 0x00),
+                    (0x034E, 0x08),
+                    (0x034F, 0x70),
+                ]
+        if register_mod:
+            flip_registers = [
+                (0x0346, 0x0B),
+                (0x0347, 0xDF),
+                (0x034A, 0x00),
+                (0x034B, 0x00),
+            ]
+            camera_register_adjustment.extend(flip_registers)
+        final_camera_settings = imx477_mode_1920X1080_60fps.copy()
+
+        for idx, register in enumerate(final_camera_settings):
+            for subset in camera_register_adjustment:
+                if register[0] == subset[0]:
+                    final_camera_settings[idx] = subset
+        return final_camera_settings
 
     def set_pattern(self):
         """Set camera mode. Currently supports RAW8 Pixel format only"""
