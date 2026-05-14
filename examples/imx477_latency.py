@@ -355,6 +355,12 @@ def main():
         default="4k",
         help="4k or 1080p",
     )
+    parser.add_argument(
+        "--flip",
+        default="none",
+        choices=["none", "h", "v", "hv"],
+        help="Choose between none, h, v or hv (for horizontal, vertical, or both)",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -374,7 +380,7 @@ def main():
     hololink_module.DataChannel.use_sensor(md, args.cam)
     hololink_channel = hololink_module.DataChannel(md)
     camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.cam, args.resolution
+        hololink_channel, args.cam, args.resolution, img_flip=args.flip
     )
 
     recorder_queue = []

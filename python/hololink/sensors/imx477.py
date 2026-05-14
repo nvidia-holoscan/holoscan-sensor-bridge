@@ -912,9 +912,22 @@ imx477_mode_1920X1080_60fps = [
 
 
 class Imx477:
+    _IMG_ORIENTATION_BYTES = {"none": 0x00, "h": 0x01, "v": 0x02, "hv": 0x03}
+
     def __init__(
-        self, hololink_channel, camera_id=0, resolution="4k", register_mod=False
+        self,
+        hololink_channel,
+        camera_id=0,
+        resolution="4k",
+        register_mod=None,
+        img_flip="none",
     ):
+        if img_flip not in self._IMG_ORIENTATION_BYTES:
+            raise ValueError(
+                f"img_flip must be one of {list(self._IMG_ORIENTATION_BYTES)}"
+                f"(got {img_flip})"
+            )
+        self._img_flip = img_flip
         self._hololink = hololink_channel.hololink()
         if camera_id == 0:
             self._i2c = self._hololink.get_i2c(hololink_module.CAM_I2C_BUS)
@@ -930,6 +943,9 @@ class Imx477:
         else:
             self._width = 3840
             self._height = 2160
+        if img_flip != "none":
+            orientation = (0x0101, self._IMG_ORIENTATION_BYTES[img_flip])
+            register_mod = [orientation, *(register_mod or [])]
         self._mode = self.resolution_conf(resolution, register_mod)
 
     def configure(self):
@@ -940,7 +956,7 @@ class Imx477:
             else:
                 self.set_register(reg, val)
 
-    def resolution_conf(self, resolution="4k", register_mod=False):
+    def resolution_conf(self, resolution="4k", register_mod=None):
         match resolution:
             case "1080p":
                 camera_register_adjustment = [
@@ -968,13 +984,7 @@ class Imx477:
                     (0x034F, 0x70),
                 ]
         if register_mod:
-            flip_registers = [
-                (0x0346, 0x0B),
-                (0x0347, 0xDF),
-                (0x034A, 0x00),
-                (0x034B, 0x00),
-            ]
-            camera_register_adjustment.extend(flip_registers)
+            camera_register_adjustment.extend(register_mod)
         final_camera_settings = imx477_mode_1920X1080_60fps.copy()
 
         for idx, register in enumerate(final_camera_settings):
@@ -1051,7 +1061,14 @@ class Imx477:
         return self._pixel_format
 
     def bayer_format(self):
-        return hololink_module.sensors.csi.BayerFormat.RGGB
+        bayer = hololink_module.sensors.csi.BayerFormat
+        flipped = {
+            "none": bayer.RGGB,
+            "h": bayer.GRBG,
+            "v": bayer.GBRG,
+            "hv": bayer.BGGR,
+        }
+        return flipped[self._img_flip]
 
     def set_analog_gain(self, value=0x33F):
         """This function sets MSB (2 bits) and LSB (8 bits) of analog gain value registers 0x204 and 0x205 respectively"""
