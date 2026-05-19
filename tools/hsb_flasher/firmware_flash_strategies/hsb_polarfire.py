@@ -57,6 +57,110 @@ IAP_IMG_START_ADDR = 0xA00000
 
 SPI_READY_TIMEOUT_S = 3.0
 
+# Traditional (pre-0x2506) SPI controller layout — This process is designed
+# to mirror the traditional_spi.cpp file functionality. This was done in as
+# an alternative to importing the traditional_peripherals_py.so file which
+# was causing issues.
+_TSPI_REG_CONTROL = 0
+_TSPI_REG_NUM_BYTES = 4
+_TSPI_REG_SPI_CFG = 8
+_TSPI_REG_NUM_BYTES2 = 12
+_TSPI_REG_DATA_BUFFER = 16
+_TSPI_START = 0x0001
+_TSPI_BUSY = 0x0100
+_TSPI_CFG_CPOL = 0x0010
+_TSPI_CFG_CPHA = 0x0020
+_TSPI_BUFFER_SIZE = 288
+_TSPI_WIDTH_MAP = {1: 0, 2: 2 << 8, 4: 3 << 8}
+
+
+class _TraditionalSpi:
+    """Python port of hololink::TraditionalSpi for legacy PolarFire HSB."""
+
+    def __init__(
+        self,
+        hololink,
+        spi_address,
+        chip_select,
+        clock_divisor,
+        cpol,
+        cpha,
+        width,
+    ):
+        if clock_divisor >= 16:
+            raise ValueError(
+                f"Invalid clock_divisor {clock_divisor} has to be less than 16"
+            )
+        if chip_select >= 8:
+            raise ValueError(
+                f"Invalid chip_select {chip_select} has to be less than < 8"
+            )
+        if width not in _TSPI_WIDTH_MAP:
+            raise ValueError(f"Unsupported width {width}")
+        self._hololink = hololink
+        self._reg_control = spi_address + _TSPI_REG_CONTROL
+        self._reg_num_bytes = spi_address + _TSPI_REG_NUM_BYTES
+        self._reg_spi_cfg = spi_address + _TSPI_REG_SPI_CFG
+        self._reg_num_bytes2 = spi_address + _TSPI_REG_NUM_BYTES2
+        self._reg_data_buffer = spi_address + _TSPI_REG_DATA_BUFFER
+        cfg = clock_divisor | (chip_select << 12) | _TSPI_WIDTH_MAP[width]
+        if cpol:
+            cfg |= _TSPI_CFG_CPOL
+        if cpha:
+            cfg |= _TSPI_CFG_CPHA
+        self._spi_cfg = cfg
+        self._turnaround_cycles = 0
+
+    def spi_transaction(self, write_command_bytes, write_data_bytes, read_byte_count=0):
+        write_bytes = list(write_command_bytes) + list(write_data_bytes)
+        write_command_count = len(write_command_bytes)
+        if write_command_count >= 16:
+            raise RuntimeError(
+                f"Size of combined write_command_bytes and write_data_bytes is too large: ({write_command_count}), has to be less than 16"
+            )
+        write_byte_count = len(write_bytes)
+        read_byte_total = write_command_count + read_byte_count
+        if read_byte_total > _TSPI_BUFFER_SIZE:
+            raise RuntimeError(
+                f"Size of read is too large: ({read_byte_total}), has to be less than {_TSPI_BUFFER_SIZE}"
+            )
+
+        if (self._hololink.read_uint32(self._reg_control) & _TSPI_BUSY) != 0:
+            raise RuntimeError("SPI controller reported busy before start")
+
+        self._hololink.write_uint32(self._reg_spi_cfg, self._spi_cfg)
+
+        for index in range(0, write_byte_count, 4):
+            value = 0
+            for j, byte in enumerate(write_bytes[index : index + 4]):
+                value |= (byte & 0xFF) << (8 * j)
+            self._hololink.write_uint32(self._reg_data_buffer + index, value)
+
+        num_bytes = (write_byte_count & 0xFFFF) | ((read_byte_count & 0xFFFF) << 16)
+        self._hololink.write_uint32(self._reg_num_bytes, num_bytes)
+        num_bytes2 = (self._turnaround_cycles & 0xF) | (
+            (write_command_count & 0xFF) << 8
+        )
+        self._hololink.write_uint32(self._reg_num_bytes2, num_bytes2)
+
+        self._hololink.write_uint32(self._reg_control, _TSPI_START)
+
+        deadline = time.monotonic() + SPI_READY_TIMEOUT_S
+        while (self._hololink.read_uint32(self._reg_control) & _TSPI_BUSY) != 0:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"Timed out waiting for SPI transaction at {self._reg_control:#x}"
+                )
+
+        result = bytearray(read_byte_total + 3)
+        for i in range(0, read_byte_total, 4):
+            value = self._hololink.read_uint32(self._reg_data_buffer + i)
+            result[i + 0] = (value >> 0) & 0xFF
+            result[i + 1] = (value >> 8) & 0xFF
+            result[i + 2] = (value >> 16) & 0xFF
+            result[i + 3] = (value >> 24) & 0xFF
+        return list(result[:read_byte_total])
+
 
 def _spi_command(in_spi, command, w_data=None, read_count=0):
     if w_data is None:
@@ -109,9 +213,7 @@ def _flash_polarfire_esb(ip_address: str, spi_path: str, traditional: bool) -> b
         with open(spi_path, "rb") as f:
             content = list(f.read())
         if traditional:
-            import traditional_peripherals_py
-
-            in_spi = traditional_peripherals_py.get_traditional_spi(
+            in_spi = _TraditionalSpi(
                 hololink,
                 spi_address=0x03000000,
                 chip_select=0,
