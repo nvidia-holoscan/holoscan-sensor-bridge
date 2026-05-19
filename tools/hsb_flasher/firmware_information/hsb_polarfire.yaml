@@ -19,11 +19,12 @@ fpga_uuid:
 firmware_versions:
   - version: 0x2510
     cpnx:
-      - location: PF_ESB_HSB2510_v2025p1_01272026.spi
+      - location: https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/PF_ESB_HSB2510_v2025p1_01272026.spi
         md5: 5e227944bd3e280ae9af58dea8725cbc
         size: 6135712
+
   - version: 0x2603
     cpnx:
-      - location: PF_ESB_HSB2603_v2025p2.spi
+      - location: https://ww1.microchip.com/downloads/aemDocuments/documents/FPGA/SOCDesignFiles/PF_ESB_HSB2603_v2025p2.spi
         md5: 48602a1bfe6382726fe8338ecab832ef
-        size: 6135712        
+        size: 6135712

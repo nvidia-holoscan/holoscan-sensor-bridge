@@ -74,27 +74,61 @@ def _wait_for_spi_ready(in_spi):
             raise RuntimeError("SPI STATUS read timed out waiting for flash ready")
 
 
-def _flash_polarfire_esb(ip_address: str, spi_path: str) -> bool:
+def _flash_polarfire_esb(ip_address: str, spi_path: str, traditional: bool) -> bool:
     # Lazy import so `supports()` / module load works in environments where
     # the hololink package isn't installed (e.g. lint / unit smoke tests).
     import hololink as hololink_module
 
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=ip_address)
+    if traditional:
+
+        def manual_enumeration(ip_address):
+            m = {
+                "control_port": 8192,
+                "hsb_ip_version": 0x2502,
+                "peer_ip": ip_address,
+                "sequence_number_checking": 0,
+                "serial_number": "100",
+                "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
+                "ptp_enable": 0,
+                "block_enable": 0,
+            }
+            metadata = hololink_module.Metadata(m)
+            hololink_module.DataChannel.use_data_plane_configuration(metadata, 0)
+            hololink_module.DataChannel.use_sensor(metadata, 0)
+            return metadata
+
+        channel_metadata = manual_enumeration(ip_address)
+    else:
+        channel_metadata = hololink_module.Enumerator.find_channel(
+            channel_ip=ip_address
+        )
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     hololink = hololink_channel.hololink()
     hololink.start()
     try:
         with open(spi_path, "rb") as f:
             content = list(f.read())
+        if traditional:
+            import traditional_peripherals_py
 
-        in_spi = hololink.get_spi(
-            bus_number=0,
-            chip_select=0,
-            cpol=1,
-            cpha=1,
-            width=1,
-            prescaler=0x4,
-        )
+            in_spi = traditional_peripherals_py.get_traditional_spi(
+                hololink,
+                spi_address=0x03000000,
+                chip_select=0,
+                clock_divisor=0x4,
+                cpol=1,
+                cpha=1,
+                width=1,
+            )
+        else:
+            in_spi = hololink.get_spi(
+                bus_number=0,
+                chip_select=0,
+                cpol=1,
+                cpha=1,
+                width=1,
+                prescaler=0x4,
+            )
 
         con_len = len(content) + START_ADDR
         tot_len = len(content)
@@ -168,6 +202,10 @@ class HSBPolarFireEsbFlasherBase(ABC):
 
     @classmethod
     def supports(cls, fpga_uuid: str, version: int) -> bool:
+        if 0x2407 <= version <= 0x2506:
+            version = 0x2412
+        elif 0x2507 <= version:
+            version = 0x2510
         return fpga_uuid == cls.FPGA_UUID and version == cls.VERSION
 
     @abstractmethod
@@ -175,27 +213,37 @@ class HSBPolarFireEsbFlasherBase(ABC):
         pass
 
 
-class HSBPolarFireEsbFlasher2510(HSBPolarFireEsbFlasherBase):
-    """Flasher for HSB PolarFire ESB version 0x2510."""
+# ===============================================
+# UDP Flasher Implementation
+# ===============================================
+
+
+class HSBPolarFireEsbFlasherTraditional(HSBPolarFireEsbFlasherBase):
+    """Flasher for HSB PolarFire ESB traditional versions."""
+
+    VERSION = 0x2412
+
+    def flash(self, cpnx_path: str) -> bool:
+        return _flash_polarfire_esb(self.ip_address, cpnx_path, True)
+
+
+# ===============================================
+# Base Flasher Implementations
+# ===============================================
+
+
+class HSBPolarFireEsbFlasherCurrent(HSBPolarFireEsbFlasherBase):
+    """Flasher for HSB PolarFire ESB current versions."""
 
     VERSION = 0x2510
 
     def flash(self, cpnx_path: str) -> bool:
-        return _flash_polarfire_esb(self.ip_address, cpnx_path)
-
-
-class HSBPolarFireEsbFlasher2603(HSBPolarFireEsbFlasherBase):
-    """Flasher for HSB PolarFire ESB version 0x2603."""
-
-    VERSION = 0x2603
-
-    def flash(self, cpnx_path: str) -> bool:
-        return _flash_polarfire_esb(self.ip_address, cpnx_path)
+        return _flash_polarfire_esb(self.ip_address, cpnx_path, False)
 
 
 FLASH_STRATEGIES = [
-    HSBPolarFireEsbFlasher2510,
-    HSBPolarFireEsbFlasher2603,
+    HSBPolarFireEsbFlasherTraditional,
+    HSBPolarFireEsbFlasherCurrent,
 ]
 
 
