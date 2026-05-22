@@ -40,6 +40,7 @@ public:
         std::stringstream python_code;
         python_code << "import sys; "
                     << "sys.path.insert(0, '" << strategies_dir_.string() << "'); "
+                    << "sys.path.append('" << strategies_dir_.parent_path().string() << "'); "
                     << "import " << module_name_ << " as m; "
                     << "exit(0 if m.do_flash("
                     << "'" << context_.enumeration_metadata.get<std::string>("fpga_uuid").value_or("N/A") << "', "

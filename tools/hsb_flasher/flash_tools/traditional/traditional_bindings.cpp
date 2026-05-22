@@ -24,11 +24,12 @@ namespace py = pybind11;
 using namespace pybind11::literals;
 using namespace hololink;
 
+namespace hololink {
 std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t spi_address, uint32_t chip_select,
     uint32_t clock_divisor, uint32_t cpol, uint32_t cpha, uint32_t width);
 
 std::shared_ptr<Hololink::I2c> get_traditional_i2c(Hololink& hololink, uint32_t i2c_address);
-
+}
 PYBIND11_MODULE(traditional_peripherals_py, m)
 {
     m.doc() = "Legacy traditional SPI/I2C peripheral interfaces for older HSB FPGAs";

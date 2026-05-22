@@ -47,6 +47,8 @@ strategy.
 
 1. Leopard imaging VB1940 Eagle Camera
 
+1. Microchip MPF200-ETH-SENSOR-BRIDGE
+
 ### Quick Start
 
 1. Verify network connectivity with the sensor bridge:
