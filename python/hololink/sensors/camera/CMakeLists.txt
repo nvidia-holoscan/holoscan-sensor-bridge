@@ -15,6 +15,12 @@
 
 include(pybind11_add_hololink_module)
 
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_sensors_camera_files
+    DESTINATION sensors/camera
+    FILES __init__.py
+)
+
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET hololink_camera_sensor
     CLASS_NAME "CameraSensor"

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,6 @@
 
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/parameter.hpp>
-#include <holoscan/utils/cuda_stream_handler.hpp>
 
 #include <hololink/common/cuda_helper.hpp>
 
@@ -63,6 +62,7 @@ private:
     holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> pool_;
     holoscan::Parameter<std::string> out_tensor_name_;
     holoscan::Parameter<uint32_t> camera_index_;
+    holoscan::Parameter<uint32_t> sensor_mode_index_;
 
     std::unique_ptr<ArgusImpl> argus_impl_;
     std::unique_ptr<CameraProvider> camera_provider_;
@@ -76,7 +76,6 @@ private:
     std::shared_ptr<nvidia::gxf::DLManagedTensorContext> tensor_pointers_[MaxNumberOfFrames];
     CUdeviceptr device_ptr_nv12_;
 
-    holoscan::CudaStreamHandler cuda_stream_handler_;
     uint32_t frame_number_ = 0;
 };
 

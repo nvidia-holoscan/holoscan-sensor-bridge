@@ -46,6 +46,7 @@ namespace args {
     class ValueSemantic : public std::enable_shared_from_this<ValueSemantic> {
     public:
         using Pointer = std::shared_ptr<ValueSemantic>;
+        virtual ~ValueSemantic() = default;
         virtual bool is_required() const = 0;
         virtual std::string name() const = 0;
         virtual bool apply_default(std::any& value) const = 0;

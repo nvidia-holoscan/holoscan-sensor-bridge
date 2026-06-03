@@ -257,19 +257,23 @@ def main():
 
     channel_metadatas = []
     hololink_channels = []
+    sensor_ids = []
     if args.sensor == -1:
         # Create separate channels for each sensor
         channel_metadatas.append(hololink_module.Metadata(channel_metadata))
         hololink_module.DataChannel.use_sensor(channel_metadatas[0], 0)
         hololink_channels.append(hololink_module.DataChannel(channel_metadatas[0]))
+        sensor_ids.append(0)
 
         channel_metadatas.append(hololink_module.Metadata(channel_metadata))
         hololink_module.DataChannel.use_sensor(channel_metadatas[1], 1)
         hololink_channels.append(hololink_module.DataChannel(channel_metadatas[1]))
+        sensor_ids.append(1)
     else:
         channel_metadatas.append(hololink_module.Metadata(channel_metadata))
         hololink_module.DataChannel.use_sensor(channel_metadatas[0], args.sensor)
         hololink_channels.append(hololink_module.DataChannel(channel_metadatas[0]))
+        sensor_ids.append(args.sensor)
 
     # Start the HSB
     hololink = hololink_channels[0].hololink()
@@ -283,8 +287,12 @@ def main():
     )
     cameras = []
     for i in range(len(hololink_channels)):
+        # expander_configuration selects the I2C expander output (OUTPUT_1 for
+        # sensor 0, OUTPUT_2 for sensor 1) and must match the data channel's
+        # sensor id, not the loop index — otherwise --sensor 1 drives sensor
+        # 0's I2C path.
         camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-            hololink_channels[i], expander_configuration=i
+            hololink_channels[i], expander_configuration=sensor_ids[i]
         )
         if i == 0:
             camera.setup_clock()

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,13 +18,14 @@
 #include <hololink/operators/linux_receiver/linux_receiver_op.hpp>
 
 #include "../operator_util.hpp"
+// NOLINTNEXTLINE - Provides CUstream type caster for pybind11 used in get_next_frame
+#include "../type_caster.hpp" // IWYU pragma: keep
 
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <cstdint>
 #include <memory>
-#include <set>
 #include <string>
 
 #include <holoscan/core/fragment.hpp>
@@ -61,7 +62,8 @@ public:
     // Define a constructor that fully initializes the object.
     PyLinuxReceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
-        py::object receiver_affinity, py::object rename_metadata, const std::string& name, bool trim)
+        py::object receiver_affinity, py::object rename_metadata, bool trim, bool use_frame_ready_condition,
+        uint32_t pages, uint32_t queue_size, const std::string& name)
         : LinuxReceiverOp(holoscan::ArgList {
             holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
             holoscan::Arg { "device_start", std::function<void()>([this]() {
@@ -75,7 +77,10 @@ public:
             holoscan::Arg {
                 "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
             holoscan::Arg { "frame_size", frame_size },
-            holoscan::Arg { "trim", trim } })
+            holoscan::Arg { "trim", trim },
+            holoscan::Arg { "use_frame_ready_condition", use_frame_ready_condition },
+            holoscan::Arg { "pages", pages },
+            holoscan::Arg { "queue_size", queue_size } })
         , device_(device)
     {
         add_positional_condition_and_resource_args(this, args);
@@ -124,13 +129,13 @@ public:
         );
     }
 
-    std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms) override
+    std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms, CUstream cuda_stream) override
     {
         typedef std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> FrameData;
         PYBIND11_OVERRIDE(FrameData, /* Return type */
             LinuxReceiverOp, /* Parent class */
             get_next_frame, /* Name of function in C++ (must match Python name) */
-            timeout_ms);
+            timeout_ms, cuda_stream);
     }
 
 private:
@@ -148,10 +153,13 @@ PYBIND11_MODULE(_linux_receiver_op, m)
     py::class_<LinuxReceiverOp, PyLinuxReceiverOp, holoscan::Operator,
         std::shared_ptr<LinuxReceiverOp>>(m, "LinuxReceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, py::object, py::object, const std::string&, bool>(),
+                 size_t, py::object, py::object, bool, bool, uint32_t, uint32_t, const std::string&>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
-            "receiver_affinity"_a = py::none(), "rename_metadata"_a = py::none(), "name"_a = "linux_receiver"s, "trim"_a = false)
-        .def("get_next_frame", &LinuxReceiverOp::get_next_frame, "timeout_ms"_a)
+            "receiver_affinity"_a = py::none(), "rename_metadata"_a = py::none(),
+            "trim"_a = true, "use_frame_ready_condition"_a = true, "pages"_a = 1,
+            "queue_size"_a = 1,
+            "name"_a = "linux_receiver"s)
+        .def("get_next_frame", &LinuxReceiverOp::get_next_frame, "timeout_ms"_a, "cuda_stream"_a, py::call_guard<py::gil_scoped_release>())
         .def("setup", &LinuxReceiverOp::setup, "spec"_a)
         .def("start", &LinuxReceiverOp::start)
         .def("stop", &LinuxReceiverOp::stop)

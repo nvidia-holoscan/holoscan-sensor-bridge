@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -128,8 +128,8 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         self._receiver.close()
         self._receiver_thread.join()
 
-    def _get_next_frame(self, timeout_ms):
-        ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms)
+    def _get_next_frame(self, timeout_ms, cuda_stream):
+        ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms, cuda_stream)
         if not ok:
             return None
         application_metadata = {
@@ -152,3 +152,6 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
             self._bytes_written_metadata: receiver_metadata.bytes_written,
         }
         return application_metadata
+
+    def frames_ready(self):
+        return self._receiver.frames_ready()

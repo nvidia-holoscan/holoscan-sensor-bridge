@@ -20,65 +20,154 @@
 #ifndef HSB_CONFIG_HPP
 #define HSB_CONFIG_HPP
 
-#include <cstdint>
+#include <stdint.h>
 
-#include "hololink/core/hololink.hpp"
+// This is a workaround to allow backward compatibility with the existing examples which require namespace to hololink.
+#ifdef __cplusplus
+namespace hololink {
+// I2C interfaces
+constexpr uint32_t BL_I2C_BUS = 0;
+constexpr uint32_t CAM_I2C_BUS = 1;
+// I2C status flags
+constexpr uint32_t I2C_CTRL = 0x03000200;
+}
+#else
+// I2C interfaces
+#define BL_I2C_BUS 0u
+#define CAM_I2C_BUS 1u
+// I2C address
+#define I2C_CTRL 0x03000200u
+#endif
 
-namespace hololink::emulation {
+#define REGISTER_SIZE 4u
 
 // control plane constants
-#define CONTROL_UDP_PORT 8192
-#define CONTROL_INTERVAL_MSEC 1000
+#define CONTROL_UDP_PORT 8192u
+#define CONTROL_INTERVAL_MSEC 1000u
+#define MIN_VALID_CONTROL_LENGTH 10u
+
+#define SOFT_RESET_REG_CTRL 0x08u
+#define RESET_REG_CTRL 0x04u
 
 // SPI interfaces
+#define SPI_CTRL 0x03000000u
+// SPI address offsets
+#define SPI_REG_CONTROL 0x00u
+#define SPI_REG_BUS_EN 0x04u
+#define SPI_REG_NUM_BYTES 0x08u
+#define SPI_REG_SPI_MODE 0x0Cu
+#define SPI_REG_NUM_CMD_BYTES 0x10u
+#define SPI_REG_STATUS 0x80u
+#define SPI_REG_DATA_BUFFER 0x100u
 // SPI control flags
-#define SPI_START 0b0000'0000'0000'0001
-#define SPI_STATUS (hololink::SPI_CTRL + 0x80)
+#define SPI_START 0x01u
 // SPI status flags
-#define SPI_IDLE 0
-#define SPI_BUSY 0b0000'0000'0000'0001
-#define SPI_FSM_ERR 0b0000'0000'0000'0010
-#define SPI_DONE 0b0000'0000'0001'0000
+#define SPI_IDLE 0x00u
+#define SPI_BUSY 0x01u
+#define SPI_FSM_ERR 0x02u
+#define SPI_SPI_ERR 0x04u
+#define SPI_DONE 0x10u
 // SPI_CFG
-#define SPI_CFG_CPOL 0b0000'0000'0001'0000
-#define SPI_CFG_CPHA 0b0000'0000'0010'0000
+#define SPI_CFG_CPOL 0x10u
+#define SPI_CFG_CPHA 0x20u
 
-// I2C status flags
-#define I2C_IDLE 0
-/*
-#define I2C_STATUS (hololink::I2C_CTRL + hololink::I2C_REG_STATUS)
-#define I2C_BUS_END (hololink::I2C_CTRL + hololink::I2C_REG_BUS_EN)
-#define I2C_NUM_BYTES (hololink::I2C_CTRL + hololink::I2C_REG_NUM_BYTES)
-#define I2C_CLK_CNT (hololink::I2C_CTRL + hololink::I2C_REG_CLK_CNT)
-#define I2C_DATA_BUFFER (hololink::I2C_CTRL + hololink::I2C_REG_DATA_BUFFER)
-*/
+// I2C interfaces
+// see above for I2C_CTRL
+// I2C address offsets
+#define I2C_REG_CONTROL 0x00u
+#define I2C_REG_BUS_EN 0x04u
+#define I2C_REG_NUM_BYTES 0x08u
+#define I2C_REG_CLK_CNT 0x0Cu
+#define I2C_REG_STATUS 0x80u
+#define I2C_REG_DATA_BUFFER 0x100u
+// I2C control flags
+#define I2C_START 0x01u
+#define I2C_10B_ADDRESS 0x02u
+// i2c status flags
+#define I2C_IDLE 0x00u
+#define I2C_BUSY 0x01u
+#define I2C_FSM_ERR 0x02u
+#define I2C_I2C_ERR 0x04u
+#define I2C_I2C_NAK 0x08u
+#define I2C_DONE 0x10u
+
+#define HSB_IP_VERSION 0x80u
+#define FPGA_DATE 0x84u
+#define FPGA_PTP_CTRL 0x104u
+#define FPGA_PTP_DELAY_ASYMMETRY 0x10Cu
+#define FPGA_PTP_CTRL_DPLL_CFG1 0x110u
+#define FPGA_PTP_CTRL_DPLL_CFG2 0x114u
+#define FPGA_PTP_CTRL_DELAY_AVG_FACTOR 0x118u
+#define FPGA_PTP_SYNC_TS_0 0x180u
+#define FPGA_PTP_SYNC_STAT 0x188u
+#define FPGA_PTP_OFM 0x18Cu
+
+// Async event messaging
+#define CTRL_EVENT 0x00000200u
+#define CTRL_EVT_RISING (CTRL_EVENT + 0x04u)
+#define CTRL_EVT_FALLING (CTRL_EVENT + 0x08u)
+#define CTRL_EVT_CLEAR (CTRL_EVENT + 0x0Cu)
+#define CTRL_EVT_HOST_MAC_ADDR_LO (CTRL_EVENT + 0x10u)
+#define CTRL_EVT_HOST_MAC_ADDR_HI (CTRL_EVENT + 0x14u)
+#define CTRL_EVT_HOST_IP_ADDR (CTRL_EVENT + 0x18u)
+#define CTRL_EVT_HOST_UDP_PORT (CTRL_EVENT + 0x1Cu)
+#define CTRL_EVT_FPGA_UDP_PORT (CTRL_EVENT + 0x20u)
+#define CTRL_EVT_APB_INTERRUPT_EN (CTRL_EVENT + 0x24u)
+#define CTRL_EVT_APB_TIMEOUT (CTRL_EVENT + 0x28u)
+#define CTRL_EVT_SW_EVENT (CTRL_EVENT + 0x2Cu)
+#define CTRL_EVT_STAT (CTRL_EVENT + 0x80u)
+
+// APB event constants
+#define APB_RAM 0x2000u
+#define APB_SIF_0_FRAME_END_START_ADDRESS (APB_RAM + 0x100u)
+#define APB_SIF_1_FRAME_END_START_ADDRESS (APB_RAM + 0x200u)
+#define APB_SW_EVENT_START_ADDRESS (APB_RAM + 0x800u)
+#define APB_RAM_DATA_SIZE 0x1000u
+
+typedef enum {
+    EVENT_I2C_BUSY = 0,
+    EVENT_SW_EVENT = 2,
+    EVENT_SIF_0_FRAME_END = 16,
+    EVENT_SIF_1_FRAME_END = 17,
+    EVENT_GPIO0 = 18,
+    EVENT_GPIO1 = 19,
+    EVENT_SIF_0_FRAME_START = 20,
+    EVENT_SIF_1_FRAME_START = 21,
+} Event;
+
+// request packet flag bits
+#define REQUEST_FLAGS_ACK_REQUEST 0x01u
+#define REQUEST_FLAGS_SEQUENCE_CHECK 0x02u
 
 // HSBConfiguration constants. Note currently in hololink::core, but might be useful/have to change if we have a unified HSBConfiguration class across HSB types and emulator.
 // size of the uuid member in HSBConfiguration. must >= UUID_SIZE
-#define BOARD_VERSION_SIZE 20
-#define UUID_STR_LEN 37
-#define BOARD_SERIAL_NUM_SIZE 7
-#define VENDOR_ID_SIZE 4
+#define BOARD_VERSION_SIZE 20u
+#define UUID_STR_LEN 37u
+#define BOARD_SERIAL_NUM_SIZE 7u
+#define VENDOR_ID_SIZE 4u
 
 // HSBConfiguration constants
-#define MAX_SENSORS 32 // 5 bits of indices
-#define MAX_DATA_PLANES 256 // 8 bits of indices
-#define MAX_SIFS_PER_SENSOR 32 // 5 bits of indices
-#define MAX_SIFS 32 // 5 bits of indices
-#define HSB_DEFAULT_SENSOR_COUNT 2
-#define HSB_DEFAULT_DATA_PLANE_COUNT 2
-#define HSB_DEFAULT_SIFS_PER_SENSOR 2
+#define MAX_SENSORS 32u // 5 bits of indices
+#ifndef MAX_DATA_PLANES
+#define MAX_DATA_PLANES 256u // 8 bits of indices
+#endif
+#define MAX_SIFS_PER_SENSOR 32u // 5 bits of indices
+#define MAX_SIFS 32u // 5 bits of indices
+#define HSB_DEFAULT_SENSOR_COUNT 1u
+#define HSB_DEFAULT_DATA_PLANE_COUNT 1u
+#define HSB_DEFAULT_SIFS_PER_SENSOR 1u
 
 // HSBEmulator specific constants
-#define HSB_EMULATOR_DATE 20250608
-#define HSB_EMULATOR_TAG 0xE0
-#define HSB_EMULATOR_TAG_LENGTH 0x04
+#define HSB_EMULATOR_DATE 20260219u
+#define HSB_EMULATOR_TAG 0xE0u
+#define HSB_EMULATOR_TAG_LENGTH 0x04u
 #define HSB_EMULATOR_VENDOR_ID \
     {                          \
         'N', 'V', 'D', 'A'     \
     }
-#define HSB_EMULATOR_ENUM_VERSION 2
-#define HSB_EMULATOR_BOARD_ID hololink::HOLOLINK_LITE_BOARD_ID
+#define HSB_EMULATOR_VENDOR_ID_SIZE 4u
+#define HSB_EMULATOR_ENUM_VERSION 2u
+#define HSB_EMULATOR_BOARD_ID 2u
 #define HSB_EMULATOR_UUID                      \
     {                                          \
         0x16, 0xaf, 0x13, 0x9b,                \
@@ -91,8 +180,9 @@ namespace hololink::emulation {
     {                           \
         3, 1, 4, 1, 5, 9, 3     \
     }
-#define HSB_EMULATOR_HSB_IP_VERSION 0x2508
-#define HSB_EMULATOR_FPGA_CRC 0x5AA5
+#define HSB_EMULATOR_HSB_IP_VERSION 0x2602u
+#define HSB_EMULATOR_FPGA_CRC 0x5AA5u
+#define HSB_DEFAULT_TIMEOUT_MSEC 100u
 
 // names should be stable, but ordering and field sizes may change.
 struct HSBConfiguration {
@@ -115,12 +205,26 @@ struct HSBConfiguration {
                              // must be <= 64 otherwise vp_address runs into APB_RAM address space
 };
 
-extern const HSBConfiguration HSB_EMULATOR_CONFIG;
+#define SENTINEL_ADDRESS 0xFFFFFFFFu
+#define SENTINEL_VALUE 0xFFFFFFFFu
 
-extern const HSBConfiguration HSB_LEOPARD_EAGLE_CONFIG;
+struct AddressValuePair {
+    uint32_t address;
+    uint32_t value;
+};
 
-int hsb_config_set_uuid(HSBConfiguration& config, const char* uuid_str);
+// Declarations must be in hololink::emulation to match the definitions in hsb_config.cpp.
+#ifdef __cplusplus
+namespace hololink::emulation {
 
-} // namespace hololink::emulation
+extern const struct HSBConfiguration HSB_EMULATOR_CONFIG;
+
+extern const struct HSBConfiguration HSB_LEOPARD_EAGLE_CONFIG;
+
+int hsb_config_set_uuid(struct HSBConfiguration* config, const char* uuid_str);
+const char* validate_configuration(const struct HSBConfiguration* config);
+
+}
+#endif
 
 #endif // HSB_CONFIG_HPP

@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,6 +21,7 @@
 #define SRC_HOLOLINK_OPERATORS_LINUX_RECEIVER_LINUX_RECEIVER
 
 #include <atomic>
+#include <queue>
 #include <semaphore.h>
 #include <stdint.h>
 
@@ -43,6 +44,7 @@ public:
     uint32_t imm_data = 0;
     int64_t received_s = 0;
     int64_t received_ns = 0;
+    CUdeviceptr frame_memory = 0;
     // Data accumulated over the life of the application
     uint64_t packets_dropped = 0;
     // Data received directly from HSB.
@@ -56,8 +58,11 @@ class LinuxReceiver {
 public:
     LinuxReceiver(CUdeviceptr cu_buffer,
         size_t cu_buffer_size,
+        size_t cu_page_size,
+        unsigned pages,
         int socket,
-        uint64_t received_address_offset);
+        uint64_t received_address_offset,
+        unsigned queue_size);
 
     ~LinuxReceiver();
 
@@ -80,7 +85,10 @@ public:
      * @param metadata is updated with statistics
      * collected with the video frame.
      */
-    bool get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata);
+    bool get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata, CUstream cuda_stream);
+
+    /** Returns false if get_next_frame() may block. */
+    bool frames_ready();
 
     uint32_t get_qp_number() { return qp_number_; };
 
@@ -93,29 +101,26 @@ public:
     void set_frame_ready(std::function<void(const LinuxReceiver&)> frame_ready);
 
 protected:
-    // Blocks execution until signal() is called;
-    // @returns false if timeout_ms elapses before
-    // signal is observed.
-    bool wait(unsigned timeout_ms);
-
-    // Pass a message to wait() telling it to wake up.
-    void signal();
+    // Signal that a new frame is available and return the next available descriptor.
+    LinuxReceiverDescriptor* signal(LinuxReceiverDescriptor* descriptor);
 
 protected:
-    CUdeviceptr cu_buffer_;
-    size_t cu_buffer_size_;
-    int socket_;
-    uint64_t received_address_offset_;
-    bool volatile ready_;
+    const CUdeviceptr cu_buffer_;
+    const size_t cu_buffer_size_;
+    const size_t cu_page_size_;
+    const unsigned pages_;
+    const int socket_;
+    const uint64_t received_address_offset_;
+    const unsigned queue_size_;
     bool volatile exit_;
     pthread_mutex_t ready_mutex_;
     pthread_cond_t ready_condition_;
+    std::atomic<bool> consumer_ready_;
     uint32_t qp_number_;
     uint32_t rkey_;
     uint8_t* local_;
-    std::atomic<LinuxReceiverDescriptor*> available_;
-    LinuxReceiverDescriptor* busy_;
-    CUstream cu_stream_; // Used to control cuMemcpyHtoDAsync.
+    std::queue<LinuxReceiverDescriptor*> available_;
+    std::queue<LinuxReceiverDescriptor*> ready_;
     std::function<void(const LinuxReceiver&)> frame_ready_;
     /** Sign-extended frame_number value. */
     ExtendedCounter<uint32_t, uint16_t> frame_number_;

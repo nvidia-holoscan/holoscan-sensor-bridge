@@ -13,5 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Define and create a directory to store python operators under the hololink python module
+set(HOLOLINK_PYTHON_MODULE_OUT_DIR "${CMAKE_BINARY_DIR}/python/${CMAKE_INSTALL_LIBDIR}/hololink" CACHE PATH
+    "Output build directory for hololink python modules")
+
+# Convert to absolute path if relative
+if(NOT IS_ABSOLUTE "${HOLOLINK_PYTHON_MODULE_OUT_DIR}")
+    cmake_path(ABSOLUTE_PATH HOLOLINK_PYTHON_MODULE_OUT_DIR BASE_DIRECTORY "${hololink_BINARY_DIR}")
+endif()
+file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR})
+set(HOLOLINK_PYTHON_INSTALL_DIR "python" CACHE PATH "Output installation directory for hololink python modules")
+
+add_custom_target(hololink_python_all ALL
+    COMMENT "adding hololink_python_all target"
+)
+
 add_subdirectory(hololink)
 add_subdirectory(tools)

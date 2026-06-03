@@ -65,6 +65,7 @@ docker run \
     --gpus all \
     --runtime=nvidia \
     --shm-size=1gb \
+    --ulimit stack=33554432 \
     --privileged \
     --name "$NAME" \
     -v $PWD:$PWD \

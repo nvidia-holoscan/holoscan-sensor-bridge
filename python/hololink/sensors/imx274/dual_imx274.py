@@ -98,14 +98,19 @@ class Imx274Cam:
 
     def get_register(self, register):
         logging.debug("get_register(register=%d(0x%X))" % (register, register))
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
         read_byte_count = 1
-        reply = self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS, write_bytes[: serializer.length()], read_byte_count
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            reply = self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS, write_bytes[: serializer.length()], read_byte_count
+            )
+        finally:
+            i2c_lock.unlock()
         deserializer = hololink_module.Deserializer(reply)
         r = deserializer.next_uint8()
         logging.debug(
@@ -118,18 +123,23 @@ class Imx274Cam:
             "set_register(register=%d(0x%X), value=%d(0x%X))"
             % (register, register, value, value)
         )
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
         serializer.append_uint8(value)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=timeout,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=timeout,
+            )
+        finally:
+            i2c_lock.unlock()
 
     def configure_camera(self, imx274_mode_set):
         self.set_mode(imx274_mode_set)
@@ -229,15 +239,17 @@ class Imx274Cam:
         )
         received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
         # We get 175 bytes of metadata preceding the image data.
-        start_byte += converter.received_line_bytes(175)
+        embedded_data_bytes = 175
         if self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
             # sensor has 8 lines of optical black before the real image data starts
             start_byte += received_line_bytes * 8
         elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
             # sensor has 16 lines of optical black before the real image data starts
+            embedded_data_bytes += 35
             start_byte += received_line_bytes * 16
         else:
             raise Exception(f"Incorrect pixel format={self._pixel_format} for IMX274.")
+        start_byte += converter.received_line_bytes(embedded_data_bytes)
         converter.configure(
             start_byte,
             received_line_bytes,

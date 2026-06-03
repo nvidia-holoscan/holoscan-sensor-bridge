@@ -58,6 +58,36 @@ hololink::core::MacAddress parse_mac_address(const std::string& mac_str)
     return mac;
 }
 
+class MetadataPrinterOp : public holoscan::Operator {
+public:
+    HOLOSCAN_OPERATOR_FORWARD_ARGS(MetadataPrinterOp)
+
+    MetadataPrinterOp()
+    {
+    }
+
+    void setup(holoscan::OperatorSpec& spec) override
+    {
+        spec.input<holoscan::gxf::Entity>("input");
+    }
+
+    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output, holoscan::ExecutionContext& context) override
+    {
+        auto entity = op_input.receive<holoscan::gxf::Entity>("input");
+        if (entity) {
+            // Print out the HSB metadata.
+            HOLOSCAN_LOG_INFO("{}: frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}",
+                name(),
+                metadata()->get<int64_t>("frame_number"),
+                metadata()->get<int64_t>("timestamp_s"),
+                metadata()->get<int64_t>("timestamp_ns"),
+                metadata()->get<int64_t>("metadata_s"),
+                metadata()->get<int64_t>("metadata_ns"),
+                metadata()->get<int64_t>("crc"));
+        }
+    }
+};
+
 class Application : public holoscan::Application {
 public:
     Application(
@@ -67,7 +97,8 @@ public:
         std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>>& cameras,
         hololink::sensors::imx274_mode::Mode camera_mode,
         uint32_t timeout,
-        int frame_limit)
+        int frame_limit,
+        bool print_metadata)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , hololink_channels_(hololink_channels)
@@ -75,6 +106,7 @@ public:
         , camera_mode_(camera_mode)
         , timeout_(timeout)
         , frame_limit_(frame_limit)
+        , print_metadata_(print_metadata)
     {
         // Because we have stereo camera paths going into the same visualizer, don't
         // raise an error when each path presents metadata with the same names.
@@ -145,10 +177,15 @@ public:
                 condition);
             cameras_[i]->configure_converter(fusa_coe_capture);
 
+            if (print_metadata_) {
+                auto metadata_printer = make_operator<MetadataPrinterOp>(fmt::format("sensor_{}", name));
+                add_flow(fusa_coe_capture, metadata_printer, { { "output", "input" } });
+            }
+
             // Convert packed RAW to 16-bit Bayer.
             size_t size = width * height * 2; // 16-bit Bayer
             const int32_t storage_type_device_memory = 1;
-            const size_t num_blocks = 2;
+            const size_t num_blocks = 4;
             auto packed_format_converter_pool = make_resource<holoscan::BlockMemoryPool>(
                 fmt::format("packed_format_converter_pool_{}", name),
                 storage_type_device_memory, size, num_blocks);
@@ -195,6 +232,7 @@ private:
     hololink::sensors::imx274_mode::Mode camera_mode_;
     uint32_t timeout_;
     int frame_limit_;
+    bool print_metadata_;
 };
 
 int main(int argc, char** argv)
@@ -215,6 +253,7 @@ int main(int argc, char** argv)
         ("hololink", value<std::string>()->default_value("192.168.0.2"), "IP address of Hololink board")
         ("sensor", value<int>()->default_value(-1), "Sensor to use (0 or 1, or -1 (default) for stereo mode)")
         ("timeout", value<int>()->default_value(1500), "Capture request timeout, in milliseconds")
+        ("metadata", bool_switch()->default_value(false), "Print frame metadata")
         ;
     // clang-format on
 
@@ -228,19 +267,23 @@ int main(int argc, char** argv)
 
         std::vector<hololink::Metadata> channel_metadatas;
         std::vector<hololink::DataChannel> hololink_channels;
+        std::vector<int> sensor_ids;
         if (sensor == -1) {
             // Create separate channels for each sensor.
             channel_metadatas.push_back(hololink::Metadata(channel_metadata));
             hololink::DataChannel::use_sensor(channel_metadatas[0], 0);
             hololink_channels.push_back(hololink::DataChannel(channel_metadatas[0]));
+            sensor_ids.push_back(0);
 
             channel_metadatas.push_back(hololink::Metadata(channel_metadata));
             hololink::DataChannel::use_sensor(channel_metadatas[1], 1);
             hololink_channels.push_back(hololink::DataChannel(channel_metadatas[1]));
+            sensor_ids.push_back(1);
         } else if (sensor == 0 || sensor == 1) {
             channel_metadatas.push_back(hololink::Metadata(channel_metadata));
             hololink::DataChannel::use_sensor(channel_metadatas[0], sensor);
             hololink_channels.push_back(hololink::DataChannel(channel_metadatas[0]));
+            sensor_ids.push_back(sensor);
         } else {
             HOLOSCAN_LOG_ERROR("sensor value must be 0 or 1 (given {})", sensor);
             return -1;
@@ -257,7 +300,11 @@ int main(int argc, char** argv)
         // Get handles to and configure the camera(s).
         std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>> cameras;
         for (uint32_t i = 0; i < hololink_channels.size(); i++) {
-            auto camera = std::make_shared<hololink::sensors::NativeImx274Sensor>(hololink_channels[i], i);
+            // The second arg selects the I2C expander output (OUTPUT_1 for sensor 0,
+            // OUTPUT_2 for sensor 1) and must match the data channel's sensor id,
+            // not the loop index — otherwise --sensor 1 drives sensor 0's I2C path.
+            auto camera = std::make_shared<hololink::sensors::NativeImx274Sensor>(
+                hololink_channels[i], sensor_ids[i]);
             if (i == 0) {
                 camera->setup_clock();
             }
@@ -274,7 +321,8 @@ int main(int argc, char** argv)
             cameras,
             camera_mode,
             variables_map["timeout"].as<int>(),
-            variables_map["frame-limit"].as<int>());
+            variables_map["frame-limit"].as<int>(),
+            variables_map["metadata"].as<bool>());
         app->run();
 
         hololink->stop();

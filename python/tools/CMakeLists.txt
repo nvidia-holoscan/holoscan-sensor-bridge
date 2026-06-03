@@ -13,9 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Install the tools
-install(FILES hololink.py
-        imx274.py
-        polarfire_esb.py
-        DESTINATION tools
-        COMPONENT hololink-python_tools)
+set(HOLOLINK_TOOLS_FILES
+    hololink.py
+    imx274.py
+    polarfire_esb.py
+)
+
+copy_hololink_python_files(
+    TARGET_NAME hololink_tools_python
+    DESTINATION tools
+    FILES ${HOLOLINK_TOOLS_FILES}
+)

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -70,11 +70,30 @@ void BaseReceiverOp::setup(holoscan::OperatorSpec& spec)
         device_stop_, "device_stop", "DeviceStop", "Function to be called to stop the device");
     spec.param(frame_context_, "frame_context", "FrameContext", "CUDA context");
     spec.param(frame_size_, "frame_size", "FrameSize", "Size of one frame in bytes");
-    spec.param(trim_, "trim", "Trim", "Set output length to bytes_written (else frame_size)", false);
+    spec.param(trim_, "trim", "Trim", "Set output length to bytes_written (else frame_size)", true);
+    spec.param(use_frame_ready_condition_, "use_frame_ready_condition", "UseFrameReadyCondition",
+        "Use an AsynchronousCondition to a waiting state until a new frame is ready. If this is enabled "
+        "then the compute method will not block and the scheduler can schedule other operators at the cost "
+        "of a slight increase in latency. If this is disabled then the compute method will block until a "
+        "new frame is ready, reducing latency.",
+        true);
 
-    auto frag = fragment();
-    frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
-    add_arg(frame_ready_condition_);
+    // The condition needs to be added before the start method is called, but the parameter values
+    // are not yet set to the arguments. So we need to check the arguments for the value.
+    bool use_frame_ready_condition = use_frame_ready_condition_.default_value();
+    for (auto& arg : args()) {
+        if (arg.name() == "use_frame_ready_condition") {
+            use_frame_ready_condition = std::any_cast<bool>(arg.value());
+        }
+    }
+
+    if (use_frame_ready_condition) {
+        auto frag = fragment();
+        frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
+        add_arg(frame_ready_condition_);
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::WAIT);
+    }
+
     frame_count_ = 0;
 }
 
@@ -87,21 +106,37 @@ void BaseReceiverOp::start()
     }
 
     hololink_channel_->configure_socket(data_socket_.get());
+    running_ = true;
     start_receiver();
     device_start_.get()();
+    if (frame_ready_condition_ && frames_ready()) {
+        // Don't wait if we have data ready.
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+    }
 }
 
 void BaseReceiverOp::stop()
 {
+    running_ = false;
     device_stop_.get()();
     stop_receiver();
+    if (frame_ready_condition_) {
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_NEVER);
+    }
 }
 
 void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputContext& output,
     holoscan::ExecutionContext& context)
 {
+    // get the CUDA stream for this operator
+    auto maybe_cuda_stream = context.allocate_cuda_stream();
+    if (!maybe_cuda_stream) {
+        throw std::runtime_error("Failed to allocate CUDA stream");
+    }
+    const auto cuda_stream = maybe_cuda_stream.value();
+
     const double timeout_ms = 1000.f;
-    auto [frame_memory, frame_metadata] = get_next_frame(timeout_ms);
+    auto [frame_memory, frame_metadata] = get_next_frame(timeout_ms, cuda_stream);
     if (!frame_metadata) {
         timeout(input, output, context);
         // In this case, we have no frame data to write to the application,
@@ -112,8 +147,16 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
 
     ok_ = true;
     frame_count_ += 1;
-    // Clear our asynchronous event
-    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
+    if (frame_ready_condition_) {
+        // Clear our asynchronous event
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
+        // Undo EVENT_WAITING if there is data available.  This is written
+        // this way to avoid a race condition-- we always test frames_ready()
+        // after setting EVENT_WAITING.
+        if (frames_ready()) {
+            frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+        }
+    }
 
     // Create an Entity and use GXF tensor to wrap the CUDA memory.
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
@@ -190,6 +233,9 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
         }
         throw std::runtime_error(fmt::format("Unable to copy metadata \"{}\".", x.first));
     }
+
+    // Emit the stream to the output
+    output.set_cuda_stream(cuda_stream, "output");
     // Emit the tensor.
     output.emit(out_message.value(), "output");
 }
@@ -205,7 +251,9 @@ void BaseReceiverOp::timeout(holoscan::InputContext& input, holoscan::OutputCont
 
 void BaseReceiverOp::frame_ready()
 {
-    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+    if (frame_ready_condition_ && running_.load()) {
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+    }
 }
 
 std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
@@ -222,71 +270,6 @@ std::tuple<std::string, uint32_t> BaseReceiverOp::local_ip_and_port()
     const in_port_t local_port = ntohs(ip.sin_port);
 
     return { local_ip, local_port };
-}
-
-ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size)
-{
-    CudaCheck(cuInit(0));
-    CudaCheck(cuCtxSetCurrent(cu_context));
-    CUdevice device;
-    CudaCheck(cuCtxGetDevice(&device));
-    int integrated = 0;
-
-    // Add enough space to guarantee that the pointer we return
-    // can be page aligned.
-    size_t page_size = getpagesize();
-    size_t page_mask = page_size - 1;
-    // Make sure size isn't gonna overflow
-    if (size > std::numeric_limits<size_t>::max() - page_size) {
-        throw std::overflow_error(fmt::format("Requested buffer size={:#x} is too large for page-aligned allocation", size));
-    }
-    size_t allocation_size = size + page_size;
-
-    CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
-
-    HSB_LOG_TRACE("integrated={}", integrated);
-    if (integrated == 0) {
-        // We're a discrete GPU device; so allocate using cuMemAlloc/cuMemFree
-        deviceptr_.reset([allocation_size] {
-            CUdeviceptr device_deviceptr;
-            CudaCheck(cuMemAlloc(&device_deviceptr, allocation_size));
-            return device_deviceptr;
-        }());
-        CUdeviceptr mem = deviceptr_.get();
-        // Round up size to page boundary;
-        // Note deviceptr_ is what we'll free; don't try to free mem_.
-        size_t rem = mem & page_mask;
-        if (rem) {
-            mem += (page_size - rem);
-        }
-        mem_ = mem;
-    } else {
-        // We're an integrated device (e.g. Tegra) so we must allocate
-        // using cuMemHostAlloc/cuMemFreeHost
-        host_deviceptr_.reset([allocation_size] {
-            void* host_deviceptr;
-            unsigned int flags = CU_MEMHOSTALLOC_DEVICEMAP;
-            CudaCheck(cuMemHostAlloc(&host_deviceptr, allocation_size, flags));
-            return host_deviceptr;
-        }());
-
-        CUdeviceptr device_deviceptr;
-        CudaCheck(cuMemHostGetDevicePointer(&device_deviceptr, host_deviceptr_.get(), 0));
-        CUdeviceptr mem = device_deviceptr;
-        // Round up size to page boundary;
-        // Note: host_deviceptr_ is what we'll free; don't try to free mem_.
-        size_t rem = mem & page_mask;
-        if (rem) {
-            mem += (page_size - rem);
-        }
-        mem_ = mem;
-    }
-}
-
-ReceiverMemoryDescriptor::~ReceiverMemoryDescriptor()
-{
-    host_deviceptr_.release();
-    deviceptr_.release();
 }
 
 } // namespace hololink::operators

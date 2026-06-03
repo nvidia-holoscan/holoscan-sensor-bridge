@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+
+#include "../operator_util.hpp"
 
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
@@ -61,6 +63,7 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyArgusIspOp(holoscan::Fragment* fragment,
+        const py::args& args,
         int bayer_format,
         float exposure_time_ms,
         float analog_gain,
@@ -68,15 +71,18 @@ public:
         std::shared_ptr<holoscan::Allocator> pool,
         const std::string& name = "argus_isp",
         const std::string& out_tensor_name = "output",
-        uint32_t camera_index = 0)
+        uint32_t camera_index = 0,
+        uint32_t sensor_mode_index = 0)
         : ArgusIspOp(holoscan::ArgList { holoscan::Arg { "bayer_format", bayer_format },
             holoscan::Arg { "exposure_time_ms", exposure_time_ms },
             holoscan::Arg { "analog_gain", analog_gain },
             holoscan::Arg { "pixel_bit_depth", pixel_bit_depth },
             holoscan::Arg { "pool", pool },
             holoscan::Arg { "out_tensor_name", out_tensor_name },
-            holoscan::Arg { "camera_index", camera_index } })
+            holoscan::Arg { "camera_index", camera_index },
+            holoscan::Arg { "sensor_mode_index", sensor_mode_index } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -95,6 +101,7 @@ PYBIND11_MODULE(_argus_isp, m)
     auto op = py::class_<ArgusIspOp, PyArgusIspOp, holoscan::Operator, std::shared_ptr<ArgusIspOp>>(m,
         "ArgusIspOp")
                   .def(py::init<holoscan::Fragment*,
+                           const py::args&,
                            int,
                            float,
                            float,
@@ -102,6 +109,7 @@ PYBIND11_MODULE(_argus_isp, m)
                            std::shared_ptr<holoscan::Allocator>,
                            const std::string&,
                            const std::string&,
+                           uint32_t,
                            uint32_t>(),
                       "fragment"_a,
                       "bayer_format"_a,
@@ -111,7 +119,8 @@ PYBIND11_MODULE(_argus_isp, m)
                       "pool"_a,
                       "name"_a = "argus_isp"s,
                       "out_tensor_name"_a = "output"s,
-                      "camera_index"_a = 0)
+                      "camera_index"_a = 0,
+                      "sensor_mode_index"_a = 0)
                   .def("setup", &ArgusIspOp::setup, "spec"_a);
 
     py::enum_<ArgusIspOp::BayerFormat>(op, "BayerFormat")
@@ -123,4 +132,4 @@ PYBIND11_MODULE(_argus_isp, m)
 
 } // PYBIND11_MODULE
 
-} // namespace holoscan::operators
+} // namespace hololink::operators

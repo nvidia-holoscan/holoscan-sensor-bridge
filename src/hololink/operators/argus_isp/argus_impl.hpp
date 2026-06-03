@@ -81,7 +81,7 @@ public:
     void set_reprocess_info(int bayerFormat, int pixelBitDepth);
     void setup_output_streams(const uint8_t sensorModeIndex);
     void setup_input_streams();
-    void setup_capture_request(float analog_gain, float exposureTimeMs);
+    void setup_capture_request(float analog_gain, float exposureTimeMs, uint32_t sensorModeIndex = 0);
     void stop();
 };
 } // namespace hololink::operators

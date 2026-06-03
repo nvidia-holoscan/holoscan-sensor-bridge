@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,9 +17,7 @@
 
 import argparse
 import collections
-import ctypes
 import logging
-import multiprocessing
 import os
 import queue
 import select
@@ -41,9 +39,10 @@ import hololink as hololink_module
 # should be allocated?  We'll fault if we try to create an
 # image that won't fit.  A 4k image is like 32M.
 image_size_limit = 64 * 1024 * 1024
-image_memory = multiprocessing.Array(ctypes.c_uint8, image_size_limit)
+image_memory = bytearray(image_size_limit)
 # total-size, height, width, bpp
-image_memory_metadata = multiprocessing.Array(ctypes.c_uint32, [0, 0, 0, 0])
+image_memory_metadata = [0, 0, 0, 0]
+image_memory_lock = threading.Lock()
 
 DataPlaneConfiguration = collections.namedtuple(
     "DataPlaneConfiguration", ["hif_address"]
@@ -74,6 +73,8 @@ NS_PER_SEC = 1000 * US_PER_SEC
 
 icrc_initializer = zlib.crc32(bytes([0xFF] * 8))
 
+SEQUENCER_SHUTDOWN = "sequencer shutdown"
+
 
 def generate_image(bayer_height, bayer_width, bayer_format, pixel_format):
     image, bayer_image = utils.make_image(
@@ -82,12 +83,11 @@ def generate_image(bayer_height, bayer_width, bayer_format, pixel_format):
     logging.debug("bayer_image=%s bytes" % (bayer_image.nbytes,))
     # Publish our image so that test code can check that
     # we decoded to the same thing.
-    global image_memory, image_memory_metadata
-    with image_memory.get_lock():
-        s = image.ravel()
-        length = len(s)
-        u = np.frombuffer(image_memory.get_obj(), dtype=np.uint8, count=length)
-        np.copyto(u, s)
+    global image_memory, image_memory_metadata, image_memory_lock
+    s = image.ravel()
+    length = len(s)
+    with image_memory_lock:
+        image_memory[:length] = s.tobytes()
         image_memory_metadata[0] = length
         image_memory_metadata[1] = image.shape[0]
         image_memory_metadata[2] = image.shape[1]
@@ -333,7 +333,7 @@ class MockServer:
         self._camera_watchdog_trigger = 0
         self._frame_time_s = 1.0
         self._camera_version = 12344312
-        self._hsb_ip_version = 0x2504
+        self._hsb_ip_version = 0x2602
         self._fpga_date = 20250528
         self._serial_number = 0xAA55
         self._memory = {
@@ -348,12 +348,11 @@ class MockServer:
         self._vp_address = sensor_map[self._sensor].vp_address
         self._memory[self._vp_address + hololink_module.DP_QP] = 0
         self._memory[self._vp_address + hololink_module.DP_RKEY] = 0
-        self._memory[self._vp_address + hololink_module.DP_ADDRESS_0] = 0
-        self._memory[self._vp_address + hololink_module.DP_ADDRESS_1] = 0
-        self._memory[self._vp_address + hololink_module.DP_ADDRESS_2] = 0
-        self._memory[self._vp_address + hololink_module.DP_ADDRESS_3] = 0
+        self._memory[self._vp_address + hololink_module.DP_MAX_BUFF] = 0
+        self._memory[self._vp_address + hololink_module.DP_PAGE_LSB] = 0
+        self._memory[self._vp_address + hololink_module.DP_PAGE_MSB] = 0
+        self._memory[self._vp_address + hololink_module.DP_PAGE_INC] = 0
         self._memory[self._vp_address + hololink_module.DP_BUFFER_LENGTH] = 0
-        self._memory[self._vp_address + hololink_module.DP_BUFFER_MASK] = 0
         self._memory[self._vp_address + hololink_module.DP_HOST_MAC_LOW] = 0
         self._memory[self._vp_address + hololink_module.DP_HOST_MAC_HIGH] = 0
         self._memory[self._vp_address + hololink_module.DP_HOST_IP] = 0
@@ -374,7 +373,6 @@ class MockServer:
         self._sequencer = threading.Thread(target=self.run_sequencer, daemon=True)
 
     def udp_server(self, lock):
-        #
         logging.debug("Starting.")
         self._sequencer.start()
         control_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -383,244 +381,279 @@ class MockServer:
         data_socket = socket.socket(socket.AF_INET, socket.SOCK_RAW, socket.IPPROTO_RAW)
         data_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         data_socket.bind(("", self._data_udp_port))
-        message = bytearray(hololink_module.UDP_PACKET_SIZE)
-        reply = bytearray(1500)
-        frame_number = 0
-        next_page = 0
-        latched_sequence = 0
+        try:
+            message = bytearray(hololink_module.UDP_PACKET_SIZE)
+            reply = bytearray(1500)
+            frame_number = 0
+            latched_sequence = 0
+            page = 0
 
-        now = time.monotonic()
-        # frames come in at this rate.
-        frame_trigger = now + self._frame_time_s
-        logging.info("Ready.")
-        lock.release()
-        while not self._done:
-            trigger = frame_trigger
-            if (self._i2c_trigger is not None) and (self._i2c_trigger < trigger):
-                trigger = self._i2c_trigger
             now = time.monotonic()
-            timeout = None
-            if trigger > now:
-                timeout = trigger - now
-            cr = [control_socket, self._control_r]
-            cw = []
-            cx = []
-            r, w, x = select.select(cr, cw, cx, timeout)
-
-            with nvtx.annotate("update"):
+            # frames come in at this rate.
+            frame_trigger = now + self._frame_time_s
+            logging.info("Ready.")
+            lock.release()
+            while not self._done:
+                trigger = frame_trigger
+                if (self._i2c_trigger is not None) and (self._i2c_trigger < trigger):
+                    trigger = self._i2c_trigger
                 now = time.monotonic()
+                timeout = None
+                if trigger > now:
+                    timeout = trigger - now
+                cr = [control_socket, self._control_r]
+                cw = []
+                cx = []
+                r, w, x = select.select(cr, cw, cx, timeout)
 
-                if self._control_r in r:
-                    message = os.read(self._control_r, len(message))
-                    logging.trace("got control message=%s" % (message,))
-                    if message == b"exit":
-                        break
+                with nvtx.annotate("update"):
+                    now = time.monotonic()
 
-                if control_socket in r:
-                    with nvtx.annotate("udp-request"):
-                        length, peer = control_socket.recvfrom_into(message)
-                        logging.trace('Received "%s".' % (message[:length],))
-                        deserializer = hololink_module.Deserializer(message)
-                        cmd_code = deserializer.next_uint8()
-                        flags = deserializer.next_uint8()
-                        send_reply = flags & hololink_module.REQUEST_FLAGS_ACK_REQUEST
-                        sequence = deserializer.next_uint16_be()
-                        deserializer.next_uint8()  # reserved
-                        deserializer.next_uint8()  # reserved
-                        #
-                        serializer = hololink_module.Serializer(reply)
-                        reply_cmd_code = 0x80 | cmd_code
-                        serializer.append_uint8(reply_cmd_code)
-                        serializer.append_uint8(flags)
-                        serializer.append_uint16_be(sequence)
-                        if cmd_code == hololink_module.WR_DWORD:
-                            address = deserializer.next_uint32_be()
-                            value = deserializer.next_uint32_be()
-                            status = self.memory_write(address, value)
-                            serializer.append_uint8(status)
-                            serializer.append_uint8(0)  # reserved; aligns the next data
-                            serializer.append_uint32_be(address)
-                            serializer.append_uint32_be(value)
-                            serializer.append_uint32_be(latched_sequence)
-                        elif cmd_code == hololink_module.WR_BLOCK:
-                            here = deserializer.position()
-                            status = hololink_module.RESPONSE_SUCCESS
-                            count = 0
-                            while (deserializer.position() < length) and (
-                                status == hololink_module.RESPONSE_SUCCESS
-                            ):
+                    if self._control_r in r:
+                        message = os.read(self._control_r, len(message))
+                        logging.trace("got control message=%s" % (message,))
+                        if message == b"exit":
+                            break
+
+                    if control_socket in r:
+                        with nvtx.annotate("udp-request"):
+                            length, peer = control_socket.recvfrom_into(message)
+                            logging.trace('Received "%s".' % (message[:length],))
+                            deserializer = hololink_module.Deserializer(message)
+                            cmd_code = deserializer.next_uint8()
+                            flags = deserializer.next_uint8()
+                            send_reply = (
+                                flags & hololink_module.REQUEST_FLAGS_ACK_REQUEST
+                            )
+                            sequence = deserializer.next_uint16_be()
+                            deserializer.next_uint8()  # reserved
+                            deserializer.next_uint8()  # reserved
+                            #
+                            serializer = hololink_module.Serializer(reply)
+                            reply_cmd_code = 0x80 | cmd_code
+                            serializer.append_uint8(reply_cmd_code)
+                            serializer.append_uint8(flags)
+                            serializer.append_uint16_be(sequence)
+                            if cmd_code == hololink_module.WR_DWORD:
                                 address = deserializer.next_uint32_be()
                                 value = deserializer.next_uint32_be()
                                 status = self.memory_write(address, value)
-                                count += 1
-                            serializer.append_uint8(status)
-                            serializer.append_uint8(0)  # reserved; aligns the next data
-                            deserializer.reset(here)
-                            for _ in range(count):
-                                address = deserializer.next_uint32_be()
-                                value = deserializer.next_uint32_be()
+                                serializer.append_uint8(status)
+                                serializer.append_uint8(
+                                    0
+                                )  # reserved; aligns the next data
                                 serializer.append_uint32_be(address)
-                                serializer.append_uint32_be(0)
-                            serializer.append_uint32_be(latched_sequence)
-                        elif cmd_code == hololink_module.RD_DWORD:
-                            address = deserializer.next_uint32_be()
-                            value = self.memory_read(address)
-                            status = hololink_module.RESPONSE_SUCCESS
-                            serializer.append_uint8(status)
-                            serializer.append_uint8(0)  # reserved; aligns the next data
-                            serializer.append_uint32_be(address)
-                            serializer.append_uint32_be(value)
-                            serializer.append_uint32_be(latched_sequence)
-                            send_reply = True
-                        else:
-                            serializer.append_uint8(
-                                hololink_module.RESPONSE_INVALID_CMD
-                            )
-                            send_reply = True
-                        if send_reply:
-                            control_socket.sendto(reply[: serializer.length()], peer)
-
-                if (self._i2c_trigger is not None) and (now >= self._i2c_trigger):
-                    with nvtx.annotate("i2c"):
-                        self._i2c_trigger = None
-                        self._i2c.done()
-                        # NOTE I2C busy -> 0 event here.
-
-                if now >= frame_trigger:
-                    with nvtx.annotate("frame-trigger"):
-                        frame_trigger += self._frame_time_s
-                        if self._run:
-                            if now >= self._camera_watchdog_trigger:
-                                self._run = False
-                                logging.error("Watchdog timeout; stopping frames.")
-                        if self._run:
-                            timestamp = time.time_ns()
-                            # Advance "page", which tells us the host address we're going to write to
-                            page_mask = self.memory_read(
-                                self._vp_address + hololink_module.DP_BUFFER_MASK
-                            )
-                            for i in range(32):
-                                page = next_page
-                                next_page = (next_page + 1) % 32
-                                if (page_mask & (1 << page)) == 1:
-                                    break
+                                serializer.append_uint32_be(value)
+                                serializer.append_uint32_be(latched_sequence)
+                            elif cmd_code == hololink_module.WR_BLOCK:
+                                here = deserializer.position()
+                                status = hololink_module.RESPONSE_SUCCESS
+                                count = 0
+                                while (deserializer.position() < length) and (
+                                    status == hololink_module.RESPONSE_SUCCESS
+                                ):
+                                    address = deserializer.next_uint32_be()
+                                    value = deserializer.next_uint32_be()
+                                    status = self.memory_write(address, value)
+                                    count += 1
+                                serializer.append_uint8(status)
+                                serializer.append_uint8(
+                                    0
+                                )  # reserved; aligns the next data
+                                deserializer.reset(here)
+                                for _ in range(count):
+                                    address = deserializer.next_uint32_be()
+                                    value = deserializer.next_uint32_be()
+                                    serializer.append_uint32_be(address)
+                                    serializer.append_uint32_be(0)
+                                serializer.append_uint32_be(latched_sequence)
+                            elif cmd_code == hololink_module.RD_DWORD:
+                                address = deserializer.next_uint32_be()
+                                value = self.memory_read(address)
+                                status = hololink_module.RESPONSE_SUCCESS
+                                serializer.append_uint8(status)
+                                serializer.append_uint8(
+                                    0
+                                )  # reserved; aligns the next data
+                                serializer.append_uint32_be(address)
+                                serializer.append_uint32_be(value)
+                                serializer.append_uint32_be(latched_sequence)
+                                send_reply = True
                             else:
-                                logging.error("Page mask is 0; skipping this frame.")
-                                continue
-                            frame_number += 1
-                            logging.debug("frame_number=%s" % (frame_number,))
-                            #
-                            ip_address = self.memory_read(
-                                self._vp_address + hololink_module.DP_HOST_IP
-                            )
-                            destination_ip = [
-                                (ip_address >> 24) & 0xFF,
-                                (ip_address >> 16) & 0xFF,
-                                (ip_address >> 8) & 0xFF,
-                                (ip_address >> 0) & 0xFF,
-                            ]
-                            ip = "%d.%d.%d.%d" % (
-                                destination_ip[0],
-                                destination_ip[1],
-                                destination_ip[2],
-                                destination_ip[3],
-                            )
-                            target_udp_port = self.memory_read(
-                                self._vp_address + hololink_module.DP_HOST_UDP_PORT
-                            )
-                            payload_size = (
-                                self.memory_read(
-                                    self._hif_address + hololink_module.DP_PACKET_SIZE
+                                serializer.append_uint8(
+                                    hololink_module.RESPONSE_INVALID_CMD
                                 )
-                                * PAGE_SIZE
-                            )
-                            assert payload_size > 0
-                            address_map = {
-                                0: hololink_module.DP_ADDRESS_0,
-                                1: hololink_module.DP_ADDRESS_1,
-                                2: hololink_module.DP_ADDRESS_2,
-                                3: hololink_module.DP_ADDRESS_3,
-                            }
-                            address = self.memory_read(
-                                self._vp_address + address_map[page]
-                            )
-                            address <<= 7
-                            qp = self.memory_read(
-                                self._vp_address + hololink_module.DP_QP
-                            )
-                            rkey = self.memory_read(
-                                self._vp_address + hololink_module.DP_RKEY
-                            )
-                            source_ip, source_interface, source_mac = (
-                                hololink_module.local_ip_and_mac(ip, target_udp_port)
-                            )
-                            source_ip = socket.inet_aton(source_ip)
-                            source_port = self._data_udp_port
-                            formatter = InfinibandFormatter(
-                                source_ip,
-                                source_port,
-                                bytes(destination_ip),
-                                target_udp_port,
-                                qp,
-                                rkey,
-                            )
-                            with nvtx.annotate("write-frame"):
-                                # the last packet is a bit different; don't include that here
-                                s, e = 0, payload_size
-                                csi_image_length = len(self._csi_image_data)
-                                logging.debug(
-                                    f"{self._vp_address=:#X} {csi_image_length=} {payload_size=} {ip=} {target_udp_port=}"
+                                send_reply = True
+                            if send_reply:
+                                control_socket.sendto(
+                                    reply[: serializer.length()], peer
                                 )
-                                while s < csi_image_length:
-                                    packet = formatter.format_write(
-                                        self._psn,
-                                        address + s,
-                                        bytes(self._csi_image_data[s:e]),
+
+                    if (self._i2c_trigger is not None) and (now >= self._i2c_trigger):
+                        with nvtx.annotate("i2c"):
+                            self._i2c_trigger = None
+                            self._i2c.done()
+                            # NOTE I2C busy -> 0 event here.
+
+                    if now >= frame_trigger:
+                        with nvtx.annotate("frame-trigger"):
+                            frame_trigger += self._frame_time_s
+                            if self._run:
+                                if now >= self._camera_watchdog_trigger:
+                                    self._run = False
+                                    logging.error("Watchdog timeout; stopping frames.")
+                            if self._run:
+                                timestamp = time.time_ns()
+                                # Advance "page", which tells us the host address we're going to write to
+                                dp_max_buff = self.memory_read(
+                                    self._vp_address + hololink_module.DP_MAX_BUFF
+                                )
+                                start_page = (dp_max_buff >> 16) & 0xFFF
+                                end_page = (dp_max_buff >> 0) & 0xFFF
+                                if page < start_page:
+                                    page = start_page
+                                else:
+                                    page += 1
+                                if page > end_page:
+                                    page = start_page
+                                frame_number += 1
+                                logging.debug("frame_number=%s" % (frame_number,))
+                                #
+                                ip_address = self.memory_read(
+                                    self._vp_address + hololink_module.DP_HOST_IP
+                                )
+                                destination_ip = [
+                                    (ip_address >> 24) & 0xFF,
+                                    (ip_address >> 16) & 0xFF,
+                                    (ip_address >> 8) & 0xFF,
+                                    (ip_address >> 0) & 0xFF,
+                                ]
+                                ip = "%d.%d.%d.%d" % (
+                                    destination_ip[0],
+                                    destination_ip[1],
+                                    destination_ip[2],
+                                    destination_ip[3],
+                                )
+                                target_udp_port = self.memory_read(
+                                    self._vp_address + hololink_module.DP_HOST_UDP_PORT
+                                )
+                                payload_size = (
+                                    self.memory_read(
+                                        self._hif_address
+                                        + hololink_module.DP_PACKET_SIZE
                                     )
-                                    data_socket.sendto(packet, (ip, target_udp_port))
-                                    s, e = e, e + payload_size
+                                    * PAGE_SIZE
+                                )
+                                assert payload_size > 0
+                                address_lsb = self.memory_read(
+                                    self._vp_address + hololink_module.DP_PAGE_LSB
+                                )
+                                address_msb = self.memory_read(
+                                    self._vp_address + hololink_module.DP_PAGE_MSB
+                                )
+                                page_inc = self.memory_read(
+                                    self._vp_address + hololink_module.DP_PAGE_INC
+                                )
+                                address = (address_msb << 32) | address_lsb
+                                address += page_inc * PAGE_SIZE * page
+                                qp = self.memory_read(
+                                    self._vp_address + hololink_module.DP_QP
+                                )
+                                rkey = self.memory_read(
+                                    self._vp_address + hololink_module.DP_RKEY
+                                )
+                                source_ip, source_interface, source_mac = (
+                                    hololink_module.local_ip_and_mac(
+                                        ip, target_udp_port
+                                    )
+                                )
+                                source_ip = socket.inet_aton(source_ip)
+                                source_port = self._data_udp_port
+                                formatter = InfinibandFormatter(
+                                    source_ip,
+                                    source_port,
+                                    bytes(destination_ip),
+                                    target_udp_port,
+                                    qp,
+                                    rkey,
+                                )
+                                with nvtx.annotate("write-frame"):
+                                    # the last packet is a bit different; don't include that here
+                                    s, e = 0, payload_size
+                                    csi_image_length = len(self._csi_image_data)
+                                    logging.debug(
+                                        f"{self._vp_address=:#X} {csi_image_length=} {payload_size=} {ip=} {target_udp_port=}"
+                                    )
+                                    while s < csi_image_length:
+                                        packet = formatter.format_write(
+                                            self._psn,
+                                            address + s,
+                                            bytes(self._csi_image_data[s:e]),
+                                        )
+                                        data_socket.sendto(
+                                            packet, (ip, target_udp_port)
+                                        )
+                                        s, e = e, e + payload_size
+                                        self._psn += 1
+                                    assert (page & ~0xFFF) == 0
+                                    immediate_value = (page & 0xFFF) | (
+                                        (self._psn & 0xFFFFF) << 12
+                                    )
+                                    overall_crc = 0  # We'll add this when we watermark checking demos
+                                    timestamp_s, timestamp_ns = ns_to_sns(timestamp)
+                                    bytes_written = csi_image_length
+                                    metadata_timestamp = time.time_ns()
+                                    metadata_s, metadata_ns = ns_to_sns(
+                                        metadata_timestamp
+                                    )
+                                    metadata = struct.pack(
+                                        "!IIIQIQHHQI",
+                                        0,  # flags
+                                        self._psn,
+                                        overall_crc,
+                                        timestamp_s,
+                                        timestamp_ns,
+                                        bytes_written,
+                                        0,
+                                        frame_number & 0xFFFF,
+                                        metadata_s,
+                                        metadata_ns,
+                                    )
+                                    # Zero-extend metadata to METADATA_SIZE
+                                    metadata_size = len(metadata)
+                                    if metadata_size < hololink_module.METADATA_SIZE:
+                                        metadata += bytes(
+                                            hololink_module.METADATA_SIZE
+                                            - metadata_size
+                                        )
+                                    assert (
+                                        len(metadata) == hololink_module.METADATA_SIZE
+                                    )
+                                    frame_size = self.memory_read(
+                                        self._vp_address
+                                        + hololink_module.DP_BUFFER_LENGTH
+                                    )
+                                    metadata_offset = hololink_module.round_up(
+                                        frame_size, PAGE_SIZE
+                                    )
+                                    metadata_address = address + metadata_offset
+                                    metadata_packet = formatter.format_write_immediate(
+                                        self._psn,
+                                        metadata_address,
+                                        metadata,
+                                        immediate_value,
+                                    )
+                                    data_socket.sendto(
+                                        metadata_packet, (ip, target_udp_port)
+                                    )
                                     self._psn += 1
-                                assert (page & ~0xFF) == 0
-                                immediate_value = (page & 0xFF) | (
-                                    (self._psn & 0xFFFFFF) << 8
-                                )
-                                overall_crc = (
-                                    0  # We'll add this when we watermark checking demos
-                                )
-                                timestamp_s, timestamp_ns = ns_to_sns(timestamp)
-                                bytes_written = csi_image_length
-                                metadata_timestamp = time.time_ns()
-                                metadata_s, metadata_ns = ns_to_sns(metadata_timestamp)
-                                metadata = struct.pack(
-                                    "!IIIQIQHHQI",
-                                    0,  # flags
-                                    self._psn,
-                                    overall_crc,
-                                    timestamp_s,
-                                    timestamp_ns,
-                                    bytes_written,
-                                    0,
-                                    frame_number & 0xFFFF,
-                                    metadata_s,
-                                    metadata_ns,
-                                )
-                                frame_size = self.memory_read(
-                                    self._vp_address + hololink_module.DP_BUFFER_LENGTH
-                                )
-                                metadata_offset = hololink_module.round_up(
-                                    frame_size, PAGE_SIZE
-                                )
-                                metadata_address = address + metadata_offset
-                                metadata_packet = formatter.format_write_immediate(
-                                    self._psn,
-                                    metadata_address,
-                                    metadata,
-                                    immediate_value,
-                                )
-                                data_socket.sendto(
-                                    metadata_packet, (ip, target_udp_port)
-                                )
-                                self._psn += 1
+            # Even though this thread is daemon, don't leave it
+            # dangling.
+            self._sequencer_queue.put(SEQUENCER_SHUTDOWN)
+            self._sequencer.join()
+        finally:
+            control_socket.close()
+            data_socket.close()
 
     def memory_write(self, address, value):
         logging.debug("Writing 0x%X to 0x%X." % (value, address))
@@ -693,6 +726,8 @@ class MockServer:
         while True:
             event = self._sequencer_queue.get()
             logging.debug(f"{event=}")
+            if event is SEQUENCER_SHUTDOWN:
+                break
             # Run it.
             vector = hololink_module.APB_RAM + int(event) * 4
             instruction_pointer = self.memory_read(vector)
@@ -757,20 +792,20 @@ class TestServer:
     def __init__(self, mock_camera=None):
         """If mock_camera is None, then we'll start one and use that."""
         self._mock_camera = mock_camera
-        self._process = None
-        self._lock = multiprocessing.Lock()
+        self._thread = None
+        self._lock = threading.Lock()
         self._server = MockServer()
 
     def __enter__(self):
         logging.debug("__enter__")
         if self._mock_camera is None:
             self._lock.acquire()
-            self._process = multiprocessing.Process(
+            self._thread = threading.Thread(
                 target=self._run,
                 name="udp-server",
             )
-            self._process.start()
             self._server_address = "127.0.0.1"
+            self._thread.start()
             self._lock.acquire()
         else:
             self._server_address = self._mock_camera
@@ -779,9 +814,9 @@ class TestServer:
 
     def __exit__(self, *args, **kwargs):
         logging.debug("__exit__")
-        if self._process is not None:
+        if self._thread is not None:
             self._server.close()
-            self._process.join()
+            self._thread.join()
 
     def _run(self):
         try:
@@ -800,14 +835,14 @@ class TestServer:
 
     def get_image(self):
         logging.debug("Fetching image.")
-        global image_memory, image_memory_metadata
-        with image_memory.get_lock():
+        global image_memory, image_memory_metadata, image_memory_lock
+        with image_memory_lock:
             length, height, width, bpp = image_memory_metadata[0:4]
             logging.debug(
                 "length=%s height=%s width=%s bpp=%s" % (length, height, width, bpp)
             )
-            u = np.frombuffer(image_memory.get_obj(), dtype=np.uint8, count=length)
-            r = np.array(u).reshape(height, width, bpp)
+            u = np.frombuffer(image_memory, dtype=np.uint8, count=length)
+            r = np.array(u, copy=True).reshape(height, width, bpp)
         return r
 
     def channel_metadata(self):
@@ -834,7 +869,7 @@ def main():
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     # provide it a dummy lock; no one else is running to synchronize with this.
-    lock = multiprocessing.Lock()
+    lock = threading.Lock()
     lock.acquire()
     server = MockServer()
     server.udp_server(lock)

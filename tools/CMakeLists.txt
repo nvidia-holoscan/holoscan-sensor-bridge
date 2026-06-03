@@ -14,6 +14,7 @@
 # limitations under the License.
 
 add_subdirectory(enumerate)
+add_subdirectory(hsb_flasher)
 add_subdirectory(program_lattice_cpnx100)
 add_subdirectory(program_leopard_cpnx100)
 add_subdirectory(read)

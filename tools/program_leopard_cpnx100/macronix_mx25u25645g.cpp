@@ -17,17 +17,12 @@
 
 #include "macronix_mx25u25645g.hpp"
 
+#include "traditional_peripherals.hpp"
 #include <fmt/format.h>
 #include <hololink/core/logging_internal.hpp>
 #include <hololink/core/timeout.hpp>
 
 namespace hololink {
-
-// This routine is not expected to be used anywhere
-// except for programming tools, so there isn't a
-// header file you can include for it.
-std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t spi_address, uint32_t chip_select,
-    uint32_t clock_divisor, uint32_t cpol, uint32_t cpha, uint32_t width);
 
 MacronixMx25u25645g::MacronixMx25u25645g(const std::string& context, std::shared_ptr<Hololink> hololink, uint32_t spi_address)
     : context_(context)

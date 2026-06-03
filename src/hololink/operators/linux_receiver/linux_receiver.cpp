@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,7 @@
 #include "linux_receiver.hpp"
 
 #include <alloca.h>
-#include <chrono>
+#include <atomic>
 #include <errno.h>
 #include <poll.h>
 #include <pthread.h>
@@ -30,8 +30,6 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-#include <infiniband/opcode.h>
-
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/deserializer.hpp>
 #include <hololink/core/hololink.hpp>
@@ -39,9 +37,25 @@
 #include <hololink/core/networking.hpp>
 #include <hololink/core/nvtx_trace.hpp>
 
+#if defined(HOLOLINK_HAVE_IBV_OPCODE)
+#include <infiniband/opcode.h>
+#endif
+
+#define OPCODE_UC_RDMA_WRITE_ONLY (0x2A)
+#define OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE (0x2B)
+
+#if defined(HOLOLINK_HAVE_IBV_OPCODE)
+static_assert(OPCODE_UC_RDMA_WRITE_ONLY == IBV_OPCODE_UC_RDMA_WRITE_ONLY,
+    "OPCODE_UC_RDMA_WRITE_ONLY must match libibverbs definition");
+static_assert(OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE == IBV_OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE,
+    "OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE must match libibverbs definition");
+#endif
+
 #define NUM_OF(x) (sizeof(x) / sizeof(x[0]))
 
 namespace hololink::operators {
+
+static std::atomic<uint32_t> next_qp_number_(0xCAF0);
 
 static inline struct timespec add_ms(struct timespec& ts, unsigned long ms)
 {
@@ -62,33 +76,38 @@ static inline struct timespec add_ms(struct timespec& ts, unsigned long ms)
 
 class LinuxReceiverDescriptor {
 public:
-    LinuxReceiverDescriptor(uint8_t* memory)
+    LinuxReceiverDescriptor(uint8_t* memory, CUevent event)
         : memory_(memory)
+        , event_(event)
     {
     }
 
     uint8_t* memory_;
+    CUevent event_;
     LinuxReceiverMetadata metadata_;
 };
 
 LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     size_t cu_buffer_size,
+    size_t cu_page_size,
+    unsigned pages,
     int socket,
-    uint64_t received_address_offset)
+    uint64_t received_address_offset,
+    unsigned queue_size)
     : cu_buffer_(cu_buffer)
     , cu_buffer_size_(cu_buffer_size)
+    , cu_page_size_(cu_page_size)
+    , pages_(pages)
     , socket_(socket)
     , received_address_offset_(received_address_offset)
-    , ready_(false)
+    , queue_size_(queue_size)
     , exit_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
     , ready_condition_(PTHREAD_COND_INITIALIZER)
-    , qp_number_(0xCAFE)
+    , consumer_ready_(false)
+    , qp_number_(next_qp_number_++)
     , rkey_(0xBEEF)
     , local_(NULL)
-    , available_(NULL)
-    , busy_(NULL)
-    , cu_stream_(0)
     , frame_ready_([](const LinuxReceiver&) {})
     , frame_number_()
 {
@@ -112,44 +131,42 @@ LinuxReceiver::LinuxReceiver(CUdeviceptr cu_buffer,
     if (setsockopt(socket_, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout)) < 0) {
         throw std::runtime_error(fmt::format("setsockopt failed errno={}", errno));
     }
-
-    // See get_next_frame.
-    CUresult cu_result = cuStreamCreate(&cu_stream_, CU_STREAM_NON_BLOCKING);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuStreamCreate failed, cu_result={}.", cu_result));
-    }
 }
 
 LinuxReceiver::~LinuxReceiver()
 {
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
-    cuStreamDestroy(cu_stream_);
 }
 
 void LinuxReceiver::run()
 {
-    HSB_LOG_DEBUG("Starting.");
+    HSB_LOG_DEBUG("Starting, qp={:#x}.", qp_number_);
     core::NvtxTrace::setThreadName("linux_receiver");
 
     // Round the buffer size up to 64k
 #define BUFFER_ALIGNMENT (0x10000)
-    uint64_t buffer_size = (cu_buffer_size_ + BUFFER_ALIGNMENT - 1) & ~(BUFFER_ALIGNMENT - 1);
-    // Allocate three pages, details below
-    CUresult cu_result = cuMemHostAlloc((void**)(&local_), buffer_size * 3, CU_MEMHOSTALLOC_WRITECOMBINED);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuMemHostAlloc failed, cu_result={}.", cu_result));
+    uint64_t buffer_size = (cu_page_size_ + BUFFER_ALIGNMENT - 1) & ~(BUFFER_ALIGNMENT - 1);
+    // +1 for the buffer we're currently receiving into
+    const uint32_t buffer_count = queue_size_ + 1;
+    // Allocate pages, details below
+    CudaCheck(cuMemHostAlloc((void**)(&local_), buffer_size * buffer_count, CU_MEMHOSTALLOC_WRITECOMBINED));
+    CUevent events[buffer_count];
+    for (int i = 0; i < buffer_count; i++) {
+        CudaCheck(cuEventCreate(&events[i], CU_EVENT_DISABLE_TIMING));
     }
     // Construct a descriptor for each page
-    LinuxReceiverDescriptor d0(&local_[buffer_size * 0]);
-    LinuxReceiverDescriptor d1(&local_[buffer_size * 1]);
-    LinuxReceiverDescriptor d2(&local_[buffer_size * 2]);
-    // receiving points to the section we're currently receiving into
-    // busy_ points to the buffer that the application is using.
-    // available_ points to the last completed frame
-    LinuxReceiverDescriptor* receiving = &d0;
-    busy_ = &d1;
-    available_.store(&d2);
+    std::unique_ptr<LinuxReceiverDescriptor> descriptors[buffer_count];
+    for (int i = 0; i < buffer_count; i++) {
+        descriptors[i] = std::make_unique<LinuxReceiverDescriptor>(&local_[buffer_size * i], events[i]);
+    }
+    // receiving points to the buffer we're currently receiving into.
+    // ready_ has the the buffers for the application to process.
+    // available_ has the buffers which are not used.
+    LinuxReceiverDescriptor* receiving = descriptors[0].get();
+    for (int i = 1; i < buffer_count; i++) {
+        available_.push(descriptors[i].get());
+    }
 
     // Received UDP message goes here.
     uint8_t received[hololink::core::UDP_PACKET_SIZE];
@@ -172,8 +189,6 @@ void LinuxReceiver::run()
             HSB_LOG_ERROR("clock_gettime failed, errno={}", errno);
             break;
         }
-
-        HSB_LOG_TRACE("received_bytes={} recv_errno={}.", received_bytes, recv_errno);
 
         if (received_bytes <= 0) {
             // check if there is a timeout
@@ -215,8 +230,6 @@ void LinuxReceiver::run()
             // Note that 'psn' is only 24 bits.  Use that to determine
             // how many packets were dropped.  Note that this doesn't
             // account for out-of-order delivery.
-            core::NvtxTrace::event_u64("psn", psn);
-            core::NvtxTrace::event_u64("frame_packets_received", frame_packets_received);
             if (!first) {
                 uint32_t next_psn = (last_psn + 1) & 0xFFFFFF;
                 uint32_t diff = (psn - next_psn) & 0xFFFFFF;
@@ -229,23 +242,29 @@ void LinuxReceiver::run()
             uint32_t rkey = 0;
             uint32_t size = 0;
             const uint8_t* content = NULL;
-            if ((opcode == IBV_OPCODE_UC_RDMA_WRITE_ONLY)
+            if ((opcode == OPCODE_UC_RDMA_WRITE_ONLY)
                 && deserializer.next_uint64_be(address)
                 && deserializer.next_uint32_be(rkey)
                 && deserializer.next_uint32_be(size)
                 && deserializer.pointer(content, size)) {
-                HSB_LOG_TRACE("opcode=2A address={:x} size={:x}", address, size);
                 uint64_t target_address = address + received_address_offset_;
                 if ((target_address >= cu_buffer_) && (target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
-                    uint64_t offset = target_address - cu_buffer_;
+                    uint64_t offset = (target_address - cu_buffer_) % cu_page_size_;
+                    if (offset + size > cu_page_size_) {
+                        HSB_LOG_ERROR("Packet spans page boundary; address={:`#x`}, size={:`#x`}, offset={:`#x`}, cu_page_size_={:`#x`}",
+                            target_address, size, offset, cu_page_size_);
+                        break;
+                    }
                     memcpy(&receiving->memory_[offset], content, size);
                     frame_bytes_received += size;
+                } else {
+                    HSB_LOG_ERROR("Ignoring contents for a packet with address={:#x} and size={:#x}, cu_buffer_={:#x}, cu_buffer_size_={:#x}.", target_address, size, cu_buffer_, cu_buffer_size_);
                 }
                 break;
             }
 
             uint32_t imm_data = 0;
-            if ((opcode == IBV_OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE)
+            if ((opcode == OPCODE_UC_RDMA_WRITE_ONLY_WITH_IMMEDIATE)
                 && deserializer.next_uint64_be(address)
                 && deserializer.next_uint32_be(rkey)
                 && deserializer.next_uint32_be(size)
@@ -254,21 +273,10 @@ void LinuxReceiver::run()
                 frame_count++;
                 core::NvtxTrace::event_u64("frame_count", frame_count);
 
-                HSB_LOG_TRACE("opcode=2B address={:#x} size={:x}", address, size);
-                uint64_t target_address = address + received_address_offset_;
-                if ((target_address >= cu_buffer_) && (target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
-                    uint64_t offset = target_address - cu_buffer_;
-                    memcpy(&receiving->memory_[offset], content, size);
-                    frame_bytes_received += size;
+                if (size != METADATA_SIZE) {
+                    HSB_LOG_ERROR("Unexpected size for metadata, size={}, expected={}", size, METADATA_SIZE);
+                    break;
                 }
-                // Send it
-                // - receiving now has legit data;
-                // - swap it with available_, now
-                //  available_ points to received data
-                //  and we'll continue to receive into what
-                //  was in available_ (but not consumed by
-                //  the application)
-                // - signal the pipeline so it wakes up if necessary.
                 Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(content, size);
                 LinuxReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
@@ -285,10 +293,16 @@ void LinuxReceiver::run()
                 metadata.frame_metadata = frame_metadata;
                 metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
 
-                receiving = available_.exchange(receiving);
-                signal();
+                unsigned page = imm_data & 0xFFF;
+                if (page >= pages_) {
+                    throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
+                }
+
+                // Send it
+                // - signal the pipeline so it wakes up if necessary.
+                receiving = signal(receiving);
                 // Make it easy to identify missing packets.
-                memset(receiving->memory_, 0xFF, buffer_size);
+                memset(receiving->memory_, 0xFF, cu_page_size_);
                 // Reset metadata.
                 frame_packets_received = 0;
                 frame_bytes_received = 0;
@@ -299,25 +313,51 @@ void LinuxReceiver::run()
         } while (false);
     }
 
-    busy_ = NULL;
-    available_.store(NULL);
-
-    cu_result = cuMemFreeHost((void*)(local_));
-    if (cu_result != CUDA_SUCCESS) {
-        HSB_LOG_ERROR("cuMemFreeHost failed, cu_result={}", cu_result);
-        return;
+    while (!ready_.empty()) {
+        ready_.pop();
     }
+    while (!available_.empty()) {
+        available_.pop();
+    }
+
+    for (int i = 0; i < buffer_count; i++) {
+        CudaCheck(cuEventDestroy(events[i]));
+    }
+    CudaCheck(cuMemFreeHost((void*)(local_)));
     local_ = NULL;
     HSB_LOG_DEBUG("Done.");
 }
 
-void LinuxReceiver::signal()
+LinuxReceiverDescriptor* LinuxReceiver::signal(LinuxReceiverDescriptor* received)
 {
     int r = pthread_mutex_lock(&ready_mutex_);
     if (r != 0) {
         throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
     }
-    ready_ = true;
+    LinuxReceiverDescriptor* available;
+    if (!consumer_ready_ && !ready_.empty()) {
+        // if the consumer is not ready yet, avoid queueing up more frames
+        available = ready_.front();
+        ready_.pop();
+    } else {
+        if (available_.empty()) {
+            // if there is no available descriptor use the oldest ready one and drop the frame
+            available = ready_.front();
+            ready_.pop();
+            if (consumer_ready_) {
+                HSB_LOG_DEBUG("No available descriptors, dropping oldest ready frame {}.", available->metadata_.frame_number);
+            }
+        } else {
+            available = available_.front();
+            available_.pop();
+        }
+    }
+    // make sure the copy is complete before we overwrite the buffer
+    CudaCheck(cuEventSynchronize(available->event_));
+
+    // place in the ready queue for the application to process
+    ready_.push(received);
+
     r = pthread_cond_signal(&ready_condition_);
     if (r != 0) {
         throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
@@ -326,72 +366,81 @@ void LinuxReceiver::signal()
     if (r != 0) {
         throw std::runtime_error(fmt::format("pthread_mutex_unlock returned r={}.", r));
     }
+
     // Provide the local callback, letting the application know
     // that get_next_frame won't block.
     frame_ready_(this[0]);
+
+    return available;
 }
 
-bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata)
-{
-    bool r = wait(timeout_ms);
-    if (r) {
-        busy_ = available_.exchange(busy_);
-        if (busy_) {
-            // Because we're setting up the next frame of data for
-            // pipeline processing, we can allow this memcpy to overlap
-            // with other GPU work-- we just make sure that this copy is done
-            // (with the cuStreamSynchronize below) to ensure that this memcpy
-            // finishes before the pipeline uses the destination buffer.
-            CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, cu_stream_);
-            if (cu_result != CUDA_SUCCESS) {
-                HSB_LOG_ERROR("cuMemcpyHtoDAsync failed, cu_result={}", cu_result);
-                r = false;
-            } else {
-                cu_result = cuStreamSynchronize(cu_stream_);
-                if (cu_result != CUDA_SUCCESS) {
-                    HSB_LOG_ERROR("cuStreamSynchronize failed, cu_result={}", cu_result);
-                    r = false;
-                }
-            }
-            metadata = busy_->metadata_;
-        } else {
-            // run() exited.
-            HSB_LOG_ERROR("get_next_frame failed, receiver has terminated.");
-            r = false;
-        }
-    }
-    return r;
-}
-
-bool LinuxReceiver::wait(unsigned timeout_ms)
+bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata, CUstream cuda_stream)
 {
     int status = pthread_mutex_lock(&ready_mutex_);
     if (status != 0) {
         throw std::runtime_error(fmt::format("pthread_mutex_lock returned status={}.", status));
     }
+
+    // signal the background thread that the consumer is ready to receive frames
+    consumer_ready_ = true;
+
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         HSB_LOG_ERROR("clock_gettime failed, errno={}", errno);
     }
     struct timespec timeout = add_ms(now, timeout_ms);
 
-    while (!ready_) {
+    bool result = true;
+    while (ready_.empty()) {
         status = pthread_cond_timedwait(&ready_condition_, &ready_mutex_, &timeout);
         if (status == ETIMEDOUT) {
+            result = false;
             break;
         }
         if (status != 0) {
             HSB_LOG_ERROR("pthread_cond_wait returned status={}", status);
+            result = false;
             break;
         }
     }
-    bool r = ready_;
-    ready_ = false;
+
+    if (result) {
+        LinuxReceiverDescriptor* ready_descriptor = ready_.front();
+        ready_.pop();
+
+        metadata = ready_descriptor->metadata_;
+        metadata.frame_memory = cu_buffer_;
+
+        // Because we're setting up the next frame of data for pipeline processing,
+        // we can allow this memcpy to overlap with other GPU work. We just make sure
+        // that this copy is happening on the same stream as the pipeline.
+        CudaCheck(cuMemcpyHtoDAsync(cu_buffer_, ready_descriptor->memory_, metadata.frame_metadata.bytes_written, cuda_stream));
+        CudaCheck(cuEventRecord(ready_descriptor->event_, cuda_stream));
+
+        available_.push(ready_descriptor);
+    }
+
     status = pthread_mutex_unlock(&ready_mutex_);
     if (status != 0) {
         throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
     }
-    return r;
+    return result;
+}
+
+bool LinuxReceiver::frames_ready()
+{
+    int status = pthread_mutex_lock(&ready_mutex_);
+    if (status != 0) {
+        throw std::runtime_error(fmt::format("pthread_mutex_lock returned status={}.", status));
+    }
+
+    bool result = ready_.empty();
+
+    status = pthread_mutex_unlock(&ready_mutex_);
+    if (status != 0) {
+        throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
+    }
+    return !result;
 }
 
 void LinuxReceiver::close()

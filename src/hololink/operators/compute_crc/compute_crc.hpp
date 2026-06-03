@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,7 +22,6 @@
 
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/parameter.hpp>
-#include <holoscan/utils/cuda_stream_handler.hpp>
 
 #include <cuda.h>
 #include <nvcomp/crc32.h>
@@ -92,8 +91,7 @@ protected:
 
     bool is_integrated_ = false; ///< True if running on integrated GPU
     bool host_memory_warning_ = false; ///< Tracks if host memory warning was issued
-    holoscan::CudaStreamHandler cuda_stream_handler_;
-    cudaStream_t stream_ = 0; ///< CUDA stream for CRC computation
+    cudaEvent_t event_ = 0; ///< CUDA event for synchronization
     size_t* message_size_dptr_ = nullptr; ///< Device pointer to message size
     void** message_dptr_ = nullptr; ///< Device pointer to message pointer
     uint32_t* result_dptr_ = nullptr; ///< Device pointer to CRC result
@@ -188,9 +186,6 @@ public:
 protected:
     holoscan::Parameter<std::shared_ptr<ComputeCrcOp>> compute_crc_op_; ///< Linked CRC compute operator
     holoscan::Parameter<std::string> computed_crc_metadata_name_; ///< Metadata key for CRC
-
-    holoscan::CudaStreamHandler cuda_stream_handler_;
-    nvidia::gxf::Handle<holoscan::MetadataDictionary> meta_ = nullptr; ///< Entity metadata handle
 };
 
 } // namespace hololink::operators

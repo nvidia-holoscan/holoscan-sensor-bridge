@@ -22,8 +22,8 @@
 
 #include <cstdint>
 
+#include "../core/serializer.hpp"
 #include "dlpack/dlpack.h"
-#include "hololink/core/serializer.hpp"
 
 // Note that if monotonic times are critical downstream (accuracy, repeatability or conflict with other system process), this clock must be configurable
 #define FRAME_METADATA_CLOCK CLOCK_REALTIME
@@ -37,21 +37,28 @@ struct FrameMetadata {
     uint32_t psn;
     uint32_t crc;
     // Time when the first sample data for the frame was received
-    uint64_t timestamp_s;
+    uint32_t timestamp_s_high;
+    uint32_t timestamp_s_low;
     uint32_t timestamp_ns;
-    uint64_t bytes_written;
+    uint32_t bytes_written_high;
+    uint32_t bytes_written_low;
     uint32_t frame_number;
     // Time at which the metadata packet was sent
-    uint64_t metadata_s;
+    uint32_t metadata_s_high;
+    uint32_t metadata_s_low;
     uint32_t metadata_ns;
     uint8_t reserved[80];
 };
+
+static_assert(sizeof(FrameMetadata) == 128, "FrameMetadata size is not 128 bytes/there are padded misalignments");
+
+extern struct FrameMetadata* DEFAULT_FRAME_METADATA;
 
 /**
  * This is metadata that is associated with all Transmitters that implement the abstract BaseTransmitter class.
  *
  * payload_size: Size of the payload in bytes. Semantics may be up to the type of transmitter.
- * e.g., pre-PAGE_SIZE calculation for LinuxTransmitter
+ * e.g., pre-HSB_PAGE_SIZE calculation for LinuxTransmitter
  */
 struct TransmissionMetadata {
     uint32_t dest_mac_low;
@@ -93,7 +100,8 @@ public:
      * @note The tensor is not owned by the transmitter and must not be
      * propagated to other objects to satisfy the DLPack Python API specification.
      */
-    virtual int64_t send(const TransmissionMetadata* metadata, const DLTensor& tensor) = 0;
+    virtual int64_t send(TransmissionMetadata* metadata, const DLTensor& tensor, FrameMetadata* frame_metadata = nullptr) = 0;
+    virtual int64_t send(TransmissionMetadata* metadata, const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata = nullptr) = 0;
 };
 
 } // namespace hololink::emulation

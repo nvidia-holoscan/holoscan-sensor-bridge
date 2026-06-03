@@ -69,6 +69,27 @@ class SizeCheckerOperator(holoscan.core.Operator):
         logging.debug(f"{buffer_size_bytes=:#x} {num_elements=} {bytes_written=:#x}")
 
 
+class UpdateBufferLengthOperator(operators.PassThroughOperator):
+    def __init__(
+        self,
+        *args,
+        frame_size=None,
+        enumeration_metadata=None,
+        hololink_channel=None,
+        **kwargs,
+    ):
+        super().__init__(*args, **kwargs)
+        self._frame_size = frame_size
+        self._vp_address = enumeration_metadata["vp_address"]
+        self._hololink_channel = hololink_channel
+
+    def start(self):
+        hololink = self._hololink_channel.hololink()
+        hololink.write_uint32(
+            self._vp_address + hololink_module.DP_BUFFER_LENGTH, self._frame_size
+        )
+
+
 class RuntTestApplication(holoscan.core.Application):
     def __init__(
         self,
@@ -81,6 +102,7 @@ class RuntTestApplication(holoscan.core.Application):
         frame_limit,
         watchdog,
         network_receiver_factory,
+        enumeration_metadata,
     ):
         logging.info("__init__")
         super().__init__()
@@ -93,6 +115,7 @@ class RuntTestApplication(holoscan.core.Application):
         self._frame_limit = frame_limit
         self._watchdog = watchdog
         self._network_receiver_factory = network_receiver_factory
+        self._enumeration_metadata = enumeration_metadata
 
     def compose(self):
         logging.info("compose")
@@ -118,7 +141,7 @@ class RuntTestApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -140,9 +163,18 @@ class RuntTestApplication(holoscan.core.Application):
         receiver_operator, size_checker_operator = self._network_receiver_factory(
             self,
             condition,
+            frame_size,
             runt_frame_size,
             self._cuda_context,
             [runt_frame_size, remaining_frame_size],  # expected_frame_sizes
+        )
+
+        update_buffer_length_operator = UpdateBufferLengthOperator(
+            self,
+            name="update_buffer_length",
+            frame_size=runt_frame_size,
+            enumeration_metadata=self._enumeration_metadata,
+            hololink_channel=self._hololink_channel,
         )
 
         pixel_format = self._camera.pixel_format()
@@ -166,7 +198,7 @@ class RuntTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -194,7 +226,12 @@ class RuntTestApplication(holoscan.core.Application):
         )
 
         #
-        self.add_flow(receiver_operator, size_checker_operator, {("output", "input")})
+        self.add_flow(
+            receiver_operator, update_buffer_length_operator, {("output", "input")}
+        )
+        self.add_flow(
+            update_buffer_length_operator, size_checker_operator, {("output", "input")}
+        )
         self.add_flow(
             size_checker_operator, csi_to_bayer_operator, {("output", "input")}
         )
@@ -241,7 +278,12 @@ def runt_test(
     ) as watchdog:
         # Set up the application
         def receiver_factory(
-            fragment, condition, _frame_size, frame_context, _expected_frame_sizes
+            fragment,
+            condition,
+            _frame_size,
+            runt_frame_size,
+            frame_context,
+            _expected_frame_sizes,
         ):
             nonlocal frame_size
             frame_size = _frame_size
@@ -254,6 +296,7 @@ def runt_test(
                 hololink_channel=hololink_channel,
                 device=camera,
                 trim=trim,
+                runt_frame_size=runt_frame_size,
             )
             nonlocal size_checker_operator
             size_checker_operator = SizeCheckerOperator(
@@ -275,6 +318,7 @@ def runt_test(
             frame_limit,
             watchdog,
             network_receiver_factory=receiver_factory,
+            enumeration_metadata=channel_metadata,
         )
         # Run it.
         hololink = hololink_channel.hololink()
@@ -339,6 +383,7 @@ def test_linux_imx274_runt(
         condition,
         name,
         frame_size,
+        runt_frame_size,
         frame_context,
         hololink_channel,
         device,
@@ -413,12 +458,15 @@ def test_roce_imx274_runt(
         condition,
         name,
         frame_size,
+        runt_frame_size,
         frame_context,
         hololink_channel,
         device,
         trim,
     ):
         ibv_port = 1
+        PAGE_SIZE = 128
+        metadata_offset = hololink_module.round_up(runt_frame_size, PAGE_SIZE)
         receiver_operator = hololink_module.operators.RoceReceiverOp(
             fragment,
             condition,
@@ -430,6 +478,7 @@ def test_roce_imx274_runt(
             ibv_name=ibv_name,
             ibv_port=ibv_port,
             trim=trim,
+            metadata_offset=metadata_offset,
         )
         return receiver_operator
 
@@ -482,6 +531,7 @@ def test_coe_imx274_runt(
         condition,
         name,
         frame_size,
+        runt_frame_size,
         frame_context,
         hololink_channel,
         device,

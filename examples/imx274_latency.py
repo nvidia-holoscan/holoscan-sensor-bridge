@@ -43,7 +43,7 @@ def get_timestamp(metadata, name):
 
 def record_times(recorder_queue, metadata):
     #
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     #
     frame_number = metadata.get("frame_number", 0)
 
@@ -116,7 +116,7 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        operator_timestamp = datetime.datetime.now(datetime.UTC)
+        operator_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         in_message = op_input.receive("input")
         cp_frame = cp.asarray(in_message.get(""))
@@ -143,7 +143,7 @@ class MonitorOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        complete_timestamp = datetime.datetime.now(datetime.UTC)
+        complete_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         _ = op_input.receive("input")
         #
@@ -206,7 +206,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -258,7 +258,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,

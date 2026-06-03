@@ -1,34 +1,30 @@
-import os
-import sysconfig
-from distutils.core import setup
+"""
+SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+SPDX-License-Identifier: Apache-2.0
 
-STANDALONE_VERSION = "2.5"
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+See README.md for detailed information.
+"""
+
+import re
+
+from setuptools import setup
 
 
 def get_version():
-    version = STANDALONE_VERSION
-    # try to get the value from HSB TOT VERSION file
-    try:
-        with open("../../../VERSION", "r") as f:
-            version = f.read().strip()
-    except Exception:
-        print(
-            f"failed to get HSB TOT version. using standalone version {STANDALONE_VERSION}"
-        )
+    with open("../../../../VERSION", "r") as f:
+        version = re.match(r"[0-9\.]+", f.read().strip()).group(0)
     return version
-
-
-def install_data_files(module_path, exts=None):
-    if exts is None:
-        exts = {".so"}
-    files = []
-    search_path = os.path.join(".", module_path)
-    for file in os.listdir(search_path):
-        if os.path.splitext(file)[1] in exts:
-            files.append(os.path.join(search_path, file))
-    target_path = os.path.join(sysconfig.get_paths()["purelib"], module_path)
-    print(f"installing {files} to {target_path}")
-    return (target_path, files)
 
 
 setup(
@@ -38,8 +34,9 @@ setup(
     url="https://github.com/nvidia-holoscan/holoscan-sensor-bridge",
     packages=["hololink", "hololink.emulation", "hololink.emulation.sensors"],
     package_dir={"hololink": "hololink"},
-    data_files=[
-        install_data_files("hololink/emulation"),
-        install_data_files("hololink/emulation/sensors"),
-    ],
+    package_data={
+        "hololink.emulation": ["*.so"],
+        "hololink.emulation.sensors": ["*.so"],
+    },
+    include_package_data=True,
 )

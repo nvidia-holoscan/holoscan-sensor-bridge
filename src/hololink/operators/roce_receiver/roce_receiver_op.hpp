@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -43,8 +43,9 @@ public:
     // BaseReceiverOp virtual functions
     void start_receiver() override;
     void stop_receiver() override;
-    std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms) override;
+    std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms, CUstream cuda_stream) override;
     std::tuple<std::string, uint32_t> local_ip_and_port() override;
+    bool frames_ready() override;
 
     // Setter for rename_metadata function
     void set_rename_metadata(std::function<std::string(const std::string&)> rename_fn);
@@ -52,6 +53,10 @@ public:
 private:
     holoscan::Parameter<std::string> ibv_name_;
     holoscan::Parameter<uint32_t> ibv_port_;
+    holoscan::Parameter<uint32_t> pages_;
+    holoscan::Parameter<uint32_t> queue_size_;
+    holoscan::Parameter<size_t> metadata_offset_;
+
     std::function<std::string(const std::string&)> rename_metadata_;
 
     // Cached metadata key names
@@ -60,6 +65,7 @@ private:
     std::string received_s_metadata_;
     std::string received_ns_metadata_;
     std::string imm_data_metadata_;
+    std::string page_number_metadata_;
     std::string frame_memory_metadata_;
     std::string dropped_metadata_;
     std::string frame_number_metadata_;
@@ -72,8 +78,7 @@ private:
 
     std::shared_ptr<RoceReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;
-    static constexpr unsigned PAGES = 2;
-    std::unique_ptr<ReceiverMemoryDescriptor> frame_memory_;
+    std::unique_ptr<hololink::ReceiverMemoryDescriptor> frame_memory_;
 
     void run();
 };

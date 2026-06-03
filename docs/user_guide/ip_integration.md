@@ -50,7 +50,8 @@ Table 1
 | HOST_MTU                                      | 1500, 4096                                                                                                                                                                                                                                                           | Size of Ethernet packet in bytes.                                                                                                         |
 | SPI_INST                                      | undefined, 1-8                                                                                                                                                                                                                                                       | Number of SPI interfaces.                                                                                                                 |
 | I2C_INST                                      | undefined, 1-8                                                                                                                                                                                                                                                       | Number of I2C interfaces.                                                                                                                 |
-| GPIO_INST                                     | 0-255                                                                                                                                                                                                                                                                | Number of GPIO Input & Output bits.                                                                                                       |
+| UART_INST                                     | undefined, 1                                                                                                                                                                                                                                                         | Number of UART interfaces.                                                                                                                |
+| GPIO_INST                                     | 1-255                                                                                                                                                                                                                                                                | Number of GPIO Input & Output bits.                                                                                                       |
 | GPIO_RESET_VALUE[GPIO_INST-1:0]               | 0                                                                                                                                                                                                                                                                    | Reset value of GPIO bits.                                                                                                                 |
 | REG_INST                                      | 1-8                                                                                                                                                                                                                                                                  | Number of user register.                                                                                                                  |
 | N_INIT_REG                                    | Integer value                                                                                                                                                                                                                                                        | Number of initialization registers.                                                                                                       |
@@ -86,22 +87,24 @@ HSB IP supports Virtual Port mapping. For more information, refer to
 
 ### BOOTP Packet
 
-The HSB IP transmits a broadcast BOOTP Request packet on each Host interface
-approximately once per second. BOOTP packets are used to enumerate the HSB to host and
-to change the IP address from default in case of multiple board enumeration. Default IP
-address of HSB IP is "192.168.0.2" for Host interface 0 and "192.168.0.3" for Host
-interface 1 and so on. HSB IP BOOTP packets adhere to RFC-951. The Vendor Field of the
-BOOTP packet is used to communicate enumeration info and status of Holoscan Sensor Board
-to the host.
+The HSB IP transmits a broadcast BOOTP Request packet (adhering to RFC-951) on each Host
+interface. BOOTP Request packets are used to enumerate the HSB to host and to change the
+IP address from default in case of multiple board enumeration. Default IP address of HSB
+IP is "192.168.0.2" for Host interface 0 and "192.168.0.3" for Host interface 1 and so
+on. BOOTP Request packets are sent once a second. If PTP internal to the HSB IP is used,
+BOOTP packet is sent every pulse-per-second (PPS) which is internally generated in the
+"i_ptp_clk" domain. If `EXT_PTP` macro is defined, then PPS is internally generated when
+the LSB of "i_ptp_sec" input port toggles.
 
-Holoscan Sensor Bridge IP BOOTP Vendor field is laid out in below table:
+The Vendor Field of the BOOTP packet is used to communicate enumeration info and status
+of HSB to the host. The BOOTP Vendor field is laid out in below table:
 
 Table 2
 
 | **Byte Number** | **Description**                   | **Value**                                                                     |
 | --------------- | --------------------------------- | ----------------------------------------------------------------------------- |
 | [0]             | Vendor Tag                        | 0xE0                                                                          |
-| [1]             | Tag Length                        | 0x2B                                                                          |
+| [1]             | Tag Length                        | 0x38                                                                          |
 | [5:2]           | ASCII "NVDA"                      | 0x4144564E, in Big Endian format                                              |
 | [6]             | Ethernet Port Number              | 0x0 for Port 0 , 0x1 for Port 1                                               |
 | [7]             | Enumeration Version               | 0x2                                                                           |
@@ -109,8 +112,8 @@ Table 2
 | [25:10]         | UUID                              | UUID defined in HOLOLINK_def.svh. Big Endian format                           |
 | [29:26]         | Reserved                          | Reserved. Set to 0.                                                           |
 | [36:30]         | Board Serial Number               | BOARD_SN fetched from EEPROM or from HSB IP input port. Little Endian format. |
-| [38:37]         | Holoscan Sensor Bridge IP Version | *0x2510* for *Holoscan SDK v2.5.0* release. Little Endian format.             |
-| [44:39]         | Reserved                          | Reserved. Set to 0.                                                           |
+| [38:37]         | Holoscan Sensor Bridge IP Version | *0x2603* for *Holoscan SDK v2.6.0* release. Little Endian format.             |
+| [44:39]         | Reserved                          | Reserved.                                                                     |
 | [54:45]         | PTP Timestamp                     | PTP Timestamp. Seconds and Nanoseconds in PTP v2 format. Big Endian format.   |
 | [56:55]         | Packet Sequence Number            | Packet Sequence Number. Increments per BOOTP packet sent. Big Endian format.  |
 | [57]            | Status                            | 0x1 when PTP is enabled in HSB and a SYNC PTP packet has been received.       |

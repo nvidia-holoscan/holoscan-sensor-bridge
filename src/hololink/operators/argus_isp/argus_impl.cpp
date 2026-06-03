@@ -112,11 +112,20 @@ void ArgusImpl::set_reprocess_info(int bayerFormat, int pixelBitDepth)
     i_reprocess_info_->setReprocessingModePixelBitDepth(pixelBitDepth);
     i_reprocess_info_->setReprocessingModeDynamicPixelBitDepth(pixelBitDepth);
 
+    // Match reprocess framerate and sensor mode type to the selected sensor mode
+    // so the descriptor matches an existing NITO knobset.
+    const Argus::Range<uint64_t> frameDurationRange = i_sensor_mode_->getFrameDurationRange();
+    if (frameDurationRange.min() > 0) {
+        const float frameRate = 1.0e9f / static_cast<float>(frameDurationRange.min());
+        i_reprocess_info_->setReprocessingModeFrameRate(frameRate);
+    }
+    i_reprocess_info_->setReprocessingModeSensorType(i_sensor_mode_->getSensorModeType());
+
     // Create capture session before ICaptureSession.
     capture_session_.reset(i_camera_provider_->createCaptureSession(camera_devices_[camera_index_]));
 }
 
-void ArgusImpl::setup_capture_request(float analogGain, float exporeTimeMs)
+void ArgusImpl::setup_capture_request(float analogGain, float exporeTimeMs, uint32_t sensorModeIndex)
 {
 
     // Create CaptureSession
@@ -146,7 +155,7 @@ void ArgusImpl::setup_capture_request(float analogGain, float exporeTimeMs)
     if (!i_source_settings) {
         throw std::runtime_error("Failed to get ISourceSettings interface");
     }
-    i_source_settings->setSensorMode(sensor_modes_[0]);
+    i_source_settings->setSensorMode(sensor_modes_[sensorModeIndex]);
 
     // setExposureTimeRange takes the input in nanoseconds
     if (i_source_settings->setExposureTimeRange(

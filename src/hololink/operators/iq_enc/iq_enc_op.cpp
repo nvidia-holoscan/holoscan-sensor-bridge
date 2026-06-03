@@ -88,7 +88,7 @@ void IQEncoderOp::compute(holoscan::InputContext& op_input, [[maybe_unused]] hol
 
     auto tensor_iq = maybe_tensor.value();
     if (tensor_iq->size() % 8) {
-        throw std::runtime_error("Invalid IQ signal");
+        throw std::runtime_error("Invalid IQ signal with size: " + std::to_string(tensor_iq->size()));
     }
 
     // Create CUDA buffer

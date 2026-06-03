@@ -28,11 +28,18 @@ target_include_directories(sig_viewer
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
 )
 
+find_package(CUDAToolkit REQUIRED)
+find_package(CCCL REQUIRED)
 target_link_libraries(sig_viewer
-  PRIVATE
-    cufft
+  PUBLIC
+    CCCL::CCCL     # For Thrust project headers
+    CUDA::cudart
     hololink
+    hololink::core
     holoscan::core
+  PRIVATE
+    CUDA::cufft
+    CUDA::cuda_driver
     holoscan::viz::imgui
 )
 

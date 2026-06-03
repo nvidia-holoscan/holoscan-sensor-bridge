@@ -22,8 +22,7 @@
 
 #include <imgui.h>
 
-#include <holoscan/operators/holoviz/holoviz.hpp>
-#include <holoviz/holoviz.hpp>
+#include <holoscan/core/operator.hpp>
 
 #include <hololink/common/cuda_error.hpp>
 #include <hololink/core/logging_internal.hpp>

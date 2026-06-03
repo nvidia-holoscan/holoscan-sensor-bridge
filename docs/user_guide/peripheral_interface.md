@@ -1,9 +1,9 @@
 # Peripheral Interface
 
 The Holoscan Sensor Bridge IP supports several software defined peripheral interfaces;
-SPI, I2C, and GPIO. Each of the protocols instantiate a general-purpose core to handle
-all protocol specific requirements and allows for software to set up transactions which
-are then executed by the Holoscan Sensor Bridge IP.
+SPI, I2C, UART, and GPIO. Each of the protocols instantiate a general-purpose core to
+handle all protocol specific requirements and allows for software to set up transactions
+which are then executed by the Holoscan Sensor Bridge IP.
 
 Multiple endpoints can be supported using one single core instance. This reduces the
 overall resource utilization by not requiring multiple instances of the given core.
@@ -101,26 +101,92 @@ The base address for I2C CTRL FSM is 0x0300_0200.
 
 **\*Note: I2C is only verified and tested at 400kHz speed mode.**
 
+## UART
+
+The UART core provides a standard asynchronous serial interface with configurable frame
+format and programmable baud rate through the UART divisor register. The core supports
+common UART baud rates 9600, 38400, 57600, and 115200 (and other rates that can be
+generated from the APB clock using the baud divisor setting).
+
+The UART interface should be connected at the top level with one TX output and one RX
+input per endpoint. Connect the HSB UART TX output to the external UART RX pin, and
+connect the external UART TX pin into the HSB UART RX input. If hardware flow control is
+required, also connect RTS/CTS between the HSB IP and the external interface. The UART
+core already includes internal RX glitch filtering support, so additional external
+glitch filter logic is not required.
+
+UART TX and RX data is accessed through the APB interface.
+
+The base address for UART CTRL FSM is 0x0300_0400.
+
 ## GPIO
 
 The Holoscan Sensor Bridge IP supports General Purpose I/O (GPIO) signals for status and
-control functionality. The GPIO signals can be set to be an input or an output signals.
-GPIO signals are set as inputs by default.
+control functionality.
 
-The GPIO signals can connect to internal user logic or to the top level onto the board.
+The GPIO signals can connect to internal user logic or to the top level of the board.
 Examples for GPIO control are toggling on-board pins, internal straps to IP
 configuration, LED control, and more.
-
-The reset value of the GPIO control signals can be defined using the "GPIO_RESET_VALUE"
-parameter.
 
 Examples for GPIO status are sensor status signals, on-board and internal calibration
 done signal, software reset count, and more.
 
-GPIO input signals will cross domain clock (CDC) into "i_apb_clk" cloGck domain.
+The reset value of the GPIO control signals can be defined using the `GPIO_RESET_VALUE`
+parameter.
 
-GPIO output signals will cross domain clock (CDC) into "i_hif_clk" clock domain.
+The following code snippet demonstrates how to connect the Holoscan Sensor Bridge GPIO
+interface to top level as INOUT ports, where “i” is the endpoint index.
+
+GPIO Assignment
+
+```none
+assign i_gpio[i] = GPIO[i];
+assign GPIO[i] = o_gpio_dir[i] ? 1'bz : o_gpio[i];
+```
+
+GPIO input signals will cross domain clock (CDC) into "i_apb_clk" clock domain. GPIO
+output signals will cross domain clock (CDC) into "i_hif_clk" clock domain.
 
 ![1709593052977](images/peripheral_interface/1709593052977.png)
 
 Figure 4. GPIO Connectivity
+
+In the Lattice CPNX100-ETH-SENSOR-BRIDGE devkit, the GPIOs from HSB IP are connected to
+the Test Points and the Jetson Connector. The HSB IP GPIO mapping in Lattice devkit is
+listed below.
+
+Lattice CPNX100-ETH-SENSOR-BRIDGE GPIO Pins
+
+| **HSB IP** | **Lattice HSB** |
+| ---------- | --------------- |
+| GPIO[0]    | J20, pin 3      |
+| GPIO[1]    | J20, pin 5      |
+| GPIO[2]    | J20, pin 7      |
+| GPIO[3]    | J20, pin 9      |
+| GPIO[4]    | J20, pin 11     |
+| GPIO[5]    | J20, pin 13     |
+| GPIO[6]    | J20, pin 15     |
+| GPIO[7]    | J20, pin 17     |
+| GPIO[8]    | J20, pin 4      |
+| GPIO[9]    | J20, pin 6      |
+| GPIO[10]   | J20, pin 8      |
+| GPIO[11]   | J20, pin 10     |
+| GPIO[12]   | J20, pin 12     |
+| GPIO[13]   | J20, pin 14     |
+| GPIO[14]   | J20, pin 16     |
+| GPIO[15]   | J20, pin 18     |
+| GPIO[16]   | J9, pin 76      |
+| GPIO[17]   | J9, pin 78      |
+| GPIO[18]   | J9, pin 84      |
+| GPIO[19]   | J9, pin 85      |
+| GPIO[20]   | J9, pin 90      |
+| GPIO[21]   | J9, pin 92      |
+| GPIO[22]   | J9, pin 96      |
+| GPIO[23]   | J9, pin 97      |
+| GPIO[24]   | J9, pin 98      |
+| GPIO[25]   | J9, pin 119     |
+| GPIO[26]   | J9, pin 86      |
+| GPIO[27]   | J9, pin 103     |
+| GPIO[28]   | J9, pin 104     |
+| GPIO[29]   | J9, pin 106     |
+| GPIO[30]   | J9, pin 117     |

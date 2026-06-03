@@ -79,7 +79,7 @@ class PatternTestApplication(holoscan.core.Application):
             block_size=self._camera_left._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
             self,
@@ -98,7 +98,7 @@ class PatternTestApplication(holoscan.core.Application):
             block_size=self._camera_right._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator_right = hololink_module.operators.CsiToBayerOp(
             self,
@@ -147,7 +147,7 @@ class PatternTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         isp_left = hololink_module.operators.ArgusIspOp(
             self,
@@ -163,7 +163,7 @@ class PatternTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         isp_right = hololink_module.operators.ArgusIspOp(
             self,

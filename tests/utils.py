@@ -22,7 +22,9 @@ import threading
 import time
 import traceback
 
+import cupy as cp
 import numpy as np
+import PIL.Image
 
 import hololink as hololink_module
 
@@ -205,6 +207,10 @@ def caller(n=0):
     return "%s:%u" % (filename, line)
 
 
+watchdogs = 0
+watchdogs_lock = threading.Lock()
+
+
 class Watchdog:
     """When used this way:
 
@@ -288,8 +294,12 @@ class Watchdog:
         # on and trigger the test failure.  When we stop the watchdog, we need
         # to set the SIGUSR1 and SIGUSR2 signals back to SIG_DFL, so we use
         # SIGUSR2 to get the foreground thread to do that.
-        signal.signal(signal.SIGUSR1, self._sigusr1)
-        signal.signal(signal.SIGUSR2, self._sigusr2)
+        global watchdogs, watchdogs_lock
+        with watchdogs_lock:
+            watchdogs += 1
+            if watchdogs == 1:
+                signal.signal(signal.SIGUSR1, self._sigusr1)
+                signal.signal(signal.SIGUSR2, self._sigusr2)
         self._pid = os.getpid()
         timeout = self._get_next_timeout()
         self._running = True
@@ -301,12 +311,21 @@ class Watchdog:
         assert False, message
 
     def _sigusr2(self, signal_number, stack_frame):
-        signal.signal(signal.SIGUSR1, signal.SIG_DFL)
-        signal.signal(signal.SIGUSR2, signal.SIG_DFL)
+        global watchdogs, watchdogs_lock
+        with watchdogs_lock:
+            if watchdogs > 0:
+                signal.signal(signal.SIGUSR1, self._sigusr1)
+                signal.signal(signal.SIGUSR2, self._sigusr2)
+            else:
+                signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+                signal.signal(signal.SIGUSR2, signal.SIG_DFL)
 
     def stop(self):
         self._running = False
         self._reactor.cancel_alarm(self._alarm)
+        global watchdogs, watchdogs_lock
+        with watchdogs_lock:
+            watchdogs -= 1
         os.kill(self._pid, signal.SIGUSR2)
 
     def tap(self, timeout=None):
@@ -358,6 +377,11 @@ class Watchdog:
         )
         logging.error(message)
         os.kill(self._pid, signal.SIGUSR1)
+        time.sleep(2)
+        # We only get here if we weren't closed up by _sigusr1.
+        logging.error("Sending SIGABRT to the local process group.")
+        local_process_group = 0
+        os.kill(local_process_group, signal.SIGABRT)
 
     def update(self, timeout=None, initial_timeout=None, tap=True):
         """Reconfigure how the next tap() works."""
@@ -440,3 +464,104 @@ class PriorityScheduler:
     def __exit__(self, *args):
         logging.debug("Resetting scheduler.")
         os.sched_setscheduler(0, self._scheduler, self._params)
+
+
+def encode_bayer_image(rgb_image, bayer_format):
+    sr = rgb_image[:, :, 0]
+    sg = rgb_image[:, :, 1]
+    sb = rgb_image[:, :, 2]
+    dtype = cp.uint16
+    height, width, elements_per_pixel = rgb_image.shape
+    bayer_height, bayer_width = height, width
+    if bayer_format == hololink_module.sensors.csi.BayerFormat.RGGB:
+        # upper_line is red0, green0, red1, green1, ...
+        r, g = sr.ravel(), sg.ravel()
+        assert r.size == g.size
+        c = cp.empty(((r.size + g.size) // 2,), dtype=dtype)
+        c[0::2] = r[::2]
+        c[1::2] = g[::2]
+        upper_line = c.reshape(height, bayer_width)
+        upper_line = upper_line[::2]  # only take every other line
+        # lower_line is green0, blue0, green1, blue1, ...
+        g, b = sg.ravel(), sb.ravel()
+        c = cp.empty(((g.size + b.size) // 2,), dtype=dtype)
+        c[0::2] = g[::2]
+        c[1::2] = b[::2]
+        lower_line = c.reshape(height, bayer_width)
+        lower_line = lower_line[::2]  # only take every other line
+        bayer_image = cp.stack([upper_line, lower_line], axis=1).reshape(
+            bayer_height, bayer_width
+        )
+    elif bayer_format == hololink_module.sensors.csi.BayerFormat.GBRG:
+        # upper_line is green0, blue0, green1, blue1, ...
+        g, b = sg.ravel(), sb.ravel()
+        assert g.size == b.size
+        c = cp.empty(((g.size + b.size) // 2,), dtype=dtype)
+        c[0::2] = g[::2]
+        c[1::2] = b[::2]
+        upper_line = c.reshape(height, bayer_width)
+        upper_line = upper_line[::2]  # only take every other line
+        # lower_line is red0, green0, red1, green1, ...
+        r, g = sr.ravel(), sg.ravel()
+        c = cp.empty(((r.size + g.size) // 2,), dtype=dtype)
+        c[0::2] = r[::2]
+        c[1::2] = g[::2]
+        lower_line = c.reshape(height, bayer_width)
+        lower_line = lower_line[::2]  # only take every other line
+        bayer_image = cp.stack([upper_line, lower_line], axis=1).reshape(
+            bayer_height, bayer_width
+        )
+    else:
+        assert False and 'Unexpected image format "%s".' % (bayer_format,)
+    return bayer_image
+
+
+def bayer_image_to_csi(pixel_format, bayer_image, start_byte, received_line_bytes):
+    if pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_8:
+        csi_image = encode_raw_8_bayer_image(bayer_image)
+    elif pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
+        csi_image = encode_raw_12_bayer_image(bayer_image)
+    elif pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
+        csi_image = encode_raw_10_bayer_image(bayer_image)
+    else:
+        assert False and f"Unexpected {pixel_format=}"
+    rows, cols = csi_image.shape
+    expected_lines = cp.resize(csi_image, (rows, received_line_bytes))
+    start_metadata = cp.empty((start_byte,), dtype=cp.uint8)
+    return cp.concatenate((start_metadata, expected_lines.ravel()))
+    # with_prefix = cp.array([start_metadata, expected_lines.ravel()])
+    # return with_prefix.ravel()
+
+
+def make_csi_from_image_file(
+    height,
+    width,
+    pixel_format,
+    bayer_format,
+    start_byte,
+    received_line_bytes,
+    filename,
+):
+    # Workaround for the fact that pytest globally configures the
+    # logging line with our `log_timestamp_s` and `tid` values,
+    # but PIL uses module-specific loggers (which don't inherit
+    # filters from the root logger).  Our workaround isn't great--
+    # this will crash the program if PIL logs something at WARN
+    # level-- which isn't a problem for now.
+    logging.getLogger("PIL").setLevel(logging.WARN)
+    image = (
+        PIL.Image.open(filename)
+        .convert("RGB")
+        .resize((width, height), PIL.Image.LANCZOS)
+    )
+    uint16_image = cp.array(image, dtype=np.uint16)  # only 8 bits are set
+    if pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
+        uint16_image[:] <<= 2  # use 10 bits
+    else:
+        assert False and "untested mode"
+    rgb_image = uint16_image.reshape(height, width, 3)
+    bayer_image = encode_bayer_image(rgb_image, bayer_format)
+    csi_bytes = bayer_image_to_csi(
+        pixel_format, bayer_image, start_byte, received_line_bytes
+    )
+    return csi_bytes

@@ -13,16 +13,21 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# Define and create a directory to store python operators under the hololink python module
-set(HOLOLINK_PYTHON_MODULE_OUT_DIR ${CMAKE_BINARY_DIR}/python/${CMAKE_INSTALL_LIBDIR})
-file(MAKE_DIRECTORY ${HOLOLINK_PYTHON_MODULE_OUT_DIR})
+include(pybind11_add_hololink_module)
+
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_python_files
+    FILES
+        __init__.py
+        hsb_controller.py
+        renesas_bajoran_lite_ts1.py
+        renesas_bajoran_lite_ts2.py
+)
 
 add_subdirectory(hololink_core)
 add_subdirectory(operators)
 add_subdirectory(sensors)
 add_subdirectory(emulation)
-
-include(pybind11_add_hololink_module)
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET hololink
@@ -33,13 +38,10 @@ pybind11_add_hololink_module(
 # Note: Link against _hololink_core.so is handled automatically by pybind11_add_hololink_module
 # since the hololink target depends on hololink_core
 
-# install compiled modules
-if(NOT HOLOLINK_PYTHON_INSTALL_DIR)
-    set(HOLOLINK_PYTHON_INSTALL_DIR .)
-endif()
+# install compiled HoloLink Python module
 install(
     DIRECTORY "${HOLOLINK_PYTHON_MODULE_OUT_DIR}/"
-    DESTINATION "${HOLOLINK_PYTHON_INSTALL_DIR}"
+    DESTINATION "${HOLOLINK_PYTHON_INSTALL_DIR}/hololink"
     FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
     DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
     COMPONENT "hololink-python_libs"

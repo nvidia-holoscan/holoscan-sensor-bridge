@@ -27,6 +27,21 @@ namespace {
 const char* source = R"(
 extern "C" {
 
+// Converts packed 8-bit data into 16-bit data.
+__global__ void packed8bitTo16bit(unsigned short* output, const unsigned char* input,
+                                  int bytes_per_line, int width, int height) {
+    int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
+    int idx_y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if ((idx_x >= width) || (idx_y >= height))
+        return;
+
+    int input_index = (idx_y * bytes_per_line) + idx_x;
+    int output_index = (idx_y * width) + idx_x;
+
+    output[output_index] = (((unsigned short)input[input_index]) << 8) & 0xFF00;
+}
+
 // Converts packed 10-bit data, where each 4-byte dword contains 3 pixels, into 16-bit data.
 __global__ void packed10bitTo16bit(unsigned short* output, const unsigned int* input,
                                    int bytes_per_line, int width, int height) {
@@ -45,6 +60,12 @@ __global__ void packed10bitTo16bit(unsigned short* output, const unsigned int* i
 }
 
 // Converts packed 12-bit data, where 2 pixels are stored in every 3 bytes.
+// Byte layout (matches the COE/FUSA RAW12 stream and is consistent with
+// packed10bitTo16bit's pixel-0-first ordering):
+//   byte[0]      = pixel0[7:0]
+//   byte[1][3:0] = pixel0[11:8]
+//   byte[1][7:4] = pixel1[3:0]
+//   byte[2]      = pixel1[11:4]
 __global__ void packed12bitTo16bit(unsigned short* output, const unsigned char* input,
                                    int bytes_per_line, int width, int height) {
     int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
@@ -56,10 +77,10 @@ __global__ void packed12bitTo16bit(unsigned short* output, const unsigned char* 
     int input_index = (idx_y * bytes_per_line) + (idx_x * 3);
     int output_index = (idx_y * width) + (idx_x * 2);
 
-    output[output_index]     = (input[input_index + 1] << 12 |
-                                input[input_index + 2] << 4) & 0xFFC0;
-    output[output_index + 1] = (input[input_index] << 8 |
-                                input[input_index + 1]) & 0xFFC0;
+    output[output_index]     = ((input[input_index + 1] & 0x0F) << 12 |
+                                input[input_index]            <<  4) & 0xFFF0;
+    output[output_index + 1] = (input[input_index + 2]        <<  8 |
+                                (input[input_index + 1] & 0xF0)    ) & 0xFFF0;
 }
 
 })";
@@ -81,7 +102,6 @@ void PackedFormatConverterOp::setup(holoscan::OperatorSpec& spec)
         "Name of the input tensor", std::string(""));
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
         "Name of the output tensor", std::string(""));
-    cuda_stream_handler_.define_params(spec);
 }
 
 void PackedFormatConverterOp::start()
@@ -100,7 +120,7 @@ void PackedFormatConverterOp::start()
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
     cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
-        source, { "packed10bitTo16bit", "packed12bitTo16bit" }));
+        source, { "packed8bitTo16bit", "packed10bitTo16bit", "packed12bitTo16bit" }));
 }
 
 void PackedFormatConverterOp::stop()
@@ -122,15 +142,6 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
     }
 
     auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-
-    // get the CUDA stream from the input message
-    gxf_result_t stream_handler_result
-        = cuda_stream_handler_.from_message(context.context(), entity);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error(fmt::format(
-            "Failed to get the CUDA stream from incoming messages: {}",
-            GxfResultStr(stream_handler_result)));
-    }
 
     const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>(in_tensor_name_.get().c_str());
     if (!maybe_tensor) {
@@ -179,9 +190,18 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
     }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
+    // Get the CUDA stream from the input message if present, otherwise generate one.
+    // This stream will also be transmitted on the output port.
+    const cudaStream_t cuda_stream = input.receive_cuda_stream();
 
     switch (pixel_format_) {
+    case hololink::csi::PixelFormat::RAW_8:
+        cuda_function_launcher_->launch("packed8bitTo16bit",
+            { pixel_width_, pixel_height_, 1 },
+            cuda_stream, tensor.value()->pointer(),
+            input_tensor->pointer() + start_byte_,
+            bytes_per_line_, pixel_width_, pixel_height_);
+        break;
     case hololink::csi::PixelFormat::RAW_10:
         cuda_function_launcher_->launch("packed10bitTo16bit",
             { pixel_width_ / 3, // outputs 3 pixels per shader invocation
@@ -200,12 +220,6 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
         break;
     default:
         throw std::runtime_error("Unsupported bits per pixel value");
-    }
-
-    // pass the CUDA stream to the output message
-    stream_handler_result = cuda_stream_handler_.to_message(out_message);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to add the CUDA stream to the outgoing messages");
     }
 
     // Emit the tensor

@@ -17,19 +17,80 @@
 find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
 include(hololink_deps/pybind11)
 
+# Helper function to copy pure Python files to the module output directory
+# Usage:
+#   copy_hololink_python_files(
+#       TARGET_NAME <name>           # Name for the custom target (required)
+#       DESTINATION <subdir>         # Relative build subdirectory (e.g. "sensors/vb1940", or empty for module root)
+#       FILES <file1> <file2> ...    # List of Python files to copy. Note that all files are placed in the same
+#                                    # output destination folder, without respect for input subfolder structures.
+#   )
+function(copy_hololink_python_files)
+    cmake_parse_arguments(COPY                  # PREFIX
+        ""                                      # OPTIONS
+        "TARGET_NAME;DESTINATION"               # ONEVAL
+        "FILES"                                 # MULTIVAL
+        ${ARGN}
+    )
+
+    if(NOT COPY_TARGET_NAME)
+        message(FATAL_ERROR "copy_hololink_python_files: TARGET_NAME is required")
+    endif()
+    if(NOT COPY_FILES)
+        message(FATAL_ERROR "copy_hololink_python_files: FILES is required")
+    endif()
+
+    # Build destination path, handling empty DESTINATION for root-level files
+    if(COPY_DESTINATION)
+        # Make COPY_DESTINATION absolute relative to HOLOLINK_PYTHON_MODULE_OUT_DIR
+        cmake_path(ABSOLUTE_PATH COPY_DESTINATION BASE_DIRECTORY "${HOLOLINK_PYTHON_MODULE_OUT_DIR}" OUTPUT_VARIABLE _dest_dir)
+    else()
+        set(_dest_dir "${HOLOLINK_PYTHON_MODULE_OUT_DIR}")
+    endif()
+    # Ensure destination directory hierarchy exists
+    file(MAKE_DIRECTORY "${_dest_dir}")
+
+    set(_output_files)
+    foreach(_source_file ${COPY_FILES})
+        # Convert to absolute path (handles both absolute and relative paths)
+        set(_source_path "${_source_file}")
+        cmake_path(ABSOLUTE_PATH _source_path BASE_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
+
+        # Extract just the filename for the destination
+        cmake_path(GET _source_file FILENAME _filename)
+        set(_output_file "${_dest_dir}/${_filename}")
+
+        list(APPEND _output_files "${_output_file}")
+        add_custom_command(
+            OUTPUT "${_output_file}"
+            COMMAND ${CMAKE_COMMAND} -E copy
+                "${_source_path}" "${_output_file}"
+            DEPENDS "${_source_path}"
+            COMMENT "Copying ${_filename} to ${_output_file}"
+        )
+    endforeach()
+
+    add_custom_target(${COPY_TARGET_NAME} ALL
+        DEPENDS ${_output_files}
+    )
+    add_dependencies(hololink_python_all ${COPY_TARGET_NAME})
+endfunction()
+
 # Helper function to generate pybind11 operator modules
 function(pybind11_add_hololink_module)
     cmake_parse_arguments(MODULE                # PREFIX
         ""                                      # OPTIONS
-        "CPP_CMAKE_TARGET;CLASS_NAME;IMPORT"    # ONEVAL
+        "CPP_CMAKE_TARGET;CLASS_NAME;IMPORT;NAME"    # ONEVAL
         "SOURCES"                               # MULTIVAL
         ${ARGN}
     )
 
-    set(MODULE_NAME ${MODULE_CPP_CMAKE_TARGET})
+    if(NOT MODULE_NAME)
+        set(MODULE_NAME ${MODULE_CPP_CMAKE_TARGET})
+    endif()
+
     set(target_name ${MODULE_NAME}_python)
     pybind11_add_module(${target_name} MODULE ${MODULE_SOURCES})
-
     target_include_directories(${target_name}
         PUBLIC ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pydoc
     )
@@ -58,7 +119,7 @@ function(pybind11_add_hololink_module)
                 # Add RPATH to find hololink_core module at runtime
                 file(RELATIVE_PATH core_relative_path
                     ${CMAKE_CURRENT_LIST_DIR}
-                    ${CMAKE_SOURCE_DIR}/python/hololink/hololink_core
+                    ${hololink_SOURCE_DIR}/python/hololink/hololink_core
                 )
                 set_property(TARGET ${target_name}
                     APPEND PROPERTY BUILD_RPATH "\$ORIGIN/${core_relative_path}"
@@ -74,7 +135,7 @@ function(pybind11_add_hololink_module)
     # Sets the rpath of the module
     file(RELATIVE_PATH install_lib_relative_path
         ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_SOURCE_DIR}/${HOLOSCAN_INSTALL_LIB_DIR}
+        ${hololink_SOURCE_DIR}/${HOLOSCAN_INSTALL_LIB_DIR}
     )
     list(APPEND _rpath
         "\$ORIGIN/${install_lib_relative_path}" # in our install tree (same layout as src)
@@ -86,11 +147,11 @@ function(pybind11_add_hololink_module)
     )
     unset(_rpath)
 
-    # Define and create a directory to store python bindings the hololink python module
     file(RELATIVE_PATH module_relative_path
-        ${CMAKE_SOURCE_DIR}/python/hololink
+        ${hololink_SOURCE_DIR}/python/hololink
         ${CMAKE_CURRENT_LIST_DIR}
     )
+
     set(module_out_dir ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${module_relative_path})
     file(MAKE_DIRECTORY ${module_out_dir})
 
@@ -113,5 +174,7 @@ function(pybind11_add_hololink_module)
         LIBRARY_OUTPUT_DIRECTORY ${module_out_dir}
         OUTPUT_NAME _${MODULE_NAME}
     )
+
+    add_dependencies(hololink_python_all ${target_name})
 
 endfunction()

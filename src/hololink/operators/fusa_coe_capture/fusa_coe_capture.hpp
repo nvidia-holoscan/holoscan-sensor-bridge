@@ -65,6 +65,9 @@ public:
     // that is responsible for converting the packetized pixel formats that this outputs.
     void configure_converter(csi::CsiConverter& converter);
 
+    // Configure the receiver for non-CSI/image data.
+    void configure_frame_size(uint32_t frame_size_bytes);
+
     // Callback for releasing the wrapped buffers that were passed to downstream operators.
     static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
 
@@ -93,6 +96,7 @@ private:
     uint32_t pixel_height_;
     uint32_t trailing_bytes_;
     csi::PixelFormat pixel_format_;
+    bool csi_pixel_format_;
     bool configured_ = false;
 
     CUcontext cuda_context_ = nullptr;
@@ -107,10 +111,12 @@ private:
     std::atomic<bool> stop_thread_;
     std::mutex buffer_mutex_;
     std::condition_variable buffer_acquired_;
+    std::condition_variable buffer_available_;
 
     struct BufferInfo {
-        BufferInfo(FusaCoeCaptureOp* parent)
+        BufferInfo(FusaCoeCaptureOp* parent, uint32_t index)
             : parent_(parent)
+            , index_(index)
         {
         }
 
@@ -122,11 +128,14 @@ private:
 
         // Holds reference to parent for the sake of the release callback.
         FusaCoeCaptureOp* parent_ = nullptr;
+        uint32_t index_ = 0;
     };
 
     std::deque<BufferInfo*> available_buffers_; // Buffers available for new capture requests.
     std::queue<BufferInfo*> in_flight_captures_; // Buffers in use for in-flight captures.
     BufferInfo* acquired_buffer_ = nullptr; // Last buffer acquired from capture.
+
+    uint32_t next_reissue_index_ = 0; // Next expected buffer index for FIFO-ordered issue.
 
     // Pending buffers that have been wrapped and passed to downstream operators and have not yet
     // been released. This map is static since the callback provides only the CUDA device pointer.

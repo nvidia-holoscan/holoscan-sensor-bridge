@@ -95,3 +95,22 @@ For SPI and I2C controllers:
    - **I2C ARB_LOST**: Check for bus contention
    - **SPI Data Issues**: Verify SPI_MODE and clock frequency
    - **All**: Check signal integrity with oscilloscope
+
+## UART Debug Registers
+
+Use UART status and debug registers at base `0x0300_0400` to isolate RX/TX path issues:
+
+- **STATUS0 (0x0300_0480)**:
+  - **TX_BUSY (bit 0)** / **RX_BUSY (bit 1)**: Activity indicators
+  - **TX_FIFO_EMPTY (bit 3)** / **RX_FIFO_NOT_EMPTY (bit 5)**: FIFO flow state
+  - **RX_PARITY_ERROR (bit 6)**, **RX_FRAME_ERROR (bit 7)**, **TX_OVERFLOW (bit 8)**,
+    **RX_OVERFLOW (bit 9)**, **RX_GLITCH_ERROR (bit 13)**: Sticky error bits
+  - **LAST_RX_VALID (bit 10)**: Indicates `LAST_RX` contains valid data
+- **STATUS1 (0x0300_0484)**:
+  - Sticky interrupt status for TX empty/almost-full/almost-empty, RX not-empty, and RX
+    glitch error
+- **LAST_RX (0x0300_0548)**:
+  - Non-destructive view of the most recent byte consumed from `RX_DATA`
+
+Clear sticky interrupt/error conditions through **CTRL3 (0x0300_040C)** and clear
+`LAST_RX_VALID` via **CTRL0[10] (0x0300_0400)**.

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -44,12 +44,13 @@ PYBIND11_MODULE(_linux_coe_receiver, m)
         .def("run", &LinuxCoeReceiver::run, py::call_guard<py::gil_scoped_release>())
         .def("close", &LinuxCoeReceiver::close)
         .def(
-            "get_next_frame", [](LinuxCoeReceiver& self, unsigned timeout_ms) {
+            "get_next_frame", [](LinuxCoeReceiver& self, unsigned timeout_ms, intptr_t cuda_stream) {
                 LinuxCoeReceiverMetadata metadata;
-                bool success = self.get_next_frame(timeout_ms, metadata);
+                bool success = self.get_next_frame(timeout_ms, metadata, reinterpret_cast<CUstream>(cuda_stream));
                 return std::make_tuple(success, metadata);
             },
-            py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a)
+            py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a, "cuda_stream"_a)
+        .def("frames_ready", &LinuxCoeReceiver::frames_ready, py::call_guard<py::gil_scoped_release>())
         .def("set_frame_ready", &LinuxCoeReceiver::set_frame_ready, "frame_ready"_a);
 
     py::class_<LinuxCoeReceiverMetadata>(m, "LinuxCoeReceiverMetadata")

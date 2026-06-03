@@ -17,6 +17,7 @@
 
 #include "write.hpp"
 
+#include <cstring>
 #include <getopt.h>
 #include <iostream>
 
@@ -58,10 +59,21 @@ int main(int argc, char* argv[])
         print_usage(argv[0]);
         return 1;
     }
-    int32_t address = std::stoi(argv[optind]);
-    int32_t value = std::stoi(argv[optind + 1]);
+    size_t nconsumed = 0;
+    int32_t address = std::stoi(argv[optind], &nconsumed, 0);
+    if (nconsumed != strlen(argv[optind])) {
+        std::cerr << "Error: Invalid address - Argument not fully recognized as signed integer in any base.\n";
+        print_usage(argv[0]);
+        return 1;
+    }
+    int32_t value = std::stoi(argv[optind + 1], &nconsumed, 0);
+    if (nconsumed != strlen(argv[optind + 1])) {
+        std::cerr << "Error: Invalid value - Argument not fully recognized as signed integer in any base.\n";
+        print_usage(argv[0]);
+        return 1;
+    }
 
-    std::cout << "Writing 0x" << std::hex << address << std::dec << "=" << value << " on " << hololink_ip << "..." << std::endl;
+    std::cout << "Writing 0x" << std::hex << address << std::dec << "= 0x" << std::hex << value << std::dec << "..." << std::endl;
     hololink::tools::write(hololink_ip, address, value);
     std::cout << "Done." << std::endl;
 

@@ -21,7 +21,7 @@ There are two distributed examples available:
 
   sh ./docker/build.sh
 
-  export DISPLAY=`(DISPLAY)`
+  export DISPLAY=:0  # or your X display, e.g. :1
 
   xhost +
 
@@ -49,7 +49,7 @@ On a node having Hololink board connected, run:
 
 ```bash
 
-  python3 ./examples/distributed_imx274_player.py --driver --worker --address `(Host IP: Port (example: 5555))` --fragments src_fragment
+  python3 ./examples/distributed_imx274_player.py --driver --worker --address <driver-node-ip>:5555 --fragments src_fragment
 
 ```
 
@@ -57,7 +57,7 @@ On a node having display connected, run:
 
 ```bash
 
-  python3 ./examples/distributed_imx274_player.py --worker --address `(Node 1 IP: Node 1 driver port (example: 5555))` --fragments visualizer_fragment
+  python3 ./examples/distributed_imx274_player.py --worker --address <driver-node-ip>:5555 --fragments visualizer_fragment
 
 ```
 
@@ -95,7 +95,7 @@ On a node having Hololink board and display connected, run:
 
 ```bash
 
-  python3 ./examples/distributed_tao_peoplenet.py --driver --worker --address `(Host IP: Port (example: 5555))` --fragments src_fragment
+  python3 ./examples/distributed_tao_peoplenet.py --driver --worker --address <driver-node-ip>:5555 --fragments src_fragment
 
 ```
 
@@ -103,7 +103,7 @@ On a node having inferencing capabilities, run:
 
 ```bash
 
-  python3 ./examples/distributed_tao_peoplenet.py --worker --address `(Node 1 IP: Node 1 driver port (example: 5555))` --fragments visualizer_fragment
+  python3 ./examples/distributed_tao_peoplenet.py --worker --address <driver-node-ip>:5555 --fragments inference_fragment
 
 ```
 

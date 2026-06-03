@@ -55,4 +55,6 @@ $ENV_PIP install -r "$REQUIREMENTS_FILE" && \
 $ENV_PIP install cupy-cuda${CUDA_MAJOR_VERSION}x ; \
 $ENV_PIP install $PACKAGE_PATH && \
 rm -f $PACKAGE_PATH/hololink/emulation/$EMULATION_LIB_FILE $PACKAGE_PATH/hololink/emulation/sensors/$SENSORS_LIB_FILE
+# egg_info file caches version information, masking changes
+rm -rf $PACKAGE_PATH/hololink.egg-info
 deactivate

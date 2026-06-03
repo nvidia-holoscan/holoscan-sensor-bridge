@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,6 +13,8 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+find_package(CUDAToolkit REQUIRED)
+
 add_library(hololink_core STATIC
   arp_wrapper.cpp
   data_channel.cpp
@@ -25,15 +27,18 @@ add_library(hololink_core STATIC
   packetizer_program.cpp
   reactor.cpp
   timeout.cpp
-  traditional_spi.cpp
-  traditional_i2c.cpp
   )
 add_library(hololink::core ALIAS hololink_core)
 
 set_property(TARGET hololink_core PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+target_compile_definitions(hololink_core PRIVATE
+    HOLOLINK_ROCE_USE_GPU_VRAM=$<BOOL:${HOLOLINK_ROCE_USE_GPU_VRAM}>
+)
+
 target_link_libraries(hololink_core
   PUBLIC
+    CUDA::cuda_driver
     fmt::fmt-header-only
 )
 
@@ -53,6 +58,7 @@ install(TARGETS hololink_core
 install(FILES
         arp_wrapper.hpp
         csi_controller.hpp
+        named_lock.hpp
         csi_formats.hpp
         data_channel.hpp
         deserializer.hpp
@@ -66,6 +72,7 @@ install(FILES
         networking.hpp
         nullable_pointer.hpp
         nvtx_trace.hpp
+        packetizer_program.hpp
         reactor.hpp
         serializer.hpp
         smart_object_pool.hpp

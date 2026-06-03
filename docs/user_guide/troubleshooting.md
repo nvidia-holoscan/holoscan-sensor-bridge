@@ -13,14 +13,27 @@ run.
 
 ## Unable to connect to the sensor bridge device
 
+On AGX devices running Jetpack 7.X, ensure the target interface is up and the carrier is
+detected while the HSB is connected. On AGX Orin, this is the `end0` interface while AGX
+Thor it is the `mgbe0_0` interface. If the connections are secure and ip addresses set
+properly, try to reset the network interface in a single command:
+
+```none
+sudo ip link set dev end0 down && sudo ip link set dev end0 up
+```
+
 The `hololink enumerate` command, in the demo container, can be used to monitor
 enumeration messages sent by the sensor bridge device. If no messages appear, then check
 for power to the sensor bridge device, physical connections to the device, and
 appropriate network configurations as listed above. `ping 192.168.0.2` and
-`ping 192.168.0.3` can be used to check for connectivity. If an HSB device is running an
-incompatible FPGA image (e.g. FPGA is 2407 while the host software requires 2412), ping
-would be successful but no enumeration data would appear. Firmware version problems can
-be solved by [reprogramming your device](sensor_bridge_firmware_setup.md).
+`ping 192.168.0.3` can be used to check for connectivity.
+
+### FPGA firmware version mismatch (`ping` succeeds, `hololink enumerate` shows nothing)
+
+If an HSB device is running an incompatible FPGA image (e.g. FPGA is 2407 while the host
+software requires 2412), `ping` would be successful but no enumeration data would
+appear. Firmware version problems can be solved by
+[reprogramming your device](sensor_bridge_firmware_setup.md).
 
 ## Visualizer display is completely white
 

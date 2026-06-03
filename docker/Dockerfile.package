@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -16,11 +18,14 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_VERSION=invalid
+ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked"
+
 FROM ${CONTAINER_VERSION} AS base
 
 ADD . /opt/hololink/
 
-RUN apt-get update \
+RUN ${APT_CACHE_MOUNT} apt-get update \
     && apt-get install -y python3-setuptools \
     && rm -rf /var/lib/apt/lists/*
 
@@ -35,6 +40,7 @@ RUN cd /opt/hololink \
     && rm -rf build \
     && cmake -S . -B build -G Ninja \
        -DBUILD_SHARED_LIBS:BOOL=OFF \
+       -DHOLOLINK_BUILD_CPACK:BOOL=ON \
        -DHOLOLINK_BUILD_PYTHON:BOOL=ON \
        -DHOLOLINK_PYTHON_INSTALL_DIR:STRING=python/hololink \
        -DCPACK_GENERATOR:STRING=DEB \

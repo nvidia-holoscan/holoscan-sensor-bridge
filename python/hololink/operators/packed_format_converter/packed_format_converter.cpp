@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+
+#include "../operator_util.hpp"
 
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
@@ -55,6 +57,7 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyPackedFormatConverterOp(holoscan::Fragment* fragment,
+        const py::args& args,
         const std::shared_ptr<holoscan::Allocator>& allocator,
         int cuda_device_ordinal,
         const std::string& name = "packed_format_converter",
@@ -65,6 +68,7 @@ public:
             holoscan::Arg { "in_tensor_name", in_tensor_name },
             holoscan::Arg { "out_tensor_name", out_tensor_name } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -84,7 +88,7 @@ PYBIND11_MODULE(_packed_format_converter, m)
 
     auto op = py::class_<PackedFormatConverterOp, PyPackedFormatConverterOp, holoscan::Operator, hololink::csi::CsiConverter,
         std::shared_ptr<PackedFormatConverterOp>>(m, "PackedFormatConverterOp")
-                  .def(py::init<holoscan::Fragment*, const std::shared_ptr<holoscan::Allocator>&,
+                  .def(py::init<holoscan::Fragment*, const py::args&, const std::shared_ptr<holoscan::Allocator>&,
                            int, const std::string&, const std::string&, const std::string&>(),
                       "fragment"_a, "allocator"_a, "cuda_device_ordinal"_a = 0,
                       "name"_a = "packed_format_converter"s, "in_tensor_name"_a = ""s, "out_tensor_name"_a = ""s)

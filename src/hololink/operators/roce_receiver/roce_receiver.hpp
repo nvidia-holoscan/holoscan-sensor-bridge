@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -22,6 +22,7 @@
 
 #include <atomic>
 #include <mutex>
+#include <queue>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -29,6 +30,7 @@
 
 #include <infiniband/verbs.h>
 
+#include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/deserializer.hpp>
 #include <hololink/core/hololink.hpp>
 #include <hololink/core/nvtx_trace.hpp>
@@ -50,6 +52,8 @@ public:
     uint32_t frame_number = 0; // 32-bit extended version of the 16-bit frame_metadata.frame_number
 };
 
+class RoceReceiverDescriptor;
+
 /**
  *
  */
@@ -67,9 +71,11 @@ public:
         size_t cu_page_size,
         unsigned pages,
         size_t metadata_offset,
-        const char* peer_ip);
+        const char* peer_ip,
+        unsigned queue_size,
+        void* host_buffer = nullptr);
 
-    ~RoceReceiver();
+    virtual ~RoceReceiver();
 
     void blocking_monitor();
 
@@ -79,7 +85,7 @@ public:
      * metadata to the host. In that case, the virtual function implementation should override
      * this function to be a no-op (i.e., do nothing).
      */
-    virtual void copy_metadata_to_host(unsigned current_page);
+    virtual void copy_metadata_to_host(uint32_t page, void* metadata_buffer, CUevent metadata_event);
 
     bool start();
 
@@ -95,12 +101,17 @@ public:
     bool get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& metadata);
 
     /**
+     * returns false if get_next_frame may block.
+     */
+    bool frames_ready();
+
+    /**
      * This virtual function is used to get the frame metadata.
      * This is kept virtual as some implementations may skip copying the
      * metadata to the host. In that case, the virtual function implementation should override
      * this function to return empty frame metadata.
      */
-    virtual const Hololink::FrameMetadata get_frame_metadata();
+    virtual const Hololink::FrameMetadata get_frame_metadata(void* metadata_buffer, CUevent metadata_event);
 
     uint32_t get_qp_number() { return qp_number_; };
 
@@ -123,6 +134,7 @@ protected:
 protected:
     char* ibv_name_;
     unsigned ibv_port_;
+    void* host_buffer_;
     CUdeviceptr cu_buffer_;
     size_t cu_buffer_size_;
     size_t cu_frame_size_;
@@ -130,6 +142,7 @@ protected:
     unsigned pages_;
     size_t metadata_offset_;
     char* peer_ip_;
+    unsigned queue_size_;
     struct ibv_qp* ib_qp_;
     struct ibv_mr* ib_mr_;
     int dmabuf_fd_;
@@ -139,26 +152,28 @@ protected:
     struct ibv_comp_channel* ib_completion_channel_;
     uint32_t qp_number_;
     uint32_t rkey_;
-    bool volatile ready_;
+
     pthread_mutex_t ready_mutex_;
     pthread_cond_t ready_condition_;
+    std::atomic<bool> consumer_ready_;
+
+    std::queue<RoceReceiverDescriptor*> ready_;
+    std::queue<RoceReceiverDescriptor*> available_;
+
+    uint32_t dropped_;
+
     bool volatile done_;
+
     int control_r_, control_w_;
-    uint64_t received_frame_number_;
     int rx_write_requests_fd_;
-    uint64_t volatile rx_write_requests_; // over all of time
-    uint32_t volatile imm_data_;
-    struct timespec volatile event_time_;
-    struct timespec volatile received_;
-    CUdeviceptr volatile current_buffer_;
-    CUstream metadata_stream_;
-    uint32_t volatile dropped_;
-    uint8_t* metadata_buffer_;
-    uint32_t volatile received_psn_;
-    unsigned volatile received_page_;
+
+    common::UniqueCUstream metadata_stream_;
+
     std::function<void(const RoceReceiver&)> frame_ready_;
+
     /** Sign-extended frame_number value. */
     ExtendedCounter<uint32_t, uint16_t> frame_number_;
+
     std::mutex monitor_running_;
 
     std::mutex& get_lock(); // Ensures reentrency protection for ibv calls.

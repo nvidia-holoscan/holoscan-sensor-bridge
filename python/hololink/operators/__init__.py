@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,14 +18,17 @@
 import importlib
 import sys
 
-_MODULES = {
+_OBJECTS = {
     "ArgusIspOp": "argus_isp",
     "AudioPacketizerOp": "audio_packetizer",
     "BaseReceiverOp": "base_receiver_op",
     "CheckCrcOp": "compute_crc",
+    "CheckPvaCrcOp": "pva_crc",
     "ComputeCrcOp": "compute_crc",
+    "ComputePvaCrcOp": "pva_crc",
     "CsiToBayerOp": "csi_to_bayer",
     "FusaCoeCaptureOp": "fusa_coe_capture",
+    "HsbControllerOp": "hsb_controller_op",
     "ImageProcessorOp": "image_processor",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
     "IQDecoderOp": "iq_dec",
@@ -37,17 +40,28 @@ _MODULES = {
     "LinuxReceiverOperator": "linux_receiver_operator",
     "PackedFormatConverterOp": "packed_format_converter",
     "Rational": "sig_gen",
+    "RoceReceiver": "roce_receiver",
     "RoceReceiverOp": "roce_receiver",
     "RoceTransmitterOp": "roce_transmitter",
+    "GpuRoceTransceiverOp": "gpu_roce_transceiver",
     "SignalGeneratorOp": "sig_gen",
     "SignalViewerOp": "sig_viewer",
-    "SIPLCaptureOp": "sipl_capture",
+    "SIPLCaptureService": "sipl_capture",
+    "SIPLCameraOutputOp": "sipl_capture",
+    "SubFrameCombinerOp": "sub_frame_combiner",
     "UdpTransmitterOp": "udp_transmitter",
 }
 
+_MODULES = [
+    "linux_controller_receiver",
+    "roce_controller_receiver",
+]
+
+
 __all__ = []
 
-__all__.extend(_MODULES.keys())
+__all__.extend(_MODULES)
+__all__.extend(_OBJECTS.keys())
 
 
 # Autocomplete
@@ -57,12 +71,20 @@ def __dir__():
 
 # Lazily load modules and classes
 def __getattr__(attr):
-    if attr in _MODULES:
-        module_name = ".".join([__name__, _MODULES[attr]])
+    if attr in _OBJECTS:
+        module_name = ".".join([__name__, _OBJECTS[attr]])
         if module_name in sys.modules:  # cached
             module = sys.modules[module_name]
         else:
             module = importlib.import_module(module_name)  # import
             sys.modules[module_name] = module  # cache
         return getattr(module, attr)
+    if attr in _MODULES:
+        module_name = f"{__name__}.{attr}"
+        if module_name in sys.modules:  # cached
+            module = sys.modules[module_name]
+        else:
+            module = importlib.import_module(module_name)  # import
+            sys.modules[module_name] = module  # cache
+        return module
     raise AttributeError(f"module {__name__} has no attribute {attr}")

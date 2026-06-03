@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,7 @@
 #include "logging.hpp"
 #include "metadata.hpp"
 
+#include <fmt/chrono.h>
 #include <fmt/format.h>
 #include <fmt/ranges.h>
 
@@ -77,7 +78,12 @@ template <typename FormatT, typename... ArgsT>
 static inline void hsb_log_fmt(char const* file, unsigned line, const char* function, HsbLogLevel level, const FormatT& format, ArgsT&&... args)
 {
     if (level >= hsb_log_level) {
+// Version number of the fmt library represented as (major * 10000 + minor * 100 + patch)
+#if FMT_VERSION >= 110000
+        auto fmt_args = fmt::make_format_args(args...);
+#else
         auto fmt_args = fmt::make_format_args<fmt::buffer_context<fmt::char_t<FormatT>>>(args...);
+#endif
         hsb_logger(file, line, function, level, fmt::vformat(format, fmt_args).c_str());
     }
 }

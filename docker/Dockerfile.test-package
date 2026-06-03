@@ -1,4 +1,6 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# syntax=docker/dockerfile:1
+
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -14,10 +16,12 @@
 # limitations under the License.
 
 ARG CONTAINER_VERSION=invalid
+ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked"
 
 FROM ${CONTAINER_VERSION} AS base
 
-RUN apt-get update \
+RUN ${APT_CACHE_MOUNT} apt-get update \
   && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
     wget \
     pkg-config \
@@ -30,10 +34,11 @@ RUN apt-get update \
     python3-pip \
   && rm -rf /var/lib/apt/lists/*
 
-RUN wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
-  && dpkg -i cuda-keyring_1.1-1_all.deb
+RUN curl -L -O https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/arm64/cuda-keyring_1.1-1_all.deb \
+  && dpkg -i cuda-keyring_1.1-1_all.deb \
+  && rm cuda-keyring_1.1-1_all.deb
 
-RUN pip3 install holoscan==3.9.0 cuda-python
+RUN pip3 install holoscan==4.0.0 cuda-python
 
 ARG HOLOLINK_VERSION=invalid
 ARG ARCH=invalid
@@ -41,6 +46,6 @@ COPY --from=hololink-package hololink-core_${HOLOLINK_VERSION}_${ARCH}.deb .
 COPY --from=hololink-package hololink-dev_${HOLOLINK_VERSION}_${ARCH}.deb .
 COPY --from=hololink-package hololink-roce_${HOLOLINK_VERSION}_${ARCH}.deb .
 
-RUN apt-get update \
+RUN ${APT_CACHE_MOUNT} apt-get update \
  && apt-get install -y ./hololink-core_${HOLOLINK_VERSION}_${ARCH}.deb ./hololink-dev_${HOLOLINK_VERSION}_${ARCH}.deb \
  && rm -rf /var/lib/apt/lists/*

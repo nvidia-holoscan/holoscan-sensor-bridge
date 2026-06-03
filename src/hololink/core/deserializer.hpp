@@ -210,6 +210,8 @@ public:
         return true;
     }
 
+    size_t remaining() { return (limit_ >= position_) ? (limit_ - position_) : 0; }
+
 protected:
     const uint8_t* buffer_;
     size_t limit_;

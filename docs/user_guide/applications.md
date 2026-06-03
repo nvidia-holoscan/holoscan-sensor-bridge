@@ -661,3 +661,256 @@ The WAV file must use the following audio parameters:
 - **Bit rate**: 2304 kbps
 ]
 ```
+
+## Sub-Frame Processing Applications
+
+Sub-frame processing is a feature that allows high-resolution sensor data frames to be
+processed incrementally as they arrive, rather than waiting for the complete frame to be
+received. This enables reduced memory requirements for processing large frames by using
+smaller sub-frame buffers.
+
+### What is Sub-Frame Processing?
+
+In traditional frame-based processing, a complete frame must be received before any
+processing or display can occur. For high-resolution sensors (e.g., 4K cameras at 60fps,
+high-density lidar point clouds, or radar data), this can introduce significant latency,
+as the entire frame must be buffered before processing begins.
+
+Sub-frame processing divides each frame into multiple horizontal strips (sub-frames)
+that are processed independently as they arrive. Each sub-frame contains a contiguous
+set of rows from the original frame. For example, a 2160-row tall image frame can be
+divided into sub-frames of 540 rows each, resulting in 4 sub-frames per complete frame.
+The same concept can be applied to other sensor data types that can be divided into
+horizontal strips.
+
+### Sub-Frame Processing Pipeline
+
+There are two display modes for sub-frame processing, depending on whether
+display-synchronized capture is required:
+
+**Sub-Frame Combiner Mode** (e.g., IMX274 examples): Sub-frames are accumulated into a
+complete frame buffer before display. Capture timing is independent of the display.
+
+```{mermaid}
+:align: center
+:caption: Sub-Frame Combiner Pipeline
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph TD
+    subgraph Sensor Data Source
+        S[Sensor]
+    end
+
+    subgraph Holoscan Sensor Bridge
+        R[ReceiverOp] --> C[CsiToBayerOp]
+    end
+
+    subgraph Holoscan Application
+        C --> I[ImageProcessorOp]
+        I --> D[BayerDemosaicOp]
+        D --> SC[SubFrameCombinerOp]
+        SC --> V[HolovizOp]
+    end
+
+    style S fill:#f9f,stroke:#333,stroke-width:2px
+    style R fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style I fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style SC fill:#bbf,stroke:#333,stroke-width:2px
+    style V fill:#bbf,stroke:#333,stroke-width:2px
+```
+
+**Sub-Frame Visualizer Mode** (e.g., VB1940 example): Sub-frames are composited directly
+to the display as they arrive. Capture is synchronized to the display refresh via FPGA
+PTP/PPS, minimizing end-to-end latency.
+
+```{mermaid}
+:align: center
+:caption: Sub-Frame Visualizer Pipeline
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph TD
+    subgraph Sensor Data Source
+        S[Sensor]
+    end
+
+    subgraph Holoscan Sensor Bridge
+        R[ReceiverOp] --> C[CsiToBayerOp]
+    end
+
+    subgraph Holoscan Application
+        C --> I[ImageProcessorOp]
+        I --> D[BayerDemosaicOp]
+        D --> SV[SubFrameVisualizerOp]
+    end
+
+    SV -->|FPO event + PTP/PPS| S
+
+    style S fill:#f9f,stroke:#333,stroke-width:2px
+    style R fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style I fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style SV fill:#9f9,stroke:#333,stroke-width:2px
+```
+
+### Operator-Specific Sub-Frame Behavior
+
+#### CsiToBayerOp
+
+When `sub_frame_rows` parameter is set to a non-zero value:
+
+- **Sub-frame accumulation**: Incoming packets are accumulated into sub-frame-sized
+  buffers
+- **Metadata handling**: The first sub-frame packet may contain a header (`start_byte_`)
+  that is skipped
+- **Sub-frame emission**: A sub-frame is emitted only when a complete sub-frame has been
+  accumulated
+- **Offset calculation**: Converts byte-based offsets to line-based offsets for
+  downstream operators
+- **Frame numbering**: Converts receiver frame numbers to full frame numbers based on
+  sub-frames per frame
+
+#### ImageProcessorOp
+
+Sub-frame processing affects white balance calculation:
+
+- **Histogram accumulation**: Histograms are accumulated across all sub-frames of a
+  frame
+- **White balance timing**: White balance gains are calculated when a new frame starts
+  (detected by frame number change)
+- **Gain application**: White balance gains from the previous frame are applied to
+  current sub-frames
+- **Per-sub-frame processing**: Optical black correction and histogram generation are
+  performed independently on each sub-frame
+- **Out-of-order handling**: Out-of-order sub-frames are handled by accumulating to the
+  existing histogram without recalculating WB gains
+
+#### SubFrameCombinerOp
+
+Combines sub-frames into complete frames:
+
+- **Frame tracking**: Tracks expected frame numbers to detect dropped sub-frames
+- **Row accumulation**: Accumulates rows from sub-frames into a complete frame buffer
+- **Emission**: Emits complete frames only when all sub-frames have been received
+- **Error handling**: Warns if sub-frames are dropped or arrive out of order
+
+#### SubFrameVisualizerOp
+
+Accumulates and visualizes sub-frames with display-synchronized camera capture. Unlike
+`SubFrameCombinerOp`, sub-frames are composited directly to the display as they arrive.
+The operator does not wait for a complete frame before rendering.
+
+A dedicated background thread listens for the display **First Pixel Out (FPO)** event,
+which fires once per display refresh at the start of each vertical blanking interval. On
+each FPO event the thread computes the optimal FPGA camera trigger time for the next
+capture by measuring the pipeline delay (time from FPGA trigger to first sub-frame
+arriving in `compute()`), then schedules the next capture so that the captured frame
+completes rendering just before the following vblank.
+
+This synchronization uses the FPGA **PTP/PPS single-pulse** output: one `set_delay()`
+call per FPO event advances the capture phase by one display period, producing a
+continuous 60 Hz trigger cadence that is phase-locked to the display refresh.
+
+Key behaviors:
+
+- **Pipelined capture**: Frame N+1 is captured while frame N is being rendered, keeping
+  the capture rate equal to the display refresh rate.
+- **Cached pipeline delay**: If a frame is still in-flight when the FPO fires, the last
+  measured pipeline delay is reused to avoid destabilizing the FPGA trigger phase.
+- **Slow-camera detection**: If `render_start_time` is unchanged between consecutive FPO
+  events, a warning is logged indicating that the camera rate is below the display rate.
+  Capture scheduling continues regardless.
+- **FPO fallback**: If `WaitForDisplayEvent` times out, `fpo_available_` is set to
+  `false` and `compute()` switches to a fallback render path that swaps buffers directly
+  rather than relying on the FPO-driven swap.
+
+Parameters:
+
+- **`ptp_synchronizer`**: Pointer to `PtpSynchronizer` from `ptp_pps_output(1)`.
+  Required for display sync; if `nullptr`, capture runs unsynchronized. Default:
+  `nullptr`.
+- **`full_frame_height`**: Total frame height in rows. Required for correct sub-frame
+  compositing.
+- **`fullscreen`**: Run in fullscreen mode. Default: `false`.
+- **`use_exclusive_display`**: Use exclusive display mode (lower latency, requires
+  display ownership). Default: `false`.
+- **`display_name`**: Display name for exclusive display mode. Default: `""`.
+- **`display_width`**: Display width in pixels. Default: `1920`.
+- **`display_height`**: Display height in pixels. Default: `1080`.
+- **`display_framerate`**: Display framerate in Hz×1000 (e.g., `60000` for 60 Hz).
+  Default: `59950`.
+- **`window_title`**: Window title for windowed mode. Default: `"Sub-Frame Visualizer"`.
+
+### Configuration
+
+Sub-frame processing is enabled by setting the `sub_frame_rows` parameter in
+`CsiToBayerOp`:
+
+- **`sub_frame_rows = 0`**: Disables sub-frame processing (default, full-frame mode)
+- **`sub_frame_rows > 0`**: Enables sub-frame processing with the specified number of
+  rows per sub-frame
+
+**Important constraint:** `sub_frame_rows` must evenly divide the frame height.
+
+The sub-frame size should be chosen based on:
+
+- **Network packet size**: Should align with expected packet sizes to minimize partial
+  sub-frames
+- **Memory constraints**: Smaller sub-frames use less memory per buffer, but require
+  more buffers to process a complete frame
+- **Display refresh rate**: Sub-frame size affects how smoothly data appears on display
+- **Latency requirements**: Smaller sub-frames can reduce end-to-end latency by enabling
+  earlier processing start, but this benefit must be balanced against increased
+  processing overhead from handling more sub-frames per frame
+- **Sensor data characteristics**: Different sensor types may benefit from different
+  sub-frame sizes based on their data structure and processing requirements
+
+### Limitations and Considerations
+
+- **Out-of-order arrival**: Sub-frames may arrive out of order due to network
+  conditions. Operators handle this by tracking frame numbers and sub-frame offsets.
+
+- **Dropped sub-frames**: If sub-frames are dropped, the final frame may be incomplete.
+  `SubFrameCombinerOp` will warn about dropped sub-frames and emit partial frames.
+
+- **White balance accuracy**: White balance gains are calculated from the previous
+  frame's histogram, which may not perfectly match the current frame's lighting
+  conditions.
+
+### Example: Sub-Frame IMX274 Player
+
+The sub-frame IMX274 player example (`sub_frame_imx274_player.py` or
+`sub_frame_imx274_player.cpp`) demonstrates the complete sub-frame processing pipeline
+without display synchronization:
+
+1. **Receiver**: Receives network packets containing partial frame data
+1. **CSI to Bayer**: Accumulates packets into sub-frames and converts to Bayer format
+1. **Image Processor**: Processes sub-frames and accumulates histograms for white
+   balance
+1. **Demosaic**: Converts Bayer sub-frames to RGBA
+1. **Sub-Frame Combiner**: Combines sub-frames into complete frames before display
+
+### Example: Sub-Frame VB1940 Player
+
+The sub-frame VB1940 player example (`sub_frame_vb1940_player.cpp`) demonstrates
+display-synchronized sub-frame capture and visualization using `SubFrameVisualizerOp`:
+
+1. **Receiver**: Receives network packets from the VB1940 camera via ConnectX RoCE
+1. **CSI to Bayer**: Accumulates packets into sub-frames and converts to Bayer format
+1. **Image Processor**: Applies optical black correction and white balance
+1. **Demosaic**: Converts Bayer sub-frames to RGBA
+1. **Sub-Frame Visualizer**: Composites sub-frames onto the display as they arrive,
+   while the FPO thread schedules the next FPGA camera capture synchronized to the
+   display refresh
+
+The `SubFrameVisualizerOp` uses `ptp_pps_output(1)` (single-pulse PPS mode) to trigger
+the FPGA camera. One `set_delay()` call is issued per FPO event, advancing the capture
+phase by one display period each tick. This produces a 60 Hz capture cadence that is
+phase-locked to the display, achieving minimum pipeline latency.
+
+See the [Sub-Frame Processing Examples](examples.md#sub-frame-processing-examples)
+section for instructions on running sub-frame examples.

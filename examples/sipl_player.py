@@ -57,15 +57,34 @@ class HoloscanApplication(holoscan.core.Application):
             condition = self._ok
 
         # SIPL capture operator captures either the RAW or ISP-Processed image via NvSIPL.
-        sipl_capture = hololink_module.operators.SIPLCaptureOp(
-            self,
-            condition,
-            name="sipl_capture",
+        sipl_service = hololink_module.operators.SIPLCaptureService(
             camera_config=self._camera_config,
             json_config=self._json_config,
             raw_output=self._raw_output,
         )
-        camera_info = sipl_capture.get_camera_info()
+        camera_info = sipl_service.get_camera_info()
+        if not camera_info:
+            raise RuntimeError("SIPLCaptureService returned no cameras")
+
+        sipl_outputs = []
+        for camera_index, info in enumerate(camera_info):
+            if self._frame_limit:
+                per_camera_condition = holoscan.conditions.CountCondition(
+                    self,
+                    name=f"count_{info.output_name}",
+                    count=self._frame_limit,
+                )
+            else:
+                per_camera_condition = condition
+
+            sipl_output = hololink_module.operators.SIPLCameraOutputOp(
+                self,
+                per_camera_condition,
+                name=f"sipl_output_{info.output_name}",
+                service=sipl_service,
+                camera_index=camera_index,
+            )
+            sipl_outputs.append(sipl_output)
 
         # Holoviz is used to render the image(s).
         view_width = 1.0 / len(camera_info)
@@ -96,21 +115,24 @@ class HoloscanApplication(holoscan.core.Application):
         if not self._raw_output:
             # When capturing ISP-processed images from SIPL, output directly
             # from SIPL to the vizualizer.
-            self.add_flow(sipl_capture, visualizer, {("output", "receivers")})
+            for sipl_output in sipl_outputs:
+                self.add_flow(sipl_output, visualizer, {("output", "receivers")})
         else:
             # If capturing RAW, we need to do the following between the SIPL capture and Holoviz:
             #   1) Convert the packed RAW to 16-bit Bayer (PackedFormatConverterOp)
             #   2) Perform basic ISP operations (ImageProcessorOp)
             #   3) Demosaic the Bayer to RGB.
             # These operators only process one buffer each, so each camera needs separate instances.
-            for info in camera_info:
+            for camera_index, info in enumerate(camera_info):
+                sipl_output = sipl_outputs[camera_index]
+
                 # Convert packed RAW to 16-bit Bayer.
                 converter_pool = holoscan.resources.BlockMemoryPool(
                     self,
                     name=f"converter_pool_{info.output_name}",
                     storage_type=1,  # Device memory
                     block_size=(info.width * info.height * 2),  # 16-bit Bayer
-                    num_blocks=2,
+                    num_blocks=4,
                 )
                 format_converter = hololink_module.operators.PackedFormatConverterOp(
                     self,
@@ -142,7 +164,7 @@ class HoloscanApplication(holoscan.core.Application):
                     name=f"demosaic_pool_{info.output_name}",
                     storage_type=1,  # Device memory
                     block_size=(info.width * info.height * 2 * 4),  # 16-bit RGBA
-                    num_blocks=2,
+                    num_blocks=4,
                 )
                 demosaic = holoscan.operators.BayerDemosaicOp(
                     self,
@@ -156,7 +178,7 @@ class HoloscanApplication(holoscan.core.Application):
                 )
 
                 # Define the application flow.
-                self.add_flow(sipl_capture, format_converter, {("output", "input")})
+                self.add_flow(sipl_output, format_converter, {("output", "input")})
                 self.add_flow(format_converter, image_processor, {("output", "input")})
                 self.add_flow(image_processor, demosaic, {("output", "receiver")})
                 self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
@@ -192,7 +214,9 @@ def main():
     hololink_module.logging_level(args.log_level)
 
     if args.list_configs:
-        hololink_module.operators.SIPLCaptureOp.list_available_configs(args.json_config)
+        hololink_module.operators.SIPLCaptureService.list_available_configs(
+            args.json_config
+        )
     else:
         application = HoloscanApplication(
             args.camera_config,

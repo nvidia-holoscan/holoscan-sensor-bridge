@@ -173,13 +173,15 @@ namespace {
         uint16_t reserved_1 = 0;
         std::string fpga_uuid;
         std::string serial_number;
-        uint32_t reserved_2 = 0;
+        uint32_t transmitted_packet_count = 0;
         uint16_t hsb_ip_version = 0;
         uint16_t fpga_crc = 0;
+        uint8_t ignored = 0;
 
         if (!(deserializer.next_uint16_le(reserved_1)
                 && next_uuid_as_string(deserializer, fpga_uuid)
-                && deserializer.next_uint32_le(reserved_2)
+                && deserializer.next_uint24_be(transmitted_packet_count)
+                && deserializer.next_uint8(ignored)
                 && next_buffer_as_string(deserializer, serial_number, 7)
                 && deserializer.next_uint16_le(hsb_ip_version)
                 && deserializer.next_uint16_le(fpga_crc))) {
@@ -193,6 +195,7 @@ namespace {
         }
 
         metadata["fpga_uuid"] = fpga_uuid;
+        metadata["transmitted_packet_count"] = transmitted_packet_count;
         metadata["serial_number"] = serial_number;
         metadata["hsb_ip_version"] = hsb_ip_version;
         metadata["fpga_crc"] = fpga_crc;
@@ -302,8 +305,8 @@ namespace {
         }
 
         auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
-        EnumerationStrategy& enumeration_strategy = Enumerator::get_uuid_strategy(fpga_uuid);
-        enumeration_strategy.update_metadata(metadata, deserializer);
+        auto enumeration_strategy = Enumerator::get_uuid_strategy(fpga_uuid);
+        enumeration_strategy->update_metadata(metadata, deserializer);
     }
 
 } // anonymous namespace
@@ -377,7 +380,7 @@ void Enumerator::enumeration_packets(
     while (!done) {
         // if there had been a timeout provided check if it had expired, if not set the timeout of
         // the select() call to the remaining time
-        timeval* select_timeout;
+        timeval* select_timeout = nullptr;
         if (timeout) {
             if (timeout->expired()) {
                 return;
@@ -390,8 +393,6 @@ void Enumerator::enumeration_packets(
             timeout_value.tv_usec
                 = (__suseconds_t)(fractional * std::micro().den / std::micro().num);
             select_timeout = &timeout_value;
-        } else {
-            select_timeout = nullptr;
         }
 
         std::array<int, 1> fds { { bootp_socket.get() } };
@@ -408,6 +409,10 @@ void Enumerator::enumeration_packets(
         num_fds++;
         const int result = select(num_fds, &r, nullptr, &x, select_timeout);
         if (result == -1) {
+            if (errno == EINTR) {
+                // Go back and try it again.
+                continue;
+            }
             throw std::runtime_error(fmt::format("select failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
         for (auto&& fd : fds) {
@@ -494,9 +499,18 @@ void Enumerator::send_bootp_reply(
     }
 }
 
-// Static variable definitions
-std::map<std::string, std::shared_ptr<EnumerationStrategy>> Enumerator::uuid_strategies_;
-std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::reactor_enumerator_;
+/* static */ std::shared_ptr<Enumerator::EnumerationStrategyMap> Enumerator::uuid_strategies()
+{
+    // Intentionally leaked to avoid static destruction order fiasco
+    static auto* instance_ptr = new std::shared_ptr<Enumerator::EnumerationStrategyMap>();
+    static std::once_flag init_flag;
+
+    std::call_once(init_flag, []() {
+        *instance_ptr = std::shared_ptr<Enumerator::EnumerationStrategyMap>(new Enumerator::EnumerationStrategyMap());
+    });
+
+    return *instance_ptr;
+}
 
 EnumerationStrategy::~EnumerationStrategy()
 {
@@ -507,26 +521,28 @@ void EnumerationStrategy::update_metadata(Metadata& metadata, hololink::core::De
     // By default, don't do anything.
 }
 
-std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy)
+/* static */ std::shared_ptr<EnumerationStrategy> Enumerator::set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy)
 {
     Enumerator::configure_default_enumeration_strategies();
     std::shared_ptr<EnumerationStrategy> previous_strategy = nullptr;
-    auto previous = uuid_strategies_.find(uuid);
-    if (previous != uuid_strategies_.end()) {
+    auto strategies = uuid_strategies();
+    auto previous = strategies->find(uuid);
+    if (previous != strategies->end()) {
         previous_strategy = previous->second;
     }
-    uuid_strategies_[uuid] = enumeration_strategy;
+    (*strategies)[uuid] = enumeration_strategy;
     return previous_strategy;
 }
 
-EnumerationStrategy& Enumerator::get_uuid_strategy(std::string uuid)
+/* static */ std::shared_ptr<EnumerationStrategy> Enumerator::get_uuid_strategy(std::string uuid)
 {
-    auto it = uuid_strategies_.find(uuid);
-    if (it != uuid_strategies_.end()) {
-        return *it->second;
+    auto strategies = uuid_strategies();
+    auto it = strategies->find(uuid);
+    if (it != strategies->end()) {
+        return it->second;
     }
     Metadata empty;
-    static BasicEnumerationStrategy null_enumeration_strategy(empty);
+    static auto null_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(empty);
     return null_enumeration_strategy;
 }
 
@@ -654,23 +670,25 @@ void Enumerator::configure_default_enumeration_strategies()
         return;
     }
 
+    auto strategies = uuid_strategies();
+
     // For those bootp-v1 configurations, provide default strategies
     Metadata hololink_lite_metadata;
     hololink_lite_metadata["board_description"] = "hololink-lite";
     hololink_lite_metadata["gpio_pin_count"] = 16;
     auto hololink_lite_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_lite_metadata);
-    uuid_strategies_[HOLOLINK_LITE_UUID] = hololink_lite_enumeration_strategy;
+    (*strategies)[HOLOLINK_LITE_UUID] = hololink_lite_enumeration_strategy;
 
     Metadata hololink_nano_metadata;
     hololink_nano_metadata["board_description"] = "hololink-nano";
     hololink_nano_metadata["gpio_pin_count"] = 54;
     auto hololink_nano_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_nano_metadata);
-    uuid_strategies_[HOLOLINK_NANO_UUID] = hololink_nano_enumeration_strategy;
+    (*strategies)[HOLOLINK_NANO_UUID] = hololink_nano_enumeration_strategy;
 
     Metadata hololink_100g_metadata;
     hololink_100g_metadata["board_description"] = "hololink 100G";
     auto hololink_100g_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_100g_metadata);
-    uuid_strategies_[HOLOLINK_100G_UUID] = hololink_100g_enumeration_strategy;
+    (*strategies)[HOLOLINK_100G_UUID] = hololink_100g_enumeration_strategy;
 
     Metadata microchip_polarfire_metadata;
     microchip_polarfire_metadata["board_description"] = "Microchip Polarfire";
@@ -680,10 +698,10 @@ void Enumerator::configure_default_enumeration_strategies()
     unsigned microchip_polarfire_sifs_per_sensor = 1;
     auto microchip_polarfire_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(microchip_polarfire_metadata,
         microchip_polarfire_total_sensors, microchip_polarfire_total_dataplanes, microchip_polarfire_sifs_per_sensor);
-    uuid_strategies_[MICROCHIP_POLARFIRE_UUID] = microchip_polarfire_enumeration_strategy;
+    (*strategies)[MICROCHIP_POLARFIRE_UUID] = microchip_polarfire_enumeration_strategy;
 
     auto leopard_eagle_enumeration_strategy = std::make_shared<LeopardEagleEnumerationStrategy>();
-    uuid_strategies_[LEOPARD_EAGLE_UUID] = leopard_eagle_enumeration_strategy;
+    (*strategies)[LEOPARD_EAGLE_UUID] = leopard_eagle_enumeration_strategy;
 
     done = true;
 }
@@ -782,14 +800,17 @@ std::tuple<Metadata, std::vector<uint8_t>> Enumerator::handle_bootp_fd(int fd)
 // ReactorEnumerator implementation
 std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::ReactorEnumerator::get_reactor_enumerator()
 {
-    static std::mutex mutex;
-    std::lock_guard<std::mutex> lock(mutex);
+    // Use a leaked static pointer to avoid destruction order issues
+    // This ensures the shared_ptr control block survives until program exit
+    static auto* instance_ptr = new std::shared_ptr<ReactorEnumerator>();
+    static std::once_flag init_flag;
 
-    if (!Enumerator::reactor_enumerator_) {
-        Enumerator::reactor_enumerator_ = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
-        Enumerator::reactor_enumerator_->start();
-    }
-    return Enumerator::reactor_enumerator_;
+    std::call_once(init_flag, []() {
+        *instance_ptr = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
+        (*instance_ptr)->start();
+    });
+
+    return *instance_ptr;
 }
 
 Enumerator::ReactorEnumerator::ReactorEnumerator()

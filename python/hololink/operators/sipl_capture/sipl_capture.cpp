@@ -49,25 +49,20 @@ namespace hololink::operators {
  *
  * The sequence of events in this constructor is based on Fragment::make_operator<OperatorT>
  */
-class PySIPLCaptureOp : public SIPLCaptureOp {
+class PySIPLCameraOutputOp : public SIPLCameraOutputOp {
 public:
     /* Inherit the constructors */
-    using SIPLCaptureOp::SIPLCaptureOp;
+    using SIPLCameraOutputOp::SIPLCameraOutputOp;
 
     // Define a constructor that fully initializes the object.
-    PySIPLCaptureOp(holoscan::Fragment* fragment, const py::args& args,
-        const std::string& camera_config,
-        const std::string& json_config,
-        bool raw_output,
-        uint32_t capture_queue_depth,
-        const std::string& nito_base_path,
+    PySIPLCameraOutputOp(holoscan::Fragment* fragment,
+        const py::args& args,
+        std::shared_ptr<SIPLCaptureService> service,
+        uint32_t camera_index,
         uint32_t timeout,
-        const std::string& name = "sipl_capture")
-        : SIPLCaptureOp(camera_config, json_config, raw_output,
-            holoscan::ArgList {
-                holoscan::Arg { "capture_queue_depth", capture_queue_depth },
-                holoscan::Arg { "nito_base_path", nito_base_path },
-                holoscan::Arg { "timeout", timeout } })
+        const std::string& name = "sipl_camera_output")
+        : SIPLCameraOutputOp(std::move(service), camera_index,
+            holoscan::ArgList { holoscan::Arg { "timeout", timeout } })
     {
         add_positional_condition_and_resource_args(this, args);
         name_ = name;
@@ -85,35 +80,39 @@ PYBIND11_MODULE(_sipl_capture, m)
     m.attr("__version__") = "dev";
 #endif
 
-    py::class_<SIPLCaptureOp::CameraInfo>(m, "CameraInfo")
-        .def_readwrite("output_name", &SIPLCaptureOp::CameraInfo::output_name)
-        .def_readwrite("offset", &SIPLCaptureOp::CameraInfo::offset)
-        .def_readwrite("width", &SIPLCaptureOp::CameraInfo::width)
-        .def_readwrite("height", &SIPLCaptureOp::CameraInfo::height)
-        .def_readwrite("bytes_per_line", &SIPLCaptureOp::CameraInfo::bytes_per_line)
-        .def_readwrite("pixel_format", &SIPLCaptureOp::CameraInfo::pixel_format)
-        .def_readwrite("bayer_format", &SIPLCaptureOp::CameraInfo::bayer_format);
+    py::class_<SIPLCaptureService::CameraInfo>(m, "CameraInfo")
+        .def_readwrite("output_name", &SIPLCaptureService::CameraInfo::output_name)
+        .def_readwrite("offset", &SIPLCaptureService::CameraInfo::offset)
+        .def_readwrite("width", &SIPLCaptureService::CameraInfo::width)
+        .def_readwrite("height", &SIPLCaptureService::CameraInfo::height)
+        .def_readwrite("bytes_per_line", &SIPLCaptureService::CameraInfo::bytes_per_line)
+        .def_readwrite("pixel_format", &SIPLCaptureService::CameraInfo::pixel_format)
+        .def_readwrite("bayer_format", &SIPLCaptureService::CameraInfo::bayer_format);
 
-    py::class_<SIPLCaptureOp, PySIPLCaptureOp, holoscan::Operator,
-        std::shared_ptr<SIPLCaptureOp>>(m, "SIPLCaptureOp")
-        .def(py::init<holoscan::Fragment*, const py::args&,
-                 const std::string&,
-                 const std::string&,
-                 bool,
-                 uint32_t,
-                 const std::string&,
-                 uint32_t,
-                 const std::string&>(),
-            "fragment"_a,
+    py::class_<SIPLCaptureService, std::shared_ptr<SIPLCaptureService>>(m, "SIPLCaptureService")
+        .def(py::init<const std::string&, const std::string&, bool, uint32_t, const std::string&, uint32_t>(),
             "camera_config"_a = "",
             "json_config"_a = "",
             "raw_output"_a = false,
             "capture_queue_depth"_a = 4u,
             "nito_base_path"_a = "/var/nvidia/nvcam/settings/sipl",
+            "timeout"_a = 1000000u)
+        .def_static("list_available_configs", &SIPLCaptureService::list_available_configs)
+        .def("get_camera_info", &SIPLCaptureService::get_camera_info)
+        .def("camera_count", &SIPLCaptureService::camera_count);
+
+    py::class_<SIPLCameraOutputOp, PySIPLCameraOutputOp, holoscan::Operator,
+        std::shared_ptr<SIPLCameraOutputOp>>(m, "SIPLCameraOutputOp")
+        .def(py::init<holoscan::Fragment*, const py::args&,
+                 std::shared_ptr<SIPLCaptureService>,
+                 uint32_t,
+                 uint32_t,
+                 const std::string&>(),
+            "fragment"_a,
+            "service"_a,
+            "camera_index"_a,
             "timeout"_a = 1000000u,
-            "name"_a = "sipl_capture"s)
-        .def("list_available_configs", &SIPLCaptureOp::list_available_configs)
-        .def("get_camera_info", &SIPLCaptureOp::get_camera_info);
+            "name"_a = "sipl_camera_output"s);
 } // PYBIND11_MODULE
 
 } // namespace hololink::operators

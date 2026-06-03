@@ -212,7 +212,7 @@ def validate_frame(recorder_queue, validation_data, expected_frame_time_ms=16.6)
 
 def record_times(recorder_queue, metadata, camera_name=""):
     """Record timing information from metadata to queue."""
-    now = datetime.datetime.now(datetime.UTC)
+    now = datetime.datetime.now(datetime.timezone.utc)
     frame_number = metadata.get("frame_number", 0)
     crc32_errors = metadata.get("crc_errors", 0)
 
@@ -261,7 +261,7 @@ class InstrumentedTimeProfiler(holoscan.core.Operator):
         spec.output("output")
 
     def compute(self, op_input, op_output, context):
-        operator_timestamp = datetime.datetime.now(datetime.UTC)
+        operator_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
         in_message = op_input.receive("input")
         cp_frame = holoscan.as_tensor(in_message.get(""))
@@ -297,7 +297,7 @@ class MonitorOperator(holoscan.core.Operator):
         spec.output("output")
 
     def compute(self, op_input, op_output, context):
-        complete_timestamp = datetime.datetime.now(datetime.UTC)
+        complete_timestamp = datetime.datetime.now(datetime.timezone.utc)
         in_message = op_input.receive("input")
 
         # Save the complete timestamp and record the times

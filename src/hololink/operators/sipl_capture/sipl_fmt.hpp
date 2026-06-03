@@ -17,6 +17,8 @@
 
 #include <hololink/core/logging_internal.hpp>
 
+#include "sipl_compat.hpp"
+
 static int indent_level = 0;
 
 static std::string indent()
@@ -56,6 +58,197 @@ static std::string ip_to_str(uint32_t ip)
     ss << ((ip >> 24) & 0xFF);
     return ss.str();
 }
+
+#if SIPL_V2
+
+// ============================================================
+// SIPL API v2 formatters
+// ============================================================
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::MacAddress> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::MacAddress& mac, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        return fmt::format_to(ctx.out(), "{:x}:{:x}:{:x}:{:x}:{:x}:{:x}",
+            mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::CoECameraSensorConfig> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::CoECameraSensorConfig& sensor, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        return fmt::format_to(ctx.out(),
+            "{}id = {},\n"
+            "{}name = {},\n"
+            "{}macAddress = {},\n"
+            "{}ipAddress = {}\n",
+            indent(), sensor.id,
+            indent(), sensor.name,
+            indent(), sensor.macAddress,
+            indent(), ip_to_str(sensor.ipAddress));
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::CoEModule> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::CoEModule& module, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        std::stringstream ss;
+        ss << fmt::format("{}sensorConfigs[{}] =\n", indent(), module.sensorConfigs.size());
+        ss << start_indent_block();
+        for (size_t i = 0; i < module.sensorConfigs.size(); ++i) {
+            ss << start_indent_block();
+            const auto& sensor = std::get<nvsipl::sensorconfig::CoECameraSensorConfig>(module.sensorConfigs[i]);
+            ss << fmt::format("{}", sensor);
+            ss << end_indent_block(i + 1 < module.sensorConfigs.size());
+        }
+        ss << end_indent_block();
+        return fmt::format_to(ctx.out(), "{}", ss.str());
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::ModuleType> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::ModuleType& module_type, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        if (std::holds_alternative<nvsipl::sensorconfig::CoEModule>(module_type)) {
+            const auto& coe_module = std::get<nvsipl::sensorconfig::CoEModule>(module_type);
+            return fmt::format_to(ctx.out(), "{}", coe_module);
+        } else {
+            return fmt::format_to(ctx.out(), "GmslModule");
+        }
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::CoETransportConfig> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::CoETransportConfig& transport, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        return fmt::format_to(ctx.out(),
+            "{}interfaceName = {},\n"
+            "{}ipAddress = {},\n"
+            "{}vlanEnable = {},\n"
+            "{}syncSensors = {}\n",
+            indent(), transport.interfaceName,
+            indent(), ip_to_str(transport.ipAddress),
+            indent(), transport.vlanEnable,
+            indent(), transport.syncSensors);
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::CommonSensorConfig::VirtualChannelInfo> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::CommonSensorConfig::VirtualChannelInfo& vc, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        return fmt::format_to(ctx.out(),
+            "{}resolution = {}x{} @ {} fps,\n"
+            "{}cfa = {},\n"
+            "{}embeddedTopLines = {},\n"
+            "{}embeddedBottomLines = {},\n"
+            "{}inputFormat = {}\n",
+            indent(), vc.resolution.width, vc.resolution.height, vc.fps,
+            indent(), vc.cfa,
+            indent(), vc.embeddedTopLines,
+            indent(), vc.embeddedBottomLines,
+            indent(), static_cast<int>(vc.inputFormat));
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::ModuleConfig> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::ModuleConfig& module, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        std::stringstream module_type;
+        module_type << start_indent_block();
+        module_type << fmt::format("{}", module.moduleType);
+        module_type << end_indent_block(true);
+
+        std::stringstream vc_info;
+        // Extract VC info from the first sensor if this is a CoE module.
+        if (std::holds_alternative<nvsipl::sensorconfig::CoEModule>(module.moduleType)) {
+            const auto& coe = std::get<nvsipl::sensorconfig::CoEModule>(module.moduleType);
+            if (!coe.sensorConfigs.empty()) {
+                const auto& sensor = std::get<nvsipl::sensorconfig::CoECameraSensorConfig>(coe.sensorConfigs[0]);
+                if (!sensor.vcInfoList.empty()) {
+                    vc_info << start_indent_block();
+                    vc_info << fmt::format("{}", sensor.vcInfoList[0]);
+                    vc_info << end_indent_block();
+                }
+            }
+        }
+
+        return fmt::format_to(ctx.out(),
+            "{}name = {},\n"
+            "{}platform = {},\n"
+            "{}platformConfig = {},\n"
+            "{}description = \"{}\",\n"
+            "{}moduleType =\n{}"
+            "{}vcInfo =\n{}",
+            indent(), module.name,
+            indent(), module.platform,
+            indent(), module.platformConfig,
+            indent(), module.description,
+            indent(), module_type.str(),
+            indent(), vc_info.str());
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::TransportConfig> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::TransportConfig& transport, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        if (std::holds_alternative<nvsipl::sensorconfig::CoETransportConfig>(transport.transportType)) {
+            const auto& coe_transport = std::get<nvsipl::sensorconfig::CoETransportConfig>(transport.transportType);
+            return fmt::format_to(ctx.out(),
+                "{}name = {},\n{}",
+                indent(), transport.name,
+                fmt::format("{}", coe_transport));
+        } else {
+            return fmt::format_to(ctx.out(), "{}name = {},\nGmslTransportConfig", indent(), transport.name);
+        }
+    }
+};
+
+template <>
+struct fmt::formatter<nvsipl::sensorconfig::SensorSystemConfig> : fmt::formatter<fmt::string_view> {
+    auto format(const nvsipl::sensorconfig::SensorSystemConfig& config, fmt::format_context& ctx) const -> decltype(ctx.out())
+    {
+        std::stringstream ss;
+        ss << start_indent_block();
+
+        // Modules.
+        ss << indent() << "modules[" << config.modules.size() << "] =\n";
+        ss << start_indent_block();
+        for (uint32_t i = 0; i < config.modules.size(); ++i) {
+            const auto& module = config.modules[i];
+            ss << start_indent_block();
+            ss << fmt::format("{}", module);
+            ss << end_indent_block((i + 1) < config.modules.size());
+        }
+        ss << end_indent_block(true);
+
+        // Transports.
+        ss << indent() << "transports[" << config.transports.size() << "] =\n";
+        ss << start_indent_block();
+        for (uint32_t i = 0; i < config.transports.size(); ++i) {
+            const auto& transport = config.transports[i];
+            ss << start_indent_block();
+            ss << fmt::format("{}", transport);
+            ss << end_indent_block((i + 1) < config.transports.size());
+        }
+        ss << end_indent_block();
+
+        ss << end_indent_block();
+        return fmt::format_to(ctx.out(), "{}", ss.str());
+    }
+};
+
+#else // !SIPL_V2
+
+// ============================================================
+// SIPL API v1 formatters
+// ============================================================
 
 template <>
 struct fmt::formatter<nvsipl::MacAddress> : fmt::formatter<fmt::string_view> {
@@ -236,6 +429,12 @@ struct fmt::formatter<nvsipl::CameraSystemConfig> : fmt::formatter<fmt::string_v
         return fmt::format_to(ctx.out(), "{}", ss.str());
     }
 };
+
+#endif // SIPL_V2
+
+// ============================================================
+// Version-independent formatters
+// ============================================================
 
 template <>
 struct fmt::formatter<NvSciBufAttrValColorFmt> : fmt::formatter<fmt::string_view> {

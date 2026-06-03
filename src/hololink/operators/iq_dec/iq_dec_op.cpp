@@ -94,7 +94,7 @@ void IQDecoderOp::compute(holoscan::InputContext& op_input, [[maybe_unused]] hol
     HSB_LOG_DEBUG("Received {} bytes", encoded_tensor->nbytes());
     auto number_of_iq_elements = encoded_tensor->nbytes() / sizeof(uint16_t); // Each in-phase/quadrature sample is encoded into 16 bit (each sample is 32 bit)
     if (number_of_iq_elements % 8 != 0) {
-        throw std::runtime_error("Invalid encoded tensor size");
+        throw std::runtime_error("Invalid encoded tensor size: " + std::to_string(encoded_tensor->nbytes()));
     }
 
     int tensor_size = static_cast<int>(number_of_iq_elements);

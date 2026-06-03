@@ -16,6 +16,7 @@
 # See README.md for detailed information.
 
 from . import (
+    gpu_roce_loopback,
     imx274_player,
     linux_imx274_player,
     linux_tao_peoplenet,
@@ -24,6 +25,7 @@ from . import (
 )
 
 __all__ = [
+    "gpu_roce_loopback",
     "imx274_player",
     "linux_imx274_player",
     "linux_tao_peoplenet",

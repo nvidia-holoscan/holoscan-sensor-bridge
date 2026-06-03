@@ -18,6 +18,7 @@
  */
 
 #include <getopt.h>
+#include <stdexcept>
 #include <stdio.h>
 #include <string.h>
 

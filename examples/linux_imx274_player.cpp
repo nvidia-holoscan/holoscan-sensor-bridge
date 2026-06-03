@@ -18,7 +18,9 @@
 #include <getopt.h>
 
 #include <iostream>
+#include <memory>
 #include <string>
+#include <utility>
 
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/data_channel.hpp>
@@ -33,9 +35,7 @@
 #include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
 #include <holoscan/operators/holoviz/holoviz.hpp>
 
-#include <pybind11/embed.h>
-namespace py = pybind11;
-using namespace pybind11::literals; // to bring in the `_a` literal
+#include <hololink/sensors/camera/imx274/native_imx274_sensor.hpp>
 
 namespace {
 
@@ -43,14 +43,15 @@ class HoloscanApplication : public holoscan::Application {
 public:
     explicit HoloscanApplication(bool headless, bool fullscreen, CUcontext cuda_context,
         int cuda_device_ordinal, hololink::DataChannel& hololink_channel,
-        py::object camera, py::object camera_mode,
+        std::shared_ptr<hololink::sensors::NativeImx274Sensor> camera,
+        hololink::sensors::imx274_mode::Mode camera_mode,
         int64_t frame_limit)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , cuda_context_(cuda_context)
         , cuda_device_ordinal_(cuda_device_ordinal)
         , hololink_channel_(hololink_channel)
-        , camera_(camera)
+        , camera_(std::move(camera))
         , camera_mode_(camera_mode)
         , frame_limit_(frame_limit)
     {
@@ -59,31 +60,25 @@ public:
 
     void compose() override
     {
-        // acquire the Python GIL to be able to call the Python functions of the camera device
-        py::gil_scoped_acquire guard;
-
         std::shared_ptr<holoscan::Condition> condition;
         if (frame_limit_) {
             condition = make_condition<holoscan::CountCondition>("count", frame_limit_);
         } else {
             condition = make_condition<holoscan::BooleanCondition>("ok", true);
         }
-        camera_.attr("set_mode")(camera_mode_);
+        camera_->set_mode(camera_mode_);
 
         auto csi_to_bayer_pool = make_resource<holoscan::BlockMemoryPool>("csi_to_bayer_pool",
             // storage_type of 1 is device memory
             1, // storage_type
-            camera_.attr("_width").cast<int>() * sizeof(uint16_t)
-                * camera_.attr("_height").cast<int>(), // block_size
-            2 // num_blocks
+            camera_->get_width() * sizeof(uint16_t)
+                * camera_->get_height(), // block_size
+            4 // num_blocks
         );
         auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
             "csi_to_bayer", holoscan::Arg("allocator", csi_to_bayer_pool),
             holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
-        // Without this; pybind11 doesn't know how to get the right superclass
-        // for configure_converter.
-        std::shared_ptr<hololink::csi::CsiConverter> csi_converter = csi_to_bayer_operator;
-        camera_.attr("configure_converter")(csi_converter);
+        camera_->configure_converter(csi_to_bayer_operator);
 
         const size_t frame_size = csi_to_bayer_operator->get_csi_length();
         auto receiver_operator = make_operator<hololink::operators::LinuxReceiverOp>("receiver",
@@ -91,22 +86,14 @@ public:
             holoscan::Arg("frame_context", cuda_context_),
             holoscan::Arg("hololink_channel", &hololink_channel_),
             holoscan::Arg("device_start", std::function<void()>([this] {
-                // acquire the Python GIL lock to be able to call the Python functions of the camera
-                // device
-                py::gil_scoped_acquire guard;
-                camera_.attr("start")();
+                camera_->start();
             })),
             holoscan::Arg("device_stop", std::function<void()>([this] {
-                // acquire the Python GIL lock to be able to call the Python functions of the camera
-                // device
-                py::gil_scoped_acquire guard;
-                camera_.attr("stop")();
+                camera_->stop();
             })));
 
-        auto bayer_format = camera_.attr("bayer_format")()
-                                .cast<hololink::csi::BayerFormat>();
-        auto pixel_format
-            = camera_.attr("pixel_format")().cast<hololink::csi::PixelFormat>();
+        auto bayer_format = camera_->get_bayer_format();
+        auto pixel_format = camera_->get_pixel_format();
         auto image_processor_operator = make_operator<hololink::operators::ImageProcessorOp>(
             "image_processor",
             // Optical black value for imx274 is 50
@@ -117,9 +104,9 @@ public:
         auto bayer_pool = make_resource<holoscan::BlockMemoryPool>("bayer_pool",
             // storage_type of 1 is device memory
             1, // storage_type
-            camera_.attr("_width").cast<int>() * rgba_components_per_pixel * sizeof(uint16_t)
-                * camera_.attr("_height").cast<int>(), // block_size
-            2 // num_blocks
+            camera_->get_width() * rgba_components_per_pixel * sizeof(uint16_t)
+                * camera_->get_height(), // block_size
+            4 // num_blocks
         );
         auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>("demosaic",
             holoscan::Arg("pool", bayer_pool), holoscan::Arg("generate_alpha", true),
@@ -142,8 +129,8 @@ private:
     const CUcontext cuda_context_;
     const int cuda_device_ordinal_;
     hololink::DataChannel& hololink_channel_;
-    const py::object camera_;
-    const py::object camera_mode_;
+    const std::shared_ptr<hololink::sensors::NativeImx274Sensor> camera_;
+    const hololink::sensors::imx274_mode::Mode camera_mode_;
     const int64_t frame_limit_;
 };
 
@@ -237,42 +224,8 @@ int main(int argc, char** argv)
         }
     }
 
-    // The IMX274 camera is implemented in Python, start the interpreter and keep it alive
-    py::scoped_interpreter guard {};
-
     // set the Holoscan log level
     holoscan::set_log_level(log_level);
-
-    // set the Python log level as well (needed for the camera implementation only)
-    py::module_ hololink_module = py::module_::import("hololink");
-    py::module_ logging = py::module_::import("logging");
-    int python_log_level = logging.attr("NOTSET").cast<int>();
-    switch (log_level) {
-    case holoscan::LogLevel::TRACE:
-        python_log_level = logging.attr("DEBUG").cast<int>() - 5;
-        break;
-    case holoscan::LogLevel::DEBUG:
-        python_log_level = logging.attr("DEBUG").cast<int>();
-        break;
-    case holoscan::LogLevel::INFO:
-        python_log_level = logging.attr("INFO").cast<int>();
-        break;
-    case holoscan::LogLevel::WARN:
-        python_log_level = logging.attr("WARN").cast<int>();
-        break;
-    case holoscan::LogLevel::ERROR:
-        python_log_level = logging.attr("ERROR").cast<int>();
-        break;
-    case holoscan::LogLevel::CRITICAL:
-        python_log_level = logging.attr("CRITICAL").cast<int>();
-        break;
-    case holoscan::LogLevel::OFF:
-        python_log_level = logging.attr("CRITICAL").cast<int>() + 1;
-        break;
-    default:
-        throw std::runtime_error("Unhandled log level");
-    }
-    hololink_module.attr("logging_level")(python_log_level);
 
     std::cout << "Initializing." << std::endl;
 
@@ -289,15 +242,11 @@ int main(int argc, char** argv)
 
     hololink::DataChannel hololink_channel(channel_metadata);
 
-    // Import the IMX274 sensor module and the IMX274 mode
-    py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
-    py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
-    py::object Imx274_Mode = imx274.attr("imx274_mode").attr("Imx274_Mode");
-
     // Get a handle to the camera
-    py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel,
-        "expander_configuration"_a = expander_configuration);
-    py::object imx274_mode_set = Imx274_Mode(camera_mode);
+    auto camera = std::make_shared<hololink::sensors::NativeImx274Sensor>(
+        hololink_channel, expander_configuration);
+    auto imx274_mode_set
+        = static_cast<hololink::sensors::imx274_mode::Mode>(camera_mode);
     // Set up the application
     auto application = holoscan::make_application<HoloscanApplication>(headless, fullscreen,
         cu_context, cu_device_ordinal, hololink_channel, camera,
@@ -308,17 +257,14 @@ int main(int argc, char** argv)
     std::shared_ptr<hololink::Hololink> hololink = hololink_channel.hololink();
     hololink->start();
     hololink->reset();
-    camera.attr("setup_clock")();
-    camera.attr("configure")(imx274_mode_set);
-    camera.attr("set_digital_gain_reg")(0x4);
+    camera->setup_clock();
+    camera->configure(imx274_mode_set);
+    camera->set_digital_gain_reg(0x4);
     if (pattern_set) {
-        camera.attr("test_pattern")(pattern);
+        camera->test_pattern(pattern);
     }
     std::cout << "Calling run" << std::endl;
     {
-        // we need release the Python GIL before starting the application to make sure the
-        // operators can call camera device functions
-        py::gil_scoped_release release_guard;
         application->run();
     }
     hololink->stop();

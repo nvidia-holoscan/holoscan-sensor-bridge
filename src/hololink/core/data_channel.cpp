@@ -18,31 +18,26 @@
 #include "data_channel.hpp"
 
 #include <arpa/inet.h>
+#include <unistd.h>
 
+#include <limits>
 #include <thread>
 
 #include "logging_internal.hpp"
 
 namespace hololink {
 
-namespace {
+// This memory map used by DataChannel is only supported on FPGAs that are this
+// version or newer.  Note that we only check this when setting up the data
+// channel; if you're only using the control channel, we don't test this.
+constexpr int64_t MINIMUM_HSB_IP_VERSION = 0x2602;
 
-    // This memory map used by DataChannel is only supported on FPGAs that are this
-    // version or newer.
-    constexpr int64_t MINIMUM_HSB_IP_VERSION = 0x2501;
-
-} // anonymous namespace
+#ifndef HOLOLINK_ROCE_USE_GPU_VRAM
+#define HOLOLINK_ROCE_USE_GPU_VRAM 1
+#endif
 
 DataChannel::DataChannel(const Metadata& metadata, const std::function<std::shared_ptr<Hololink>(const Metadata& metadata)>& create_hololink)
 {
-    auto hsb_ip_version = metadata.get<int64_t>("hsb_ip_version"); // or None
-    if (!hsb_ip_version) {
-        throw UnsupportedVersion("No 'hsb_ip_version' field found.");
-    }
-    if (hsb_ip_version.value() < MINIMUM_HSB_IP_VERSION) {
-        throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
-            hsb_ip_version.value(), MINIMUM_HSB_IP_VERSION));
-    }
     auto hololink = create_hololink(metadata);
     initialize(metadata, hololink);
 }
@@ -209,11 +204,16 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     size_t aligned_frame_size = hololink::core::round_up(frame_size, hololink::core::PAGE_SIZE);
     size_t metadata_size = hololink::core::PAGE_SIZE;
     size_t aligned_frame_with_metadata = aligned_frame_size + metadata_size;
-    if (page_size < aligned_frame_with_metadata) {
+    if (frame_size <= hololink::core::PAGE_SIZE) { // Allowing for no metadata mode, to be improved
+        if (page_size < aligned_frame_size) {
+            throw std::runtime_error(fmt::format("page_size={:#x} must be at least {:#x} bytes.", page_size, aligned_frame_size));
+        }
+    } else if (page_size < aligned_frame_with_metadata) {
         throw std::runtime_error(fmt::format("page_size={:#x} must be at least {:#x} bytes.", page_size, aligned_frame_with_metadata));
     }
-    if (pages > 4) {
-        throw std::runtime_error(fmt::format("pages={} can be at most 4.", pages));
+
+    if (pages > 4096) {
+        throw std::runtime_error(fmt::format("pages={} can be at most 4096.", pages));
     }
     if (pages < 1) {
         throw std::runtime_error(fmt::format("pages={} must be at least 1.", pages));
@@ -229,14 +229,15 @@ void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_
     hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
 
     const uint32_t roce_overhead = 74;
+    const uint32_t frame_msb = frame_memory >> 32;
+    const uint32_t frame_lsb = frame_memory & 0xFFFFFFFF;
     configure_common(frame_size, roce_overhead, local_data_port);
     hololink_->write_uint32(vp_address_ + DP_QP, qp_number_);
     hololink_->write_uint32(vp_address_ + DP_RKEY, rkey_);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, (pages > 0) ? PAGES(frame_memory) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, (pages > 1) ? PAGES(frame_memory + page_size) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, (pages > 2) ? PAGES(frame_memory + (page_size * 2)) : 0);
-    hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, (pages > 3) ? PAGES(frame_memory + (page_size * 3)) : 0);
-    hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, (1 << pages) - 1);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, frame_lsb);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, frame_msb);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_INC, PAGES(page_size));
+    hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, pages - 1);
 
     // Restore the DP_VP_MASK to re-enable the sensor.
     hololink_->or_uint32(hif_address_ + DP_VP_MASK, vp_mask_);
@@ -292,14 +293,13 @@ void DataChannel::unconfigure()
         // Let any in-transit data flush out.
         std::this_thread::sleep_for(std::chrono::milliseconds(10));
         // Clear the ROCE configuration.
-        hololink_->write_uint32(vp_address_ + DP_BUFFER_MASK, 0);
         hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
         hololink_->write_uint32(vp_address_ + DP_QP, 0);
         hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_0, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_1, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_2, 0);
-        hololink_->write_uint32(vp_address_ + DP_ADDRESS_3, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, 0);
+        hololink_->write_uint32(vp_address_ + DP_PAGE_INC, 0);
+        hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
         hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
@@ -314,6 +314,17 @@ void DataChannel::unconfigure()
 
 void DataChannel::configure_socket(int socket_fd)
 {
+    // We're enabling the data plane; make sure the memory map
+    // in the distal device is compatible.
+    auto hsb_ip_version = enumeration_metadata_.get<int64_t>("hsb_ip_version"); // or None
+    if (!hsb_ip_version) {
+        throw UnsupportedVersion("No 'hsb_ip_version' field found.");
+    }
+    if (hsb_ip_version.value() < MINIMUM_HSB_IP_VERSION) {
+        throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
+            hsb_ip_version.value(), MINIMUM_HSB_IP_VERSION));
+    }
+
     const std::string& peer_ip = this->peer_ip();
     auto [local_ip, local_device, local_mac] = core::local_ip_and_mac(peer_ip);
 
@@ -392,15 +403,15 @@ void DataChannel::configure_socket(int socket_fd)
 /* static */ void DataChannel::use_data_plane_configuration(Metadata& metadata, int64_t data_plane)
 {
     auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
-    EnumerationStrategy& enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
-    enumeration_strategy.use_data_plane_configuration(metadata, data_plane);
+    auto enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
+    enumeration_strategy->use_data_plane_configuration(metadata, data_plane);
 }
 
 /* static */ void DataChannel::use_sensor(Metadata& metadata, int64_t sensor_number)
 {
     auto fpga_uuid = metadata.get<std::string>("fpga_uuid").value();
-    EnumerationStrategy& enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
-    enumeration_strategy.use_sensor(metadata, sensor_number);
+    auto enumeration_strategy = hololink::Enumerator::get_uuid_strategy(fpga_uuid);
+    enumeration_strategy->use_sensor(metadata, sensor_number);
 }
 
 class FrameEndSequencer
@@ -441,6 +452,113 @@ void DataChannel::set_packetizer_program(std::shared_ptr<PacketizerProgram> prog
         throw std::runtime_error("Invalid packetizer program");
     }
     packetizer_program_ = program;
+}
+
+ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size)
+{
+    CudaCheck(cuInit(0));
+    CudaCheck(cuCtxSetCurrent(cu_context));
+    CUdevice device;
+    CudaCheck(cuCtxGetDevice(&device));
+    int integrated = 0;
+
+    // Add enough space to guarantee that the pointer we return
+    // can be page aligned.
+    size_t page_size = getpagesize();
+    size_t page_mask = page_size - 1;
+    // Make sure size isn't gonna overflow
+    if (size > std::numeric_limits<size_t>::max() - page_size) {
+        throw std::overflow_error(fmt::format("Requested buffer size={:#x} is too large for page-aligned allocation", size));
+    }
+    size_t allocation_size = size + page_size;
+
+    CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
+
+    // For discrete GPUs, prefer GPU VRAM (cuMemAlloc) so that RDMA data lands
+    // in VRAM directly via GPUDirect RDMA (DMA-BUF path in RoceReceiver).
+    // This requires the system to have GPUDirect RDMA configured correctly
+    // (e.g. nvidia_peermem loaded, IOMMU grants write access to the NIC).
+    //
+    // If GPU VRAM allocation succeeds but cuMemGetHandleForAddressRange fails,
+    // the CUDA driver does not support DMA-BUF export for this allocation, and
+    // RDMA registration would have to fall back to casting the device pointer
+    // as a CPU VA (invalid for discrete GPU). In that case we release the VRAM
+    // and fall through to pinned host memory.
+    //
+    // If DMAR faults appear in dmesg after switching to the GPU VRAM path
+    // ("PTE Write access is not set", fault reason 0x05), the NVIDIA GPU
+    // driver is mapping VRAM pages read-only for the NIC's IOMMU domain.
+    // This silently discards all RDMA data writes. In that case configure
+    // GPUDirect RDMA properly (load nvidia_peermem, or update the driver),
+    // or build with -DHOLOLINK_ROCE_USE_GPU_VRAM=OFF to force pinned host memory.
+    bool use_gpu_vram = (integrated == 0) && HOLOLINK_ROCE_USE_GPU_VRAM;
+    if (use_gpu_vram) {
+        CUdeviceptr device_deviceptr = 0;
+        CUresult alloc_result = cuMemAlloc(&device_deviceptr, allocation_size);
+        if (alloc_result != CUDA_SUCCESS) {
+            HSB_LOG_INFO("cuMemAlloc failed (result={}); falling back to pinned host memory.", (int)alloc_result);
+            use_gpu_vram = false;
+        } else {
+            // Verify DMA-BUF export is supported for this allocation.
+            // cuMemGetHandleForAddressRange requires page-aligned range; align
+            // the candidate pointer before testing.
+            CUdeviceptr aligned = device_deviceptr;
+            size_t rem = aligned & page_mask;
+            if (rem) {
+                aligned += (page_size - rem);
+            }
+            int dmabuf_fd = -1;
+            CUresult dmabuf_result = cuMemGetHandleForAddressRange(
+                (void*)&dmabuf_fd, aligned, size,
+                CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
+            if (dmabuf_fd >= 0) {
+                ::close(dmabuf_fd);
+            }
+            if (dmabuf_result != CUDA_SUCCESS) {
+                HSB_LOG_INFO("cuMemGetHandleForAddressRange failed (result={}); "
+                             "DMA-BUF export not supported for GPU VRAM on this system. "
+                             "Falling back to pinned host memory.",
+                    (int)dmabuf_result);
+                cuMemFree(device_deviceptr);
+                use_gpu_vram = false;
+            } else {
+                // DMA-BUF export works; commit to the GPU VRAM allocation.
+                deviceptr_.reset(device_deviceptr);
+                mem_ = aligned;
+                // host_ptr_ stays nullptr: RoceReceiver will use ibv_reg_dmabuf_mr.
+                HSB_LOG_INFO("Using GPU VRAM: device_ptr={:#x} size={:#x}", mem_, size);
+            }
+        }
+    }
+
+    if (!use_gpu_vram) {
+        // Pinned host memory: accessible from both CPU and GPU, and always
+        // mapped with read/write IOMMU access for all PCIe devices.  RDMA
+        // writes land here directly; the GPU reads via the device-mapped ptr.
+        host_deviceptr_.reset([allocation_size] {
+            void* host_deviceptr;
+            unsigned int flags = CU_MEMHOSTALLOC_DEVICEMAP;
+            CudaCheck(cuMemHostAlloc(&host_deviceptr, allocation_size, flags));
+            return host_deviceptr;
+        }());
+
+        CUdeviceptr device_deviceptr;
+        CudaCheck(cuMemHostGetDevicePointer(&device_deviceptr, host_deviceptr_.get(), 0));
+        CUdeviceptr mem = device_deviceptr;
+        // Round up size to page boundary;
+        // Note: host_deviceptr_ is what we'll free; don't try to free mem_.
+        size_t rem = mem & page_mask;
+        if (rem) {
+            mem += (page_size - rem);
+        }
+        mem_ = mem;
+
+        // Compute the aligned host CPU pointer (same offset as device pointer).
+        size_t offset = mem - device_deviceptr;
+        host_ptr_ = static_cast<uint8_t*>(host_deviceptr_.get()) + offset;
+        HSB_LOG_INFO("Using pinned host memory: host_ptr={} device_ptr={:#x} size={:#x}",
+            host_ptr_, mem_, size);
+    }
 }
 
 } // namespace hololink

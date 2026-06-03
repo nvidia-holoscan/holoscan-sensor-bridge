@@ -20,9 +20,7 @@ from unittest import mock
 
 import pytest
 
-from examples import (
-    linux_single_network_stereo_imx477_player,
-)
+from examples import linux_single_network_stereo_imx477_player
 
 
 @pytest.mark.skip_unless_stereo_imx477

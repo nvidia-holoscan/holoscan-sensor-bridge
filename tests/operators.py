@@ -15,6 +15,7 @@
 
 # See README.md for detailed information.
 
+import dataclasses
 import datetime
 import logging
 import math
@@ -22,6 +23,8 @@ import math
 import cupy as cp
 import holoscan
 import utils
+
+import hololink as hololink_module
 
 COLOR_PROFILER_START_FRAME = 5
 
@@ -168,7 +171,7 @@ class MonitorOperator(holoscan.core.Operator):
 
     def compute(self, op_input, op_output, context):
         # What time is it now?
-        complete = datetime.datetime.now(datetime.UTC)
+        complete = datetime.datetime.now(datetime.timezone.utc)
 
         _ = op_input.receive("input")
         #
@@ -241,18 +244,67 @@ class PassThroughOperator(holoscan.core.Operator):
 
 
 class RecordMetadataOp(PassThroughOperator):
-    def __init__(self, *args, metadata_names=[], **kwargs):
+    def __init__(self, *args, metadata_class=None, **kwargs):
         super().__init__(*args, **kwargs)
-        self._metadata_names = metadata_names
+        self._metadata_class = metadata_class
+        self._field_names = [f.name for f in dataclasses.fields(self._metadata_class)]
         self._record = []
 
     def compute(self, op_input, op_output, context):
         super().compute(op_input, op_output, context)
         metadata = self.metadata
-        value = []
-        for name in self._metadata_names:
-            value.append(metadata[name])
-        self._record.append(value)
+        try:
+            values = []
+            for name in self._field_names:
+                value = metadata[name]
+                hololink_module.NvtxTrace.event_u64(
+                    f"{self.name} {name=} {value=:#x}", value
+                )
+                values.append(value)
+            self._record.append(self._metadata_class(*values))
+        except KeyError as e:
+            logging.error(f"Caught {e} ({type(e)=})")
+            logging.error("Metadata contents:")
+            for name, value in metadata.items():
+                logging.error(f"  {name}={value}")
+            raise
 
     def get_record(self):
         return self._record
+
+
+class OnFrameNOperator(holoscan.core.Operator):
+    def __init__(
+        self,
+        *args,
+        trigger_frame=50,
+        callback=None,
+        in_tensor_name="",
+        out_tensor_name=None,
+        **kwargs,
+    ):
+        self._in_tensor_name = in_tensor_name
+        self._out_tensor_name = out_tensor_name
+        super().__init__(*args, **kwargs)
+        self._trigger_frame = trigger_frame
+        self._callback = callback
+        self._count = 0
+
+    def setup(self, spec):
+        logging.info("setup")
+        spec.input("input")
+        if self._out_tensor_name is not None:
+            spec.output("output")
+
+    def compute(self, op_input, op_output, context):
+        in_message = op_input.receive("input")
+        if self._out_tensor_name is not None:
+            tensor = in_message.get(self._in_tensor_name)
+            op_output.emit({self._out_tensor_name: tensor}, "output")
+        self.check()
+
+    def check(self):
+        self._count += 1
+        if self._count != self._trigger_frame:
+            return
+        self._callback()

@@ -61,19 +61,24 @@ SKIP=( \
     # black: Cannot parse: 18:7: from ._@MODULE_NAME@ import @MODULE_CLASS_NAME@
     cmake/pybind11/__init__.py
     scripts
+    skills
     build*
     # HSB100G user guide has users put build/VM config directories and 3rd party repos here with many lint errors. 
     # ignore the directories but retain other files.
     configurator/*/
 )
 
-# Codespell checks for spelling mistakes.  Don't include PDF files.
-CODESPELL_FILES=( `git ls-files | grep -v '.pdf$'` )
+# Codespell checks for spelling mistakes.  Don't include PDF files or skills/.
+# skills/ uses NVCARPS-convention formatting validated separately (see ai_rules MR !22).
+CODESPELL_FILES=( `git ls-files | grep -v '.pdf$' | grep -v '^skills/'` )
 
 C_FILES=( `git ls-files | egrep '.(cpp|hpp)$' ` )
-# added explicit exclude on mdformat docs/user_guide/emulation.md because 
+# added explicit exclude on mdformat docs/user_guide/emulation.md because
 # it is completely messing up tables and code formatting blocks used by sphinx
-DOCS_FILES=( `git ls-files | egrep -v 'docs/user_guide/emulation.md' | egrep '.md$' ` )
+# skills/ contains markdown-based Claude Code agent skill files authored under NVCARPS conventions.
+# They use formatting rules that differ from this project's mdformat rules and are validated
+# separately by the NVCARPS CI pipeline (see ai_rules MR !22).
+DOCS_FILES=( `git ls-files | egrep -v 'docs/user_guide/emulation.md' | egrep -v '^skills/' | egrep '.md$' ` )
 
 # Each command likes its list of inputs slightly different
 T=${SKIP[*]}

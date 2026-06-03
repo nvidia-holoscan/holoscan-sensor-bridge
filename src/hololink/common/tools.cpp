@@ -18,7 +18,9 @@
  */
 
 #include <algorithm>
+#ifdef HAS_IBVERBS
 #include <infiniband/verbs.h>
+#endif
 #include <string>
 #include <vector>
 
@@ -26,17 +28,20 @@ namespace hololink {
 
 std::vector<std::string> infiniband_devices()
 {
+    std::vector<std::string> device_names;
+#ifdef HAS_IBVERBS
     int num_devices = 0;
     struct ibv_device** devices = ibv_get_device_list(&num_devices);
     if (!devices) {
-        return {};
+        return device_names;
     }
-    std::vector<std::string> device_names;
+
     for (int i = 0; i < num_devices; i++) {
         device_names.push_back(ibv_get_device_name(devices[i]));
     }
     ibv_free_device_list(devices);
     std::sort(device_names.begin(), device_names.end());
+#endif
     return device_names;
 }
 

@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,6 @@
 
 #include "linux_receiver_op.hpp"
 
-#include <chrono>
 #include <cstdlib>
 #include <sched.h>
 #include <sys/socket.h>
@@ -58,7 +57,9 @@ void LinuxReceiverOp::initialize()
     metadata_ns_metadata_ = rename_fn("metadata_ns");
     packets_dropped_metadata_ = rename_fn("packets_dropped");
     crc_metadata_ = rename_fn("crc");
+    imm_data_metadata_ = rename_fn("imm_data");
     psn_metadata_ = rename_fn("psn");
+    page_number_metadata_ = rename_fn("page_number");
     bytes_written_metadata_ = rename_fn("bytes_written");
 
     // Set default receiver affinity if not set
@@ -84,6 +85,10 @@ void LinuxReceiverOp::setup(holoscan::OperatorSpec& spec)
     // Add our own parameters
     spec.param(receiver_affinity_, "receiver_affinity", "ReceiverAffinity",
         "CPU affinity set for receiver thread", std::vector<int> {});
+    spec.param(pages_, "pages", "Pages", "Number of pages to use for the receiver memory", 1u);
+    spec.param(queue_size_, "queue_size", "QueueSize",
+        "The number of buffers that can be queued up for the receiver, has to be less or equal to the number of pages",
+        1u);
 
     // Note: rename_metadata is handled programmatically via set_rename_metadata() method
     // to avoid YAML-CPP serialization issues with std::function
@@ -101,21 +106,33 @@ void LinuxReceiverOp::set_receiver_affinity(const std::vector<int>& affinity)
 
 void LinuxReceiverOp::start_receiver()
 {
+    if (queue_size_.get() == 0) {
+        throw std::runtime_error("Queue size cannot be 0");
+    }
+    if (queue_size_.get() > pages_.get()) {
+        throw std::runtime_error(fmt::format("Queue size {{}} cannot be greater than the number of pages {{}}", queue_size_.get(), pages_.get()));
+    }
+
     check_buffer_size(frame_size_.get());
 
-    // Allocate frame memory with metadata space
-    size_t aligned_frame_size = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
-    size_t allocation_size = aligned_frame_size + hololink::METADATA_SIZE;
-    frame_memory_.reset(new ReceiverMemoryDescriptor(frame_context_, allocation_size));
-
-    HSB_LOG_INFO("frame_size={:#x} frame={:#x} allocation_size={:#x}",
-        frame_size_.get(), frame_memory_->get(), allocation_size);
+    size_t metadata_address = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
+    // received_frame_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
+    // Prove that PAGE_SIZE is a power of two
+    static_assert((hololink::core::PAGE_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
+    // Prove that METADATA_SIZE is an even multiple of PAGE_SIZE
+    static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
+    size_t received_frame_size = metadata_address + hololink::METADATA_SIZE;
+    size_t buffer_size = hololink::core::round_up(received_frame_size * pages_.get(), getpagesize());
+    frame_memory_.reset(new hololink::ReceiverMemoryDescriptor(frame_context_, buffer_size));
 
     receiver_.reset(new LinuxReceiver(
         frame_memory_->get(),
-        frame_size_.get(),
+        buffer_size,
+        received_frame_size,
+        pages_.get(),
         data_socket_.get(),
-        received_address_offset()));
+        received_address_offset(),
+        queue_size_.get()));
 
     receiver_->set_frame_ready([this](const LinuxReceiver&) {
         this->frame_ready();
@@ -132,10 +149,8 @@ void LinuxReceiverOp::start_receiver()
     auto [local_ip, local_port] = local_ip_and_port();
     HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
 
-    size_t page_size = allocation_size;
-    size_t pages = 1;
     uint64_t distal_memory_address_start = 0; // See received_address_offset()
-    hololink_channel_->configure_roce(distal_memory_address_start, frame_size_, page_size, pages, local_port);
+    hololink_channel_->configure_roce(distal_memory_address_start, frame_size_, received_frame_size, pages_.get(), local_port);
 }
 
 void LinuxReceiverOp::run()
@@ -167,10 +182,10 @@ void LinuxReceiverOp::stop_receiver()
     frame_memory_.reset();
 }
 
-std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> LinuxReceiverOp::get_next_frame(double timeout_ms)
+std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> LinuxReceiverOp::get_next_frame(double timeout_ms, CUstream cuda_stream)
 {
     LinuxReceiverMetadata linux_receiver_metadata;
-    if (!receiver_->get_next_frame(static_cast<unsigned>(timeout_ms), linux_receiver_metadata)) {
+    if (!receiver_->get_next_frame(static_cast<unsigned>(timeout_ms), linux_receiver_metadata, cuda_stream)) {
         return {};
     }
 
@@ -187,10 +202,18 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> LinuxReceiverOp::ge
     (*metadata)[metadata_ns_metadata_] = int64_t(linux_receiver_metadata.frame_metadata.metadata_ns);
     (*metadata)[packets_dropped_metadata_] = int64_t(linux_receiver_metadata.packets_dropped);
     (*metadata)[crc_metadata_] = int64_t(linux_receiver_metadata.frame_metadata.crc);
-    (*metadata)[psn_metadata_] = int64_t(linux_receiver_metadata.imm_data); // PSN is stored in imm_data
+    (*metadata)[psn_metadata_] = int64_t(linux_receiver_metadata.frame_metadata.psn);
+    auto imm_data = linux_receiver_metadata.imm_data;
+    (*metadata)[imm_data_metadata_] = int64_t(imm_data);
+    (*metadata)[page_number_metadata_] = int64_t(imm_data & 0xFFF);
     (*metadata)[bytes_written_metadata_] = int64_t(linux_receiver_metadata.frame_metadata.bytes_written);
 
     return { frame_memory_->get(), metadata };
+}
+
+bool LinuxReceiverOp::frames_ready()
+{
+    return receiver_->frames_ready();
 }
 
 uint64_t LinuxReceiverOp::received_address_offset()

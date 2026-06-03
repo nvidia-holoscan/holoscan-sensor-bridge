@@ -20,10 +20,7 @@
 #ifndef EMULATION_I2C_INTERFACE_HPP
 #define EMULATION_I2C_INTERFACE_HPP
 
-#include <atomic>
 #include <cstdint>
-#include <memory>
-#include <set>
 
 #include "hsb_emulator.hpp"
 
@@ -87,12 +84,14 @@ public:
      *
      * @param peripheral_address The peripheral address to communicate with.
      * @param write_bytes The bytes to write to the peripheral.
+     * @param write_size The size of the write bytes
      * @param read_bytes The bytes to read from the peripheral. This shall be filled with 0s to the requested read size and replaced by peripheral. This is to ensure peripheral can get the read count from read_bytes.size() and enough valid data is returned for no-ops.
+     * @param read_size The size of the read bytes
      * @return I2CStatus The status of the transaction.
      *
      * @note read request size is the size of the read_bytes vector as initialized by the caller
      */
-    virtual I2CStatus i2c_transaction(uint8_t peripheral_address, const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes) = 0;
+    virtual I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) = 0;
 };
 
 }

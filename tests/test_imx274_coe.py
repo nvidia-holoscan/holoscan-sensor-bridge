@@ -163,6 +163,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             coe_interface=self._coe_interface_left,
             pixel_width=self._camera_left._width,
             coe_channel=self._coe_channel_left,
+            receiver_affinity=[2],
         )
         receiver_right = hololink_module.operators.LinuxCoeReceiverOp(
             self,
@@ -175,6 +176,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             coe_interface=self._coe_interface_right,
             pixel_width=self._camera_right._width,
             coe_channel=self._coe_channel_right,
+            receiver_affinity=[3],
         )
 
         isp_left = hololink_module.operators.ImageProcessorOp(
@@ -204,7 +206,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_left._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic_left = holoscan.operators.BayerDemosaicOp(
             self,
@@ -225,7 +227,7 @@ class DualCoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera_right._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic_right = holoscan.operators.BayerDemosaicOp(
             self,
@@ -362,6 +364,7 @@ def run_dual_coe_test(
                 camera_left.pixel_format()
             )
             hololink_channel_left.set_packetizer_program(packetizer_program)
+            hololink_channel_right.set_packetizer_program(packetizer_program)
 
             #
             application.run()
@@ -521,7 +524,7 @@ class CoeTestApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -567,9 +570,11 @@ class CoeTestApplication(holoscan.core.Application):
     ],
 )
 @pytest.mark.parametrize(
-    "hololink",
+    # coe_interface is an index to coe_interfaces
+    "hololink, expander_configuration, coe_interface",
     [
-        "192.168.0.2",
+        ("192.168.0.2", 0, 0),
+        ("192.168.0.3", 1, 1),
     ],
 )
 def test_imx274_pattern_coe(
@@ -577,6 +582,8 @@ def test_imx274_pattern_coe(
     pattern,
     headless,
     hololink,
+    expander_configuration,
+    coe_interface,
     coe_interfaces,
     frame_limit,
 ):
@@ -595,7 +602,8 @@ def test_imx274_pattern_coe(
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
     camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=0
+        hololink_channel,
+        expander_configuration=expander_configuration,
     )
     # Note that ColorProfiler takes longer on the COLOR_PROFILER_START_FRAMEth frame, where it
     # starts running (and builds CUDA code).
@@ -613,7 +621,7 @@ def test_imx274_pattern_coe(
             camera,
             camera_mode,
             watchdog,
-            coe_interface=coe_interfaces[0],
+            coe_interface=coe_interfaces[coe_interface],
         )
         # Run it.
         hololink = hololink_channel.hololink()

@@ -20,9 +20,26 @@
 #ifndef EMULATION_UTILS_HPP
 #define EMULATION_UTILS_HPP
 
-#include <cstdint>
-
 #include "dlpack/dlpack.h"
+#include <cstdint>
+#include <cstdio>
+#include <stdexcept>
+
+// if utils.hpp is changed to utils.h, wrap this in a #ifdef __cplusplus block
+#ifdef __cpp_exceptions
+#define THROW_EXCEPTION(msg, ...)                                                                                                \
+    {                                                                                                                            \
+        char message_buffer[256];                                                                                                \
+        snprintf(message_buffer, sizeof(message_buffer), "%s:%s:%d: (%d): " msg, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); \
+        throw std::runtime_error(message_buffer);                                                                                \
+    }
+#else
+// caller must provide an integer error status as first argument in VA_ARGS
+#define THROW_EXCEPTION(msg, ...)                                                               \
+    {                                                                                           \
+        fprintf(stderr, "%s:%s:%d: (%d): " msg, __FILE__, __FUNCTION__, __LINE__, __VA_ARGS__); \
+    }
+#endif
 
 namespace hololink::emulation {
 

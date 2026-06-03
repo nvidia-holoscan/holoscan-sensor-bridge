@@ -260,7 +260,7 @@ void Programmer::power_cycle()
 std::vector<uint8_t> Programmer::fetch_content(const std::string& content_name)
 {
     auto content_metadata = manifest_node_["content"][content_name];
-    if (content_metadata.IsNull()) {
+    if (!content_metadata.IsDefined()) {
         throw std::runtime_error(fmt::format("No content \"{}\" found.", content_name));
     }
 

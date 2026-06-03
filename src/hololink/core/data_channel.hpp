@@ -23,6 +23,10 @@
 #include <memory>
 #include <string>
 
+#include <cuda.h>
+
+#include <hololink/common/cuda_helper.hpp>
+
 #include "csi_formats.hpp"
 #include "hololink.hpp"
 #include "metadata.hpp"
@@ -30,6 +34,32 @@
 #include "packetizer_program.hpp"
 
 namespace hololink {
+
+class ReceiverMemoryDescriptor {
+public:
+    /**
+     * Allocate a region of GPU or pinned host memory which will be page
+     * aligned and freed on destruction.
+     */
+    explicit ReceiverMemoryDescriptor(CUcontext context, size_t size);
+    ReceiverMemoryDescriptor() = delete;
+    ~ReceiverMemoryDescriptor() = default;
+
+    /** GPU-accessible device pointer for CUDA operations. */
+    CUdeviceptr get() { return mem_; };
+
+    /**
+     * Host CPU virtual address of the same allocation, for use with
+     * ibverbs MR registration (ibv_reg_mr / ibv_reg_mr_iova).
+     */
+    void* get_host_ptr() { return host_ptr_; };
+
+protected:
+    common::UniqueCUdeviceptr deviceptr_;
+    common::UniqueCUhostptr host_deviceptr_;
+    CUdeviceptr mem_;
+    void* host_ptr_ = nullptr;
+};
 
 // HIF: Packet metadata
 constexpr uint32_t DP_PACKET_SIZE = 0x04;
@@ -39,14 +69,11 @@ constexpr uint32_t DP_VP_MASK = 0x0C;
 // VP: DMA descriptor registers.
 constexpr uint32_t DP_QP = 0x00;
 constexpr uint32_t DP_RKEY = 0x04;
-// these are all page addresses; the actual byte address in the
-// packet will be this page address * 128.
-constexpr uint32_t DP_ADDRESS_0 = 0x08;
-constexpr uint32_t DP_ADDRESS_1 = 0x0C;
-constexpr uint32_t DP_ADDRESS_2 = 0x10;
-constexpr uint32_t DP_ADDRESS_3 = 0x14;
-constexpr uint32_t DP_BUFFER_LENGTH = 0x18; // this is in bytes
-constexpr uint32_t DP_BUFFER_MASK = 0x1C; // each bit enables a buffer
+constexpr uint32_t DP_PAGE_LSB = 0x08;
+constexpr uint32_t DP_PAGE_MSB = 0x0C;
+constexpr uint32_t DP_PAGE_INC = 0x10; // in pages
+constexpr uint32_t DP_MAX_BUFF = 0x14; // starting and ending pages to write to
+constexpr uint32_t DP_BUFFER_LENGTH = 0x18; // frame-end occurs when we receive this many bytes
 constexpr uint32_t DP_HOST_MAC_LOW = 0x20;
 constexpr uint32_t DP_HOST_MAC_HIGH = 0x24;
 constexpr uint32_t DP_HOST_IP = 0x28;

@@ -26,6 +26,19 @@ import holoscan
 import hololink as hololink_module
 
 
+def get_platform_default_mode():
+    bios_version = open("/sys/class/dmi/id/bios_version", "r").read().strip()
+    l4t_version_major = int(bios_version.split(".")[0])
+    if l4t_version_major >= 39:
+        return (
+            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS.value
+        )
+    else:
+        return (
+            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS.value
+        )
+
+
 class HoloscanApplication(holoscan.core.Application):
     def __init__(
         self,
@@ -73,7 +86,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -105,7 +118,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         bayer_format = self._camera.bayer_format()
         argus_isp = hololink_module.operators.ArgusIspOp(
@@ -117,6 +130,7 @@ class HoloscanApplication(holoscan.core.Application):
             analog_gain=10.0,
             pixel_bit_depth=10,
             pool=isp_pool,
+            sensor_mode_index=self._camera_mode.value,
         )
 
         visualizer = holoscan.operators.HolovizOp(
@@ -137,7 +151,7 @@ def main():
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS.value,
+        default=get_platform_default_mode(),
         help="IMX274 mode",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")

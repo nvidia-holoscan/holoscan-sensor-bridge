@@ -86,7 +86,6 @@ class ECam0M30Tof:
         return VERSION
 
     def mcu_set_cmd(self, register, value, count):
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -104,12 +103,18 @@ class ECam0M30Tof:
             serializer.append_uint8(crc)
 
         read_byte_count = count
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(100 / 1000)
 
     def configure(self, ecam0m30_tof_mode, depth_range=1):
@@ -122,7 +127,6 @@ class ECam0M30Tof:
         self.configure_sensor(ecam0m30_tof_mode, depth_range)
 
     def set_cmd(self, register, value):
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -140,12 +144,18 @@ class ECam0M30Tof:
             serializer.append_uint8(crc)
 
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(200 / 1000)
 
     def cam_reset(self):
@@ -174,7 +184,6 @@ class ECam0M30Tof:
 
     def get_status(self):
         self.set_cmd(CMD_ID_GET_STATUS, 0x0001)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_GET_STATUS)
@@ -190,12 +199,18 @@ class ECam0M30Tof:
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_GET_STATUS)
         read_byte_count = 5
-        reply = self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            reply = self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         deserializer = hololink_module.Deserializer(reply)
         r = deserializer.next_uint8()
         c = deserializer.next_uint16_be()
@@ -303,7 +318,6 @@ class ECam0M30Tof:
 
     def set_stream_mask(self):
         self.set_cmd(CMD_ID_SET_CTRL, 0x000B)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_SET_CTRL)
@@ -326,17 +340,22 @@ class ECam0M30Tof:
             crc ^= 0x96
         serializer.append_uint8(crc)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_stream_depth_range(self):
         self.set_cmd(CMD_ID_SET_CTRL, 0x000B)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_SET_CTRL)
@@ -358,17 +377,22 @@ class ECam0M30Tof:
             crc = 0xBA
         serializer.append_uint8(crc)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_stream_mode(self):
         self.set_cmd(CMD_ID_SET_CTRL, 0x000B)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_SET_CTRL)
@@ -393,17 +417,22 @@ class ECam0M30Tof:
             crc = 0xB9
         serializer.append_uint8(crc)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_stream_config(self):
         self.set_cmd(CMD_ID_STREAM_CONFIG, 0x000E)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_STREAM_CONFIG)
@@ -423,12 +452,18 @@ class ECam0M30Tof:
         serializer.append_uint8(0x01)
         serializer.append_uint8(0x06)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def configure_converter(self, converter):

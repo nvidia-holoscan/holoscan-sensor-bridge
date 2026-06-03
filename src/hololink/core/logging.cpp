@@ -45,10 +45,14 @@ namespace hololink::logging {
 HsbLogLevel hsb_log_level = HSB_LOG_LEVEL_INVALID;
 static HsbLogLevel hsb_log_level_default = HSB_LOG_LEVEL_INFO;
 // Allow "HOLOSCAN_LOG_LEVEL" to set our logging level (along with HSDK applications)
-static const char* log_level_environment_variable = "HOLOSCAN_LOG_LEVEL";
+static const char* holoscan_log_level_environment_variable = "HOLOSCAN_LOG_LEVEL";
+// Allow "HOLOLINK_LOG_LEVEL" to set our logging level (WITHOUT affecting HSDK applications)
+static const char* hololink_log_level_environment_variable = "HOLOLINK_LOG_LEVEL";
 #ifdef SOCKET_LOG
 // Socket to send our data to.
 static int logger_socket = -1;
+// Destination address for log messages.
+static struct sockaddr_in logger_destination;
 #endif /* SOCKET_LOG */
 
 float log_timestamp_s()
@@ -108,9 +112,10 @@ static void _hsb_logger(char const* file, unsigned line, const char* function, H
 
 #ifdef SOCKET_LOG
     int flags = 0;
-    ssize_t r = send(logger_socket, msg.data(), msg.size(), flags);
+    ssize_t r = sendto(logger_socket, msg.data(), msg.size(), flags,
+        (struct sockaddr*)&logger_destination, sizeof(logger_destination));
     if (r <= 0) {
-        throw std::runtime_error("hsb_log send failed");
+        throw std::runtime_error("hsb_log sendto failed");
     }
 #endif /* SOCKET_LOG */
 }
@@ -143,17 +148,13 @@ static int create_logger_socket(const char* sender_ip, const char* destination_i
     }
     // Use syslog's destination udp port to make wireshark show us the content
     uint16_t port = 514;
-    address = {
+    logger_destination = {
         .sin_family = AF_INET,
         .sin_port = htons(port),
     };
-    r = inet_pton(AF_INET, destination_ip, (void*)&address.sin_addr);
+    r = inet_pton(AF_INET, destination_ip, (void*)&logger_destination.sin_addr);
     if (r != 1) {
         throw std::runtime_error(fmt::format("create_logger_socket, inet_pton({}) failed, errno={}({})", destination_ip, errno, strerror(errno)));
-    }
-    r = connect(s, (struct sockaddr*)&address, sizeof(address));
-    if (r == -1) {
-        throw std::runtime_error(fmt::format("Failed to connect logger socket, errno={}({})", errno, strerror(errno)));
     }
 
     return s;
@@ -169,7 +170,10 @@ static void _initial_hsb_log(char const* file, unsigned line, const char* functi
     }
 
     // Allow the environment to override that.
-    char const* env_log_level = getenv(log_level_environment_variable);
+    char const* holoscan_env_log_level = getenv(holoscan_log_level_environment_variable);
+    char const* hololink_env_log_level = getenv(hololink_log_level_environment_variable);
+    char const* environment_variable = hololink_env_log_level ? hololink_log_level_environment_variable : holoscan_log_level_environment_variable;
+    char const* env_log_level = hololink_env_log_level ? hololink_env_log_level : holoscan_env_log_level;
     if (env_log_level) {
         if (strcasecmp(env_log_level, "TRACE") == 0) {
             hsb_log_level = HSB_LOG_LEVEL_TRACE;
@@ -182,7 +186,7 @@ static void _initial_hsb_log(char const* file, unsigned line, const char* functi
         } else if (strcasecmp(env_log_level, "ERROR") == 0) {
             hsb_log_level = HSB_LOG_LEVEL_ERROR;
         } else {
-            throw std::runtime_error(fmt::format("Invalid environment setting in \"{}\".", log_level_environment_variable));
+            throw std::runtime_error(fmt::format("Invalid environment setting in \"{}\".", environment_variable));
         }
     }
 

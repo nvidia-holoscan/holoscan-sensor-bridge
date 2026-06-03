@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +16,7 @@
 # See README.md for detailed information.
 
 import ctypes
+import dataclasses
 import logging
 
 import cuda.bindings.driver as cuda
@@ -28,6 +29,24 @@ import hololink as hololink_module
 
 # Number of frames to skip during pipeline initialization to avoid artifacts
 SKIP_INITIAL_FRAMES = 15
+
+
+@dataclasses.dataclass
+class LeftMetadataRecord:
+    left_crc: int
+    check_crc_left: int
+    bayer_crc_left: int
+    left_imm_data: int
+    left_bytes_written: int
+
+
+@dataclasses.dataclass
+class RightMetadataRecord:
+    right_crc: int
+    check_crc_right: int
+    bayer_crc_right: int
+    right_imm_data: int
+    right_bytes_written: int
 
 
 class CameraWrapper(hololink_module.sensors.imx274.dual_imx274.Imx274Cam):
@@ -169,6 +188,7 @@ class PatternTestApplication(holoscan.core.Application):
                 device=self._camera_left,
                 rename_metadata=lambda name: f"left_{name}",
             )
+            receiver_operator_left.set_receiver_affinity([2])
 
         #
         frame_size = csi_to_bayer_operator_right.get_csi_length()
@@ -198,6 +218,7 @@ class PatternTestApplication(holoscan.core.Application):
                 device=self._camera_right,
                 rename_metadata=lambda name: f"right_{name}",
             )
+            receiver_operator_right.set_receiver_affinity([3])
 
         #
         # CRC operators
@@ -208,7 +229,7 @@ class PatternTestApplication(holoscan.core.Application):
         )
         check_crc_left = hololink_module.operators.CheckCrcOp(
             self,
-            compute_crc_left,
+            compute_crc_op=compute_crc_left,
             name="check_crc_left",
             computed_crc_metadata_name="check_crc_left",
         )
@@ -220,7 +241,7 @@ class PatternTestApplication(holoscan.core.Application):
         )
         check_crc_right = hololink_module.operators.CheckCrcOp(
             self,
-            compute_crc_right,
+            compute_crc_op=compute_crc_right,
             name="check_crc_right",
             computed_crc_metadata_name="check_crc_right",
         )
@@ -285,7 +306,7 @@ class PatternTestApplication(holoscan.core.Application):
         )
         bayer_check_crc_left = hololink_module.operators.CheckCrcOp(
             self,
-            bayer_crc_left,
+            compute_crc_op=bayer_crc_left,
             name="bayer_check_crc_left",
             computed_crc_metadata_name="bayer_crc_left",
         )
@@ -303,7 +324,7 @@ class PatternTestApplication(holoscan.core.Application):
         )
         bayer_check_crc_right = hololink_module.operators.CheckCrcOp(
             self,
-            bayer_crc_right,
+            compute_crc_op=bayer_crc_right,
             name="bayer_check_crc_right",
             computed_crc_metadata_name="bayer_crc_right",
         )
@@ -311,20 +332,12 @@ class PatternTestApplication(holoscan.core.Application):
         self._record_metadata_left = operators.RecordMetadataOp(
             self,
             name="record_metadata_left",
-            metadata_names=[
-                "left_crc",
-                "check_crc_left",
-                "bayer_crc_left",
-            ],
+            metadata_class=LeftMetadataRecord,
         )
         self._record_metadata_right = operators.RecordMetadataOp(
             self,
             name="record_metadata_right",
-            metadata_names=[
-                "right_crc",
-                "check_crc_right",
-                "bayer_crc_right",
-            ],
+            metadata_class=RightMetadataRecord,
         )
 
         # the tensor name directs which pane on the visualizer is updated
@@ -609,35 +622,9 @@ def run_test(
     if ibv_name_left:
         crcs_left = application._record_metadata_left.get_record()
         logging.info(f"Left camera captured {len(crcs_left)} frames")
-        for frame_idx, (left_crc, check_crc_left, bayer_crc_left) in enumerate(
-            crcs_left
-        ):
-            logging.trace(f"{left_crc=:#x} {check_crc_left=:#x} {bayer_crc_left=:#x}")
-            # Skip validation for first N frames (initialization artifacts)
-            if frame_idx < skip_frames:
-                continue
-            # Don't include the last frame, when the pipeline is shutting down.
-            if frame_idx >= (frame_limit - 1):
-                continue
-            if left_crc != check_crc_left:
-                logging.error(
-                    f"Left CRC mismatch at frame {frame_idx}: "
-                    f"received={left_crc:#x}, computed={check_crc_left:#x}"
-                )
-                left_bad_crcs += 1
-            if bayer_crc_left != expected_left:
-                left_bad_color_crcs += 1
-        if left_bad_crcs == 0:
-            logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
-
-    if ibv_name_right:
-        crcs_right = application._record_metadata_right.get_record()
-        logging.info(f"Right camera captured {len(crcs_right)} frames")
-        for frame_idx, (right_crc, check_crc_right, bayer_crc_right) in enumerate(
-            crcs_right
-        ):
+        for frame_idx, record in enumerate(crcs_left):
             logging.trace(
-                f"{right_crc=:#x} {check_crc_right=:#x} {bayer_crc_right=:#x}"
+                f"{record.left_crc=:#x} {record.check_crc_left=:#x} {record.bayer_crc_left=:#x} {record.left_imm_data=:#x} {record.left_bytes_written=:#x}"
             )
             # Skip validation for first N frames (initialization artifacts)
             if frame_idx < skip_frames:
@@ -645,13 +632,37 @@ def run_test(
             # Don't include the last frame, when the pipeline is shutting down.
             if frame_idx >= (frame_limit - 1):
                 continue
-            if right_crc != check_crc_right:
+            if record.left_crc != record.check_crc_left:
+                logging.error(
+                    f"Left CRC mismatch at frame {frame_idx}: "
+                    f"received={record.left_crc:#x}, computed={record.check_crc_left:#x}"
+                )
+                left_bad_crcs += 1
+            if record.bayer_crc_left != expected_left:
+                left_bad_color_crcs += 1
+        if left_bad_crcs == 0:
+            logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
+
+    if ibv_name_right:
+        crcs_right = application._record_metadata_right.get_record()
+        logging.info(f"Right camera captured {len(crcs_right)} frames")
+        for frame_idx, record in enumerate(crcs_right):
+            logging.trace(
+                f"{record.right_crc=:#x} {record.check_crc_right=:#x} {record.bayer_crc_right=:#x} {record.right_imm_data=:#x} {record.right_bytes_written=:#x}"
+            )
+            # Skip validation for first N frames (initialization artifacts)
+            if frame_idx < skip_frames:
+                continue
+            # Don't include the last frame, when the pipeline is shutting down.
+            if frame_idx >= (frame_limit - 1):
+                continue
+            if record.right_crc != record.check_crc_right:
                 logging.error(
                     f"Right CRC mismatch at frame {frame_idx}: "
-                    f"received={right_crc:#x}, computed={check_crc_right:#x}"
+                    f"received={record.right_crc:#x}, computed={record.check_crc_right:#x}"
                 )
                 right_bad_crcs += 1
-            if bayer_crc_right != expected_right:
+            if record.bayer_crc_right != expected_right:
                 right_bad_color_crcs += 1
         if right_bad_crcs == 0:
             logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")

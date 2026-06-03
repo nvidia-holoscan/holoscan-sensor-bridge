@@ -289,33 +289,6 @@ void AD9986Config::run()
     hololink_.write_uint32(JESD_RX_CTRL + 0x39000, 0x1);
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
-    // Write the rx lane status to clear errors
-    //  - Clears some RX lane status that we are interested in.
-    for (int i = 0x0; i < 0x800; i += 0x100) {
-        uint32_t address = JESD_RX_CTRL + 0x3C008 + i;
-        hololink_.write_uint32(address, 0xff);
-    }
-
-    // Read the status back
-    //  - Reads back lane 64B66B status.
-    //  - Used to check SH/EMB/User lock status of JESD lanes.
-    //  - Read the gearbox status to check any overflow conditions.
-    //  - TODO: Intelligently assess the status based on what we read back...
-    HSB_LOG_DEBUG("LANE 64B66B Status:");
-    for (int i = 0x0; i < 0x800; i += 0x100) {
-        uint32_t address = JESD_RX_CTRL + 0x3C008 + i;
-        HSB_LOG_DEBUG("address:{:#x}, value:{:#x}", address, hololink_.read_uint32(address));
-    }
-    HSB_LOG_DEBUG("UPHY OVERFLOW Status:");
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x2102C));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21448));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21864));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x21C80));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x2209C));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x224B8));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x228D4));
-    HSB_LOG_DEBUG("value:{:#x}", hololink_.read_uint32(JESD_RX_CTRL + 0x22CF0));
-
     hololink_.write_uint32(JESD_REG_CTRL, 0x30); // Enable RX
     hololink_.write_uint32(0x01200000, 0x3); // Enable TX
 
@@ -511,6 +484,58 @@ void AD9986Config::configure_nvda_jesd_rx(void)
 
     // Enable the link
     hololink_.write_uint32(rx_base + 0x39000, 0x00000001);
+}
+
+bool AD9986Config::verify_link_status()
+{
+    bool ok = true;
+
+    // Clear sticky 64B66B error bits then read back — expect 0x3 (SH/EMB lock) for all 8 lanes.
+    // Bit 2 (user data lock) may be 0 and is not required.
+    for (int i = 0x0; i < 0x800; i += 0x100) {
+        uint32_t address = JESD_RX_CTRL + 0x3C008 + i;
+        hololink_.write_uint32(address, 0xFF);
+        uint32_t status = hololink_.read_uint32(address);
+        if ((status & 0x3) != 0x3) {
+            HSB_LOG_ERROR("JESD RX lane {} 64B66B status error: {:#x}", i / 0x100, status);
+            ok = false;
+        }
+    }
+
+    // UPHY overflow registers — expect 0 for all 8 lanes.
+    static constexpr uint32_t uphy_offsets[] = {
+        0x2102C,
+        0x21448,
+        0x21864,
+        0x21C80,
+        0x2209C,
+        0x224B8,
+        0x228D4,
+        0x22CF0,
+    };
+    for (auto offset : uphy_offsets) {
+        uint32_t status = hololink_.read_uint32(JESD_RX_CTRL + offset);
+        if (status != 0) {
+            HSB_LOG_ERROR("JESD UPHY overflow at offset {:#x}: {:#x}", offset, status);
+            ok = false;
+        }
+    }
+
+    // AD9082 JESD link status via SPI — register 0x055E, expect bits 5+6 set (0x60).
+    // spi_transaction returns [echo_cmd0, echo_cmd1, register_value]; data is at index 2.
+    auto spi = hololink_.get_spi(0, 0, 15, 1, 1, 1, 0x03000000);
+    std::vector<uint8_t> cmd = { 0x85, 0x5E };
+    auto result = spi->spi_transaction(cmd, {}, 1);
+    if (result.size() < 3 || (result[2] & 0x60) != 0x60) {
+        uint8_t val = result.size() < 3 ? 0xFF : result[2];
+        HSB_LOG_ERROR("AD9082 JESD link status: expected bits 5+6 set (0x60), got {:#x}", val);
+        ok = false;
+    }
+
+    if (ok) {
+        HSB_LOG_INFO("JESD link status: OK");
+    }
+    return ok;
 }
 
 } // namespace hololink

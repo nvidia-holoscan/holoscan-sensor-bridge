@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+
+#include "../operator_util.hpp"
 
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
@@ -54,12 +56,13 @@ public:
     using ImageProcessorOp::ImageProcessorOp;
 
     // Define a constructor that fully initializes the object.
-    PyImageProcessorOp(holoscan::Fragment* fragment, int pixel_format, int bayer_format, int32_t optical_black, int cuda_device_ordinal, const std::string& name = "image_processor")
+    PyImageProcessorOp(holoscan::Fragment* fragment, const py::args& args, int pixel_format, int bayer_format, int32_t optical_black, int cuda_device_ordinal, const std::string& name = "image_processor")
         : ImageProcessorOp(holoscan::ArgList { holoscan::Arg { "pixel_format", pixel_format },
             holoscan::Arg { "bayer_format", bayer_format },
             holoscan::Arg { "optical_black", optical_black },
             holoscan::Arg { "cuda_device_ordinal", cuda_device_ordinal } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -77,7 +80,7 @@ PYBIND11_MODULE(_image_processor, m)
 
     auto op = py::class_<ImageProcessorOp, PyImageProcessorOp, holoscan::Operator, std::shared_ptr<ImageProcessorOp>>(m,
         "ImageProcessorOp")
-                  .def(py::init<holoscan::Fragment*, int, int, int32_t, int, const std::string&>(),
+                  .def(py::init<holoscan::Fragment*, const py::args&, int, int, int32_t, int, const std::string&>(),
                       "fragment"_a,
                       "pixel_format"_a,
                       "bayer_format"_a,

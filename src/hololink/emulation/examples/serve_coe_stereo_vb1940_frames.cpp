@@ -18,6 +18,7 @@
  */
 
 #include <getopt.h>
+#include <stdexcept>
 #include <stdio.h>
 #include <string.h>
 
@@ -157,7 +158,7 @@ int main(int argc, char** argv)
     // build the emulator and data plane(s)
     // NOTE: this is the configuration of the Leopard Eagle board,
     // which is currently the only one that will work with vb1940
-    HSBEmulator hsb(HSB_LEOPARD_EAGLE_CONFIG);
+    HSBEmulator hsb(hololink::emulation::HSB_LEOPARD_EAGLE_CONFIG);
     auto address = IPAddress_from_string(ip_address);
     const uint8_t data_plane_id = 0;
     const uint8_t sensor_id_0 = 0;
