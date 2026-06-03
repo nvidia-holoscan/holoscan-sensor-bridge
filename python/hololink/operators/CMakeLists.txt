@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +12,20 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_operators_python
+    DESTINATION operators
+    FILES
+        __init__.py
+        base_receiver_op.py
+        hsb_controller_op.py
+        image_shift_to_uint8_operator.py
+        linux_coe_receiver_operator.py
+        linux_controller_receiver.py
+        linux_receiver_operator.py
+        roce_controller_receiver.py
+)
 
 # include the operators
 if(HOLOLINK_BUILD_ARGUS_ISP)
@@ -30,11 +44,18 @@ add_subdirectory(linux_receiver)
 add_subdirectory(linux_receiver_op)
 add_subdirectory(linux_coe_receiver)
 add_subdirectory(packed_format_converter)
-add_subdirectory(roce_receiver)
-add_subdirectory(roce_transmitter)
-add_subdirectory(sig_gen)
-add_subdirectory(sig_viewer)
+if(HOLOLINK_BUILD_PVA)
+  add_subdirectory(pva_crc)
+endif()
+if (HOLOLINK_BUILD_ROCE)
+  add_subdirectory(roce_receiver)
+  add_subdirectory(roce_transmitter)
+  add_subdirectory(gpu_roce_transceiver)
+  add_subdirectory(sig_gen)
+  add_subdirectory(sig_viewer)
+endif() # HOLOLINK_BUILD_ROCE
 if(HOLOLINK_BUILD_SIPL)
   add_subdirectory(sipl_capture)
 endif()
+add_subdirectory(sub_frame_combiner)
 add_subdirectory(udp_transmitter)

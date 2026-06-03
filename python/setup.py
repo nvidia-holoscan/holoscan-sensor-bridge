@@ -41,6 +41,18 @@ class BuildCommand(distutils.command.build.build):
         self.build_base = self._tmp_dir.name
 
 
+def has_coe_offload():
+    if os.path.isdir("/dev/") and "coe-chan-0" in os.listdir("/dev"):
+        return True
+    return "COE_OFFLOAD" in os.environ and os.environ["COE_OFFLOAD"] == "1"
+
+
+def get_l4t_version():
+    with open("/sys/class/dmi/id/bios_version", "r") as f:
+        bios_version = f.read().strip()
+    return tuple(int(x) for x in bios_version.split("-")[0].split("."))
+
+
 setuptools.setup(
     name="hololink",
     version=VERSION,
@@ -63,7 +75,7 @@ setuptools.setup(
         cmake_build_extension.CMakeExtension(
             name="_hololink",
             # Name of the resulting package name (import hololink)
-            install_prefix="hololink",
+            install_prefix="",
             # Selects the folder where the main CMakeLists.txt is stored
             source_dir="..",
             cmake_configure_options=[
@@ -71,11 +83,17 @@ setuptools.setup(
                 # the logic of FindPython3.cmake to find the active version
                 f"-DPython3_ROOT_DIR={Path(sys.prefix)}",
                 "-DBUILD_SHARED_LIBS:BOOL=OFF",
-                f"-DHOLOLINK_BUILD_ARGUS_ISP={'ON' if os.path.isdir('/usr/src/jetson_multimedia_api/argus') else 'OFF'}",
-                f"-DHOLOLINK_BUILD_SIPL={'ON' if os.path.isdir('/usr/src/jetson_sipl_api') else 'OFF'}",
-                f"-DHOLOLINK_BUILD_FUSA={'ON' if os.path.isdir('/usr/src/jetson_sipl_api/sipl/fusa') else 'OFF'}",
+                # argus has a breaking change between l4t 36 (Jetpack 6.X) and l4t 39 (Jetpack 7.2+) for which this is compatible.
+                f"-DHOLOLINK_BUILD_ARGUS_ISP={'ON' if os.path.isdir('/usr/src/jetson_multimedia_api/argus') and get_l4t_version() >= (39, 0, 0) else 'OFF'}",
+                f"-DHOLOLINK_BUILD_SIPL={'ON' if has_coe_offload() else 'OFF'}",
+                f"-DHOLOLINK_BUILD_FUSA={'ON' if has_coe_offload() else 'OFF'}",
+                f"-DHOLOLINK_BUILD_PVA={'ON' if os.path.isdir('/opt/nvidia/pva-sdk-2.9') else 'OFF'}",
+                # build roce only if the infiniband device driver & devices are present. It is not enough to check for the directory presence, e.g. AGX Thor
+                f"-DHOLOLINK_BUILD_ROCE={'ON' if os.path.isdir('/sys/class/infiniband') and any(os.scandir('/sys/class/infiniband')) else 'OFF'}",
+                f"-DHOLOLINK_ROCE_USE_GPU_VRAM={os.environ.get('HOLOLINK_ROCE_USE_GPU_VRAM', 'ON')}",
                 # Add this to debug the code
                 # "-DCMAKE_BUILD_TYPE=Debug",
+                "-DHOLOLINK_PYTHON_INSTALL_DIR:PATH=.",
             ],
         ),
     ],

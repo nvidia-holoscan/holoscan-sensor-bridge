@@ -22,7 +22,7 @@
 ## Overview
 
 The holoscan-sensor-bridge (HSB) repository includes a minimally featured emulation of
-the HSB framework's IP for use in testing and development within a hosted environment -
+the HSB framework's IP for use in testing and development within a hosted or embedded environment -
 the "HSB Emulator". Though it is called like a single object, it is a collection of
 objects that can be used to configure a real endpoint and data source for HSB host-side
 applications. This allows for simulation, testing, or development of a host application
@@ -37,11 +37,11 @@ code. Note also that the two applications may exist either on different device, 
 the same device in different processes, or even within different threads of the same
 process (through transport options may be limited). The details of the specific objects
 in the diagram are described in
-[Developing with HSB Emulator](#developing-with-hsb-emulator)
+[Developing with HSB Emulator](#developing-with-hsb-emulator). These objects in the header files in `src/hololink/emulation` comprise the HSB hardware abstraction layer ("HAL") API that each target HSB Emulator environment is minimally expected to implement.
 
 <img src="HSBEmulatorApplicationCommunicationFlow.png" alt="Communication Pipelines between HSB Host and Emulator Applications" width="100%"/>
 
-The HSB Emulator as provided is *not* meant to be a full implementation of an MCU or
+The HSB Emulator as provided is *not* meant to be a full implementation of the
 FPGA HSB device nor provide the full performance benefits of those implementations. Many
 features of the HSB IP are not fully implemented in that the existing emulator will
 accept and reply to requests, e.g. ptp, but may be "no-ops" internally so that apps that
@@ -58,7 +58,7 @@ The features that are supported in provided code are
    - HSB Emulator itself has no built-in knowledge of any given sensor.
    - Sensors and drivers that do not depend on state change queries, e.g. the HSB
      example "stateless" imx drivers, are compatible by default
-1. `LinuxTransmitter` for RoCEv2 UDP-based transport
+1. `RoCEv2Transmitter` for RoCEv2 UDP-based transport
    - Name is to be consistent with the rest of HSB where the implementation is via Linux
      interface access and sockets
 1. `COETransmitter` for IEEE 1722B link layer transport (Camera-over-Ethernet, CoE)
@@ -77,8 +77,8 @@ The features that are supported in provided code are
 1. Loopback testing ability
    - The HSB Emulator can be used to test both accelerated and unaccelerated transport
      on the same device the host is running on though for accelerated transport, e.g.
-     `RoceReceiverOp` and `SIPLCaptureOp`, a physical connection and network isolation
-     would be needed
+     `RoceReceiverOp` and `SIPLCaptureService / SIPLCameraOutputOp`, a physical connection
+     and network isolation would be needed
 
 ### Limitations
 
@@ -102,11 +102,8 @@ features are not or will not be implemented.
 
 ### Environment Compatibility
 
-Python and C++ APIs are provided and designed to work in any recent Linux environment -
-x86-64 or arm64. They can be extended to other operating systems or environments (e.g.
-32-bit) by suitably changing/re-implementing `src/hololink/emulation/net.cpp` where most
-of the host-specific functionality has been isolated, though POSIX APIs have been
-generally been assumed elsewhere. Other than OS facilities, requirements have been kept
+In Linux target environments, Python and C++ APIs are provided. They can be extended to other operating systems or environments (e.g.
+32-bit) by creating a new target in the `src/hololink/emulation/src` directory, implementing the HSB "HAL" layer represented by the headers within the `src/hololink/emulation` directory, and creating a suitable, target-specific cmake file in `src/hololink/emulation/cmake/targets/` to configure the build system for that target. Other than OS facilities, requirements have been kept
 to a minimum and are described in more detail in the
 [Building HSB Emulator](#building-hsb-emulator) section. HSB Emulator has been tested
 with host applications in the following environments:
@@ -117,7 +114,9 @@ with host applications in the following environments:
 1. IGX Orin Developer Kit - IGX BaseOS 1.0+ - Host or Emulator applications
 1. AGX Thor Developer Kit - Jetpack 7.1+ - Host or Emulator applications
 
-The [Examples](#examples) provided are tested mostly with imx274- (where applicable) and
+As an example of extending the environment compatibility, an implementation of the HSB IP through the HSBEmulator HAL APIs is provided for STM's STM32f767zi Cortex-M7 processor that is suitable for deployment or development on the [NUCLEO-STM32f767zi](https://www.st.com/en/evaluation-tools/nucleo-f767zi.html) development board. This implementation currently includes only the control plane communication, but has an extensible callback feature where additional "registers" from control plane commands can invoke custom callbacks to be defined by the user. To demonstrate the cross-platform API, a simple example in `examples/hsb_control` is provided that may be compiled for both linux and STM32F767ZI targets without any changes and respond to host control plane commands.
+
+For a Linux target, the [Examples](#examples) provided are tested mostly with imx274- (where applicable) and
 the vb1940-based HSB camera applications. The `serve_linux_file` and `serve_coe_file`
 have been used with the HSB-provided imx477 and imx715 sensor drivers as well.
 
@@ -129,12 +128,20 @@ There are 2 ways to build the HSB Emulator
   - This is a normal build of the HSB repository that will build the emulator and
     include it within the normal hololink Python module
 - Emulator-only
+  - Targets a linux environment or MCU (currently only STM32f767zi Cortex-M7 devices, but extensible)
   - Minimal build dependencies. An optional hololink Python module is provided within a
-    virtual environment for the Python API
+    virtual environment for the Python API on linux targets
 
 ### Build instructions
 
-For all build types, clone and enter the repository
+For all build types, make sure the CUDA compiler and libraries are on your `PATH`
+
+```shell
+export PATH="$PATH:/usr/local/cuda/bin"
+export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:/usr/local/cuda/lib64"
+```
+
+clone and enter the repository
 
 ```
 git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
@@ -155,7 +162,7 @@ cmake --build build -j
 
 :::
 
-:::{tab-item} Emulator-only
+:::{tab-item} Emulator-only for Linux
 
 Install build dependencies. It's assumed an appropriate
 [CUDA toolkit](https://developer.nvidia.com/cuda-downloads) has been installed for the
@@ -187,17 +194,53 @@ cmake --build build -j
 
 :::
 
+:::{tab-item} Emulator-only for STM32F767ZI
+
+Install build dependencies. It's assumed an appropriate
+[STM32CubeF7 MCU FW Package](https://github.com/STMicroelectronics/STM32CubeF7) has been cloned locally for the
+target board, e.g.
+
+```
+git clone --depth 1 --recursive https://github.com/STMicroelectronics/STM32CubeF7.git ~/STM32/STM32CubeF7
+```
+
+Additionally, the gcc arm cross compiling toolchaing must be installed:
+
+```
+sudo apt-get install gcc-arm-none-eabi
+```
+
+To build:
+
+```
+mkdir build
+cmake -S src/hololink/emulation -B build -DHSB_EMULATOR_TARGET=STM32F767ZI -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake
+cmake --build build -j
+```
+
+Use your normal MCU programming tools compatible with the target platform (STM32). For example, using the STM32_Programmer_CLI,
+
+```
+STM32_Programmer_CLI --connect port=swd reset=HWrst -w <program .elf file> 0x08000000 --go
+```
+
+:::
+
+
 ::::
 
 ### Configuring the Emulator-only build
 
-Several `cmake` flags are available to configure the "Emulator-only" build if
+Several `cmake` flags are available to configure the "Emulator-only for Linux" build if
 prerequisites are not met or not in expected locations
 
-| dependency                                                                  | cmake configuration                                      | default setting           |
-| --------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------- |
-| Python unavailable/not needed                                               | `-DHSB_EMULATOR_BUILD_PYTHON=OFF`                        | `ON`                      |
-| Python virtual environment location <br> (ignored if Python build is `OFF`) | `-DHSB_EMULATOR_PYTHON_VENV=path/to/virtual_environment` | `${CMAKE_BINARY_DIR}/env` |
+| dependency                                                                  | cmake configuration                                      | default setting           | availability |
+| --------------------------------------------------------------------------- | -------------------------------------------------------- | ------------------------- | ------------ |
+| Python unavailable/not needed                                               | `-DHSB_EMULATOR_BUILD_PYTHON=OFF`                        | `ON`                      | Emulator-only for Linux   |
+| Python virtual environment location <br> (ignored if Python build is `OFF`) | `-DHSB_EMULATOR_PYTHON_VENV=path/to/virtual_environment` | `${CMAKE_BINARY_DIR}/env` | Emulator-only for Linux   |
+| non Linux targets                                                           | `-DHSB_EMULATOR_TARGET=target_name`                      | `linux`                   | `target_name` must have a configuration in `src/hololink/emulation/cmake/targets/*` and acceptable targets in `src/hololink/emulation/CMakeLists.txt` |
+| STM32CubeF7 not in `~/Documents/STM32`                                      | `-DSTM32_PATH=/path/to/STM32CubeF7/repo`                 | `~/STM32`       | Emulator-only for STM32 targets |
+| zlib source available locally | `-DZLIB_PATH=/path/to/zlib | downloads required files | Emulator-only for STM32 targets |
 
 Note for cmake version < 3.24 (`apt` default available in Ubuntu 22.04 or earlier),
 cmake does not allow setting a native architecture and a default
@@ -226,13 +269,16 @@ sudo build/env/bin/python3 src/hololink/emulation/examples/serve_coe_stereo_vb19
 
 | example | sample invocation | brief description | HSB sample camera <br> driver compatibility | Compatible HSB receivers | Notes |
 | ------- | ----------------- | ----------------- | ------------------------------------------- | ------------------------ | ----- |
+| `hsb_control`      | `./hsb_control` | send and receive basic control plane commands to/from HSB | None | None | available on all target platforms |
+| `gpio_send_roce` | N/A | send board-specific gpio pin status over RoCEv2 from MCU | None | `LinuxReceiver`, `RoceReceiver` | STM32 targets only |
+| `gpio_trigger_send_roce` | N/A | send timestamp triggered by gpio pin over RoCEv2 from MCU | None | `LinuxReceiver`, `RoceReceiver` | STM32 targets only |
 | `serve_linux_file` | `./serve_linux_file 192.168.0.2 imx_single_raw_frame.dat`| serve frames from a file | imx cameras |`LinuxReceiver`, `RoceReceiver` |  |
 | `serve_coe_file` | `./serve_coe_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file | imx cameras | `LinuxCoeReceiver` |  |
-| `serve_coe_vb1940_file` | `./serve_coe_vb1940_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureOp` | Compatible with AGX Thor platform |
+| `serve_coe_vb1940_file` | `./serve_coe_vb1940_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
 | `serve_linux_single_vb1940_frames` | `./serve_linux_single_vb1940_frames 192.168.0.2` | serve test RGB frames from single VB1940 camera | VB1940 | `LinuxReceiver`, `RoceReceiver` |  |
 | `serve_linux_stereo_vb1940_frames` | `./serve_linux_stereo_vb1940_frames 192.168.0.2` | serve test RGB frames from stereo VB1940 camera | VB1940 | `LinuxReceiver`, `RoceReceiver` |  |
-| `serve_coe_single_vb1940_frames` | `./serve_coe_single_vb1940_frames 192.168.0.2` | serve test RGB frames from single VB1940 camera | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureOp` | Compatible with AGX Thor platform |
-| `serve_coe_stereo_vb1940_frames` | `./serve_coe_stereo_vb1940_frames 192.168.0.2` | serve test RGB frames from stereo VB1940 camera | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureOp` | Compatible with AGX Thor platform |
+| `serve_coe_single_vb1940_frames` | `./serve_coe_single_vb1940_frames 192.168.0.2` | serve test RGB frames from single VB1940 camera | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
+| `serve_coe_stereo_vb1940_frames` | `./serve_coe_stereo_vb1940_frames 192.168.0.2` | serve test RGB frames from stereo VB1940 camera | VB1940 | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
 
 For the `*_file` examples, it is crucial that image frame sizes are set up
 appropriately, especially on Jetson AGX Thor platform. <b>You will need to know the correct
@@ -270,7 +316,7 @@ the beginning of the file, and then continue.
 
 ## Testing
 
-Full-loop testing of the HSB Emulator is provided within the pytest framework in the docker
+Full-loop testing of the HSB Emulator (on linux platforms) is provided within the pytest framework in the docker
 container. To run the test, launch the docker container and run:
 
 ```
@@ -292,12 +338,12 @@ to get the more comprehensive testing parameters.
 The tests above for vb1940 are all executed by default over software loopback. To run them over-the-wire using available network interfaces, they may be run in hardware loopback mode by attaching an Ethernet cable between 2 Ethernet-compatible ports on the target test device. Note the interfaces `IF1` and `IF2` (from e.g. `ip addr sh`) that correspond to the attached ports. Then run the tests with the following option:
 
 ```
-pytest --hw-loopback IF1,IF2
+pytest --hw-loopback IF1 IF2
 ```
 
 This will run the same tests for the HSB Emulator, but isolate `IF1` from `IF2` and launch the relevant the emulator process on `IF1` and the test host application process targeting `IF2`. 
 
-The scripts `nsisolate.sh`, `nsexec.sh`, `nspid.sh`, and `nsjoin.sh` in the `scripts/` directory are provided to facilitate development of additional hardware loopback tests. The `--hw-loopback IF1,IF2` switch in `pytest` is roughly equivalent to:
+The scripts `nsisolate.sh`, `nsexec.sh`, `nspid.sh`, and `nsjoin.sh` in the `scripts/` directory are provided to facilitate development of additional hardware loopback tests. The `--hw-loopback IF1 IF2` switch in `pytest` is roughly equivalent to:
 
 ```
 # setup environment
@@ -318,7 +364,7 @@ Under normal conditions, the Linux operating systems used on those target device
 
 ```
 # interface names may vary
-pytest --hw-loopback enP5p3s0f1np1,enP5p3s0f0np0
+pytest --hw-loopback enP5p3s0f1np1 enP5p3s0f0np0
 ```
 
 will run the linux, coe transport examples over standard linux sockets and also run the RoCE examples for vb1940 through the CX-7 ports.
@@ -328,7 +374,7 @@ scripts/nsisolate.sh enP2p1s0 192.168.0.2/24
 # this next line run outside the container if mgbe0_0 is "DOWN" after isolating
 sudo ip link set mgbe0_0 down && sudo ip link set mgbe0_0 up
 # back in the container
-pytest --hw-loopback enP2p1s0,mgbe0_0 --json-config my_single_vb1940_sensor_config.json
+pytest --hw-loopback enP2p1s0 mgbe0_0 --json-config my_single_vb1940_sensor_config.json
 scripts/nsjoin.sh enP2p1s0
 ```
 
@@ -354,12 +400,19 @@ device and the Host HSB Application
 ```{eval-rst}
 .. _doxygen_HSBEmulator:
 .. doxygenclass:: hololink::emulation::HSBEmulator
-   :members: start, stop, is_running, write, read, get_i2c, HSBEmulator
+   :members: start, stop, is_running, write, read, register_read_callback, register_write_callback, handle_msgs, get_i2c, get_config, HSBEmulator
+```
+
+Callback type used by `register_read_callback` and `register_write_callback`:
+
+```{eval-rst}
+.. doxygentypedef:: hololink::emulation::ControlPlaneCallback_f
+   :project: holoscan-sensor-bridge
 ```
 
 ```{eval-rst}
-.. doxygenclass:: hololink::emulation::MemRegister
-   :members: MemRegister, write, read, write_many, read_many, write_range, read_range
+.. doxygenclass:: hololink::emulation::AddressMemory
+   :members: AddressMemory, write, read, write_many, read_many, write_range, read_range
 ```
 
 `I2CController` is a component in `HSBEmulator` that is only needed to develop a sensor
@@ -382,7 +435,7 @@ to the Host application and how receivers identify unique sensor sources
 ```{eval-rst}
 .. _doxygen_DataPlane:
 .. doxygenclass:: hololink::emulation::DataPlane
-   :members: DataPlane, start, stop, stop_bootp, is_running, send, get_sensor_id, packetizer_enabled
+   :members: DataPlane, start, stop, stop_bootp, is_running, send, get_sensor_id, packetizer_enabled, broadcast_bootp
 ```
 
 The `IPAddress` and the utility function `IPAddress_from_string` are provided to
@@ -399,14 +452,14 @@ the `DataPlane` object in the hosted environment
 
 ```
 
-Two implementations of the `DataPlane` interface provided are `LinuxDataPlane` and
-`COEDataPlane`
+Two implementations of the `DataPlane` interface provided are `RoCEv2DataPlane` and
+`COEDataPlane`. The `COEDataPlane` is currently only available on linux target platforms.
 
 RoCEv2 UDP-based transport implementation.
 
 ```{eval-rst}
-.. doxygenclass:: hololink::emulation::LinuxDataPlane
-   :members: LinuxDataPlane
+.. doxygenclass:: hololink::emulation::RoCEv2DataPlane
+   :members: RoCEv2DataPlane
 ```
 
 ```{eval-rst}
@@ -430,12 +483,12 @@ not interact directly with these objects
    :members: send
 ```
 
-Two implementations of the `BaseTransmitter` interface provided are `LinuxTransmitter`
+Two implementations of the `BaseTransmitter` interface provided are `RoCEv2Transmitter`
 and `COETransmitter`
 
 ```{eval-rst}
-.. doxygenclass:: hololink::emulation::LinuxTransmitter
-   :members: LinuxTransmitter, send
+.. doxygenclass:: hololink::emulation::RoCEv2Transmitter
+   :members: RoCEv2Transmitter, send
 ```
 
 ```{eval-rst}
@@ -448,7 +501,7 @@ and `COETransmitter`
 :::{dropdown} I2CPeripheral - For virtual sensor or driver bridge development
 
 For development of new sensor bridge drivers (bridge HSBEmulator to a real device) or
-emulating a sensor.
+emulating a sensor. This will only be available on linux target platforms.
 
 ```{eval-rst}
 .. _doxygen_I2CPeripheral:
@@ -481,7 +534,7 @@ sockets.
 
 // including the appropriate header for the implementation of the
 // DataPlane is sufficient for a minimal application 
-#include "hololink/emulation/linux_data_plane.hpp"
+#include "hololink/emulation/data_plane.hpp"
 
 // OPTIONAL: import the target sensor emulator 
 #include "hololink/emulation/sensors/vb1940_emulator.hpp"
@@ -504,7 +557,7 @@ HSBEmulator hsb(HSB_LEOPARD_EAGLE_CONFIG);
 // their configurations may override each other
 uint8_t data_plane_id = 0; 
 uint8_t sensor_id = 0; 
-LinuxDataPlane linux_data_plane(hsb, IPAddress_from_string(ip_address), 
+RoCEv2DataPlane data_plane(hsb, IPAddress_from_string(ip_address), 
    data_plane_id, sensor_id);
 
 // Optional for stateful sensor emulation or driver bridge declare the sensor instance 
@@ -523,7 +576,7 @@ hsb.start();
 // client code in a loop. Passing the DataPlane implementation gives the loop access
 // to send data to the host application and sending the sensor instance (if needed)
 // provides access to sensor-specific/state data
-application_specific_data_loop(LinuxDataPlane, vb1940, ...user configuration data)
+application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
 
 // OPTIONAL: Stop the emulator if the application needed to be able to restart the 
 // HSBEmulator instance without exiting. All registered elements will receive a call
@@ -562,7 +615,7 @@ hsb = hemu.HSBEmulator(hemu.HSB_LEOPARD_EAGLE_CONFIG)
 # configurations may override each other
 data_plane_id = 0
 sensor_id = 0
-data_plane = hemu.LinuxDataPlane( hsb, hemu.IPAddress(args.ip_address), 
+data_plane = hemu.RoCEv2DataPlane( hsb, hemu.IPAddress(args.ip_address), 
    data_plane_id, sensor_id)
 
 # Optional for stateful sensor emulation or driver bridge declare the sensor instance 
@@ -582,7 +635,7 @@ hsb.start()
 # sensor client code in a loop. Passing the DataPlane implementation gives the loop access to
 # send data to the host application
 # and sending the sensor instance (if needed) provides access to sensor-specific/state data
-application_specific_data_loop(LinuxDataPlane, vb1940, ...user configuration data)
+application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
 
 # OPTIONAL: Stop the emulator if the application needed to be able to restart the HSBEmulator
 # instance without exiting. All registered elements will receive a call to their `stop()`

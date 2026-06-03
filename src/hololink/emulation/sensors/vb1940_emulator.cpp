@@ -17,20 +17,18 @@
  * See README.md for detailed information.
  */
 
-#include <cassert>
-#include <cstdint>
-#include <set>
-#include <unordered_map>
-
+#include "vb1940_emulator.hpp"
 #include "../hsb_emulator.hpp"
 #include "../i2c_interface.hpp"
-#include "vb1940_emulator.hpp"
+#include <cassert>
+#include <cstdint>
+#include <cstring>
 
 #define CAM_I2C_ADDRESS 0x10
+#define VCL_PWM_I2C_ADDRESS 0x21
 #define EEPROM_I2C_ADDRESS 0x51
 #define VCL_EN_I2C_ADDRESS_1 0x70
 #define VCL_EN_I2C_ADDRESS_2 0x71
-#define VCL_PWM_I2C_ADDRESS 0x21
 
 // these are read only registers
 // 4 byte reads
@@ -40,12 +38,10 @@
 #define SYSTEM_FSM_STATE_REG 0x0044
 #define BOOT_FSM_REG 0x0200
 
-// these are read/write registers
-// 1 byte read/writes
-#define SYSTEM_UP_REG 0x0514
-#define BOOT_REG 0x0515
-#define SW_STBY_REG 0x0516
-#define STREAMING_REG 0x0517
+#define SYSTEM_UP_REG 0x0514u
+#define BOOT_REG 0x0515u
+#define SW_STBY_REG 0x0516u
+#define STREAMING_REG 0x0517u
 
 #define VB1940_WIDTH_LO 0x91A
 #define VB1940_WIDTH_HI 0x91B
@@ -71,6 +67,25 @@
 #define VB1940_BAYER_RAW8 0x2A
 
 namespace hololink::emulation::sensors {
+
+const uint8_t VB1940_I2C_ADDRESSES[] = { CAM_I2C_ADDRESS, VCL_PWM_I2C_ADDRESS, EEPROM_I2C_ADDRESS, VCL_EN_I2C_ADDRESS_1, VCL_EN_I2C_ADDRESS_2 };
+
+static constexpr uint16_t VB1940_CALLBACK_REGISTERS[4] = {
+    SYSTEM_UP_REG,
+    BOOT_REG,
+    SW_STBY_REG,
+    STREAMING_REG,
+};
+
+Vb1940Emulator::i2c_callback_type Vb1940Emulator::get_callback(uint16_t reg_addr)
+{
+    unsigned int i = 0;
+    unsigned int size = sizeof(VB1940_CALLBACK_REGISTERS) / sizeof(VB1940_CALLBACK_REGISTERS[0]);
+    while (i < size && VB1940_CALLBACK_REGISTERS[i] != reg_addr) {
+        i++;
+    }
+    return VB1940_CALLBACK_MAP[i];
+}
 
 enum SystemFsmState : uint8_t {
     SYSTEM_HW_STBY = 0x0,
@@ -115,16 +130,14 @@ enum BootFsmState : uint8_t {
     BOOT_COMPLETED = 0xBC
 };
 
+bool is_write(size_t write_size)
+{
+    return write_size > sizeof(uint16_t);
+}
+
 Vb1940Emulator::Vb1940Emulator()
     : I2CPeripheral()
 {
-    i2c_addresses_ = {
-        CAM_I2C_ADDRESS,
-        EEPROM_I2C_ADDRESS,
-        VCL_EN_I2C_ADDRESS_1,
-        VCL_EN_I2C_ADDRESS_2,
-        VCL_PWM_I2C_ADDRESS
-    };
     reset();
     build_state_machine();
     // set device id
@@ -148,23 +161,19 @@ void Vb1940Emulator::reset()
 
 void Vb1940Emulator::attach_to_i2c(I2CController& i2c_controller, uint8_t bus_address)
 {
-    for (const auto& address : i2c_addresses_) {
+    for (const auto& address : VB1940_I2C_ADDRESSES) {
         i2c_controller.attach_i2c_peripheral(bus_address, address, this);
     }
 }
 
 void Vb1940Emulator::build_state_machine()
 {
-    callback_map_[SYSTEM_UP_REG] = &Vb1940Emulator::system_up_reg;
-    callback_map_[BOOT_REG] = &Vb1940Emulator::boot_reg;
-    callback_map_[SW_STBY_REG] = &Vb1940Emulator::sw_stby_reg;
-    callback_map_[STREAMING_REG] = &Vb1940Emulator::streaming_reg;
 }
 
-I2CStatus Vb1940Emulator::i2c_transaction(uint8_t peripheral_address, const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes)
+I2CStatus Vb1940Emulator::i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size)
 {
 
-    if (write_bytes.size() < 2) {
+    if (write_size < 2) {
         return I2CStatus::I2C_STATUS_INVALID_REGISTER_ADDRESS;
     }
 
@@ -174,32 +183,31 @@ I2CStatus Vb1940Emulator::i2c_transaction(uint8_t peripheral_address, const std:
         return I2CStatus::I2C_STATUS_SUCCESS; // do nothing for non-camera addresses
     }
 
-    auto it = callback_map_.find(reg_addr);
-    if (it != callback_map_.end()) {
-        I2CStatus status = (this->*it->second)(write_bytes, read_bytes);
-        return status;
+    i2c_callback_type callback = get_callback(reg_addr);
+    if (callback) {
+        return (this->*callback)(write_bytes, write_size, read_bytes, read_size);
     }
 
     // for writes, copy the write bytes to the memory map
-    if (is_write(write_bytes)) {
-        if (reg_addr + write_bytes.size() - 2 > VB1940_MEMORY_SIZE) {
+    if (is_write(write_size)) {
+        if (reg_addr + write_size > VB1940_MEMORY_SIZE + 2) {
             return I2CStatus::I2C_STATUS_WRITE_FAILED;
         }
-        std::copy(write_bytes.begin() + 2, write_bytes.end(), &memory_[reg_addr]);
+        memcpy(&memory_[reg_addr], write_bytes + 2, write_size - 2);
     }
     // for reads, copy the memory map to the read bytes
     else {
-        if (read_bytes.size() > VB1940_MEMORY_SIZE - reg_addr) {
+        if (read_size > VB1940_MEMORY_SIZE - reg_addr) {
             return I2CStatus::I2C_STATUS_READ_FAILED;
         }
-        std::copy(&memory_[reg_addr], &memory_[reg_addr + read_bytes.size()], read_bytes.begin());
+        memcpy(read_bytes, &memory_[reg_addr], read_size);
     }
     return I2CStatus::I2C_STATUS_SUCCESS;
 }
 
-I2CStatus Vb1940Emulator::system_up_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes)
+I2CStatus Vb1940Emulator::system_up_reg(const uint8_t* write_bytes, uint16_t write_size, __attribute__((unused)) uint8_t* read_bytes, __attribute__((unused)) uint16_t read_size)
 {
-    if (is_write(write_bytes)) {
+    if (is_write(write_size)) {
         if (write_bytes[2] == 0x01) {
             reset();
             memory_[SYSTEM_FSM_STATE_REG] = SystemFsmState::BOOT;
@@ -210,9 +218,9 @@ I2CStatus Vb1940Emulator::system_up_reg(const std::vector<uint8_t>& write_bytes,
     return I2CStatus::I2C_STATUS_SUCCESS;
 }
 
-I2CStatus Vb1940Emulator::boot_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes)
+I2CStatus Vb1940Emulator::boot_reg(const uint8_t* write_bytes, uint16_t write_size, __attribute__((unused)) uint8_t* read_bytes, __attribute__((unused)) uint16_t read_size)
 {
-    if (is_write(write_bytes)) {
+    if (is_write(write_size)) {
         switch (write_bytes[2]) {
         case 0x01:
             memory_[BOOT_FSM_REG] = BootFsmState::BOOT_WAITING_CMD;
@@ -232,33 +240,28 @@ I2CStatus Vb1940Emulator::boot_reg(const std::vector<uint8_t>& write_bytes, std:
     return I2CStatus::I2C_STATUS_SUCCESS;
 }
 
-I2CStatus Vb1940Emulator::sw_stby_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes)
+I2CStatus Vb1940Emulator::sw_stby_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size)
 {
-    if (is_write(write_bytes)) {
+    if (is_write(write_size)) {
         if (write_bytes[2] == 0x01) {
             memory_[SYSTEM_FSM_STATE_REG] = SystemFsmState::STREAMING;
         }
-    } else if (read_bytes.size() > 0) {
+    } else if (read_size > 0) {
         read_bytes[0] = memory_[SW_STBY_REG];
     }
     return I2CStatus::I2C_STATUS_SUCCESS;
 }
 
-I2CStatus Vb1940Emulator::streaming_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes)
+I2CStatus Vb1940Emulator::streaming_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size)
 {
-    if (is_write(write_bytes)) {
+    if (is_write(write_size)) {
         if (write_bytes[2] == 0x01) {
             memory_[SYSTEM_FSM_STATE_REG] = SystemFsmState::SW_STBY;
         }
-    } else if (read_bytes.size() > 0) {
+    } else if (read_size > 0) {
         read_bytes[0] = memory_[STREAMING_REG];
     }
     return I2CStatus::I2C_STATUS_SUCCESS;
-}
-
-bool Vb1940Emulator::is_write(const std::vector<uint8_t>& write_bytes)
-{
-    return write_bytes.size() > sizeof(uint16_t);
 }
 
 bool Vb1940Emulator::is_streaming() const

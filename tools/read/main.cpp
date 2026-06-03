@@ -17,6 +17,7 @@
 
 #include "read.hpp"
 
+#include <cstring>
 #include <getopt.h>
 #include <iostream>
 
@@ -58,11 +59,18 @@ int main(int argc, char* argv[])
         print_usage(argv[0]);
         return 1;
     }
-    int32_t address = std::stoi(argv[optind]);
+
+    size_t nconsumed = 0;
+    int32_t address = std::stoi(argv[optind], &nconsumed, 0);
+    if (nconsumed != strlen(argv[optind])) {
+        std::cerr << "Error: Invalid address - Argument not fully recognized as signed integer in any base.\n";
+        print_usage(argv[0]);
+        return 1;
+    }
 
     std::cout << "Reading 0x" << std::hex << address << std::dec << " from " << hololink_ip << "..." << std::endl;
     uint32_t value = hololink::tools::read(hololink_ip, address);
-    std::cout << "  0x" << std::hex << address << std::dec << "=" << value << std::endl;
+    std::cout << "  0x" << std::hex << address << std::dec << "= 0x" << std::hex << value << std::dec << std::endl;
 
     return 0;
 }

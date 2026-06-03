@@ -17,16 +17,11 @@
 
 #include "winbond_w25q128jw.hpp"
 
+#include "traditional_peripherals.hpp"
 #include <fmt/format.h>
 #include <hololink/core/logging_internal.hpp>
 
 namespace hololink {
-
-// This routine is not expected to be used anywhere
-// except for programming tools, so there isn't a
-// header file you can include for it.
-std::shared_ptr<Hololink::Spi> get_traditional_spi(Hololink& hololink, uint32_t spi_address, uint32_t chip_select,
-    uint32_t clock_divisor, uint32_t cpol, uint32_t cpha, uint32_t width);
 
 WinbondW25q128jw::WinbondW25q128jw(const std::string& context, std::shared_ptr<Hololink> hololink, uint32_t spi_address)
     : context_(context)

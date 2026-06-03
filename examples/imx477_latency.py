@@ -202,7 +202,7 @@ class MicroApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -253,7 +253,7 @@ class MicroApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -303,6 +303,11 @@ def main():
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
     )
     parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
+    parser.add_argument(
         "--frame-limit",
         type=int,
         default=None,
@@ -350,6 +355,12 @@ def main():
         default="4k",
         help="4k or 1080p",
     )
+    parser.add_argument(
+        "--flip",
+        default="none",
+        choices=["none", "h", "v", "hv"],
+        help="Choose between none, h, v or hv (for horizontal, vertical, or both)",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -363,21 +374,13 @@ def main():
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
     # Get a handle to the Hololink device
-    if args.cam == 0:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.2"
-        )
-    elif args.cam == 1:
-        channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.3"
-        )
-    else:
-        raise Exception(f"Unexpected camera={args.cam}")
-
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
+    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     # Get a handle to the camera
+    md = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(md, args.cam)
+    hololink_channel = hololink_module.DataChannel(md)
     camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.cam, args.resolution
+        hololink_channel, args.cam, args.resolution, img_flip=args.flip
     )
 
     recorder_queue = []

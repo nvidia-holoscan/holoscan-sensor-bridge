@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -23,6 +23,8 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+
+#include "../operator_util.hpp"
 
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
@@ -55,13 +57,17 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyCsiToBayerOp(holoscan::Fragment* fragment,
+        const py::args& args,
         const std::shared_ptr<holoscan::Allocator>& allocator, int cuda_device_ordinal,
         const std::string& name = "csi_to_bayer",
-        const std::string& out_tensor_name = "")
+        const std::string& out_tensor_name = "",
+        uint32_t sub_frame_rows = 0)
         : CsiToBayerOp(holoscan::ArgList { holoscan::Arg { "allocator", allocator },
             holoscan::Arg { "cuda_device_ordinal", cuda_device_ordinal },
-            holoscan::Arg { "out_tensor_name", out_tensor_name } })
+            holoscan::Arg { "out_tensor_name", out_tensor_name },
+            holoscan::Arg { "sub_frame_rows", sub_frame_rows } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -81,14 +87,15 @@ PYBIND11_MODULE(_csi_to_bayer, m)
 
     auto op = py::class_<CsiToBayerOp, PyCsiToBayerOp, holoscan::Operator, hololink::csi::CsiConverter,
         std::shared_ptr<CsiToBayerOp>>(m, "CsiToBayerOp")
-                  .def(py::init<holoscan::Fragment*, const std::shared_ptr<holoscan::Allocator>&,
-                           int, const std::string&, const std::string&>(),
+                  .def(py::init<holoscan::Fragment*, const py::args&, const std::shared_ptr<holoscan::Allocator>&,
+                           int, const std::string&, const std::string&, uint32_t>(),
                       "fragment"_a, "allocator"_a, "cuda_device_ordinal"_a = 0,
-                      "name"_a = "csi_to_bayer"s, "out_tensor_name"_a = ""s)
+                      "name"_a = "csi_to_bayer"s, "out_tensor_name"_a = ""s, "sub_frame_rows"_a = 0)
                   .def("setup", &CsiToBayerOp::setup, "spec"_a)
                   .def("configure", &CsiToBayerOp::configure, "start_byte"_a, "bytes_per_line"_a, "pixel_width"_a, "pixel_height"_a,
                       "pixel_format"_a, "trailing_bytes"_a = 0)
-                  .def("get_csi_length", &CsiToBayerOp::get_csi_length);
+                  .def("get_csi_length", &CsiToBayerOp::get_csi_length)
+                  .def("get_sub_frame_size", &CsiToBayerOp::get_sub_frame_size);
 } // PYBIND11_MODULE
 
 } // namespace hololink::operators

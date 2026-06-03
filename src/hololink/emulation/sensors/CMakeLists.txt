@@ -21,8 +21,6 @@ set_property(TARGET emulation_sensors PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 add_library(hololink::emulation::sensors ALIAS emulation_sensors)
 
-find_package(CUDAToolkit REQUIRED)
-
 target_include_directories(emulation_sensors
   PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../../../
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -42,6 +40,6 @@ install(TARGETS emulation_sensors
         COMPONENT hololink-emulation-sensors)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/vb1940_emulator.hpp
-        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/emulation/sensors
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation/sensors
         COMPONENT hololink-emulation-sensors)
 

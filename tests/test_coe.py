@@ -65,8 +65,12 @@ def test_imx274_stereo_linux_naive(
         headless,
         frame_limit,
         hololink_address,
-        left_receiver_factory=applications.linux_receiver_factory,
-        right_receiver_factory=applications.linux_receiver_factory,
+        left_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[2], **kwargs
+        ),
+        right_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[3], **kwargs
+        ),
         left_isp_factory=applications.naive_isp,
         right_isp_factory=applications.naive_isp,
         left_camera_factory=lambda channel, instance: applications.imx274_camera_factory(
@@ -103,10 +107,10 @@ def test_imx274_stereo_linux_naive_coe(
         frame_limit,
         hololink_address,
         left_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 1, pixel_width, *args, **kwargs
+            coe_interfaces[0], 1, pixel_width, *args, affinity=[2], **kwargs
         ),
         right_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 2, pixel_width, *args, **kwargs
+            coe_interfaces[0], 2, pixel_width, *args, affinity=[3], **kwargs
         ),
         left_isp_factory=applications.naive_isp,
         right_isp_factory=applications.naive_isp,
@@ -142,8 +146,12 @@ def test_imx274_stereo_linux_argus(
         headless,
         frame_limit,
         hololink_address,
-        left_receiver_factory=applications.linux_receiver_factory,
-        right_receiver_factory=applications.linux_receiver_factory,
+        left_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[2], **kwargs
+        ),
+        right_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[3], **kwargs
+        ),
         left_isp_factory=applications.argus_isp,
         right_isp_factory=applications.argus_isp,
         left_camera_factory=lambda channel, instance: applications.imx274_camera_factory(
@@ -182,10 +190,10 @@ def test_imx274_stereo_linux_argus_coe(
         frame_limit,
         hololink_address,
         left_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 1, pixel_width, *args, **kwargs
+            coe_interfaces[0], 1, pixel_width, *args, affinity=[2], **kwargs
         ),
         right_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 2, pixel_width, *args, **kwargs
+            coe_interfaces[0], 2, pixel_width, *args, affinity=[3], **kwargs
         ),
         left_isp_factory=applications.argus_isp,
         right_isp_factory=applications.argus_isp,
@@ -365,8 +373,12 @@ def test_vb1940_stereo_linux_naive(
         headless,
         frame_limit,
         hololink_address,
-        left_receiver_factory=applications.linux_receiver_factory,
-        right_receiver_factory=applications.linux_receiver_factory,
+        left_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[2], **kwargs
+        ),
+        right_receiver_factory=lambda *args, **kwargs: applications.linux_receiver_factory(
+            *args, affinity=[3], **kwargs
+        ),
         left_isp_factory=applications.naive_isp,
         right_isp_factory=applications.naive_isp,
         left_camera_factory=lambda channel, instance: applications.vb1940_camera_factory(
@@ -403,10 +415,10 @@ def test_vb1940_stereo_linux_naive_coe(
         frame_limit,
         hololink_address,
         left_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 1, pixel_width, *args, **kwargs
+            coe_interfaces[0], 1, pixel_width, *args, affinity=[2], **kwargs
         ),
         right_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 2, pixel_width, *args, **kwargs
+            coe_interfaces[0], 2, pixel_width, *args, affinity=[3], **kwargs
         ),
         left_isp_factory=applications.naive_isp,
         right_isp_factory=applications.naive_isp,
@@ -446,10 +458,10 @@ def test_vb1940_stereo_linux_argus_coe(
         frame_limit,
         hololink_address,
         left_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 1, pixel_width, *args, **kwargs
+            coe_interfaces[0], 1, pixel_width, *args, affinity=[2], **kwargs
         ),
         right_receiver_factory=lambda *args, **kwargs: applications.linux_coe_receiver_factory(
-            coe_interfaces[0], 2, pixel_width, *args, **kwargs
+            coe_interfaces[0], 2, pixel_width, *args, affinity=[3], **kwargs
         ),
         left_isp_factory=applications.argus_isp,
         right_isp_factory=applications.argus_isp,

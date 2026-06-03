@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,7 +20,6 @@
 #include "roce_receiver.hpp"
 
 #include <arpa/inet.h>
-#include <chrono>
 #include <fcntl.h>
 #include <poll.h>
 #include <stdio.h>
@@ -36,6 +35,21 @@
 
 namespace hololink::operators {
 
+class RoceReceiverDescriptor {
+public:
+    uint32_t page_;
+
+    common::UniqueCUhostptr metadata_buffer_;
+    common::UniqueCUevent metadata_event_;
+
+    uint64_t received_frame_number_;
+    uint64_t rx_write_requests_; // over all of time
+    uint32_t imm_data_;
+    struct timespec received_;
+    uint32_t dropped_;
+    uint32_t received_psn_;
+};
+
 RoceReceiver::RoceReceiver(
     const char* ibv_name,
     unsigned ibv_port,
@@ -45,14 +59,18 @@ RoceReceiver::RoceReceiver(
     size_t cu_page_size,
     unsigned pages,
     size_t metadata_offset,
-    const char* peer_ip)
+    const char* peer_ip,
+    unsigned queue_size,
+    void* host_buffer)
     : ibv_name_(strdup(ibv_name))
     , ibv_port_(ibv_port)
+    , host_buffer_(host_buffer)
     , cu_buffer_(cu_buffer)
     , cu_buffer_size_(cu_buffer_size)
     , cu_frame_size_(cu_frame_size)
     , cu_page_size_(cu_page_size)
     , pages_(pages)
+    , queue_size_(queue_size)
     , metadata_offset_(metadata_offset)
     , peer_ip_(strdup(peer_ip))
     , ib_qp_(NULL)
@@ -64,24 +82,13 @@ RoceReceiver::RoceReceiver(
     , ib_completion_channel_(NULL)
     , qp_number_(0)
     , rkey_(0)
-    , ready_(false)
     , ready_mutex_(PTHREAD_MUTEX_INITIALIZER)
     , ready_condition_(PTHREAD_COND_INITIALIZER)
+    , dropped_(0)
     , done_(false)
     , control_r_(-1)
     , control_w_(-1)
-    , received_frame_number_(0)
     , rx_write_requests_fd_(-1)
-    , rx_write_requests_(0)
-    , imm_data_(0)
-    , event_time_ {}
-    , received_ {}
-    , current_buffer_(0)
-    , metadata_stream_(0)
-    , dropped_(0)
-    , metadata_buffer_(nullptr)
-    , received_psn_(0)
-    , received_page_(0)
     , frame_ready_([](const RoceReceiver&) {})
     , frame_number_()
     , monitor_running_()
@@ -125,18 +132,11 @@ RoceReceiver::RoceReceiver(
         HSB_LOG_ERROR("Unable to fetch rx_write_requests; ignoring.");
     }
 
-    // We use this to synchronize metadata readout.
-    CUresult cu_result = cuStreamCreate(&metadata_stream_, CU_STREAM_NON_BLOCKING);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuStreamCreate failed, cu_result={}.", cu_result));
-    }
-
-    // Set metadata_buffer_ content to some value that's easily distinguished.
-    cu_result = cuMemHostAlloc((void**)&metadata_buffer_, hololink::METADATA_SIZE, 0);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuMemHostAlloc failed, cu_result={}.", cu_result));
-    }
-    memset(metadata_buffer_, 0xEE, hololink::METADATA_SIZE);
+    metadata_stream_.reset([] {
+        CUstream stream;
+        CudaCheck(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
+        return stream;
+    }());
 }
 
 RoceReceiver::~RoceReceiver()
@@ -144,7 +144,6 @@ RoceReceiver::~RoceReceiver()
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
     ::close(rx_write_requests_fd_); // we ignore an error here if fd==-1
-    cuMemFreeHost(metadata_buffer_);
 
     free(ibv_name_);
     free(peer_ip_);
@@ -168,7 +167,7 @@ bool RoceReceiver::start()
     if (!ibv_fork_init_done) {
         int r = ibv_fork_init();
         if (r != 0) {
-            HSB_LOG_ERROR("ibv_fork_init failed; errno={}.", errno);
+            HSB_LOG_ERROR("ibv_fork_init failed; r={}.", r);
             return false;
         }
         ibv_fork_init_done = true;
@@ -300,28 +299,55 @@ bool RoceReceiver::start()
         return false;
     }
 
-    // Get dmabuf fd from CUDA memory
-    CUresult cu_result = cuMemGetHandleForAddressRange(
-        (void*)&dmabuf_fd_, cu_buffer_, cu_buffer_size_,
-        CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
-    if (cu_result == CUDA_SUCCESS) {
-        // Provide access to the frame buffer
-        int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-        ib_mr_ = ibv_reg_dmabuf_mr(ib_pd_, 0, cu_buffer_size_, 0, dmabuf_fd_, access);
-        if (ib_mr_ == NULL) {
-            HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
-            free_ib_resources();
-            return false;
+    // Register the frame buffer as an RDMA memory region.
+    //
+    // Preferred path: GPU VRAM via DMA-BUF (host_buffer_ == nullptr).
+    // cuMemGetHandleForAddressRange exports the VRAM allocation as a DMA-BUF
+    // fd; ibv_reg_dmabuf_mr maps those pages into the NIC's IOMMU domain so
+    // the FPGA can RDMA-write directly into GPU VRAM. Requires GPUDirect RDMA
+    // to be fully configured (e.g. nvidia_peermem loaded, IOMMU grants write
+    // access to the NIC). If DMAR faults appear in dmesg with fault reason
+    // 0x05 ("PTE Write access is not set"), the CUDA GPU driver is mapping
+    // VRAM pages read-only for non-peer devices; configure GPUDirect RDMA or
+    // force the fallback path by allocating with cuMemHostAlloc instead.
+    //
+    // Fallback path: pinned host memory via ibv_reg_mr_iova (host_buffer_ != nullptr).
+    // The IOMMU always maps pinned host pages with full write access for all
+    // PCIe devices, so RDMA writes land correctly without any additional
+    // GPUDirect configuration. ReceiverMemoryDescriptor sets host_buffer_ when
+    // GPU VRAM allocation or DMA-BUF export is unavailable on this system.
+    if (host_buffer_ == nullptr) {
+        // Preferred: GPU VRAM via DMA-BUF.
+        CUresult cu_result = cuMemGetHandleForAddressRange(
+            (void*)&dmabuf_fd_, cu_buffer_, cu_buffer_size_,
+            CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
+        if (cu_result == CUDA_SUCCESS) {
+            int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+            ib_mr_ = ibv_reg_dmabuf_mr(ib_pd_, 0, cu_buffer_size_, 0, dmabuf_fd_, access);
+            if (ib_mr_ == NULL) {
+                HSB_LOG_ERROR("Cannot register dmabuf memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_buffer_size_, errno);
+                free_ib_resources();
+                return false;
+            }
+        } else {
+            int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+            ib_mr_ = ibv_reg_mr_iova(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, 0, access);
+            if (ib_mr_ == NULL) {
+                HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_buffer_size_, errno);
+                free_ib_resources();
+                return false;
+            }
         }
     } else {
-        // Provide access to the frame buffer
+        // Fallback: pinned host memory.
         int access = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
-        ib_mr_ = ibv_reg_mr_iova(ib_pd_, (void*)cu_buffer_, cu_buffer_size_, 0, access);
+        ib_mr_ = ibv_reg_mr_iova(ib_pd_, host_buffer_, cu_buffer_size_, 0, access);
         if (ib_mr_ == NULL) {
-            HSB_LOG_ERROR("Cannot register memory region p={:#x} size={:#x}, errno={}.", cu_buffer_, cu_frame_size_, errno);
+            HSB_LOG_ERROR("Cannot register host memory region host={} size={:#x}, errno={}.", host_buffer_, cu_buffer_size_, errno);
             free_ib_resources();
             return false;
         }
+        HSB_LOG_INFO("Registered host memory region: host={} size={:#x} rkey={:#x}", host_buffer_, cu_buffer_size_, ib_mr_->rkey);
     }
 
     rkey_ = ib_mr_->rkey;
@@ -477,6 +503,24 @@ void RoceReceiver::blocking_monitor()
 
     std::lock_guard monitor_lock(monitor_running_);
 
+    // Construct a descriptor for each page
+    std::vector<RoceReceiverDescriptor> descriptors(queue_size_);
+    for (uint32_t index = 0; index < queue_size_; index++) {
+        descriptors[index].metadata_buffer_.reset([] {
+            void* buffer;
+            CudaCheck(cuMemHostAlloc(&buffer, hololink::METADATA_SIZE, 0));
+            memset(buffer, 0xEE, hololink::METADATA_SIZE);
+            return buffer;
+        }());
+        descriptors[index].metadata_event_.reset([] {
+            CUevent event;
+            CudaCheck(cuEventCreate(&event, CU_EVENT_DISABLE_TIMING));
+            return event;
+        }());
+
+        available_.push(&descriptors[index]);
+    }
+
     struct ibv_wc ib_wc = { 0 };
 
 #ifdef PERIODIC_STATUS
@@ -503,6 +547,9 @@ void RoceReceiver::blocking_monitor()
         }
     };
 
+    unsigned frame_count = 0;
+    struct timespec event_time;
+
     while (!done_) {
         check_async_events();
 
@@ -513,13 +560,13 @@ void RoceReceiver::blocking_monitor()
         }
 
         // Keep this as close to the actual message receipt as possible.
-        clock_gettime(CLOCK_REALTIME, const_cast<struct timespec*>(&event_time_));
+        clock_gettime(CLOCK_REALTIME, &event_time);
 
         // control_r_
         if (poll_fds[0].revents) {
             // Currently, the only activity that we see on control_r_ is a flag
             // telling us that someone closed the control_w_ side (which we do
-            // in LinuxReceiver::close).  That specific event is an indication
+            // in RoceReceiver::close).  That specific event is an indication
             // that this loop is instructed to terminate.
             HSB_LOG_DEBUG("Closing.");
             break;
@@ -552,49 +599,69 @@ void RoceReceiver::blocking_monitor()
                 if (r == 0) {
                     break;
                 }
-                uint64_t q = (uint64_t)this;
-                HSB_LOG_TRACE("this={:#x} r={} qp_number_={:#x} imm_data={:#x}", q, r, qp_number_, ntohl(ib_wc.imm_data));
+
+                frame_count++;
+                core::NvtxTrace::event_u64("frame_count", frame_count);
+
                 // Note some metadata
                 char buffer[1024];
                 lseek(rx_write_requests_fd_, 0, SEEK_SET); // may fail if fd==-1, we don't care
                 // if rx_write_requests_fd_ is -1, then buffer_size_ will be less than 0
                 ssize_t buffer_size = read(rx_write_requests_fd_, buffer, sizeof(buffer));
+
+                const uint32_t imm_data = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
+                const uint32_t page = imm_data & 0xFFF;
+                if (page >= pages_) {
+                    throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
+                }
+
                 // Do an atomic update
                 r = pthread_mutex_lock(&ready_mutex_);
                 if (r != 0) {
                     throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
                 }
-                // If the application didn't set ready_ to false,
-                // then we're overwriting a valid frame.
-                if (ready_) {
-                    dropped_++;
+
+                RoceReceiverDescriptor* descriptor;
+                if (!consumer_ready_ && !ready_.empty()) {
+                    // if the consumer is not ready yet, avoid queueing up more frames
+                    descriptor = ready_.front();
+                    ready_.pop();
+                } else {
+                    if (available_.empty()) {
+                        // if there is no available descriptor use the oldest ready one and drop the frame
+                        descriptor = ready_.front();
+                        ready_.pop();
+                        if (consumer_ready_) {
+                            HSB_LOG_DEBUG("No available descriptors, dropping oldest ready frame {}.", descriptor->received_frame_number_);
+                        }
+                        dropped_++;
+                    } else {
+                        descriptor = available_.front();
+                        available_.pop();
+                    }
                 }
+
+                descriptor->page_ = page;
+
+                // Start copying out the metadata chunk. get_next_frame will synchronize with the event.
+                copy_metadata_to_host(descriptor->page_, descriptor->metadata_buffer_.get(), descriptor->metadata_event_.get());
+
+                descriptor->received_frame_number_ = frame_count;
                 if ((buffer_size > 0) && (buffer_size < 1000)) {
-                    rx_write_requests_ = strtoull(buffer, NULL, 10);
+                    buffer[buffer_size] = '\0';
+                    descriptor->rx_write_requests_ = strtoull(buffer, NULL, 10);
                     // otherwise we'll continue to use the 0 from the constructor
+                } else {
+                    descriptor->rx_write_requests_ = 0;
                 }
-                imm_data_ = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
-                received_psn_ = (imm_data_ >> 8) & 0xFFFFFF;
-                unsigned page = imm_data_ & 0xFF;
-                if (page >= pages_) {
-                    throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
-                }
-                received_page_ = page;
-                // Start copying out the metadata chunk.  get_next_frame will synchronize on metadata_stream_.
-                // NOTE that we start this request while we hold ready_mutex_ -- this guarantees that we don't
-                // start another copy while the foreground is copying data out of this buffer.
-                copy_metadata_to_host(page);
-                current_buffer_ = cu_buffer_ + cu_page_size_ * page;
-                received_frame_number_++;
-                core::NvtxTrace::event_u64("received_frame_number", received_frame_number_);
-                HSB_LOG_TRACE("received_frame_number={}", received_frame_number_);
-                received_.tv_sec = event_time_.tv_sec;
-                received_.tv_nsec = event_time_.tv_nsec;
-                HSB_LOG_TRACE("received_frame_number={} imm_data={:#x} received.tv_sec={:#x} received.tv_nsec={:#x}",
-                    received_frame_number_, imm_data_, received_.tv_sec, received_.tv_nsec);
+                descriptor->imm_data_ = imm_data;
+                descriptor->received_.tv_sec = event_time.tv_sec;
+                descriptor->received_.tv_nsec = event_time.tv_nsec;
+                descriptor->dropped_ = dropped_;
+                descriptor->received_psn_ = (imm_data >> 12) & 0xFFFFF;
+
                 // Send it
-                ready_ = true;
-                core::NvtxTrace::event_u64("signal", 1);
+                ready_.push(descriptor);
                 r = pthread_cond_signal(&ready_condition_);
                 if (r != 0) {
                     throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
@@ -631,18 +698,16 @@ void RoceReceiver::blocking_monitor()
     HSB_LOG_DEBUG("Closed.");
 }
 
-void RoceReceiver::copy_metadata_to_host(unsigned current_page)
+void RoceReceiver::copy_metadata_to_host(uint32_t page, void* metadata_buffer, CUevent metadata_event)
 {
-    CUdeviceptr page_start = current_page * cu_page_size_;
+    CUdeviceptr page_start = page * cu_page_size_;
     CUdeviceptr metadata_start = page_start + metadata_offset_;
     if ((metadata_start + hololink::METADATA_SIZE) > cu_buffer_size_) {
         throw std::runtime_error(fmt::format("metadata_start={:#x}+metadata_size={:#x}(which is {:#x}) exceeds cu_buffer_size={:#x}.",
             metadata_start, hololink::METADATA_SIZE, metadata_start + hololink::METADATA_SIZE, cu_buffer_size_));
     }
-    CUresult cu_result = cuMemcpyDtoHAsync(metadata_buffer_, cu_buffer_ + metadata_start, hololink::METADATA_SIZE, metadata_stream_);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuMemcpyDtoHAsync failed, cu_result={}.", cu_result));
-    }
+    CudaCheck(cuMemcpyDtoHAsync(metadata_buffer, cu_buffer_ + metadata_start, hololink::METADATA_SIZE, metadata_stream_.get()));
+    CudaCheck(cuEventRecord(metadata_event, metadata_stream_.get()));
 }
 
 void RoceReceiver::close()
@@ -656,6 +721,22 @@ void RoceReceiver::close()
 void RoceReceiver::free_ib_resources()
 {
     if (ib_qp_ != NULL) {
+        // Move QP to ERROR state -- this flushes all posted
+        // receive WRs and NAKs incoming RDMA operations.
+        struct ibv_qp_attr attr = { .qp_state = IBV_QPS_ERR };
+        if (ibv_modify_qp(ib_qp_, &attr, IBV_QP_STATE)) {
+            HSB_LOG_ERROR("ibv_modify_qp to ERR failed, errno={}.", errno);
+        }
+
+        // Drain the CQ so all flushed WRs are consumed before
+        // we destroy the QP and deregister the MR.
+        if (ib_cq_ != NULL) {
+            struct ibv_wc wc;
+            while (ibv_poll_cq(ib_cq_, 1, &wc) > 0) {
+                // discard -- these are all error completions
+            }
+        }
+
         if (ibv_destroy_qp(ib_qp_)) {
             HSB_LOG_ERROR("ibv_destroy_qp failed, errno={}.", errno);
         }
@@ -709,67 +790,84 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
 {
     int status = pthread_mutex_lock(&ready_mutex_);
     if (status != 0) {
-        HSB_LOG_ERROR("pthread_mutex_lock returned status={}.", status);
-        return false;
+        throw std::runtime_error(fmt::format("pthread_mutex_lock returned status={}.", status));
     }
+
+    // signal the background thread that the consumer is ready to receive frames
+    consumer_ready_ = true;
+
     struct timespec now;
     if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
         HSB_LOG_ERROR("clock_gettime failed, errno={}.", errno);
     }
     struct timespec timeout = add_ms(now, timeout_ms);
 
-    while (!ready_) {
+    bool result = true;
+    while (ready_.empty()) {
         status = pthread_cond_timedwait(&ready_condition_, &ready_mutex_, &timeout);
         if (status == ETIMEDOUT) {
+            result = false;
             break;
         }
         if (status != 0) {
             HSB_LOG_ERROR("pthread_cond_wait returned status={}.", status);
+            result = false;
             break;
         }
     }
-    bool r = ready_;
-    ready_ = false;
-    metadata.received_frame_number = received_frame_number_;
-    metadata.dropped = dropped_;
-    if (r) {
-        Hololink::FrameMetadata frame_metadata = get_frame_metadata();
-        metadata.rx_write_requests = rx_write_requests_;
-        metadata.imm_data = imm_data_;
-        metadata.received_s = received_.tv_sec;
-        metadata.received_ns = received_.tv_nsec;
-        metadata.frame_memory = current_buffer_;
-        metadata.metadata_memory = current_buffer_ + metadata_offset_;
+
+    if (result) {
+        RoceReceiverDescriptor* ready_descriptor = ready_.front();
+        ready_.pop();
+
+        Hololink::FrameMetadata frame_metadata = get_frame_metadata(ready_descriptor->metadata_buffer_.get(), ready_descriptor->metadata_event_.get());
+        if ((frame_metadata.psn & 0xFFFFF) != ready_descriptor->received_psn_) {
+            // This indicates that the distal end rewrote the receiver buffer.
+            HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, ready_descriptor->received_psn_);
+        }
+
+        metadata.received_frame_number = ready_descriptor->received_frame_number_;
+        metadata.dropped = ready_descriptor->dropped_;
+        metadata.rx_write_requests = ready_descriptor->rx_write_requests_;
+        metadata.imm_data = ready_descriptor->imm_data_;
+        metadata.received_s = ready_descriptor->received_.tv_sec;
+        metadata.received_ns = ready_descriptor->received_.tv_nsec;
+        metadata.frame_memory = cu_buffer_ + cu_page_size_ * ready_descriptor->page_;
+        metadata.metadata_memory = metadata.frame_memory + metadata_offset_;
         metadata.frame_metadata = frame_metadata;
         metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
-    } else {
-        metadata.rx_write_requests = 0;
-        metadata.imm_data = 0;
-        metadata.received_s = 0;
-        metadata.received_ns = 0;
-        metadata.frame_memory = 0;
-        metadata.metadata_memory = 0;
-        metadata.frame_metadata = {}; // All 0s
-        metadata.frame_number = 0;
+
+        available_.push(ready_descriptor);
     }
+
     status = pthread_mutex_unlock(&ready_mutex_);
     if (status != 0) {
-        HSB_LOG_ERROR("pthread_mutex_unlock returned status={}.", status);
+        throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
     }
-    return r;
+    return result;
 }
 
-const Hololink::FrameMetadata RoceReceiver::get_frame_metadata()
+bool RoceReceiver::frames_ready()
 {
-    CUresult cu_result = cuStreamSynchronize(metadata_stream_);
-    if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuStreamSynchronize failed, cu_result={}.", cu_result));
+    int status = pthread_mutex_lock(&ready_mutex_);
+    if (status != 0) {
+        throw std::runtime_error(fmt::format("pthread_mutex_lock returned status={}.", status));
     }
-    Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(metadata_buffer_, hololink::METADATA_SIZE);
-    if (frame_metadata.psn != received_psn_) {
-        // This indicates that the distal end rewrote the receiver buffer.
-        HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, received_psn_);
+
+    bool result = ready_.empty();
+
+    status = pthread_mutex_unlock(&ready_mutex_);
+    if (status != 0) {
+        throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
     }
+    return !result;
+}
+
+const Hololink::FrameMetadata RoceReceiver::get_frame_metadata(void* metadata_buffer, CUevent metadata_event)
+{
+    CudaCheck(cuEventSynchronize(metadata_event));
+    Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(
+        static_cast<uint8_t*>(metadata_buffer), hololink::METADATA_SIZE);
     return frame_metadata;
 }
 
@@ -808,9 +906,11 @@ std::mutex& RoceReceiver::get_lock()
 
 uint64_t RoceReceiver::external_frame_memory()
 {
-    // If we didn't use ibv_reg_dmabuf_mr above, we'd return
-    // cu_buffer_ here; but ibv_reg_dmabuf_mr always adds it's
-    // address to the address received from the peripheral.
+    // All registration paths (host pinned memory via ibv_reg_mr_iova, or
+    // GPU VRAM via ibv_reg_dmabuf_mr) use IOVA=0 as the base. The FPGA is
+    // therefore told the frame buffer starts at address 0, and writes to
+    // IOVA 0 + page * page_increment. The MR maps IOVA 0 to the start of
+    // the frame buffer.
     return 0;
 }
 

@@ -1,4 +1,8 @@
 OEN
 inout
+ser
 Inouts
 NotIn
+som
+dout
+HSI

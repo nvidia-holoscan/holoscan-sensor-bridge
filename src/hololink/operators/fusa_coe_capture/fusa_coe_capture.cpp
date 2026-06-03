@@ -17,6 +17,8 @@
 
 #include "fusa_coe_capture.hpp"
 
+#include <algorithm>
+
 #include <hololink/common/cuda_error.hpp>
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/data_channel.hpp>
@@ -109,14 +111,19 @@ void FusaCoeCaptureOp::start()
         throw std::runtime_error("Failed to register output buffers");
     }
 
-    // Configure HSB packetizer.
-    auto packetizer_program = csi::get_packetizer_program(pixel_format_);
-    hololink_channel_.get()->set_packetizer_program(packetizer_program);
+    if (csi_pixel_format_) {
+        // Configure HSB packetizer.
+        auto packetizer_program = csi::get_packetizer_program(pixel_format_);
+        hololink_channel_.get()->set_packetizer_program(packetizer_program);
+    }
 
     // Configure HSB for CoE captures.
     uint32_t frame_size = start_byte_ + (pixel_height_ * bytes_per_line_) + trailing_bytes_;
     hololink_channel_.get()->configure_coe(coe_handler_->getChannelNumber(),
         frame_size, bytes_per_line_);
+
+    // Start streaming.
+    device_start_.get()();
 
     // Issue initial capture requests.
     while (available_buffers_.size() > 0) {
@@ -128,9 +135,6 @@ void FusaCoeCaptureOp::start()
     // Start the capture acquisition thread.
     stop_thread_.store(false);
     acquire_thread_ = std::thread(&FusaCoeCaptureOp::acquire_buffer_thread_func, this);
-
-    // Start streaming.
-    device_start_.get()();
 }
 
 void FusaCoeCaptureOp::stop()
@@ -139,6 +143,7 @@ void FusaCoeCaptureOp::stop()
     // terminating and needs to be done before stopping the device stream below.
     if (acquire_thread_.joinable()) {
         stop_thread_.store(true);
+        buffer_available_.notify_all();
         acquire_thread_.join();
     }
 
@@ -167,8 +172,17 @@ void FusaCoeCaptureOp::stop()
 
 void FusaCoeCaptureOp::acquire_buffer_thread_func()
 {
-    while (in_flight_captures_.size() > 0) {
-        // Acquire the next capture.
+    while (!stop_thread_.load()) {
+        // Wait for a buffer to reissue if we've drained all in-flight captures.
+        if (in_flight_captures_.empty()) {
+            std::unique_lock<std::mutex> lock(buffer_mutex_);
+            buffer_available_.wait(lock, [this] {
+                return stop_thread_.load() || issue_capture();
+            });
+            continue;
+        }
+
+        // Wait for the next capture to complete.
         auto buffer = in_flight_captures_.front();
         auto status = coe_handler_->getCaptureStatus(buffer->sci_buf_, timeout_.get());
         if (status != NvFusaCaptureStatus::OK) {
@@ -185,14 +199,8 @@ void FusaCoeCaptureOp::acquire_buffer_thread_func()
         acquired_buffer_ = buffer;
         buffer_acquired_.notify_all();
 
-        // Issue new capture requests (unless stop has been requested).
-        if (!stop_thread_.load()) {
-            while (available_buffers_.size() > 0) {
-                if (!issue_capture()) {
-                    throw std::runtime_error("Failed to issue capture request");
-                }
-            }
-        }
+        // Reissue capture requests for any available buffers.
+        while (issue_capture()) { }
     }
 
     // Return any unused buffers.
@@ -226,7 +234,10 @@ void FusaCoeCaptureOp::compute(holoscan::InputContext& op_input,
 
     // Read the HSB metadata
     if (is_metadata_enabled()) {
-        auto* metadata_ptr = static_cast<uint8_t*>(buffer->cpu_ptr_) + start_byte_ + (pixel_height_ * bytes_per_line_) + trailing_bytes_;
+        size_t metadata_offset = start_byte_ + (pixel_height_ * bytes_per_line_) + trailing_bytes_;
+        // Metadata is delivered starting at the next 128-byte boundary.
+        metadata_offset = (metadata_offset + 127) & ~127;
+        auto* metadata_ptr = static_cast<uint8_t*>(buffer->cpu_ptr_) + metadata_offset;
         auto frame_metadata = Hololink::deserialize_metadata(metadata_ptr, hololink::METADATA_SIZE);
         auto const& meta = metadata();
         meta->set("timestamp_s", int64_t(frame_metadata.timestamp_s));
@@ -234,6 +245,7 @@ void FusaCoeCaptureOp::compute(holoscan::InputContext& op_input,
         meta->set("metadata_s", int64_t(frame_metadata.metadata_s));
         meta->set("metadata_ns", int64_t(frame_metadata.metadata_ns));
         meta->set("crc", int64_t(frame_metadata.crc));
+        meta->set("frame_number", int64_t(frame_metadata.frame_number));
     }
 
     // Create the output Tensor to wrap the buffer.
@@ -304,6 +316,7 @@ void FusaCoeCaptureOp::configure(uint32_t start_byte, uint32_t received_bytes_pe
     pixel_height_ = pixel_height;
     pixel_format_ = pixel_format;
     trailing_bytes_ = trailing_bytes;
+    csi_pixel_format_ = true;
 
     configured_ = true;
 }
@@ -311,6 +324,23 @@ void FusaCoeCaptureOp::configure(uint32_t start_byte, uint32_t received_bytes_pe
 void FusaCoeCaptureOp::configure_converter(csi::CsiConverter& converter)
 {
     converter.configure(0, bytes_per_line_, pixel_width_, pixel_height_, pixel_format_, 0);
+}
+
+void FusaCoeCaptureOp::configure_frame_size(uint32_t frame_size_bytes)
+{
+    if (frame_size_bytes == 0) {
+        throw std::runtime_error("frame_size_bytes must be > 0");
+    }
+    HSB_LOG_INFO("configure: frame_size_bytes={}", frame_size_bytes);
+    start_byte_ = 0;
+    bytes_per_line_ = frame_size_bytes;
+    pixel_width_ = frame_size_bytes;
+    pixel_height_ = 1;
+    pixel_format_ = csi::PixelFormat::RAW_8;
+    trailing_bytes_ = 0;
+    csi_pixel_format_ = false;
+
+    configured_ = true;
 }
 
 bool FusaCoeCaptureOp::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
@@ -327,19 +357,23 @@ bool FusaCoeCaptureOp::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
 
     // Convert pixel format to NvSciBuf color format
     NvSciBufAttrValColorFmt color_format;
-    switch (pixel_format_) {
-    case csi::PixelFormat::RAW_8:
-        color_format = NvSciColor_Bayer8RGGB;
-        break;
-    case csi::PixelFormat::RAW_10:
-        color_format = NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG;
-        break;
-    case csi::PixelFormat::RAW_12:
-        color_format = NvSciColor_Bayer16RGGB; // Using RAW16 as RAW12 doesn't exist in NvSci
-        break;
-    default:
-        HSB_LOG_ERROR("Unsupported pixel format");
-        return false;
+    if (csi_pixel_format_) {
+        switch (pixel_format_) {
+        case csi::PixelFormat::RAW_8:
+            color_format = NvSciColor_Bayer8RGGB;
+            break;
+        case csi::PixelFormat::RAW_10:
+            color_format = NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG;
+            break;
+        case csi::PixelFormat::RAW_12:
+            color_format = NvSciColor_Bayer16RGGB; // Using RAW16 as RAW12 doesn't exist in NvSci
+            break;
+        default:
+            HSB_LOG_ERROR("Unsupported pixel format");
+            return false;
+        }
+    } else {
+        color_format = NvSciColor_R8;
     }
 
     // Setup NvSciBuf attributes
@@ -443,7 +477,7 @@ bool FusaCoeCaptureOp::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
 bool FusaCoeCaptureOp::alloc_buffers()
 {
     for (uint32_t i = 0; i < capture_queue_depth_; i++) {
-        available_buffers_.push_back(new BufferInfo(this));
+        available_buffers_.push_back(new BufferInfo(this, i));
 
         auto buffer = available_buffers_.back();
         if (!alloc_sci_buf(buffer->sci_buf_, buffer->size_)) {
@@ -553,22 +587,26 @@ void FusaCoeCaptureOp::unregister_buffers()
 
 bool FusaCoeCaptureOp::issue_capture()
 {
-    if (available_buffers_.empty()) {
-        HSB_LOG_ERROR("No available buffers to issue capture");
+    // Find the buffer matching the next expected FIFO index.
+    auto it = std::find_if(available_buffers_.begin(), available_buffers_.end(),
+        [this](const BufferInfo* buf) { return buf->index_ == next_reissue_index_; });
+
+    if (it == available_buffers_.end()) {
         return false;
     }
 
     // Issue capture.
-    auto buffer = available_buffers_.front();
+    auto buffer = *it;
+    available_buffers_.erase(it);
     NvFusaCaptureStatus status = coe_handler_->startCapture(buffer->sci_buf_);
     if (status != NvFusaCaptureStatus::OK) {
-        HSB_LOG_ERROR("Failed to start capture: {}", static_cast<int>(status));
-        return false;
+        throw std::runtime_error(fmt::format(
+            "Failed to start capture: {}", static_cast<int>(status)));
     }
-    available_buffers_.pop_front();
 
-    // Add to in-flight queue.
+    // Add to in-flight queue and advance the FIFO index.
     in_flight_captures_.push(buffer);
+    next_reissue_index_ = (next_reissue_index_ + 1) % capture_queue_depth_;
 
     return true;
 }
@@ -585,9 +623,12 @@ nvidia::gxf::Expected<void> FusaCoeCaptureOp::buffer_release_callback(void* poin
     pending_buffers_.erase(pointer);
     pending_lock.unlock();
 
-    // Add to the available queue.
-    std::lock_guard<std::mutex> buffer_lock(buffer->parent_->buffer_mutex_);
-    buffer->parent_->available_buffers_.push_back(buffer);
+    // Add to the available queue and notify the acquire thread.
+    {
+        std::lock_guard<std::mutex> buffer_lock(buffer->parent_->buffer_mutex_);
+        buffer->parent_->available_buffers_.push_back(buffer);
+    }
+    buffer->parent_->buffer_available_.notify_one();
 
     return nvidia::gxf::Expected<void>();
 }

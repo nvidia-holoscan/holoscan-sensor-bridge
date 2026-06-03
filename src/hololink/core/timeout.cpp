@@ -17,6 +17,8 @@
 
 #include "timeout.hpp"
 
+#include "logging_internal.hpp"
+
 namespace hololink {
 
 /// default timeout in seconds
@@ -82,7 +84,21 @@ Timeout::Timeout(const Timeout& source)
         .count();
 }
 
-bool Timeout::expired() const { return Clock::now() > deadline_; }
+bool Timeout::expired() const
+{
+    auto now = Clock::now();
+    bool expired = (now > deadline_);
+    if (expired) {
+        auto to_ms = [](auto duration) {
+            return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(duration).count();
+        };
+        HSB_LOG_DEBUG("Timeout expired, now={:.3f}ms start_={:.3f}ms "
+                      "timeout_={:.3f}ms expiry_={:.3f}ms retry_={:.3f}ms deadline_={:.3f}ms",
+            to_ms(now.time_since_epoch()), to_ms(start_.time_since_epoch()),
+            to_ms(timeout_), to_ms(expiry_.time_since_epoch()), to_ms(retry_), to_ms(deadline_.time_since_epoch()));
+    }
+    return expired;
+}
 
 float Timeout::trigger_s() const
 {

@@ -255,7 +255,7 @@ class HoloscanApplication(holoscan.core.Application):
         # with the same names.  Because we don't use that metadata,
         # it's easiest to just ignore new items with the same
         # names as existing items.
-        self.is_metadata_enabled = True
+        self.is_metadata_enabled = False
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
@@ -282,7 +282,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -331,7 +331,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgb_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,

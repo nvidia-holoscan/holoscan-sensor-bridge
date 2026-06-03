@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -49,7 +49,7 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera = camera
         self._frame_limit = frame_limit
         self._engine = engine
-        self.is_metadata_enabled = True
+        self.is_metadata_enabled = False
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
 
     def compose(self):
@@ -75,7 +75,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -102,7 +102,7 @@ class HoloscanApplication(holoscan.core.Application):
         image_processor_operator = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor",
-            optical_black=50,
+            optical_black=100,
             bayer_format=bayer_format.value,
             pixel_format=pixel_format.value,
         )
@@ -117,7 +117,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgb_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -194,6 +194,11 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
+    )
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
     )
     parser.add_argument(
         "--frame-limit",

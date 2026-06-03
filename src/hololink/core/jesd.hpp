@@ -139,6 +139,12 @@ public:
     // Applies the current configuration.
     void apply();
 
+    // Returns true if the JESD link is healthy:
+    // - AD9082 link status == 0x60 (JESD204_LINK_STATUS_DATA)
+    // - No FPGA RX lane 64B66B errors
+    // - No UPHY overflow
+    bool verify_link_status();
+
     // JESDConfig functions.
     virtual void power_on();
     virtual void setup_clocks();

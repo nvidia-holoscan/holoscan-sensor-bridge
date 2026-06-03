@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -104,13 +104,21 @@ void CsiToBayerOp::setup(holoscan::OperatorSpec& spec)
         "Device to use for CUDA operations", 0);
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
         "Name of the output tensor", std::string(""));
-    cuda_stream_handler_.define_params(spec);
+    spec.param(sub_frame_rows_, "sub_frame_rows", "SubFrameRows",
+        "Number of rows in a sub-frame, if 0 (the default), the full frame will be used", 0U);
 }
 
 void CsiToBayerOp::start()
 {
     if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");
+    }
+
+    if (sub_frame_rows_.get() > 0) {
+        if (pixel_height_ % sub_frame_rows_.get() != 0) {
+            throw std::runtime_error(fmt::format("Height of {} is not evenly divisible by sub_frame_rows of {}",
+                pixel_height_, sub_frame_rows_.get()));
+        }
     }
 
     CudaCheck(cuInit(0));
@@ -124,6 +132,16 @@ void CsiToBayerOp::start()
 
     cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "frameReconstruction8", "frameReconstruction10", "frameReconstruction12" }));
+
+    if (sub_frame_rows_.get() > 0) {
+        // allocate memory for combined sub-frame data
+        sub_frame_memory_size_ = bytes_per_line_ * sub_frame_rows_.get();
+        sub_frame_memory_.reset([this]() {
+            CUdeviceptr ptr;
+            CudaCheck(cuMemAlloc(&ptr, sub_frame_memory_size_));
+            return ptr;
+        }());
+    }
 }
 
 void CsiToBayerOp::stop()
@@ -145,13 +163,6 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
     }
 
     auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-
-    // get the CUDA stream from the input message
-    gxf_result_t stream_handler_result
-        = cuda_stream_handler_.from_message(context.context(), entity);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
-    }
 
     const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
     if (!maybe_tensor) {
@@ -176,12 +187,72 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
         throw std::runtime_error("Tensor must be one dimensional");
     }
 
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    // Get the CUDA stream from the input message if present, otherwise generate one.
+    // This stream will also be transmitted on the output port.
+    cudaStream_t cuda_stream = input.receive_cuda_stream();
+
+    byte* input_pointer;
+    uint32_t cur_pixel_height;
+    size_t sub_frame_copy_size = 0;
+    if (sub_frame_rows_.get() > 0) {
+        // sub-frame handling
+        input_pointer = input_tensor->pointer();
+
+        const int64_t receiver_frame_number = metadata()->get<int64_t>("frame_number");
+        const int64_t receiver_sub_frames_per_frame = (csi_length_ + sub_frame_memory_size_ - 1) / sub_frame_memory_size_;
+        const int64_t receiver_sub_frame = receiver_frame_number % receiver_sub_frames_per_frame;
+        const int64_t receiver_sub_frame_offset = int64_t(receiver_sub_frame * sub_frame_memory_size_);
+
+        size_t input_size = input_tensor->size();
+        int64_t sub_frame_offset;
+        if (receiver_sub_frame == 0) {
+            // skip the start offset of the first sub-frame
+            if (input_size < start_byte_) {
+                throw std::runtime_error(
+                    fmt::format("Input tensor size {} is smaller than configured start_byte_ {}",
+                        input_size, start_byte_));
+            }
+            input_pointer += start_byte_;
+            input_size -= start_byte_;
+            sub_frame_offset = 0;
+        } else {
+            sub_frame_offset = receiver_sub_frame_offset - start_byte_;
+        }
+        const size_t sub_frame_memory_offset = sub_frame_offset % sub_frame_memory_size_;
+        const size_t remaining_size = sub_frame_memory_size_ - sub_frame_memory_offset;
+
+        const size_t copy_size = std::min(input_size, remaining_size);
+        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get() + sub_frame_memory_offset, (CUdeviceptr)input_pointer, copy_size, cuda_stream));
+
+        if (sub_frame_memory_offset + copy_size != sub_frame_memory_size_) {
+            // partial sub-frame, wait for the rest
+            return;
+        }
+        sub_frame_copy_size = input_size - copy_size;
+
+        // replace the byte based sub-frame offset with the line based sub-frame offset
+        metadata()->erase("sub_frame_offset");
+        const int64_t sub_frame = sub_frame_offset / sub_frame_memory_size_;
+        metadata()->set<int64_t>("sub_frame_offset", sub_frame * sub_frame_rows_);
+
+        // replace the sub-frame number with the full frame number
+        metadata()->erase("frame_number");
+        metadata()->set<int64_t>("frame_number", receiver_frame_number / receiver_sub_frames_per_frame);
+
+        input_pointer = reinterpret_cast<byte*>((CUdeviceptr)(sub_frame_memory_.get()));
+        cur_pixel_height = sub_frame_rows_.get();
+    } else {
+        input_pointer = input_tensor->pointer() + start_byte_;
+        cur_pixel_height = pixel_height_;
+    }
+
     // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
     auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
         fragment()->executor().context(), allocator_->gxf_cid());
 
     // create the output
-    nvidia::gxf::Shape shape { int(pixel_height_), int(pixel_width_), 1 };
+    nvidia::gxf::Shape shape { int(cur_pixel_height), int(pixel_width_), 1 };
     nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
         = CreateTensorMap(context.context(), allocator.value(),
             { { out_tensor_name_.get(), nvidia::gxf::MemoryStorageType::kDevice, shape,
@@ -199,40 +270,38 @@ void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContex
             fmt::format("failed to create out_tensor with name \"{}\"", out_tensor_name_.get()));
     }
 
-    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
-
     switch (pixel_format_) {
     case hololink::csi::PixelFormat::RAW_8:
-        cuda_function_launcher_->launch("frameReconstruction8", { pixel_width_, pixel_height_, 1 }, cuda_stream,
+        cuda_function_launcher_->launch("frameReconstruction8", { pixel_width_, cur_pixel_height, 1 }, cuda_stream,
             tensor.value()->pointer(),
-            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_,
-            pixel_height_);
+            input_pointer, bytes_per_line_, pixel_width_,
+            cur_pixel_height);
         break;
     case hololink::csi::PixelFormat::RAW_10:
         cuda_function_launcher_->launch("frameReconstruction10",
             { pixel_width_ / 4, // outputs 4 pixels per shader invocation
-                pixel_height_, 1 },
+                cur_pixel_height, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_ / 4,
-            pixel_height_);
+            input_pointer, bytes_per_line_, pixel_width_ / 4,
+            cur_pixel_height);
         break;
     case hololink::csi::PixelFormat::RAW_12:
         cuda_function_launcher_->launch("frameReconstruction12",
             { pixel_width_ / 2, // outputs 2 pixels per shader invocation
-                pixel_height_, 1 },
+                cur_pixel_height, 1 },
             cuda_stream, tensor.value()->pointer(),
-            input_tensor->pointer() + start_byte_, bytes_per_line_, pixel_width_ / 2,
-            pixel_height_);
+            input_pointer, bytes_per_line_, pixel_width_ / 2,
+            cur_pixel_height);
         break;
     default:
         throw std::runtime_error("Unsupported bits per pixel value");
     }
 
-    // pass the CUDA stream to the output message
-    stream_handler_result = cuda_stream_handler_.to_message(out_message);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to add the CUDA stream to the outgoing messages");
+    if (sub_frame_copy_size > 0) {
+        // copy the remaining data to the beginning of the sub-frame memory
+        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get(),
+            (CUdeviceptr)(input_tensor->pointer() + input_tensor->size() - sub_frame_copy_size),
+            sub_frame_copy_size, cuda_stream));
     }
 
     // Emit the tensor
@@ -276,6 +345,21 @@ void CsiToBayerOp::configure(uint32_t start_byte, uint32_t bytes_per_line, uint3
     pixel_height_ = pixel_height;
     pixel_format_ = pixel_format;
     csi_length_ = start_byte + bytes_per_line * pixel_height + trailing_bytes;
+
+    // the operator is not yet initialized when this function is called, so we need to find the
+    // sub_frame_rows argument from the args() vector.
+    uint32_t sub_frame_rows = sub_frame_rows_.default_value();
+    for (auto& arg : args()) {
+        if (arg.name() == "sub_frame_rows") {
+            sub_frame_rows = std::any_cast<uint32_t>(arg.value());
+        }
+    }
+    if (sub_frame_rows != 0) {
+        frame_size_ = bytes_per_line_ * sub_frame_rows;
+    } else {
+        frame_size_ = csi_length_;
+    }
+
     configured_ = true;
 }
 
@@ -286,6 +370,15 @@ size_t CsiToBayerOp::get_csi_length()
     }
 
     return csi_length_;
+}
+
+size_t CsiToBayerOp::get_sub_frame_size()
+{
+    if (!configured_) {
+        throw std::runtime_error("CsiToBayerOp is not configured.");
+    }
+
+    return frame_size_;
 }
 
 } // namespace hololink::operators

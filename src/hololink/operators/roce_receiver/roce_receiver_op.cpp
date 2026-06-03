@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +17,6 @@
 
 #include "roce_receiver_op.hpp"
 
-#include <chrono>
 #include <unistd.h>
 
 #include <netinet/in.h>
@@ -45,6 +44,7 @@ void RoceReceiverOp::initialize()
     received_s_metadata_ = rename_fn("received_s");
     received_ns_metadata_ = rename_fn("received_ns");
     imm_data_metadata_ = rename_fn("imm_data");
+    page_number_metadata_ = rename_fn("page_number");
     frame_memory_metadata_ = rename_fn("frame_memory");
     dropped_metadata_ = rename_fn("dropped");
     frame_number_metadata_ = rename_fn("frame_number");
@@ -67,6 +67,11 @@ void RoceReceiverOp::setup(holoscan::OperatorSpec& spec)
     // and add our own parameters
     spec.param(ibv_name_, "ibv_name", "IBVName", "IBV device to use", std::string("roceP5p3s0f0"));
     spec.param(ibv_port_, "ibv_port", "IBVPort", "Port number of IBV device", 1u);
+    spec.param(pages_, "pages", "Pages", "Number of pages to use for the receiver memory", 2u);
+    spec.param(queue_size_, "queue_size", "QueueSize",
+        "The number of buffers that can be queued up for the receiver, has to be less or equal to the number of pages",
+        1u);
+    spec.param(metadata_offset_, "metadata_offset", "MetadataOffset", "Where to find metadata in the received buffer", size_t { 0 });
     // Note: rename_metadata is handled programmatically via set_rename_metadata() method
     // to avoid YAML-CPP serialization issues with std::function
 }
@@ -78,15 +83,25 @@ void RoceReceiverOp::set_rename_metadata(std::function<std::string(const std::st
 
 void RoceReceiverOp::start_receiver()
 {
+    if (queue_size_.get() == 0) {
+        throw std::runtime_error("Queue size cannot be 0");
+    }
+    if (queue_size_.get() > pages_.get()) {
+        throw std::runtime_error(fmt::format("Queue size {{}} cannot be greater than the number of pages {{}}", queue_size_.get(), pages_.get()));
+    }
+
     size_t metadata_address = hololink::core::round_up(frame_size_.get(), hololink::core::PAGE_SIZE);
+    if (metadata_offset_ == 0) {
+        metadata_offset_ = metadata_address;
+    }
     // received_frame_size wants to be page aligned; prove that METADATA_SIZE doesn't upset that.
     // Prove that PAGE_SIZE is a power of two
     static_assert((hololink::core::PAGE_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     // Prove that METADATA_SIZE is an even multiple of PAGE_SIZE
     static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     size_t received_frame_size = metadata_address + hololink::METADATA_SIZE;
-    size_t buffer_size = hololink::core::round_up(received_frame_size * PAGES, getpagesize());
-    frame_memory_.reset(new ReceiverMemoryDescriptor(frame_context_, buffer_size));
+    size_t buffer_size = hololink::core::round_up(received_frame_size * pages_.get(), getpagesize());
+    frame_memory_.reset(new hololink::ReceiverMemoryDescriptor(frame_context_, buffer_size));
     HSB_LOG_INFO("frame_size={:#x} frame={:#x} buffer_size={:#x}", frame_size_.get(), frame_memory_->get(), buffer_size);
 
     const std::string& peer_ip = hololink_channel_->peer_ip();
@@ -99,9 +114,11 @@ void RoceReceiverOp::start_receiver()
         buffer_size,
         frame_size_.get(),
         received_frame_size,
-        PAGES,
-        metadata_address,
-        peer_ip.c_str()));
+        pages_.get(),
+        metadata_offset_,
+        peer_ip.c_str(),
+        queue_size_.get(),
+        frame_memory_->get_host_ptr()));
     receiver_->set_frame_ready([this](const RoceReceiver&) {
         this->frame_ready();
     });
@@ -119,7 +136,7 @@ void RoceReceiverOp::start_receiver()
     auto [local_ip, local_port] = local_ip_and_port();
     HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
 
-    hololink_channel_->configure_roce(receiver_->external_frame_memory(), frame_size_, received_frame_size, PAGES, local_port);
+    hololink_channel_->configure_roce(receiver_->external_frame_memory(), frame_size_, received_frame_size, pages_.get(), local_port);
 }
 
 void RoceReceiverOp::run()
@@ -138,7 +155,12 @@ void RoceReceiverOp::stop_receiver()
     frame_memory_.reset();
 }
 
-std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get_next_frame(double timeout_ms)
+bool RoceReceiverOp::frames_ready()
+{
+    return receiver_->frames_ready();
+}
+
+std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get_next_frame(double timeout_ms, CUstream cuda_stream)
 {
     RoceReceiverMetadata roce_receiver_metadata;
     if (!receiver_->get_next_frame(timeout_ms, roce_receiver_metadata)) {
@@ -151,6 +173,7 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get
     (*metadata)[received_s_metadata_] = int64_t(roce_receiver_metadata.received_s);
     (*metadata)[received_ns_metadata_] = int64_t(roce_receiver_metadata.received_ns);
     (*metadata)[imm_data_metadata_] = int64_t(roce_receiver_metadata.imm_data);
+    (*metadata)[page_number_metadata_] = int64_t(roce_receiver_metadata.imm_data & 0xFFF);
     CUdeviceptr frame_memory = roce_receiver_metadata.frame_memory;
     (*metadata)[frame_memory_metadata_] = int64_t(frame_memory);
     (*metadata)[dropped_metadata_] = int64_t(roce_receiver_metadata.dropped);

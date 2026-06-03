@@ -5,17 +5,24 @@
 Holoscan sensor bridge is supported on the following configurations:
 
 - IGX systems configured with
-  [IGX OS 1.1.2 Production Release](https://developer.nvidia.com/igx-downloads) with CX7
-  SmartNIC devices.
-- AGX Orin systems running [JP6.2.1](https://developer.nvidia.com/embedded/jetpack). In
+  [IGX OS 1.1.2+](https://developer.nvidia.com/igx-downloads) with CX7 SmartNIC devices.
+- AGX Orin systems running [JP6.2.1+](https://developer.nvidia.com/embedded/jetpack). In
   this configuration, the on-board Ethernet controller is used with the Linux kernel
   network stack for data I/O; all network I/O is performed by the CPU without network
   acceleration.
-- AGX Thor systems running [JP7.1](https://developer.nvidia.com/embedded/jetpack) with
+- AGX Thor systems running [JP7.2](https://developer.nvidia.com/embedded/jetpack) with
   MGBE SmartNIC device and CoE transport.
 - DGX Spark systems running
-  [DGX OS 7.2.3](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
-  CX7 SmartNIC devices.
+  [DGX OS 7.2.3+](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html)
+  with CX7 SmartNIC devices.
+- x86 Linux workstations with an NVIDIA discrete GPU. Two host receive paths are
+  supported: unaccelerated Linux socket-based receivers (used primarily for development
+  or testing purposes) and an accelerated RoCE path that requires a ConnectX network
+  adapter on the link to the sensor bridge. Note that this configuration is not part of
+  the primary reference platforms; GPUDirect RDMA into GPU memory on the RoCE path may
+  appear available from the GPU and driver even when the PCIe path on the host does not
+  support it, in which case you must disable GPU VRAM frame buffers at build time (see
+  the **x86 Linux** tab).
 
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.md),
 configure a few prerequisites in your host system. While holoscan sensor bridge
@@ -40,8 +47,7 @@ remembered across power cycles and therefore only need to be set up once.
 
   Reboot the computer to activate this setting.
 
-Next, follow the directions on the appropriate tab below to configure your Orin host
-system.
+Next, follow the directions on the appropriate tab below to configure your host system.
 
 `````{tab-set}
 ````{tab-item} IGX
@@ -59,8 +65,21 @@ system.
   ```
 
   This will produce a list of CX7 ports; your device names may vary. The lowest
-  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port.  Let's assign
-  that name to the variable `$IN0`.
+  numbered one, in this case `roceP5p3s0f0`, is the first CX7 port.  
+
+  Check the CX7 firmware version using one of the devices names that appear on your machine from the command above. 
+
+  ```
+  cat /sys/class/infiniband/roceP5p3s0f0/fw_ver
+  ```
+
+  ```
+  28.39.3004
+  ```
+
+  If the version is 28.38.1026 or lower, please [download](https://developer.nvidia.com/igx-downloads?sortBy=igx_downloads%2Fsort%2Fdate%3Adesc) the appropriate "ConnectX-7 Firmware" iso and [upgrade](https://docs.nvidia.com/igx/user-guide/1.1.1/base-os.html#update-the-connect-x-7-cx7-firmware) the CX7 firmware. Make sure to reboot the machine and re-check the firmware has loaded to the newer one.
+  
+  Assign the name of the first CX7 port to the variable `$IN0`.
 
   ```none
   LC_COLLATE=C IN=(/sys/class/infiniband/*)
@@ -174,16 +193,6 @@ system.
 Demos and examples in this package assume a sensor bridge device is connected to `eno1`,
 which is the RJ45 connector on the AGX Orin.
 
-- Linux sockets require a larger network receiver buffer.
-
-  Most sensor bridge self-tests use Linux's loopback interface; if the kernel starts
-  dropping packets due to out-of-buffer space then these tests will fail.
-
-  ```none
-  echo 'net.core.rmem_max = 31326208' | sudo tee /etc/sysctl.d/52-hololink-rmem_max.conf
-  sudo sysctl -p /etc/sysctl.d/52-hololink-rmem_max.conf
-  ```
-
 - Configure a static IP address of 192.168.0.101 on the on-board network port.
 
   L4T uses NetworkManager to configure interfaces; by default interfaces are configured
@@ -192,11 +201,11 @@ which is the RJ45 connector on the AGX Orin.
   about configuring your system if you cannot use the 192.168.0.0/24 network in this
   way.)
 
-  Note that for AGX running JP6.2.1, the on-board ethernet device is `eno1`; if you're
+  Note that for AGX running JP6.2.1, the on-board ethernet device is `eno1`, and for JP7.2, the on-board ethernet device is `end0`; if you're
   running a different configuration, use the appropriate name for the variable EN0:
 
   ```none
-  EN0=eno1
+  EN0=end0
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection up hololink-$EN0
   ```
@@ -278,6 +287,15 @@ which is the RJ45 connector on the AGX Orin.
 
 ````
 ````{tab-item} DGX Spark
+
+- First check for the OTA ConnectX-7 hotplug feature and disable + reboot if present. This disables the NIC if no link is detected which can interfere with these instructions and HSB operation. Note that if your NIC powers down without anything attached, but the file below is not present, you may not have the ability to disable and should update OTA.
+
+```
+if [ -f /etc/nvidia/cx7-hotplug-enabled ] ; then
+    sudo mv /etc/nvidia/cx7-hotplug-enabled /etc/nvidia/cx7-hotplug-disabled
+    sudo reboot
+fi
+```
 
 - Determine the name of the network device associated with the first CX7 port. This is
   the leftmost QSFP port when looking at the back of the DGX Spark unit ("port 0" in the image below). 
@@ -404,30 +422,17 @@ which is the RJ45 connector on the AGX Orin.
 ````
 ````{tab-item} AGX Thor
   
-- After installing JP 7.1 on the Thor devkit, complete the following steps.
-  If JP 7.1 was installed using an ISO image, set CUDA environment variables and install the [SIPL API](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html).
+- After installing JP 7.2 on the Thor devkit, complete the following steps.
 
-  **These steps are not required if JetPack 7.1 was installed using SDK Manager with the all available optional packages selected.**
+  If installation was done using the ISO method, install [CUDA Toolkit 13.2](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=arm64-sbsa&Compilation=Native&Distribution=Ubuntu&target_version=24.04&target_type=deb_local) and execute the following:
 
   ```none
-  export PATH=/usr/local/cuda-13.0/bin:$PATH
-  export LD_LIBRARY_PATH=/usr/local/cuda-13.0/lib64:$LD_LIBRARY_PATH
-  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v4.0/release/Jetson_SIPL_API_R38.4.0_aarch64.tbz2
-  wget https://developer.nvidia.com/downloads/embedded/L4T/r38_Release_v4.0/release/Jetson_Multimedia_API_R38.4.0_aarch64.tbz2
-  sudo tar xjf Jetson_SIPL_API_R38.4.0_aarch64.tbz2 -C /
-  sudo tar xjf Jetson_Multimedia_API_R38.4.0_aarch64.tbz2 -C /
-  ```
-
-- Configure the AGX Thor to enable running unaccelerated network examples:
-  holoscan sensor bridge release v2.5 supports running Li VB1940 and IMX274 unaccelerated network Linux sockets 
-  based examples within the holoscan sensor bridge container.
-  
-  For best performance of these examples please take the following configuration steps.
-  Increase the Linux sockets network receiver buffer:
-  
-  ```none
-  echo 'net.core.rmem_max = 31326208' | sudo tee /etc/sysctl.d/52-hololink-rmem_max.conf
-  sudo sysctl -p /etc/sysctl.d/52-hololink-rmem_max.conf
+  export PATH=/usr/local/cuda/bin:$PATH
+  export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.0/release/Jetson_SIPL_API_R39.2.0_aarch64.tbz2
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.0/release/Jetson_Multimedia_API_R39.2.0_aarch64.tbz2
+  sudo tar xjf Jetson_SIPL_API_R39.2.0_aarch64.tbz2 -C /
+  sudo tar xjf Jetson_Multimedia_API_R39.2.0_aarch64.tbz2 -C /
   ```
 
 - For the Linux socket based examples, isolating a processor core from Linux kernel is
@@ -470,35 +475,32 @@ which is the RJ45 connector on the AGX Orin.
 
   **This step requires a system reboot to take effect.**
 
-- Install Holoscan SDK v3.9.0:
+- Install Holoscan SDK v4.2.0:
 
   ```none
   sudo apt update
-  sudo apt install -t r38.4 holoscan=3.9.0-2
+  sudo apt install holoscan-cuda-13=4.2*
   ```
 
 - Install other Holoscan sensor bridge dependencies:
 
   ```none
+  . /etc/os-release
+  UBUNTU_VERSION="`echo ${VERSION_ID} | sed 's/\.//g'`"
   sudo apt-get install ca-certificates gpg wget
+  wget https://developer.download.nvidia.com/compute/nvcomp/5.2.0/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
+  sudo dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
+  sudo cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0/nvcomp-*-keyring.gpg /usr/share/keyrings/
+  rm nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
   test -f /usr/share/doc/kitware-archive-keyring/copyright ||
   wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-  echo 'deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ noble main' | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+  echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
   sudo apt-get update
   test -f /usr/share/doc/kitware-archive-keyring/copyright ||
   sudo rm /usr/share/keyrings/kitware-archive-keyring.gpg
   sudo apt-get install kitware-archive-keyring
-  wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/sbsa/cuda-keyring_1.1-1_all.deb
-  sudo dpkg -i cuda-keyring_1.1-1_all.deb
   sudo apt-get update
-  rm cuda-keyring_1.1-1_all.deb
-  PINNED_NVCOMP=5.0.0.6-1
-  sudo apt install -y git-lfs cmake libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev libibverbs-dev python3-dev \
-        libnvcomp5-cuda-13=${PINNED_NVCOMP} \
-        libnvcomp5-dev-cuda-13=${PINNED_NVCOMP} \
-        libnvcomp5-static-cuda-13=${PINNED_NVCOMP} \
-        nvcomp-cuda-13=${PINNED_NVCOMP}
-  sudo apt-mark hold libnvcomp5-cuda-13 libnvcomp5-dev-cuda-13 libnvcomp5-static-cuda-13 nvcomp-cuda-13
+  sudo apt install -y cmake=3.31.11* cmake-data=3.31.11* libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev python3-dev nvcomp-cuda-13
   ```
 
 - Enable the network interface and ensure that the camera enumerates (assumes camera IP address 192.168.0.2):
@@ -512,7 +514,7 @@ which is the RJ45 connector on the AGX Orin.
 
 - Obtain and build holoscan sensor bridge:
 
-  holoscan sensor bridge release v2.5 supports running C++ Li VB1940 accelerated networking based examples 
+  holoscan sensor bridge release v2.6 supports running C++ Li VB1940 accelerated networking based examples 
   from the terminal cli as well as running Li VB1940 and IMX274 python examples from within the
   holoscan sensor bridge container.
   
@@ -528,7 +530,7 @@ which is the RJ45 connector on the AGX Orin.
   ```none
   cd holoscan-sensor-bridge
   mkdir build && cd build
-  cmake -DHOLOLINK_BUILD_SIPL=1 -DHOLOLINK_BUILD_FUSA=1 ..
+  cmake -DHOLOLINK_BUILD_SIPL=1 -DHOLOLINK_BUILD_FUSA=1 -DHOLOLINK_BUILD_ROCE=0 ..
   make -j
   ```
 
@@ -539,12 +541,12 @@ using one of two different paths outlined below.
 
 <b> SIPL </b>
 
-[SIPL](https://docs.nvidia.com/jetson/archives/r38.4/DeveloperGuide/SD/CameraDevelopment/CoECameraDevelopment/SIPL-for-L4T/Introduction-to-SIPL.html)
+[SIPL](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/CameraDevelopment/SIPLFramework/Introduction-to-SIPL.html)
 is a modular, extensible framework for image sensor control and image processing that
 exposes the full hardware capabilities of Thor including CoE and ISP hardware
 acceleration. SIPL-enabled sensor drivers are written using the
 [Unified Device Driver Framework (UDDF)](uddf_drivers.md), and reference VB1940 UDDF
-drivers are included with JetPack 7.1 EA.
+drivers are included with JetPack 7.2.
 
 Use the following to run the SIPL-based CoE example applications for the VB1940 sensor:
 
@@ -561,6 +563,8 @@ Use the following to run the SIPL-based CoE example applications for the VB1940 
   ```
 
 - Update the `ip_address` and `mac_address` fields in these configuration files (multiple instances in each file):
+
+  **NOTE:** The provided JSON `sipl_config` files are compatible with JP7.2. For JP7.1, pull the source files from the [HSB 2.5.0 release](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/2.5.0/examples/sipl_config) and make necessary modifications to them.
 
   ```none
   ../examples/sipl_config/vb1940_single.json
@@ -589,7 +593,7 @@ Use the following to run the SIPL-based CoE example applications for the VB1940 
 
 <b>FuSa</b>
 
-FuSa is a new API included with JetPack 7.1 which exposes access to Thor's CoE data
+FuSa is a new API included with JetPack 7.1+ which exposes access to Thor's CoE data
 capture path without providing the additional camera control and ISP access that is
 offered by SIPL. This allows applications direct control of the Holoscan Sensor Bridge
 and attached sensors in a CoE-accelerated environment, bypassing the need for SIPL and
@@ -604,6 +608,8 @@ the `fusa-coe` prefix. The C++ sample applications can be run natively (not usin
 container) and are built by the host setup instructions above, while the Python variants
 must be run using the [Holoscan Sensor Bridge container](build.md).
 
+  **NOTE:** The `python/setup.py` will by default not enable the necessary FuSa or SIPL components unless it detects the required /dev/coe* devices or the `COE_OFFLOAD` environment variable is set. No action is required in the provided docker container or in native python binding builds on supported platforms.
+
 For example, to run the C++ VB1940 player example, run the following command with the IP
 address replaced with the IP address of the device:
 
@@ -615,9 +621,109 @@ address replaced with the IP address of the device:
   is explained in the following pages of the user guide.
 
 ````
+````{tab-item} x86 Linux
+
+Use this tab when the host is an x86 PC running Linux with an NVIDIA discrete GPU.
+
+**Capture paths on x86**
+
+- **Socket-based receiver** — The standard Linux network stack path used by examples
+  whose names are prefixed with `linux_` (for example `linux_imx274_player`). This does
+  not require a ConnectX adapter; use whichever Ethernet interface reaches the sensor
+  bridge and follow the same IP and [PTP](ptp.md) guidance as for other hosts. Note that
+  this path is not accelerated, and so is often unable to keep up with the data rates
+  required to stream typical sensor (e.g. camera) data, leading to intermittent data loss.
+  This path is primarily meant for development purposes.
+
+- **RoCE-accelerated receiver** — Uses RDMA over Converged Ethernet to the sensor bridge
+  and requires a Mellanox/NVIDIA ConnectX adapter on that link. The interface setup
+  requirements (i.e. addresses, routes, ring buffers, MTU) match IGX or DGX Spark:
+  the sensor bridge must be reachable at its assigned address (e.g. `192.168.0.2`) using
+  the same scheme as in the **IGX** or **DGX Spark** tabs above (adapt device names such
+  as `$IN0`, `$EN0` to your system).
+
+(gpudirect-rdma-on-the-roce-path)=
+**GPUDirect RDMA on the RoCE path**
+
+Using RoCE with GPUDirect RDMA into GPU memory requires the following:
+
+- A workstation-class NVIDIA GPU (consumer and mobile GPUs do not support GPUDirect
+  RDMA).
+- The NVIDIA open kernel driver packages on the host (e.g. `nvidia-driver-open`).
+- A PCIe topology where the ConnectX NIC and the GPU are peers such that the NIC
+  can perform RDMA directly to the GPU (platform firmware, root-port layout, and
+  IOMMU settings must allow this end-to-end).
+
+When these requirements are met, frame buffers can reside in GPU memory and data received
+from the sensor bridge can be written via RDMA directly to GPU memory. When the GPU and
+driver support GPUDirect registration but the host PCIe system path does not actually
+deliver RDMA writes into that memory, data received from the sensor bridge will not actually
+be written to the GPU memory and will typically result in incorrect data (e.g. black/blank
+image frames) and/or metadata mismatch errors. If this is the case, the build must be
+configured to force the use of pinned host memory instead (see next section).
+
+**Demo container on x86**
+
+Install Docker, Docker Buildx, and the
+[NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
+on the host. Build the demo image with the dGPU option (see [build instructions](build.md)):
+
+```none
+sh docker/build.sh --dgpu
+```
+
+**When GPUDirect RDMA does not work end-to-end**
+
+It may be the case that RoCE RDMA looks healthy while RDMA writes into registered GPU
+memory do not actually succeed; for example, when the GPU supports GPUDirect but the PCIe
+configuration does not allow the ConnectX NIC to reach the GPU as an RDMA peer. Symptoms
+include a black or blank image and application log lines similar to:
+
+```none
+ERROR 6.6634 roce_receiver.cpp:826 get_next_frame tid=0x61 -- Metadata psn=0 but received_psn=483318.
+```
+
+This is a strong indication to rebuild with GPU VRAM disabled so the RoCE receiver uses
+pinned host memory instead:
+
+- **Demo container:** pass `--disable-roce-gpu-vram` to `docker/build.sh` (together with
+  `--dgpu` as usual) to build the image. Example:
+
+  ```none
+  sh docker/build.sh --dgpu --disable-roce-gpu-vram
+  ```
+
+- **Native CMake build:** configure with:
+
+  ```none
+  -DHOLOLINK_ROCE_USE_GPU_VRAM=OFF
+  ```
+
+Using pinned host memory instead of GPU VRAM enables a partly accelerated path: the
+NIC will still RDMA directly to the system memory using RoCE, bypassing the Linux
+networking subsystem, but this data will then need to be transferred across PCIe
+when the GPU later reads the data.
+
+When the [GPUDirect RDMA requirements](gpudirect-rdma-on-the-roce-path) are satisfied
+on your machine, the default build keeps `HOLOLINK_ROCE_USE_GPU_VRAM` on and the fully
+accelerated GPUDirect RDMA path can be used. Internally, this path has been validated
+on an AMD Threadripper-based Lenovo ThinkStation workstation with a ConnectX-6 Dx
+network adapter and Quadro RTX 6000 GPU.
+
+````
 `````
 
 Now, for all configurations,
+
+- Configure the network receiver buffer for running unaccelerated network examples:
+  Holoscan sensor bridge supports running Li VB1940 and IMX274 using unaccelerated
+  network Linux sockets. For best performance of these examples increase the Linux
+  sockets network receiver buffer:
+
+  ```none
+  echo 'net.core.rmem_max = 31326208' | sudo tee /etc/sysctl.d/52-hololink-rmem_max.conf
+  sudo sysctl -p /etc/sysctl.d/52-hololink-rmem_max.conf
+  ```
 
 - Make sure that $EN0 is set to the name of the Ethernet controller connected to HSB.
   Some installations require reboots which will clear this value, so be sure and
@@ -701,7 +807,7 @@ Now, for all configurations,
   sudo systemctl start ptp4l-$EN0.service
   ```
 
-- For Orin iGPU configurations only: Install
+- For Orin iGPU with Cuda 12 configurations only (Jetpack 6 and IGX 1.X): Install
   [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.
   Applications using inference need this at initialization time; some OS images for iGPU
   don't include it.

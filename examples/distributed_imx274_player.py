@@ -75,7 +75,7 @@ class SrcFragment(holoscan.core.Fragment):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=3,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -125,7 +125,7 @@ class SrcFragment(holoscan.core.Fragment):
                 * rgba_components_per_pixel
                 * ctypes.sizeof(ctypes.c_uint16)
                 * self._camera._height,
-                num_blocks=2,
+                num_blocks=4,
             )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,

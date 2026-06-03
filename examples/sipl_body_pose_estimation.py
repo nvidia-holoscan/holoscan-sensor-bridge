@@ -57,15 +57,20 @@ class HoloscanApplication(holoscan.core.Application):
             condition = self._ok
 
         # Capture ISP-processed NV12 using SIPL.
-        sipl_capture = hololink_module.operators.SIPLCaptureOp(
-            self,
-            condition,
-            name="sipl_capture",
+        sipl_service = hololink_module.operators.SIPLCaptureService(
             camera_config=self._camera_config,
             json_config=self._json_config,
         )
-        camera_info = sipl_capture.get_camera_info()
+        camera_info = sipl_service.get_camera_info()
         assert len(camera_info) == 1, "Only single-camera configs are supported"
+
+        sipl_output = hololink_module.operators.SIPLCameraOutputOp(
+            self,
+            condition,
+            name="sipl_output",
+            service=sipl_service,
+            camera_index=0,
+        )
 
         # Holoviz will render both the NV12 image and the body pose estimation overlay.
         holoviz_args = self.kwargs("holoviz")
@@ -122,10 +127,10 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         # Render the NV12 image.
-        self.add_flow(sipl_capture, visualizer, {("output", "receivers")})
+        self.add_flow(sipl_output, visualizer, {("output", "receivers")})
 
         # Process and render the body pose estimation overlay.
-        self.add_flow(sipl_capture, yuv_to_rgba, {("output", "")})
+        self.add_flow(sipl_output, yuv_to_rgba, {("output", "")})
         self.add_flow(yuv_to_rgba, preprocessor)
         self.add_flow(preprocessor, format_input)
         self.add_flow(format_input, inference, {("", "receivers")})
@@ -178,7 +183,9 @@ def main():
     hololink_module.logging_level(args.log_level)
 
     if args.list_configs:
-        hololink_module.operators.SIPLCaptureOp.list_available_configs(args.json_config)
+        hololink_module.operators.SIPLCaptureService.list_available_configs(
+            args.json_config
+        )
     else:
         application = HoloscanApplication(
             args.camera_config,

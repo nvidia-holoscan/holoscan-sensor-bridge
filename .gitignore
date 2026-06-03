@@ -8,12 +8,16 @@ cscope.*
 .vscode/
 # cache
 .cache
-# build folders
+# build folders and artifacts
 build
 *.egg-info
+*.whl
 # tao peoplenet files
 *.fp16
 *.onnx
+# body-pose estimation
+*.fp32
+*.pt
 # NSight profiler files
 *.ncu-rep
 *.nsys-rep

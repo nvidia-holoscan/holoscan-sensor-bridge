@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +19,8 @@
 #include <hololink/operators/audio_packetizer/audio_packetizer.hpp>
 
 #include <pybind11/pybind11.h>
+
+#include "../operator_util.hpp"
 
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
@@ -42,6 +44,7 @@ public:
 
     // Define a constructor that fully initializes the object
     PyAudioPacketizerOp(holoscan::Fragment* fragment,
+        const py::args& args,
         const std::string& wav_file,
         uint32_t chunk_size,
         bool is_udp_tx,
@@ -53,6 +56,7 @@ public:
             holoscan::Arg { "is_udp_tx", is_udp_tx },
             holoscan::Arg { "pool", pool } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -67,6 +71,7 @@ PYBIND11_MODULE(_audio_packetizer, m)
     py::class_<AudioPacketizerOp, PyAudioPacketizerOp, holoscan::Operator,
         std::shared_ptr<AudioPacketizerOp>>(m, "AudioPacketizerOp")
         .def(py::init<holoscan::Fragment*,
+                 const py::args&,
                  const std::string&,
                  uint32_t,
                  bool,

@@ -56,15 +56,17 @@ public:
     /**
      * python:
      *
-     * `def i2c_transaction(self: hemu.sensors.Vb1940Emulator, peripheral_address: int, write_bytes: List[int], read_bytes: List[int]) -> hemu.I2CStatus`
+     * `def i2c_transaction(self: hemu.sensors.Vb1940Emulator, peripheral_address: int, write_bytes: bytes, write_size: int, read_bytes: bytes, read_size: int) -> hemu.I2CStatus`
      *
      * @brief Receive and act on I2C transaction from HSBEmulator's I2C controller(s)
      * @param peripheral_address The address of the peripheral to transaction with
      * @param write_bytes The bytes to write to the peripheral
+     * @param write_size The size of the write bytes
      * @param read_bytes The bytes to read from the peripheral
+     * @param read_size The size of the read bytes
      * @return The status of the I2C transaction
      */
-    I2CStatus i2c_transaction(uint8_t peripheral_address, const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes) override;
+    I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override;
 
     /**
      * @brief Check if the Host application has set the sensor to streaming mode. It is expected that the host application does not send any commands that set the sensor to streaming mode if the sensor is not yet configured.
@@ -117,40 +119,37 @@ private:
     /**
      * @brief state machine callback for writes to the system up register
      */
-    I2CStatus system_up_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes);
+    I2CStatus system_up_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
      * @brief state machine callback for writes to the boot register
      */
-    I2CStatus boot_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes);
+    I2CStatus boot_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
      * @brief state machine callback for writes to the software standby register
      */
-    I2CStatus sw_stby_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes);
+    I2CStatus sw_stby_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
      * @brief state machine callback for writes to the streaming register
      */
-    I2CStatus streaming_reg(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes);
-
-    /**
-     * @brief Check if the write bytes from an i2c transaction are a register write operation
-     * @param write_bytes The bytes to check
-     * @return True if the write bytes are a write operation, false otherwise
-     */
-    bool is_write(const std::vector<uint8_t>& write_bytes);
-
-    /**
-     * @brief The set of I2C peripheral addresses associated with a Vb1940 sensor
-     */
-    std::set<uint8_t> i2c_addresses_;
+    I2CStatus streaming_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
      * @brief The map of register addresses to their corresponding state machine callback
      */
-    typedef I2CStatus (Vb1940Emulator::*i2c_callback_type)(const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes);
-    std::unordered_map<uint16_t, i2c_callback_type> callback_map_;
+    typedef I2CStatus (Vb1940Emulator::*i2c_callback_type)(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
+
+    static constexpr i2c_callback_type VB1940_CALLBACK_MAP[5] = {
+        &Vb1940Emulator::system_up_reg,
+        &Vb1940Emulator::boot_reg,
+        &Vb1940Emulator::sw_stby_reg,
+        &Vb1940Emulator::streaming_reg,
+        nullptr,
+    };
+
+    i2c_callback_type get_callback(uint16_t reg_addr);
 
     /**
      * @brief The memory map of the Vb1940Emulator

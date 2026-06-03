@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -41,8 +41,7 @@ void ArgusIspOp::setup(holoscan::OperatorSpec& spec)
     spec.param(pool_, "pool", "Pool", "Pool to allocate the output message.");
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName", "Name of the output tensor", std::string(""));
     spec.param(camera_index_, "camera_index", "CameraIndex", "Argus camera index number");
-
-    cuda_stream_handler_.define_params(spec);
+    spec.param(sensor_mode_index_, "sensor_mode_index", "SensorModeIndex", "Argus sensor mode index for the selected camera", 0u);
 }
 
 void ArgusIspOp::start()
@@ -63,7 +62,7 @@ void ArgusIspOp::start()
     argus_impl_->setup_camera_devices(camera_index_);
 
     // set sensormode.
-    uint32_t sensor_mode_index = 0;
+    const uint32_t sensor_mode_index = sensor_mode_index_.get();
     argus_impl_->set_sensor_mode_info(sensor_mode_index);
 
     // set reprocessing info
@@ -135,12 +134,6 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
 
     auto& entity = maybe_entity.value();
 
-    // get the CUDA stream from the input message
-    gxf_result_t stream_handler_result = cuda_stream_handler_.from_message(context.context(), entity);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
-    }
-
     const auto input_tensor = entity.get<holoscan::Tensor>();
     if (!input_tensor) {
         throw std::runtime_error("Tensor not found in message");
@@ -174,7 +167,9 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
+    // Get the CUDA stream from the input message if present, otherwise generate one.
+    // This stream will also be transmitted on the output port.
+    cudaStream_t cuda_stream = input.receive_cuda_stream();
 
     // Map the cuda pointer to the EGL frame
     size_t frame_index = frame_number_ % MaxNumberOfFrames;
@@ -267,7 +262,7 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     }
     // add the npp function
     NppStreamContext npp_stream_ctx_ {};
-    npp_stream_ctx_.hStream = cuda_stream_handler_.get_cuda_stream(context.context());
+    npp_stream_ctx_.hStream = cuda_stream;
 
     CUDA_MEMCPY2D pCopyParams;
     pCopyParams.srcY = 0u;
@@ -307,11 +302,6 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
         npp_stream_ctx_);
     if (status != NPP_SUCCESS) {
         throw std::runtime_error(fmt::format("Failed with \"{}\" to convert NV12 to RGB\n", static_cast<int>(status)));
-    }
-    // pass the CUDA stream to the output message
-    stream_handler_result = cuda_stream_handler_.to_message(out_message);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to add the CUDA stream to the outgoing messages");
     }
     // Emit the tensor
     auto result = holoscan::gxf::Entity(std::move(out_message.value()));

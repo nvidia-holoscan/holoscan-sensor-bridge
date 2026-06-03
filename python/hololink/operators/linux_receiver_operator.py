@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -73,6 +73,8 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         self._receiver = hololink_module.operators.LinuxReceiver(
             self._frame_memory,
             self._frame_size,
+            self._frame_size,
+            1,
             self._data_socket.fileno(),
             self.received_address_offset(),
         )
@@ -101,8 +103,8 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         # close the socket after the receiver thread stopped
         self._data_socket.close()
 
-    def _get_next_frame(self, timeout_ms):
-        ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms)
+    def _get_next_frame(self, timeout_ms, cuda_stream):
+        ok, receiver_metadata = self._receiver.get_next_frame(timeout_ms, cuda_stream)
         if not ok:
             return None
         application_metadata = {
@@ -122,6 +124,9 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
             self._bytes_written_metadata: receiver_metadata.bytes_written,
         }
         return application_metadata
+
+    def frames_ready(self):
+        return self._receiver.frames_ready()
 
     def _check_buffer_size(self, data_memory_size):
         receiver_buffer_size = self._data_socket.getsockopt(

@@ -38,6 +38,29 @@
 
 namespace hololink::common {
 
+std::string current_device_sm_arch()
+{
+    CUdevice device;
+    CudaCheck(cuCtxGetDevice(&device));
+    int major = 0;
+    int minor = 0;
+    CudaCheck(cuDeviceGetAttribute(&major, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MAJOR, device));
+    CudaCheck(cuDeviceGetAttribute(&minor, CU_DEVICE_ATTRIBUTE_COMPUTE_CAPABILITY_MINOR, device));
+    std::stringstream buf;
+    buf << "sm_" << major << minor;
+    return buf.str();
+}
+
+static bool has_arch_option(const std::vector<std::string>& options)
+{
+    for (const auto& option : options) {
+        if (option.find("--gpu-architecture=") == 0 || option.find("-arch=") == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
     const std::vector<std::string>& functions, const std::vector<std::string>& options)
 {
@@ -48,7 +71,16 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
         0, // numHeaders
         NULL, // headers
         NULL)); // includeNames
+    // NVRTC must target a real SM (sm_<m><n>) to emit CUBIN. We load CUBIN via
+    // cuModuleLoadDataEx below to bypass the driver's PTX->SASS JIT, which is
+    // rejected on R580.00 when the NVRTC toolchain is newer than the driver
+    // (CUDA_ERROR_UNSUPPORTED_PTX_VERSION). See NVBugs 6110136, 6059987.
+    std::string arch_option;
     std::vector<const char*> compile_options;
+    if (!has_arch_option(options)) {
+        arch_option = "--gpu-architecture=" + current_device_sm_arch();
+        compile_options.push_back(arch_option.c_str());
+    }
     for (auto&& option : options) {
         compile_options.push_back(option.c_str());
     }
@@ -64,16 +96,16 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
         buf << "Failed to compile: " << log.get();
         throw std::runtime_error(buf.str().c_str());
     }
-    // Obtain PTX from the program.
-    size_t ptxSize;
-    NvRTCCheck(nvrtcGetPTXSize(prog, &ptxSize));
-    std::unique_ptr<char[]> ptx(new char[ptxSize]);
-    NvRTCCheck(nvrtcGetPTX(prog, ptx.get()));
+    // Obtain CUBIN from the program (real-arch target required, set above).
+    size_t cubinSize;
+    NvRTCCheck(nvrtcGetCUBINSize(prog, &cubinSize));
+    std::unique_ptr<char[]> cubin(new char[cubinSize]);
+    NvRTCCheck(nvrtcGetCUBIN(prog, cubin.get()));
     // Destroy the program.
     NvRTCCheck(nvrtcDestroyProgram(&prog));
 
-    // Load the generated PTX and get a handle to the kernels
-    CudaCheck(cuModuleLoadDataEx(&module_, ptx.get(), 0, 0, 0));
+    // Load the generated CUBIN and get a handle to the kernels.
+    CudaCheck(cuModuleLoadDataEx(&module_, cubin.get(), 0, 0, 0));
     for (auto&& function : functions) {
         LaunchParams launch_params;
         CudaCheck(cuModuleGetFunction(&launch_params.function_, module_, function.c_str()));

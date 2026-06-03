@@ -17,7 +17,7 @@ include(pybind11_add_hololink_module)
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET sipl_capture
-    CLASS_NAME "SIPLCaptureOp"
+    CLASS_NAME "SIPLCaptureService,SIPLCameraOutputOp"
     IMPORT "import holoscan.core"
     SOURCES sipl_capture.cpp
 )

@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -77,7 +77,7 @@ LinuxCoeReceiver::LinuxCoeReceiver(CUdeviceptr cu_buffer,
     , local_(NULL)
     , available_(NULL)
     , busy_(NULL)
-    , cu_stream_(0)
+    , event_(0)
     , frame_ready_([](const LinuxCoeReceiver&) {})
     , frame_number_()
 {
@@ -103,9 +103,9 @@ LinuxCoeReceiver::LinuxCoeReceiver(CUdeviceptr cu_buffer,
     }
 
     // See get_next_frame.
-    CUresult cu_result = cuStreamCreate(&cu_stream_, CU_STREAM_NON_BLOCKING);
+    CUresult cu_result = cuEventCreate(&event_, CU_EVENT_DISABLE_TIMING);
     if (cu_result != CUDA_SUCCESS) {
-        throw std::runtime_error(fmt::format("cuStreamCreate failed, cu_result={}.", cu_result));
+        throw std::runtime_error(fmt::format("cuEventCreate failed, cu_result={}.", cu_result));
     }
 }
 
@@ -113,7 +113,7 @@ LinuxCoeReceiver::~LinuxCoeReceiver()
 {
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
-    cuStreamDestroy(cu_stream_);
+    cuEventDestroy(event_);
 }
 
 void LinuxCoeReceiver::run()
@@ -329,6 +329,15 @@ void LinuxCoeReceiver::signal()
         throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
     }
     ready_ = true;
+
+    // Stall on any pending use of this buffer, which shouldn't be the
+    // case.  If no call to get_next_frame has happened, then this returns
+    // immediately.
+    CUresult cu_result = cuEventSynchronize(event_);
+    if (cu_result != CUDA_SUCCESS) {
+        HSB_LOG_ERROR("cuEventSynchronize failed, cu_result={}", cu_result);
+    }
+
     r = pthread_cond_signal(&ready_condition_);
     if (r != 0) {
         throw std::runtime_error(fmt::format("pthread_cond_signal returned r={}.", r));
@@ -342,7 +351,7 @@ void LinuxCoeReceiver::signal()
     frame_ready_(this[0]);
 }
 
-bool LinuxCoeReceiver::get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetadata& metadata)
+bool LinuxCoeReceiver::get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetadata& metadata, CUstream cuda_stream)
 {
     bool r = wait(timeout_ms);
     if (r) {
@@ -355,12 +364,13 @@ bool LinuxCoeReceiver::get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetad
             // finishes before the pipeline uses the destination buffer.
             // Without this, it'd use the device stream instance which would
             // wait until the device was completely idle.
-            CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, cu_stream_);
+            CUresult cu_result = cuMemcpyHtoDAsync(cu_buffer_, busy_->memory_, cu_buffer_size_, cuda_stream);
             if (cu_result != CUDA_SUCCESS) {
                 HSB_LOG_ERROR("cuMemcpyHtoDAsync failed, cu_result={}", cu_result);
                 r = false;
             } else {
-                cu_result = cuStreamSynchronize(cu_stream_);
+                // With this, we wait for event_ before overwriting next time.
+                cu_result = cuEventRecord(event_, cuda_stream);
                 if (cu_result != CUDA_SUCCESS) {
                     HSB_LOG_ERROR("cuStreamSynchronize failed, cu_result={}", cu_result);
                     r = false;
@@ -374,6 +384,11 @@ bool LinuxCoeReceiver::get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetad
         }
     }
     return r;
+}
+
+bool LinuxCoeReceiver::frames_ready()
+{
+    return ready_;
 }
 
 bool LinuxCoeReceiver::wait(unsigned timeout_ms)

@@ -1,7 +1,7 @@
 {
     "cameraConfigs": [
         {
-            "name": "vb1940",
+            "name": "VB1940",
             "type": "CoE",
             "description": "VB1940 Camera Configuration - 2560x1984 30FPS Mode (Single Sensor)",
             "platform": "Vb1940",
@@ -23,7 +23,7 @@
                 "hsbSensorIndex": 0,
                 "hsb_id": 0,
                 "sensor": {
-                    "mac_address": "8c:1f:64:6d:70:03",
+                    "mac_address": "8c:1f:64:6d:70:e9",
                     "ip_address": "192.168.0.2"
                 }
             },
@@ -37,7 +37,7 @@
                         "cfa": "gbrg",
                         "embeddedTopLines": 1,
                         "embeddedBottomLines": 2,
-                        "inputFormat": "raw10packed",
+                        "inputFormat": "raw10tp",
                         "width": 2560,
                         "height": 1984,
                         "fps": 30.0,
@@ -51,7 +51,7 @@
         ],
         "transportSettings": [
         {
-            "name": "vb1940",
+            "name": "VB1940",
             "compatible_name": "HsbTransport",
             "type": "CoE",
             "description": "Transport settings for VB1940 camera",

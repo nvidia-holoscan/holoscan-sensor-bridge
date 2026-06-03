@@ -24,30 +24,32 @@
 #include <string>
 #include <tuple>
 
-#include <arpa/inet.h>
-#include <net/if.h>
-#include <netinet/in.h>
-
-#include <netinet/ip.h>
-#include <netinet/udp.h>
-#include <poll.h>
-#include <sys/ioctl.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
-#include "hololink/core/networking.hpp"
 #include "hsb_config.hpp"
 
+#ifdef __linux__
+#include <net/if.h>
+#else
+#define IFNAMSIZ 16
+#endif
+
 namespace hololink::emulation {
+
+#define DATA_SOURCE_UDP_PORT 12288u
+#define UDP_PACKET_SIZE 10240u
 
 #define IP_ADDRESS_MAX_BITS 32u
 #define IP_ADDRESS_DEFAULT_BITS 24u
 
-constexpr uint8_t IPADDRESS_HAS_ADDR = 0x1;
-constexpr uint8_t IPADDRESS_HAS_NETMASK = 0x2;
-constexpr uint8_t IPADDRESS_HAS_BROADCAST = 0x4;
-constexpr uint8_t IPADDRESS_IS_PTP = 0x40;
-constexpr uint8_t IPADDRESS_HAS_MAC = 0x80;
+#define IPADDRESS_HAS_ADDR 0x1
+#define IPADDRESS_HAS_NETMASK 0x2
+#define IPADDRESS_HAS_BROADCAST 0x4
+#define IPADDRESS_IS_PTP 0x40
+#define IPADDRESS_HAS_MAC 0x80
+
+#define HSB_PAGE_SIZE 128u
+
+#define IB_PSN_MASK 0xFFFFFu
+#define IB_PSN_SHIFT 12u
 
 /**
  * python (limited API):
@@ -61,12 +63,12 @@ constexpr uint8_t IPADDRESS_HAS_MAC = 0x80;
  * (defaulting to 255.255.255.255 if on interface that does not have an explicit broadcast, e.g. loopback).
  */
 typedef struct IPAddress {
-    std::string if_name; ///< Network interface name (e.g., "eth0", "lo")
-    in_addr_t ip_address { 0 }; ///< IP address in network byte order
-    in_addr_t subnet_mask { 0 }; ///< Subnet mask in network byte order
-    in_addr_t broadcast_address { 0 }; ///< Broadcast address in network byte order
-    hololink::core::MacAddress mac { 0 }; ///< MAC address of the interface
-    uint16_t port { hololink::DATA_SOURCE_UDP_PORT }; ///< UDP port number (defaults to DATA_SOURCE_UDP_PORT)
+    char if_name[IFNAMSIZ]; ///< Network interface name (e.g., "eth0", "lo")
+    uint32_t ip_address { 0 }; ///< IP address in network byte order
+    uint32_t subnet_mask { 0 }; ///< Subnet mask in network byte order
+    uint32_t broadcast_address { 0 }; ///< Broadcast address in network byte order
+    uint8_t mac[6] { 0 }; ///< MAC address of the interface
+    uint16_t port { DATA_SOURCE_UDP_PORT }; ///< UDP port number (defaults to DATA_SOURCE_UDP_PORT)
     uint8_t flags { 0 }; ///< Configuration flags indicating which fields are valid
     /**
      * @brief Configuration flags bitfield:
@@ -109,13 +111,6 @@ uint32_t get_broadcast_address(const IPAddress& ip_address);
  * @brief Disable broadcast configuration warning messages.
  */
 void DISABLE_BROADCAST_CONFIG_WARNING();
-
-/**
- * @brief Retrieve and set the MAC address for a network interface.
- * @param iface The IPAddress object to update with the MAC address
- * @param if_name The name of the network interface to query
- */
-void mac_from_if(IPAddress& iface, std::string const& if_name);
 
 } // namespace hololink::emulation
 

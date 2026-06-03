@@ -15,6 +15,7 @@
 
 # See README.md for detailed information.
 
+import gc
 import json
 import logging
 import logging.handlers
@@ -39,10 +40,10 @@ if False:
             self._socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             self._socket.bind((sender_ip, 0))
-            self._socket.connect((destination_ip, 514))
+            self._destination = (destination_ip, 514)
 
         def write(self, msg):
-            self._socket.send(msg.encode())
+            self._socket.sendto(msg.encode(), self._destination)
 
     udp_writer = UdpWriter(sender_ip="127.0.0.1", destination_ip="127.0.0.1")
     handler = logging.StreamHandler(stream=udp_writer)
@@ -85,6 +86,16 @@ def _hololink_session_finalizer():
 @pytest.fixture(scope="function", autouse=True)
 def hololink_session(request):
     request.addfinalizer(_hololink_session_finalizer)
+
+
+def _reactor_session_finalizer():
+    reactor = hololink_module.Reactor.get_reactor()
+    reactor.reset_framework()
+
+
+@pytest.fixture(scope="function", autouse=True)
+def reactor_session(request):
+    request.addfinalizer(_reactor_session_finalizer)
 
 
 # Produce a default list of COE interfaces.  For now
@@ -242,6 +253,18 @@ def pytest_addoption(parser):
         help="Include tests for Audio.",
     )
     parser.addoption(
+        "--pva",
+        action="store_true",
+        default=False,
+        help="Include tests for PVA CRC hardware (requires PVA SDK).",
+    )
+    parser.addoption(
+        "--fusa",
+        action="store_true",
+        default=False,
+        help="Include tests for FUSA.",
+    )
+    parser.addoption(
         "--emulator",
         action="store_true",
         default=False,
@@ -258,6 +281,28 @@ def pytest_addoption(parser):
         default=None,
         help="Path to the JSON configuration file to use, e.g. for SIPL capture.",
     )
+    parser.addoption(
+        "--cuda-subprocesses",
+        action="store_true",
+        default=False,
+        help="Allow multiple CUDA subprocesses to be used in tests.",
+    )
+    parser.addoption(
+        "--signal-generator",
+        action="store_true",
+        default=False,
+        help="Include tests for SignalGenerator.",
+    )
+    parser.addoption(
+        "--tx-hololink",
+        default="192.168.0.3",
+        help="IP address of TX Hololink board for signal generator tests.",
+    )
+    parser.addoption(
+        "--tx-ibv-name",
+        default=infiniband_interfaces[1] if len(infiniband_interfaces) >= 2 else None,
+        help="IBV device name used for TX in signal generator tests.",
+    )
 
 
 def pytest_collection_modifyitems(config, items):
@@ -266,7 +311,8 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_imx274" in item.keywords:
                 item.add_marker(skip_imx274)
-    if config.getoption("--unaccelerated-only"):
+    infiniband_interfaces = hololink_module.infiniband_devices()
+    if config.getoption("--unaccelerated-only") or (not infiniband_interfaces):
         skip_accelerated_networking = pytest.mark.skip(
             reason="Don't run network accelerated tests when --unaccelerated-only is specified."
         )
@@ -314,6 +360,13 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_hsb_nano" in item.keywords:
                 item.add_marker(skip_hsb_nano)
+    if not config.getoption("--cuda-subprocesses"):
+        skip_cuda_subprocesses = pytest.mark.skip(
+            reason="Tests only run in --cuda-subprocesses mode."
+        )
+        for item in items:
+            if "skip_unless_cuda_subprocesses" in item.keywords:
+                item.add_marker(skip_cuda_subprocesses)
     if not config.getoption("--vb1940"):
         skip_vb1940 = pytest.mark.skip(reason="Tests only run in --vb1940 mode.")
         for item in items:
@@ -350,6 +403,25 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_audio" in item.keywords:
                 item.add_marker(skip_audio)
+    if not config.getoption("--pva"):
+        skip_pva = pytest.mark.skip(
+            reason="Tests only run in --pva mode (requires PVA SDK and hardware)."
+        )
+        for item in items:
+            if "skip_unless_pva" in item.keywords:
+                item.add_marker(skip_pva)
+    if not config.getoption("--fusa"):
+        skip_fusa = pytest.mark.skip(reason="Tests only run in --fusa mode.")
+        for item in items:
+            if "skip_unless_fusa" in item.keywords:
+                item.add_marker(skip_fusa)
+    if not config.getoption("--signal-generator"):
+        skip_signal_generator = pytest.mark.skip(
+            reason="Tests only run in --signal-generator mode."
+        )
+        for item in items:
+            if "skip_unless_signal_generator" in item.keywords:
+                item.add_marker(skip_signal_generator)
 
 
 @pytest.fixture
@@ -412,6 +484,16 @@ def json_config(request):
 @pytest.fixture
 def audio_enable(request):
     return request.config.getoption("--audio")
+
+
+@pytest.fixture
+def tx_hololink_address(request):
+    return request.config.getoption("--tx-hololink")
+
+
+@pytest.fixture
+def tx_ibv_name(request):
+    return request.config.getoption("--tx-ibv-name")
 
 
 # given an interface name, return the current, first, IPv4 address in CIDR notation, if it has one or None if it does not.
@@ -505,3 +587,14 @@ def pytest_generate_tests(metafunc):
     if "scheduler" in metafunc.fixturenames:
         schedulers = metafunc.config.getoption("--schedulers")
         metafunc.parametrize("scheduler", schedulers)
+
+
+@pytest.fixture(autouse=True)
+def report_test_name(request):
+    test_name = request.node.name
+    hololink_module.hsb_log_info(f"Starting {test_name}")
+
+
+@pytest.fixture(autouse=True)
+def python_gc():
+    gc.collect()

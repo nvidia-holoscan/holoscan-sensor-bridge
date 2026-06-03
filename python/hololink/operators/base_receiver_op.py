@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +18,6 @@
 import logging
 import socket
 
-import cuda.bindings.driver as cuda
 import cupy as cp
 import holoscan
 
@@ -33,7 +32,7 @@ class BaseReceiverOp(holoscan.core.Operator):
         device=None,
         frame_size=None,
         frame_context=None,
-        trim=False,
+        trim=True,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
@@ -49,12 +48,18 @@ class BaseReceiverOp(holoscan.core.Operator):
         )
         self._metadata_size = hololink_module.METADATA_SIZE
         self._allocation_size = aligned_frame_size + self._metadata_size
-        self._frame_memory = self._allocate(self._allocation_size)
+        self._receiver_memory_descriptor = hololink_module.ReceiverMemoryDescriptor(
+            self._frame_context, self._allocation_size
+        )
+        self._frame_memory = self._receiver_memory_descriptor.get()
         #
         self._frame_ready_condition = holoscan.conditions.AsynchronousCondition(
             self.fragment, name="frame_ready_condition"
         )
         self.add_arg(self._frame_ready_condition)
+        self._frame_ready_condition.event_state = (
+            holoscan.conditions.AsynchronousEventState.WAIT
+        )
 
     def setup(self, spec):
         logging.info("setup")
@@ -82,9 +87,6 @@ class BaseReceiverOp(holoscan.core.Operator):
         self._hololink_channel.configure_roce(
             distal_memory_address_start, self._frame_size, page_size, pages, local_port
         )
-        self._frame_ready_condition.event_state = (
-            holoscan.conditions.AsynchronousEventState.EVENT_WAITING
-        )
         self._device.start()
 
     def received_address_offset(self):
@@ -98,6 +100,9 @@ class BaseReceiverOp(holoscan.core.Operator):
     def stop(self):
         self._device.stop()
         self._hololink_channel.unconfigure()
+        self._frame_ready_condition.event_state = (
+            holoscan.conditions.AsynchronousEventState.EVENT_NEVER
+        )
         self._stop()
         self._frame_size = 0
         del self._cp_frame
@@ -107,14 +112,21 @@ class BaseReceiverOp(holoscan.core.Operator):
         raise NotImplementedError()
 
     def compute(self, op_input, op_output, context):
+        cuda_stream = context.allocate_cuda_stream()
         timeout_ms = 1000
         # metadata is a dict or None
-        metadata = self._get_next_frame(timeout_ms)
+        metadata = self._get_next_frame(timeout_ms, cuda_stream)
         if not metadata:
             return self.timeout(op_input, op_output, context)
         self._frame_ready_condition.event_state = (
             holoscan.conditions.AsynchronousEventState.EVENT_WAITING
         )
+        if self.frames_ready():
+            # Undo the EVENT_WAITING if that would step on a background
+            # EVENT_DONE.
+            self._frame_ready_condition.event_state = (
+                holoscan.conditions.AsynchronousEventState.EVENT_DONE
+            )
         self._count += 1
         self._ok = True
         # Publish the metadata from get_next_frame out to the pipeline.
@@ -125,6 +137,7 @@ class BaseReceiverOp(holoscan.core.Operator):
             bytes_written = metadata.get("bytes_written", self._frame_size)
             if (bytes_written >= 0) and (bytes_written <= self._frame_size):
                 out = self._cp_frame[:bytes_written]
+        op_output.set_cuda_stream(cuda_stream, "output")
         op_output.emit({"": out}, "output")
 
     def timeout(self, op_input, op_output, context):
@@ -135,34 +148,13 @@ class BaseReceiverOp(holoscan.core.Operator):
             )
         return None
 
-    def _get_next_frame(self, timeout_ms):
+    def _get_next_frame(self, timeout_ms, cuda_stream):
         """Returns metadata: dict or None"""
         raise NotImplementedError()
 
-    def _allocate(self, size, flags=0):
-        (cu_result,) = cuda.cuInit(0)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        (cu_result,) = cuda.cuCtxSetCurrent(self._frame_context)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_result, cu_device = cuda.cuCtxGetDevice()
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_result, integrated = cuda.cuDeviceGetAttribute(
-            cuda.CUdevice_attribute.CU_DEVICE_ATTRIBUTE_INTEGRATED, cu_device
-        )
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        logging.trace(f"{integrated=}")
-        if integrated == 0:
-            # We're a discrete GPU device; so allocate using cuMemAlloc/cuMemFree
-            cu_result, device_deviceptr = cuda.cuMemAlloc(size)
-            assert cu_result == cuda.CUresult.CUDA_SUCCESS
-            return int(device_deviceptr)
-        # We're an integrated device (e.g. Tegra) so we must allocate
-        # using cuMemHostAlloc/cuMemFreeHost
-        cu_result, host_deviceptr = cuda.cuMemHostAlloc(size, flags)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_result, device_deviceptr = cuda.cuMemHostGetDevicePointer(host_deviceptr, 0)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        return int(device_deviceptr)
+    def frames_ready(self):
+        """Returns False if _get_next_frame might block."""
+        raise NotImplementedError()
 
     def frame_ready(self):
         self._frame_ready_condition.event_state = (

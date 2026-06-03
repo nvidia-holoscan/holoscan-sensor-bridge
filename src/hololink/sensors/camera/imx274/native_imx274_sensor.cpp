@@ -93,16 +93,19 @@ uint32_t NativeImx274Sensor::get_version() const
 uint8_t NativeImx274Sensor::get_register(uint16_t reg)
 {
     HSB_LOG_DEBUG("get_register(register={}(0x{:X}))", reg, reg);
-    i2c_expander_->configure(i2c_expander_configuration_);
 
     std::vector<uint8_t> write_bytes(2);
     core::Serializer serializer(write_bytes.data(), write_bytes.size());
     serializer.append_uint16_be(static_cast<uint16_t>(reg));
 
+    // Read one byte
     const uint32_t read_byte_count = 1;
 
-    // Read one byte
+    auto& i2c_lock = hololink_->i2c_lock();
+    i2c_lock.lock();
+    i2c_expander_->configure(i2c_expander_configuration_);
     auto reply = i2c_->i2c_transaction(I2C_ADDRESS, write_bytes, read_byte_count);
+    i2c_lock.unlock();
 
     // Deserialize the reply
     core::Deserializer deserializer(reply.data(), reply.size());
@@ -121,15 +124,17 @@ void NativeImx274Sensor::set_register(uint16_t reg, uint8_t value,
 {
     HSB_LOG_DEBUG("set_register(register={}(0x{:X}), value={}(0x{:X}))", reg, reg, value, value);
 
-    i2c_expander_->configure(i2c_expander_configuration_);
-
     std::vector<uint8_t> write_bytes(3);
     core::Serializer serializer(write_bytes.data(), write_bytes.size());
     serializer.append_uint16_be(static_cast<uint16_t>(reg));
     serializer.append_uint8(value);
 
     const uint32_t read_byte_count = 0;
+    auto& i2c_lock = hololink_->i2c_lock();
+    i2c_lock.lock();
+    i2c_expander_->configure(i2c_expander_configuration_);
     i2c_->i2c_transaction(I2C_ADDRESS, write_bytes, read_byte_count, timeout);
+    i2c_lock.unlock();
 }
 
 void NativeImx274Sensor::start()
@@ -151,19 +156,22 @@ void NativeImx274Sensor::configure_converter(std::shared_ptr<hololink::csi::CsiC
     uint32_t transmitted_line_bytes = converter->transmitted_line_bytes(pixel_format_, width_);
     uint32_t received_line_bytes = converter->received_line_bytes(transmitted_line_bytes);
 
-    // Account for 175 bytes of metadata preceding image data
-    start_byte += converter->received_line_bytes(175);
-
-    // Account for optical black lines based on pixel format
+    // Sensor metadata preceding image data, then converter-aligned. The metadata
+    // length is 175 bytes for RAW_10 and 175+35 = 210 bytes for RAW_12.
+    uint32_t embedded_data_bytes = 175;
+    uint32_t optical_black_lines = 0;
     if (pixel_format_ == hololink::csi::PixelFormat::RAW_10) {
         // 8 lines of optical black before real image data
-        start_byte += received_line_bytes * 8;
+        optical_black_lines = 8;
     } else if (pixel_format_ == hololink::csi::PixelFormat::RAW_12) {
         // 16 lines of optical black before real image data
-        start_byte += received_line_bytes * 16;
+        embedded_data_bytes += 35;
+        optical_black_lines = 16;
     } else {
         throw std::runtime_error("Incorrect pixel format for IMX274");
     }
+    start_byte += converter->received_line_bytes(embedded_data_bytes);
+    start_byte += received_line_bytes * optical_black_lines;
 
     // Configure the converter
     converter->configure(

@@ -347,6 +347,18 @@ void RoceTransmitterOp::start()
     // EventBasedScheduler.
     std::lock_guard lock(get_lock());
 
+    // ibverbs has some reentrancy problems with programs
+    // that use fork, which may happen in applications we're
+    // used in.
+    static bool ibv_fork_init_done = false;
+    if (!ibv_fork_init_done) {
+        int r = ibv_fork_init();
+        if (r != 0) {
+            THROW_ERROR("ibv_fork_init failed, r=" << r);
+        }
+        ibv_fork_init_done = true;
+    }
+
     // Create resource
     resource_ = std::make_unique<Resource>(ibv_name_.get(), ibv_port_.get(), buffer_size_.get(), queue_size_.get(), hololink_ip_.get(), ibv_qp_.get());
 

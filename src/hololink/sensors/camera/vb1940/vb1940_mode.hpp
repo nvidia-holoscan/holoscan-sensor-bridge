@@ -86,12 +86,14 @@ namespace vb1940_mode {
     extern const std::vector<std::pair<uint16_t, uint8_t>> VB1940_MODE_2560X1984_30FPS_SEQUENCE;
     extern const std::vector<std::pair<uint16_t, uint8_t>> VB1940_MODE_1920X1080_30FPS_SEQUENCE;
     extern const std::vector<std::pair<uint16_t, uint8_t>> VB1940_MODE_2560X1984_30FPS_8BIT_SEQUENCE;
+    extern const std::vector<std::pair<uint16_t, uint8_t>> VB1940_MODE_2560X1984_60FPS_SEQUENCE;
 
     enum Mode {
         VB1940_MODE_2560X1984_30FPS = 0,
         VB1940_MODE_1920X1080_30FPS = 1,
         VB1940_MODE_2560X1984_30FPS_8BIT = 2,
-        VB1940_MODE_COUNT = 3,
+        VB1940_MODE_2560X1984_60FPS = 3,
+        VB1940_MODE_COUNT = 4,
     };
 } // namespace vb1940_mode
 

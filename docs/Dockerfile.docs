@@ -2,11 +2,14 @@
 # to provide all the runtime dependencies needed by
 # the python api doc generator
 ARG CONTAINER_VERSION=invalid
+ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked"
+
 FROM $CONTAINER_VERSION
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-RUN apt-get update && apt-get install -y \
+RUN ${APT_CACHE_MOUNT} apt-get update && apt-get install -y \
     curl \
     latexmk \
     texlive-base \
@@ -17,7 +20,7 @@ RUN apt-get update && apt-get install -y \
 
 # Install up to date doxygen for better C++ parsing with a few cases like
 #previous configuration fails build - removed per wendell's instructions
-RUN apt-get update && apt-get -y install doxygen
+RUN ${APT_CACHE_MOUNT} apt-get update && apt-get -y install doxygen
 
 # Install Python dependencies
 RUN python3 -m pip install \

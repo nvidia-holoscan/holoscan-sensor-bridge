@@ -20,6 +20,7 @@ import struct
 import time
 from collections import OrderedDict
 from enum import Enum
+from typing import NamedTuple
 
 import hololink as hololink_module
 
@@ -57,6 +58,20 @@ class system_fsm_state(Enum):
     STREAMING = 0x4
     STALL = 0x5
     HALT = 0x6
+
+
+class Vb1940CsiFrameLayout(NamedTuple):
+    """CSI buffer layout for a converter.
+
+    Matches the geometry passed to ``converter.configure``.
+    """
+
+    start_byte: int
+    bytes_per_line: int
+    trailing_bytes: int
+    status_line_bytes: int
+    pixel_data_size: int
+    full_frame_size: int
 
 
 class boot_fsm_state(Enum):
@@ -754,6 +769,10 @@ class Vb1940Cam(hololink_module.Synchronizable):
             == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS_8BIT.value
         ):
             mode_list = vb1940_mode.vb1940_mode_2560X1984_30fps_8bit
+        elif (
+            mode_set.value == vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_60FPS.value
+        ):
+            mode_list = vb1940_mode.vb1940_mode_2560X1984_60fps
         else:
             logging.error(f"{mode_set} mode is not present.")
 
@@ -831,6 +850,34 @@ class Vb1940Cam(hololink_module.Synchronizable):
             self._height,
             self._pixel_format,
             trailing_bytes,
+        )
+
+    def get_csi_frame_layout(self, converter):
+        """Same CSI layout as :meth:`configure_converter` (for FUSA PVA/nvCOMP full-frame sizing)."""
+        start_byte = converter.receiver_start_byte()
+        transmitted_line_bytes = converter.transmitted_line_bytes(
+            self._pixel_format, self._width
+        )
+        received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
+        status_line_bytes = 0
+        if self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_8:
+            status_line_bytes = int(self._width)
+        elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_10:
+            status_line_bytes = int(self._width * 10 / 8)
+        elif self._pixel_format == hololink_module.sensors.csi.PixelFormat.RAW_12:
+            status_line_bytes = int(self._width * 12 / 8)
+        status_line_bytes = converter.received_line_bytes(status_line_bytes)
+        start_byte += status_line_bytes
+        trailing_bytes = status_line_bytes * 2
+        pixel_data_size = received_line_bytes * self._height
+        full_frame_size = start_byte + pixel_data_size + trailing_bytes
+        return Vb1940CsiFrameLayout(
+            start_byte=start_byte,
+            bytes_per_line=received_line_bytes,
+            trailing_bytes=trailing_bytes,
+            status_line_bytes=status_line_bytes,
+            pixel_data_size=pixel_data_size,
+            full_frame_size=full_frame_size,
         )
 
     def pixel_format(self):

@@ -189,7 +189,7 @@ public:
      */
     static std::shared_ptr<EnumerationStrategy> set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy);
 
-    static EnumerationStrategy& get_uuid_strategy(std::string uuid);
+    static std::shared_ptr<EnumerationStrategy> get_uuid_strategy(std::string uuid);
 
     /**
      * Configure an AF_INET SOCK_DGRAM socket
@@ -208,11 +208,9 @@ private:
     const uint32_t bootp_request_port_;
     const uint32_t bootp_reply_port_;
 
-    // Static map to store UUID strategies
-    static std::map<std::string, std::shared_ptr<EnumerationStrategy>> uuid_strategies_;
-
-    // Static ReactorEnumerator instance
-    static std::shared_ptr<ReactorEnumerator> reactor_enumerator_;
+    // Static map to store UUID strategies (uses construct-on-first-use idiom to avoid static destruction order fiasco)
+    using EnumerationStrategyMap = std::map<std::string, std::shared_ptr<EnumerationStrategy>>;
+    static std::shared_ptr<EnumerationStrategyMap> uuid_strategies();
 };
 
 /**

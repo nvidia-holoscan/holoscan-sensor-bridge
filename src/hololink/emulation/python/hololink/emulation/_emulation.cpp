@@ -21,7 +21,7 @@
 #include "hololink/emulation/hsb_config.hpp"
 #include "hololink/emulation/hsb_emulator.hpp"
 #include "hololink/emulation/i2c_interface.hpp"
-#include "hololink/emulation/linux_data_plane.hpp"
+#include "hololink/emulation/rocev2_data_plane.hpp"
 #include <cstring>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
@@ -60,7 +60,7 @@ public:
     /* Trampoline (need one for each virtual function) */
     void update_metadata() override
     {
-        PYBIND11_OVERRIDE_PURE(void, DataPlane, update_metadata, /* comma for no arguments */);
+        PYBIND11_OVERRIDE(void, DataPlane, update_metadata, /* comma for no arguments */);
     }
 };
 
@@ -76,9 +76,9 @@ public:
     using I2CPeripheral::I2CPeripheral;
 
     // Trampoline (need one for each virtual function)
-    I2CStatus i2c_transaction(uint8_t peripheral_address, const std::vector<uint8_t>& write_bytes, std::vector<uint8_t>& read_bytes) override
+    I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override
     {
-        PYBIND11_OVERRIDE_PURE(I2CStatus, I2CPeripheral, i2c_transaction, peripheral_address, write_bytes, read_bytes);
+        PYBIND11_OVERRIDE_PURE(I2CStatus, I2CPeripheral, i2c_transaction, peripheral_address, write_bytes, write_size, read_bytes, read_size);
     }
 
     void start() override
@@ -132,7 +132,7 @@ PYBIND11_MODULE(_emulation, m)
                 return std::string(reinterpret_cast<const char*>(self.uuid), BOARD_VERSION_SIZE);
             },
             [](HSBConfiguration& self, const std::string& uuid_str) {
-                if (hsb_config_set_uuid(self, uuid_str.c_str()) != 0) {
+                if (hsb_config_set_uuid(&self, uuid_str.c_str()) != 0) {
                     throw std::runtime_error("Invalid UUID format");
                 }
             })
@@ -166,11 +166,49 @@ PYBIND11_MODULE(_emulation, m)
     // Helper function for setting UUID in HSBConfiguration
     m.def("hsb_config_set_uuid", &hsb_config_set_uuid, py::arg("config"), py::arg("uuid_str"), "Set UUID in HSBConfiguration from string");
 
+    py::class_<AddressValuePair>(m, "AddressValuePair",
+        "Address-value pair used by control-plane read/write callbacks. Callbacks receive a list of these.")
+        .def(py::init<>())
+        .def_readwrite("address", &AddressValuePair::address, "Register address")
+        .def_readwrite("value", &AddressValuePair::value, "Register value");
+
+    auto register_read_callback_trampoline = [](HSBEmulator& self, uint32_t start_address, uint32_t end_address, py::function callback, py::object ctxt) {
+        auto wrapper = [callback, ctxt](void* /* ctxt_ptr */, AddressValuePair* addr_val, int count) -> int {
+            py::list pairs;
+            for (int i = 0; i < count; ++i) {
+                pairs.append(py::cast(addr_val[i]));
+            }
+            py::object result_obj = callback(ctxt, pairs);
+            int result = result_obj.cast<int>();
+            if (result > 0) {
+                for (int i = 0; i < result && i < count; ++i) {
+                    addr_val[i].value = pairs[i].attr("value").cast<uint32_t>();
+                }
+            }
+            return result;
+        };
+        return self.register_read_callback(start_address, end_address, wrapper, nullptr);
+    };
+
+    auto register_write_callback_trampoline = [](HSBEmulator& self, uint32_t start_address, uint32_t end_address, py::function callback, py::object ctxt) {
+        auto wrapper = [callback, ctxt](void* /* ctxt_ptr */, AddressValuePair* addr_val, int count) -> int {
+            py::list pairs;
+            for (int i = 0; i < count; ++i) {
+                pairs.append(py::cast(addr_val[i]));
+            }
+            py::object result_obj = callback(ctxt, pairs);
+            return result_obj.cast<int>();
+        };
+        return self.register_write_callback(start_address, end_address, wrapper, nullptr);
+    };
+
     py::class_<HSBEmulator>(m, "HSBEmulator")
         .def(py::init<const HSBConfiguration&>(), py::arg("config") = HSB_EMULATOR_CONFIG)
         .def("start", &HSBEmulator::start, "start HSB emulator")
         .def("stop", &HSBEmulator::stop, "stop HSB emulator")
         .def("is_running", &HSBEmulator::is_running, "check if HSB emulator is running")
+        .def("register_read_callback", register_read_callback_trampoline, "register a read callback for a range of addresses", py::arg("start_address"), py::arg("end_address"), py::arg("callback"), py::arg("ctxt") = py::none())
+        .def("register_write_callback", register_write_callback_trampoline, "register a write callback for a range of addresses", py::arg("start_address"), py::arg("end_address"), py::arg("callback"), py::arg("ctxt") = py::none())
         .def("get_i2c", &HSBEmulator::get_i2c, "get I2CController from HSB emulator", py::return_value_policy::reference)
         .def("write", &HSBEmulator::write, "write to HSB emulator")
         .def("read", &HSBEmulator::read, "read from HSB emulator");
@@ -185,9 +223,9 @@ PYBIND11_MODULE(_emulation, m)
         .def("update_metadata", &DataPlanePublicist::update_metadata, "update DataPlane metadata")
         .def("packetizer_enabled", &DataPlane::packetizer_enabled, "check if packetizer is enabled");
 
-    py::class_<LinuxDataPlane, DataPlane>(m, "LinuxDataPlane")
+    py::class_<RoCEv2DataPlane, DataPlane>(m, "RoCEv2DataPlane")
         .def(py::init<HSBEmulator&, IPAddress, uint8_t, uint8_t>(), py::arg("hsb_emulator"), py::arg("source_ip"), py::arg("data_plane_id"), py::arg("sensor_id"));
-    /* not including update_metadata in a trampoline class for LinuxDataPlanebecause we are not allowing subclassing extensions of DataPlane subclasses yet */
+    /* not including update_metadata in a trampoline class for RoCEv2DataPlane because we are not allowing subclassing extensions of DataPlane subclasses yet */
 
     py::class_<COEDataPlane, DataPlane>(m, "COEDataPlane")
         .def(py::init<HSBEmulator&, IPAddress, uint8_t, uint8_t>(), py::arg("hsb_emulator"), py::arg("source_ip"), py::arg("data_plane_id"), py::arg("sensor_id"));

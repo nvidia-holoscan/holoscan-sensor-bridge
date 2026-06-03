@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,10 +15,25 @@
 
 include(pybind11_add_hololink_module)
 
-add_subdirectory(camera)
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_sensors_python
+    DESTINATION sensors
+    FILES
+        __init__.py
+        csi.py
+        imx477.py
+        v4l2_ids.py
+)
+
 
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET hololink_sensor
     CLASS_NAME "Sensor"
     SOURCES sensors.cpp
 )
+
+add_subdirectory(camera)
+add_subdirectory(ecam0m30tof)
+add_subdirectory(imx274)
+add_subdirectory(imx715)
+add_subdirectory(vb1940)

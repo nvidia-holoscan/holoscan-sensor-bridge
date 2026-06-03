@@ -15,6 +15,12 @@
 
 include(pybind11_add_hololink_module)
 
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_core_files
+    DESTINATION hololink_core
+    FILES __init__.py
+)
+
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET hololink_core
     CLASS_NAME "ArpWrapper,Deserializer,Reactor,Serializer"

@@ -16,7 +16,9 @@
  */
 
 #include <hololink/core/arp_wrapper.hpp>
+#include <hololink/core/data_channel.hpp>
 #include <hololink/core/deserializer.hpp>
+#include <hololink/core/named_lock.hpp>
 #include <hololink/core/networking.hpp>
 #include <hololink/core/reactor.hpp>
 #include <hololink/core/serializer.hpp>
@@ -181,8 +183,10 @@ PYBIND11_MODULE(_hololink_core, m)
                 }
                 return py::memoryview::from_memory(pointer, sizeof(uint8_t) * n);
             },
-            "n"_a)
+            "n"_a,
+            py::keep_alive<0, 1>())
         .def("position", &Deserializer::position)
+        .def("remaining", &Deserializer::remaining)
         .def("reset", &Deserializer::reset, "position"_a = 0);
 
     py::class_<WrappedSerializer>(m, "Serializer")
@@ -323,7 +327,8 @@ PYBIND11_MODULE(_hololink_core, m)
             py::call_guard<py::gil_scoped_release>(), "when"_a, "callback"_a, "Add an alarm to fire at a specific time")
         .def("cancel_alarm", &Reactor::cancel_alarm, "handle"_a, "Cancel a previously scheduled alarm")
         .def("stop", &Reactor::stop, "Stop the reactor (gracefully)")
-        .def("is_current_thread", &Reactor::is_current_thread, "Check if the current thread is the reactor thread");
+        .def("is_current_thread", &Reactor::is_current_thread, "Check if the current thread is the reactor thread")
+        .def("reset_framework", &Reactor::reset_framework, "Check for lingering handlers");
 
     // AlarmHandle type (shared_ptr<AlarmEntry>)
     py::class_<Reactor::AlarmEntry, std::shared_ptr<Reactor::AlarmEntry>>(m, "AlarmHandle")
@@ -335,6 +340,23 @@ PYBIND11_MODULE(_hololink_core, m)
         .def_readonly("sequence", &Reactor::AlarmEntry::sequence, "Sequence number for ordering");
 
     m.def("gettid", &gettid, "Provide the thread ID");
+
+    py::class_<hololink::ReceiverMemoryDescriptor>(m, "ReceiverMemoryDescriptor")
+        .def(py::init([](int64_t context, size_t size) {
+            return std::make_unique<hololink::ReceiverMemoryDescriptor>(
+                reinterpret_cast<CUcontext>(context), size);
+        }),
+            "context"_a, "size"_a)
+        .def("get", &hololink::ReceiverMemoryDescriptor::get,
+            "Get the CUdeviceptr for the allocated memory");
+
+    py::class_<hololink::NamedLock>(m, "NamedLock")
+        .def(py::init([](const std::string& name) {
+            return new hololink::NamedLock(name);
+        }),
+            "name"_a)
+        .def("lock", &hololink::NamedLock::lock, "Block until this lock is acquired", py::call_guard<py::gil_scoped_release>())
+        .def("unlock", &hololink::NamedLock::unlock, "Release this lock");
 
 } // PYBIND11_MODULE
 

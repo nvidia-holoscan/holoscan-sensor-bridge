@@ -164,30 +164,43 @@ These ports are only available if `I2C_INST` is defined in "HOLOLINK_def.svh"
 
 1. N=`I2C_INST`
 
-Table 14 GPIO Ports
+Table 14 UART ports
 
-| **Signal Name**          | **Direction** | **Description**                      |
-| ------------------------ | ------------- | ------------------------------------ |
-| i_gpio[N-1:0]<sup>1<sup> | Input         | GPIO In. Synchronized to “i_apb_clk” |
-| o_gpio[N-1:0]<sup>1<sup> | Output        | GPIO Out. Synchronous to “i_apb_clk” |
+These ports are only available if `UART_INST` is defined in "HOLOLINK_def.svh"
+
+| **Signal Name** | **Direction** | **Description**      |
+| --------------- | ------------- | -------------------- |
+| i_uart_rx       | Input         | UART Receive         |
+| i_uart_cts      | Input         | UART Clear To Send   |
+| o_uart_tx       | Output        | UART Transmit        |
+| o_uart_rts      | Output        | UART Request to Send |
+| o_uart_busy     | Output        | UART Busy            |
+
+Table 15 GPIO Ports
+
+| **Signal Name**              | **Direction** | **Description**                                                                                                          |
+| ---------------------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| i_gpio[N-1:0]<sup>1<sup>     | Input         | GPIO In. Synchronous to “i_apb_clk”                                                                                      |
+| o_gpio[N-1:0]<sup>1<sup>     | Output        | GPIO Out. Synchronous to “i_apb_clk”                                                                                     |
+| o_gpio_dir[N-1:0]<sup>1<sup> | Output        | GPIO Direction. 0=GPIO Output, 1=GPIO Input. User can tri-state the GPIO pin using this port. Synchronous to “i_apb_clk” |
 
 1. N=`GPIO_INST`
 
-Table 15 Sensor Reset Port
+Table 16 Sensor Reset Port
 
 | **Signal Name**     | **Direction** | **Description**                                                                          |
 | ------------------- | ------------- | ---------------------------------------------------------------------------------------- |
 | o_sw_sen_rst [31:0] | Output        | Register Controlled Reset. Connect to on-board sensor reset pin                          |
 | o_sw_sys_rst        | Output        | Register controlled self-clearing reset. Can be used to reset blocks, such as PCS block. |
 
-Table 16 PTP Clock and Reset
+Table 17 PTP Clock and Reset
 
 | **Signal Name** | **Direction** | **Description** |
 | --------------- | ------------- | --------------- |
 | i_ptp_clk       | Input         | PTP Clock       |
 | o_ptp_rst       | Output        | PTP Reset       |
 
-Table 17 Internal PTP Port
+Table 18 Internal PTP Port
 
 These ports are only available if `EXT_PTP` is NOT defined in "HOLOLINK_def.svh". PTP
 module is instantiated within the HSB IP and is used to synchronize and timestamp.
@@ -198,7 +211,7 @@ module is instantiated within the HSB IP and is used to synchronize and timestam
 | o_ptp_nanosec [31:0] | Output        | PTP Nanoseconds Field per PTP1588-2019 v2 spec. Synchronous to i_ptp_clk |
 | o_pps                | Output        | Pulse Per Second. Synchronous to i_ptp_clk                               |
 
-Table 18 External PTP Port
+Table 19 External PTP Port
 
 These ports are only available if `EXT_PTP` is defined in "HOLOLINK_def.svh". If the
 Ethernet MAC IP has built-in PTP feature, that can be used to pass the timestamp to the

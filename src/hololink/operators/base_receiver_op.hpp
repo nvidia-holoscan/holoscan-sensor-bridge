@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -20,6 +20,7 @@
 #ifndef SRC_HOLOLINK_OPERATORS_BASE_RECEIVER_OP
 #define SRC_HOLOLINK_OPERATORS_BASE_RECEIVER_OP
 
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <tuple>
@@ -29,6 +30,7 @@
 #include <holoscan/holoscan.hpp>
 
 #include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/data_channel.hpp>
 #include <hololink/core/metadata.hpp>
 #include <hololink/core/networking.hpp>
 
@@ -37,24 +39,6 @@ class DataChannel;
 } // namespace hololink
 
 namespace hololink::operators {
-
-class ReceiverMemoryDescriptor {
-public:
-    /**
-     * Allocate a region of GPU memory which will be page
-     * aligned and freed on destruction.
-     */
-    explicit ReceiverMemoryDescriptor(CUcontext context, size_t size);
-    ReceiverMemoryDescriptor() = delete;
-    ~ReceiverMemoryDescriptor();
-
-    CUdeviceptr get() { return mem_; };
-
-protected:
-    common::UniqueCUdeviceptr deviceptr_;
-    common::UniqueCUhostptr host_deviceptr_;
-    CUdeviceptr mem_;
-};
 
 class BaseReceiverOp : public holoscan::Operator {
 public:
@@ -75,6 +59,8 @@ protected:
     holoscan::Parameter<CUcontext> frame_context_;
     holoscan::Parameter<size_t> frame_size_;
     holoscan::Parameter<bool> trim_;
+    holoscan::Parameter<bool> use_frame_ready_condition_;
+
     std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
     uint64_t frame_count_;
 
@@ -82,16 +68,18 @@ protected:
 
     virtual void start_receiver() = 0;
     virtual void stop_receiver() = 0;
-    virtual std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms) = 0;
+    virtual std::tuple<CUdeviceptr, std::shared_ptr<Metadata>> get_next_frame(double timeout_ms, CUstream cuda_stream) = 0;
     virtual std::tuple<std::string, uint32_t> local_ip_and_port();
     virtual void timeout(holoscan::InputContext& input, holoscan::OutputContext& output,
         holoscan::ExecutionContext& context);
+    virtual bool frames_ready() = 0; // Returns false if get_next_frame might block.
 
     // Subclasses call this in order to queue up a call to compute.
     void frame_ready();
 
 private:
     bool ok_ = false;
+    std::atomic<bool> running_ = false;
 };
 
 } // namespace hololink::operators

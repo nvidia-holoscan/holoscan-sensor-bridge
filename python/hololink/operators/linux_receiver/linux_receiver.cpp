@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -40,16 +40,18 @@ PYBIND11_MODULE(_linux_receiver, m)
     // NOTE: pybind11 never implicitly release the GIL (see https://pybind11.readthedocs.io/en/stable/advanced/misc.html#global-interpreter-lock-gil),
     //       therefore for blocking function explicitly release the GIL using `py::call_guard<py::gil_scoped_release>()`.
     py::class_<LinuxReceiver>(m, "LinuxReceiver")
-        .def(py::init<CUdeviceptr, size_t, int, uint64_t>(), "cu_buffer"_a, "cu_buffer_size"_a, "socket"_a, "received_address_offset"_a)
+        .def(py::init<CUdeviceptr, size_t, size_t, unsigned, int, uint64_t, unsigned>(), "cu_buffer"_a, "cu_buffer_size"_a,
+            "cu_page_size"_a, "pages"_a, "socket"_a, "received_address_offset"_a, "queue_size"_a = 1)
         .def("run", &LinuxReceiver::run, py::call_guard<py::gil_scoped_release>())
         .def("close", &LinuxReceiver::close)
         .def(
-            "get_next_frame", [](LinuxReceiver& self, unsigned timeout_ms) {
+            "get_next_frame", [](LinuxReceiver& self, unsigned timeout_ms, intptr_t cuda_stream) {
                 LinuxReceiverMetadata metadata;
-                bool success = self.get_next_frame(timeout_ms, metadata);
+                bool success = self.get_next_frame(timeout_ms, metadata, reinterpret_cast<CUstream>(cuda_stream));
                 return std::make_tuple(success, metadata);
             },
-            py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a)
+            py::call_guard<py::gil_scoped_release>(), "timeout_ms"_a, "cuda_stream"_a)
+        .def("frames_ready", &LinuxReceiver::frames_ready)
         .def("get_qp_number", &LinuxReceiver::get_qp_number)
         .def("get_rkey", &LinuxReceiver::get_rkey)
         .def("set_frame_ready", &LinuxReceiver::set_frame_ready, "frame_ready"_a);
@@ -66,6 +68,7 @@ PYBIND11_MODULE(_linux_receiver, m)
         .def_readonly("packets_dropped", &LinuxReceiverMetadata::packets_dropped)
         .def_readonly("received_s", &LinuxReceiverMetadata::received_s)
         .def_readonly("received_ns", &LinuxReceiverMetadata::received_ns)
+        .def_readonly("frame_memory", &LinuxReceiverMetadata::frame_memory)
         .def_property_readonly("timestamp_s", [](LinuxReceiverMetadata& me) {
             return me.frame_metadata.timestamp_s;
         })

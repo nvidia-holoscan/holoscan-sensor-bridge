@@ -134,6 +134,13 @@ namespace core {
          */
         bool is_current_thread() const;
 
+        /**
+         * Called only internally by Hololink::reset_framework to
+         * cause an error if there are any handlers still attached
+         * to this reactor.
+         */
+        void reset_framework();
+
     private:
         /**
          * @brief Main reactor loop (runs in background thread)

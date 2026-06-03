@@ -22,3 +22,5 @@ tags
 *.pcap
 *.deb
 configurator/*
+# Docker build environment files
+docker/*

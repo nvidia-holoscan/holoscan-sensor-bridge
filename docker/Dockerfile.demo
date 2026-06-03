@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
@@ -16,55 +18,57 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_VERSION=invalid
+ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt,sharing=locked"
+
 FROM ${CONTAINER_VERSION} AS base
 
 # build container
 FROM base AS builder
 
-RUN apt-get update \
-    && apt-get install -y python3-setuptools \
-    && rm -rf /var/lib/apt/lists/*
+# Creates a container copy of the HoloLink source code without sharing a build volume.
+COPY . /opt/hololink
+WORKDIR /opt/hololink
 
-ADD . /opt/hololink/
+# RoCE receiver: GPU VRAM frame buffers require working GPUDirect RDMA.
+# Set OFF via docker/build.sh --disable-roce-gpu-vram when the PCIe path does not support it.
+ARG HOLOLINK_ROCE_USE_GPU_VRAM=ON
 
 # See build.sh for why INSTALL_ENVIRONMENT is here.
 ARG INSTALL_ENVIRONMENT=""
-RUN cd /opt/hololink/python \
-    && $INSTALL_ENVIRONMENT pip3 wheel -v .
-
-# Build C++ tools
-RUN apt-get update \
-    && apt-get install -y build-essential cmake \
-    && rm -rf /var/lib/apt/lists/*
+RUN cd python \
+    && env HOLOLINK_ROCE_USE_GPU_VRAM=${HOLOLINK_ROCE_USE_GPU_VRAM} \
+        $INSTALL_ENVIRONMENT pip3 wheel -v .
 
 # Build tools with CMake
-RUN cd /opt/hololink \
-    && mkdir -p build \
-    && cd build \
-    && cmake -DHOLOLINK_BUILD_ONLY_NATIVE=ON .. \
-    && make -j$(nproc) \
-    && make install DESTDIR=/opt/hololink/tools
+RUN cmake -S . -B build -G Ninja -D HOLOLINK_BUILD_ONLY_NATIVE=ON
+RUN cmake --build build -j
+RUN cmake --install build --prefix /opt/hololink/tools
 
 # demo container
 FROM base AS demo
 
-RUN python3 -m pip install --upgrade pip
-RUN pip3 install pytest pytest-timeout
+RUN python3 -m pip install --no-cache-dir --upgrade pip
 
-# net-tools gives us the "arp" command
-# iputils-ping gives us the "ping" command
-RUN apt-get update \
-    && apt-get install -y net-tools iputils-ping iproute2 \
+# pytest: for Python testing
+# pytest-timeout: for test timeouts
+# pyserial: for UART tests (e.g. test_uart_ftdi)
+RUN pip3 install --no-cache-dir pytest pytest-timeout pyserial
+
+# python3-requests: for Python test HTTP requests
+# python3-yaml: for Python test YAML parsing
+# libnvinfer-bin (and dependencies): for tensorrt examples. Done here to reduce diskspace pressure on prototype image
+RUN ${APT_CACHE_MOUNT} apt-get update \
+    && apt-get install -y \
+        python3-requests \
+        python3-yaml \
+        libnvinfer-bin \
     && rm -rf /var/lib/apt/lists/*
 
-RUN apt-get update \
-    && apt-get install -y python3-requests python3-yaml \
-    && rm -rf /var/lib/apt/lists/*
-
-# install the wheel we build before
+# Install the HoloLink Python wheel built above
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
 RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \
     && pip3 install ${WHEEL}
 
-# Install the C++ tools
-COPY --from=builder /opt/hololink/tools/usr/local/ /usr/local/
+# Install the C++ tools built above
+COPY --from=builder /opt/hololink/tools/ /usr/local/

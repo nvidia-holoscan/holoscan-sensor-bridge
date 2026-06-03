@@ -13,7 +13,13 @@ cd "$SCRIPT_DIR" || exit
 #EXP_Q='--expression-q=sin(2*PI*x)'
 #IQ_EXPRESSIONS="$EXP_I $EXP_Q"
 
+shopt -s nullglob
 LC_COLLATE=C INFINIBANDS=(/sys/class/infiniband/*)
+shopt -u nullglob
+if [ ${#INFINIBANDS[@]} -lt 2 ]; then
+    echo "Error: at least 2 InfiniBand devices required, found ${#INFINIBANDS[@]}" >&2
+    exit 1
+fi
 # The RoCE interfaces used for the TX and RX
 TX_INTERFACE=`basename ${INFINIBANDS[1]}`
 RX_INTERFACE=`basename ${INFINIBANDS[0]}`

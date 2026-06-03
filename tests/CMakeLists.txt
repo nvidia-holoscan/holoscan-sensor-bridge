@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,9 +12,6 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# Enable testing for the current directory and below
-enable_testing()
 
 # Find or fetch gtest
 include(hololink_deps/gtest)
@@ -65,27 +62,40 @@ endfunction()
 
 # ##################################################################################################
 # * core tests ----------------------------------------------------------------------------------
-ConfigureTest(
-    iq_encoder_decoder_test
-  SOURCES
-    iq_encoder_decoder_test.cpp
-  LINK_LIBRARIES
-    hololink::operators::iq_dec
-    hololink::operators::iq_enc
-)
+if (HOLOLINK_BUILD_ROCE)
+  ConfigureTest(
+      hololink_iq_encoder_decoder_test
+    SOURCES
+      iq_encoder_decoder_test.cpp
+    LINK_LIBRARIES
+      hololink::operators::iq_dec
+      hololink::operators::iq_enc
+  )
 
-ConfigureTest(
-    signal_generator_test
-  SOURCES
-    signal_generator_test.cpp
-  LINK_LIBRARIES
-    hololink::operators::sig_gen
-)
+  ConfigureTest(
+      hololink_signal_generator_test
+    SOURCES
+      signal_generator_test.cpp
+    LINK_LIBRARIES
+      hololink::operators::sig_gen
+  )
 
-ConfigureTest(
-    roce_transmitter_test
-  SOURCES
-  roce_transmitter_test.cpp
-  LINK_LIBRARIES
-    hololink::operators::roce_transmitter
-)
+  ConfigureTest(
+      hololink_roce_transmitter_test
+    SOURCES
+      roce_transmitter_test.cpp
+    LINK_LIBRARIES
+      hololink::operators::roce_transmitter
+  )
+  set_tests_properties(hololink_roce_transmitter_test PROPERTIES
+    SKIP_REGULAR_EXPRESSION "Failed to find GID with IP based RoCE V2|No RoCE-capable InfiniBand device available"
+  )
+
+  if(HOLOLINK_BUILD_PYTHON)
+    add_test(
+      NAME hololink_python_basic_test
+      COMMAND python3 -m pytest -vv -s
+      WORKING_DIRECTORY ${hololink_SOURCE_DIR}
+    )
+  endif() # HOLOLINK_BUILD_PYTHON
+endif() # HOLOLINK_BUILD_ROCE

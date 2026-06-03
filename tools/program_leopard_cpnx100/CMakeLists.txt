@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -36,6 +36,7 @@ set_target_properties(program_leopard_cpnx100 PROPERTIES
 target_link_libraries(program_leopard_cpnx100
     PRIVATE
         hololink::core
+        traditional_peripherals
         yaml-cpp
         CURL::libcurl
         OpenSSL::SSL

@@ -16,6 +16,13 @@
 # we don't expose the C++ interface of the operator yet, therefore link
 # statically
 
+# get the L4T_MAJ_VER from the sipl_api.cmake where it is exposed
+include(sipl_api)
+if(L4T_MAJ_VER LESS 39)
+    message(FATAL_ERROR
+        "ArgusIspOp is not compatible with L4T ${L4T_MAJ_VER}. Reconfigure with -DHOLOLINK_BUILD_ARGUS_ISP=OFF")
+endif()
+
 add_library(argus_isp STATIC
   argus_impl.cpp
   argus_isp.cpp

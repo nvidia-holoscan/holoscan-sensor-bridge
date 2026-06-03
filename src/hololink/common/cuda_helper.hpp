@@ -42,6 +42,18 @@ struct fmt::formatter<CUresult> : fmt::formatter<int> {
 namespace hololink::common {
 
 /**
+ * Returns the compute-capability arch string for the device attached to the
+ * current CUDA context, e.g. "sm_90", "sm_100", "sm_110". Used to target
+ * NVRTC CUBIN emission at a specific SM so we bypass the driver's PTX JIT
+ * (required on platforms like R580.00 where PTX from newer NVRTC toolchains
+ * is rejected with CUDA_ERROR_UNSUPPORTED_PTX_VERSION).
+ *
+ * \warning The SM string reflects whichever device is bound to the active
+ * context at the call site. Does not currently support multi-GPU scenarios.
+ */
+std::string current_device_sm_arch();
+
+/**
  * CUDA driver API error check helper
  */
 #define CudaCheck(FUNC)                                                         \
@@ -127,10 +139,31 @@ private:
  * RAII type classes for CUDA allocations and objects, use like std::unique_ptr.
  */
 using UniqueCUdeviceptr = std::unique_ptr<Nullable<CUdeviceptr>, Nullable<CUdeviceptr>::Deleter<CUresult, &cuMemFree>>;
-struct CuHostPtrDeleter {
-    void operator()(void* p) const { cuMemFreeHost(p); }
+
+/**
+ * @brief Custom deleter for CUDA objects managed by unique_ptr
+ *
+ * This template provides a custom deleter for CUDA objects that need
+ * to be properly cleaned up when managed by std::unique_ptr. It calls
+ * the specified cleanup function when the unique_ptr goes out of scope.
+ *
+ * @tparam T The CUDA object type
+ * @tparam func The cleanup function to call (e.g., cuMemFreeHost)
+ */
+template <typename T, CUresult func(T)>
+struct Deleter {
+    typedef T pointer;
+    /**
+     * @brief Operator to call the cleanup function
+     *
+     * @param value The CUDA object to clean up
+     */
+    void operator()(T value) const { func(value); }
 };
-using UniqueCUhostptr = std::unique_ptr<void, CuHostPtrDeleter>;
+
+using UniqueCUhostptr = std::unique_ptr<void, Deleter<void*, &cuMemFreeHost>>;
+using UniqueCUevent = std::unique_ptr<CUevent, Deleter<CUevent, &cuEventDestroy>>;
+using UniqueCUstream = std::unique_ptr<CUstream, Deleter<CUstream, &cuStreamDestroy>>;
 
 /**
  * RAII type class to push a CUDA context.

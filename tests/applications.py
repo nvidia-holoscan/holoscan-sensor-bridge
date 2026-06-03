@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -172,7 +172,7 @@ class StereoApplication(holoscan.core.Application):
         )
         check_crc_left = hololink_module.operators.CheckCrcOp(
             self,
-            compute_crc_left,
+            compute_crc_op=compute_crc_left,
             name="check_crc_left",
             computed_crc_metadata_name="check_crc_left",
         )
@@ -184,7 +184,7 @@ class StereoApplication(holoscan.core.Application):
         )
         check_crc_right = hololink_module.operators.CheckCrcOp(
             self,
-            compute_crc_right,
+            compute_crc_op=compute_crc_right,
             name="check_crc_right",
             computed_crc_metadata_name="check_crc_right",
         )
@@ -279,7 +279,7 @@ class StereoApplication(holoscan.core.Application):
         self.add_flow(isp_right_out, visualizer, {(isp_right_out_name, "receivers")})
         #
         self.add_flow(visualizer, check_metadata, {("camera_pose_output", "input")})
-        self.add_flow(check_metadata, watchdog, {("output", "input")})
+        self.add_flow(visualizer, watchdog, {("camera_pose_output", "input")})
 
 
 def imx274_camera_factory(hololink_channel, instance, camera_mode, test_pattern):
@@ -525,7 +525,7 @@ def argus_isp(
         * rgba_components_per_pixel
         * ctypes.sizeof(ctypes.c_uint16)
         * pixel_height,
-        num_blocks=2,
+        num_blocks=4,
     )
     # 60fps is 16.67ms
     exposure_time_ms = 16.67
@@ -554,8 +554,9 @@ def linux_receiver_factory(
     hololink_channel,
     device,
     rename_metadata=lambda name: name,
+    affinity=None,
 ):
-    r = hololink_module.operators.LinuxReceiverOperator(
+    r = hololink_module.operators.LinuxReceiverOp(
         app,
         condition,
         name=name,
@@ -565,6 +566,8 @@ def linux_receiver_factory(
         device=device,
         rename_metadata=rename_metadata,
     )
+    if affinity is not None:
+        r.set_receiver_affinity(affinity)
     return r
 
 
@@ -580,6 +583,7 @@ def linux_coe_receiver_factory(
     hololink_channel,
     device,
     rename_metadata=lambda name: name,
+    affinity=None,
 ):
     r = hololink_module.operators.LinuxCoeReceiverOp(
         app,
@@ -593,6 +597,7 @@ def linux_coe_receiver_factory(
         pixel_width=pixel_width,
         coe_channel=coe_channel,
         rename_metadata=rename_metadata,
+        receiver_affinity=affinity,
     )
     return r
 
@@ -715,7 +720,7 @@ class MonoApplication(holoscan.core.Application):
         )
         check_crc_operator = hololink_module.operators.CheckCrcOp(
             self,
-            compute_crc_operator,
+            compute_crc_op=compute_crc_operator,
             name="check_crc_operator",
         )
 

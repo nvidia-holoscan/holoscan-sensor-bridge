@@ -21,29 +21,59 @@
 #define EMULATION_HSB_EMULATOR_H
 
 #include <atomic>
-#include <condition_variable>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <memory>
-#include <mutex>
 #include <string>
-#include <thread>
 #include <unordered_map>
 #include <vector>
 
+#include "address_memory.hpp"
 #include "hsb_config.hpp"
-#include "mem_register.hpp"
-#include "net.hpp"
 
 namespace hololink::emulation {
 
+enum ECB_CMD_CODE {
+    WR_BYTE = 0x01,
+    WR_WORD = 0x02,
+    WR_DWORD = 0x04,
+    WR_BLOCK = 0x09,
+    RMW_BYTE = 0x0A,
+    RD_BYTE = 0x11,
+    RD_WORD = 0x12,
+    RD_DWORD = 0x14,
+    RD_BLOCK = 0x19,
+    GET_INFO = 0x20,
+};
+
+enum ECB_RESPONSE_CODE {
+    ECB_SUCCESS = 0x00,
+    ECB_ADDRESS_ERROR = 0x03,
+    ECB_COMMAND_ERROR = 0x04,
+    ECB_FLAG_ERROR = 0x06,
+    ECB_SEQUENCE_ERROR = 0x0B
+};
+
+template <typename T>
+using UniqueDel = std::unique_ptr<T, std::function<void(T*)>>;
+
 // forward declarations
-struct ControlMessage;
 class DataPlane;
-class APBEventHandler;
 class I2CPeripheral;
-class RenesasI2CPeripheral;
+struct I2CControllerCtxt;
+struct ControlMessage;
 class HSBEmulator;
+struct HSBEmulatorCtxt;
+
+/**
+ * @brief callback function type for control plane callback
+ * @param ctxt The context to pass to the callback.
+ * @param addr_val The address and value to pass to the callback. may be a C style array
+ * @param count The number of address and value pairs passed to the callback.
+ * @return > 0 for the number of address and successfully processed value pairs. <= 0 for an error. Note 0 is a valid number of consumed pairs but will be treated as an error.
+ */
+using ControlPlaneCallback_f = std::function<int(void* ctxt, struct AddressValuePair* addr_val, int count)>;
 
 /**
  * @brief class that manages I2C transaction events from the host
@@ -67,7 +97,7 @@ public:
      * @param peripheral_address The peripheral address of the peripheral.
      * @param peripheral The peripheral to attach. This is a pointer to the peripheral object. The caller is responsible for managing the lifetime of the peripheral object.
      */
-    void attach_i2c_peripheral(uint32_t bus_address, uint8_t peripheral_address, I2CPeripheral* peripheral);
+    void attach_i2c_peripheral(uint32_t bus_address, uint16_t peripheral_address, I2CPeripheral* peripheral);
 
 private:
     /**
@@ -112,26 +142,12 @@ private:
      */
     void run();
 
-    std::mutex i2c_mutex_;
-    std::condition_variable i2c_cv_;
-    // outer index is bus address, inner index is peripheral address. A map of a map so that buses and peripherals get null/default initialized as they are accessed.
-    std::unordered_map<uint32_t, std::unordered_map<uint8_t, I2CPeripheral*>> i2c_bus_map_;
-    std::atomic<bool> running_ { false };
-    uint16_t peripheral_address_ { 0 };
-    uint16_t cmd_ { 0 };
-    std::thread i2c_thread_;
-    std::shared_ptr<MemRegister> registers_;
-    uint32_t controller_address_;
-    uint32_t status_address_;
-    uint32_t bus_en_address_;
-    uint32_t num_bytes_address_;
-    uint32_t clk_cnt_address_;
-    uint32_t data_buffer_address_;
+    UniqueDel<struct I2CControllerCtxt> ctxt_ = { nullptr };
 };
 
 /**
  * @brief The `HSBEmulator` class represents the interface that a host application has to an HSB and acts as the emulation device's controller.
- * It manages the `DataPlane` objects and the `I2CController` and all communication with the internal memory model; see `MemRegister` for more details.
+ * It manages the `DataPlane` objects and the `I2CController` and all communication with the internal memory model; see `AddressMemory` for more details.
  */
 class HSBEmulator {
 public:
@@ -186,8 +202,9 @@ public:
      * @brief Write a value to a register.
      * @param address The address of the register to write.
      * @param value The value to write.
+     * @return 0 on success, 1 on address error.
      */
-    void write(uint32_t address, uint32_t value);
+    int write(uint32_t address, uint32_t value);
 
     /**
      * python:
@@ -196,9 +213,37 @@ public:
      *
      * @brief Read a value from a register.
      * @param address The address of the register to read.
-     * @return The value read.
+     * @param value The value read will be stored here.
+     * @return 0 on success, 1 on address error.
      */
-    uint32_t read(uint32_t address);
+    int read(uint32_t address, uint32_t& value);
+
+    /**
+     * @brief Set a read callback for a range of addresses. See ControlPlaneCallback_f for more details.
+     * @param start_address The start address of the range.
+     * @param end_address The end address of the range (exclusive).
+     * @param callback The callback to set.
+     * @param ctxt The context to pass to the callback.
+     * @return 0 on success, else error code.
+     * @note This method is not yet implemented for linux targets
+     */
+    int register_read_callback(uint32_t start_address, uint32_t end_address, ControlPlaneCallback_f callback, void* ctxt = nullptr);
+
+    /**
+     * @brief Register a write callback for a range of addresses. See ControlPlaneCallback_f for more details.
+     * @param start_address The start address of the range.
+     * @param end_address The end address of the range (exclusive).
+     * @param callback The callback to set.
+     * @param ctxt The context to pass to the callback.
+     * @return 0 on success, else error code.
+     * @note This method is not yet implemented for linux targets
+     */
+    int register_write_callback(uint32_t start_address, uint32_t end_address, ControlPlaneCallback_f callback, void* ctxt = nullptr);
+
+    /**
+     * @brief method to explicitly handle pending control messages to the HSBEmulator client. This method is required for MCU targets, but optional for linux targets
+     */
+    int handle_msgs();
 
     /**
      * python:
@@ -211,95 +256,27 @@ public:
      */
     I2CController& get_i2c(uint32_t controller_address = hololink::I2C_CTRL);
 
+    const HSBConfiguration& get_config() { return configuration_; }
+
 private:
     // utilities for use by friend DataPlane
     /**
      * @brief Add a data plane to the emulator for start()/stop()/is_running() management
      * @param data_plane The data plane to add.
+     * @return 0 on success, 1 on failure.
      */
-    void add_data_plane(DataPlane& data_plane);
-
-    /**
-     * @return A constant reference to the configuration of the emulator.
-     *      const reference because the DataPlane should not change this copy of the configuration
-     */
-    const HSBConfiguration& get_config() const { return configuration_; }
+    int add_data_plane(DataPlane& data_plane);
 
     /**
      * @return The register map of the emulated fpga
      */
-    std::shared_ptr<MemRegister> get_memory() const { return registers_; }
+    UniqueDel<AddressMemory>& get_memory() { return registers_; }
 
-    /**
-     * @brief method for separate thread to listen for control messages from the host.
-     */
-    void control_listen();
-
-    /**
-     * @brief method to handle control messages targeting the SPI bus.
-     * @param address The address of the register to read or write.
-     * @param value Pointer to the value that is to be written or nullptr
-     * @return if value is nullptr, returns the value read at the address otherwise writes value to address and returns 0 on success, >0 on failure.
-     */
-    void handle_spi_control_write(uint32_t address, uint32_t value);
-
-    /**
-     * @brief method to detect HSB Host application polling conditions
-     * @return true if the polling condition is met, false otherwise.
-     *
-     * @note This method is used as a workaround to handle HSB Host applications listening for APB sequence I2C transactions to finish
-     */
-    bool detect_poll(uint32_t address);
-
-    /**
-     * @brief method to handle HSB Host application polling conditions when detected.
-     *
-     * @note This method is used as a workaround to handle HSB Host applications listening for APB sequence I2C transactions to finish
-     */
-    void handle_poll();
-
-    /**
-     * @brief method to handle read control messages from the HSB Host application.
-     * @param message The control message to handle.
-     * @param control_socket The socket to use to send the reply message to the HSB Host application.
-     * @param host_addr The address of the HSB Host application.
-     * @param host_addr_len The length of the HSB Host application address.
-     */
-    void handle_read_message(ControlMessage& message, int control_socket, struct sockaddr_in* host_addr, socklen_t host_addr_len);
-
-    /**
-     * @brief method to handle write control messages from the HSB Host application.
-     * @param message The control message to handle.
-     * @param control_socket The socket to use to send the reply message to the HSB Host application.
-     * @param host_addr The address of the HSB Host application.
-     * @param host_addr_len The length of the HSB Host application address.
-     */
-    void handle_write_message(ControlMessage& message, int control_socket, struct sockaddr_in* host_addr, socklen_t host_addr_len);
-
-    /**
-     * @brief method to handle reply messages to the HSB Host application.
-     * @param message The control message to handle.
-     * @param message_buffer The buffer to use to send the reply message to the HSB Host application.
-     * @param message_length The length of the reply message.
-     * @param control_socket The socket to use to send the reply message to the HSB Host application.
-     * @param host_addr The address of the HSB Host application.
-     * @param host_addr_len The length of the HSB Host application address.
-     */
-    void handle_reply_message(ControlMessage& message, uint8_t* message_buffer, size_t message_length, int control_socket, struct sockaddr_in* host_addr, socklen_t host_addr_len);
+    UniqueDel<AddressMemory> registers_ = { nullptr }; // multiple devices may share this object using references
+    UniqueDel<HSBEmulatorCtxt> ctxt_ = { nullptr };
 
     HSBConfiguration configuration_;
-    std::shared_ptr<MemRegister> registers_; // multiple devices may share this object
-    std::unique_ptr<APBEventHandler> apb_event_handler_; // owned by HSBEmulator and never shared
-    std::unique_ptr<I2CController> i2c_controller_; // owned by HSBEmulator and never shared
-    std::unique_ptr<RenesasI2CPeripheral> renesas_i2c_; // owned by HSBEmulator and never shared
-    std::thread control_thread_;
-
-    std::vector<DataPlane*> data_plane_list_;
-    /* for workaround to handle polling conditions */
-    uint32_t last_read_address_ { 0 };
-    unsigned short poll_count_ { 0 };
-    /* end workaround */
-    std::atomic<bool> running_ { false };
+    I2CController i2c_controller_;
 };
 
 }

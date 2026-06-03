@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -31,8 +31,13 @@ target_include_directories(linux_receiver
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
-    ${ibverbs_INCLUDE_DIRS}
   )
+
+if(HOLOLINK_BUILD_ROCE)
+  find_package(ibverbs REQUIRED)
+  target_include_directories(linux_receiver PRIVATE ${ibverbs_INCLUDE_DIRS})
+  target_compile_definitions(linux_receiver PRIVATE HOLOLINK_HAVE_IBV_OPCODE)
+endif()
 
 target_include_directories(linux_receiver_op
   INTERFACE

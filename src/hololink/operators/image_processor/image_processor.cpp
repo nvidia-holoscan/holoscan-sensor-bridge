@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,9 +24,6 @@
 namespace {
 
 const char* source = R"(
-#include <device_atomic_functions.h>
-#include <cooperative_groups.h>
-
 extern "C" {
 
 // bayer component offsets
@@ -103,10 +100,7 @@ __global__ void histogram(const unsigned short *in,
         }
     }
 
-    // handle to thread block group
-    cooperative_groups::thread_block cta = cooperative_groups::this_thread_block();
-
-    cooperative_groups::sync(cta);
+    __syncthreads();
 
     // cycle through the entire data set, update subhistograms for each warp
     unsigned int *const s_warp_hist = s_hist + (threadIdx.x >> LOG2_WARP_SIZE) * HISTOGRAM_BIN_COUNT * CHANNELS;
@@ -119,7 +113,7 @@ __global__ void histogram(const unsigned short *in,
     }
 
     // Merge per-warp histograms into per-block and write to global memory
-    cooperative_groups::sync(cta);
+    __syncthreads();
 
     if (threadIdx.y == 0)
     {
@@ -228,7 +222,6 @@ void ImageProcessorOp::setup(holoscan::OperatorSpec& spec)
     spec.param(optical_black_, "optical_black", "Optical Black", "optical black value", 0);
     spec.param(
         cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal", "Device to use for CUDA operations", 0);
-    cuda_stream_handler_.define_params(spec);
 }
 
 void ImageProcessorOp::start()
@@ -300,6 +293,18 @@ void ImageProcessorOp::start()
         x0y1_offset = 0; // R
         x1y1_offset = 1; // G
         break;
+    case hololink::csi::BayerFormat::BGGR:
+        x0y0_offset = 2; // B
+        x1y0_offset = 1; // G
+        x0y1_offset = 1; // G
+        x1y1_offset = 0; // R
+        break;
+    case hololink::csi::BayerFormat::GRBG:
+        x0y0_offset = 1; // G
+        x1y0_offset = 0; // R
+        x0y1_offset = 2; // B
+        x1y1_offset = 1; // G
+        break;
     default:
         throw std::runtime_error(fmt::format("Camera bayer format {} not supported.", int(bayer_format_.get())));
     }
@@ -323,6 +328,10 @@ void ImageProcessorOp::start()
         CudaCheck(cuMemAlloc(&mem, CHANNELS * sizeof(float)));
         return mem;
     }());
+
+    // Initialize white balance gains to 1.0 (no correction) to avoid using uninitialized values
+    float initial_gains[CHANNELS] = { 1.0f, 1.0f, 1.0f };
+    CudaCheck(cuMemcpyHtoD(white_balance_gains_memory_.get(), initial_gains, CHANNELS * sizeof(float)));
 }
 
 void ImageProcessorOp::stop()
@@ -344,12 +353,6 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
     }
 
     auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-
-    // get the CUDA stream from the input message
-    gxf_result_t stream_handler_result = cuda_stream_handler_.from_message(context.context(), entity);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error(fmt::format("Failed to get the CUDA stream from incoming messages: {}", GxfResultStr(stream_handler_result)));
-    }
 
     const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
     if (!maybe_tensor) {
@@ -385,7 +388,10 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
     }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    const cudaStream_t cuda_stream = cuda_stream_handler_.get_cuda_stream(context.context());
+
+    // Get the CUDA stream from the input message if present, otherwise generate one.
+    // This stream will also be transmitted on the output port.
+    const cudaStream_t cuda_stream = input.receive_cuda_stream();
 
     // apply optical black if set
     if (optical_black_ != 0.f) {
@@ -396,8 +402,32 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
             input_tensor->pointer(), width, height);
     }
 
+    bool clear_histogram = true;
+
+    const bool has_sub_frame_offset = metadata()->has_key("sub_frame_offset");
+    if (has_sub_frame_offset) {
+        const auto frame_number = metadata()->get<int64_t>("frame_number");
+        if (frame_number == expected_frame_number_) {
+            // for full-frame processing we have a full histogram for each frame, but for sub-frame processing
+            // we need to accumulate the histogram for all sub-frames before calculating the white balance gains
+            clear_histogram = false;
+        } else {
+            // when we have sub-frames the white-balance gains of the previous frame will be used for the current frame
+            cuda_function_launcher_->launch(
+                "calcWBGains",
+                { 1, 1, 1 },
+                { 1, 1, 1 },
+                cuda_stream,
+                histogram_memory_.get(), white_balance_gains_memory_.get());
+            expected_frame_number_ = frame_number;
+        }
+    }
+
+    if (clear_histogram) {
+        CudaCheck(cuMemsetD32Async(histogram_memory_.get(), 0, CHANNELS * HISTOGRAM_BIN_COUNT, cuda_stream));
+    }
+
     // apply Grey World White Balance algorithm
-    CudaCheck(cuMemsetD32Async(histogram_memory_.get(), 0, CHANNELS * HISTOGRAM_BIN_COUNT, cuda_stream));
     cuda_function_launcher_->launch(
         "histogram",
         { width, height, 1 },
@@ -405,27 +435,21 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
         cuda_stream,
         input_tensor->pointer(), histogram_memory_.get(), width, height);
 
-    // calculate white balance gains
-    cuda_function_launcher_->launch(
-        "calcWBGains",
-        { 1, 1, 1 },
-        { 1, 1, 1 },
-        cuda_stream,
-        histogram_memory_.get(), white_balance_gains_memory_.get());
+    // if we don't have sub-frames, calculate the white balance gains for the current frame and apply them
+    if (!has_sub_frame_offset) {
+        cuda_function_launcher_->launch(
+            "calcWBGains",
+            { 1, 1, 1 },
+            { 1, 1, 1 },
+            cuda_stream,
+            histogram_memory_.get(), white_balance_gains_memory_.get());
+    }
 
     cuda_function_launcher_->launch(
         "applyOperations",
         { width, height, 1 },
         cuda_stream,
         input_tensor->pointer(), width, height, white_balance_gains_memory_.get());
-
-    // pass the CUDA stream to the output message
-    auto out_message = nvidia::gxf::Expected<nvidia::gxf::Entity>(entity);
-    stream_handler_result
-        = cuda_stream_handler_.to_message(out_message);
-    if (stream_handler_result != GXF_SUCCESS) {
-        throw std::runtime_error("Failed to add the CUDA stream to the outgoing messages");
-    }
 
     // Emit the tensor
     output.emit(entity);

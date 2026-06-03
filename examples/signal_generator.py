@@ -18,6 +18,7 @@
 import argparse
 import logging
 import os
+import sys
 import threading
 
 import cuda.bindings.driver as cuda
@@ -44,6 +45,10 @@ class HololinkDevice:
         self._mxfe_config = hololink_module.AD9986Config(self._hololink)
         self._mxfe_config.host_pause_mapping(self._host_pause_mapping)
         self._mxfe_config.apply()
+
+        ok = self._mxfe_config.verify_link_status()
+        if not ok:
+            raise RuntimeError("JESD link status check failed")
 
     def stop(self):
         logging.info("HololinkDevice stop")
@@ -110,7 +115,9 @@ class RoceReceiverInitializer:
             host_pause_mapping = 1 << tx_data_plane
 
             self._hololink_device = HololinkDevice(
-                self._hololink, self._frame_size, host_pause_mapping
+                self._hololink,
+                self._frame_size,
+                host_pause_mapping,
             )
 
             self._hololink.start()
@@ -141,13 +148,14 @@ class RoceReceiverInitializer:
         self._cu_context = None
         self._initialized = False
 
-    def create_receiver_op(self, fragment, name, ibv_name, ibv_port):
+    def create_receiver_op(self, fragment, condition, name, ibv_name, ibv_port):
         """Create and return a configured RoceReceiverOp."""
         if not self._initialized:
             raise RuntimeError("RoceReceiverInitializer not initialized")
 
         return hololink_module.operators.RoceReceiverOp(
             fragment,
+            condition,
             name=name,
             frame_size=self._frame_size,
             frame_context=self._cu_context,
@@ -238,15 +246,27 @@ class SignalGeneratorRxApp(holoscan.core.Application):
         samples_count = self._args.samples_count
         buffer_size = samples_count * 4
 
+        if self._args.frame_limit:
+            condition = holoscan.conditions.CountCondition(
+                self, name="count", count=self._args.frame_limit
+            )
+        else:
+            condition = holoscan.conditions.BooleanCondition(
+                self, name="ok", enable_tick=True
+            )
+
         # Initialize receiver resources
         self._receiver_initializer = RoceReceiverInitializer(
-            self._args.rx_hololink, buffer_size, self._args.tx_hololink
+            self._args.rx_hololink,
+            buffer_size,
+            self._args.tx_hololink,
         )
         self._receiver_initializer.initialize()
 
         try:
             self._roce_receiver = self._receiver_initializer.create_receiver_op(
                 self,
+                condition,
                 name="Roce Receiver",
                 ibv_name=self._args.rx_ibv_name,
                 ibv_port=self._args.rx_ibv_port,
@@ -320,6 +340,12 @@ def main():
         "--no-gui",
         action="store_true",
         help="Disable the graphic user interface",
+    )
+    parser.add_argument(
+        "--frame-limit",
+        type=int,
+        default=None,
+        help="Stop after receiving this many frames (useful for CI)",
     )
     parser.add_argument(
         "--expression-i",
@@ -442,12 +468,20 @@ def main():
         threads.append(tx_thread)
         tx_thread.start()
 
+    rx_error = []
     if args.rx_hololink:
         rx_app = SignalGeneratorRxApp(
             args,
             renderer,
         )
-        rx_thread = threading.Thread(target=rx_app.run)
+
+        def rx_run():
+            try:
+                rx_app.run()
+            except Exception as e:
+                rx_error.append(e)
+
+        rx_thread = threading.Thread(target=rx_run)
         threads.append(rx_thread)
         rx_thread.start()
 
@@ -455,12 +489,17 @@ def main():
         logging.error("Either tx-hololink or rx-hololink must be provided")
         return 1
 
-    # Wait for all threads to complete
-    for thread in threads:
-        thread.join()
+    if rx_app and args.frame_limit:
+        rx_thread.join()
+        if tx_app:
+            tx_app.stop_execution()
+        os._exit(1 if rx_error else 0)
+    else:
+        for thread in threads:
+            thread.join()
 
     return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

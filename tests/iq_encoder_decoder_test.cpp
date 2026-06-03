@@ -49,7 +49,7 @@ Tensor create_tensor(void* context, gxf_uid_t allocator_uid, const Data& data)
 
 class DataGeneratorOp : public holoscan::Operator {
 public:
-    using DataGenerator = std::function<Data()>;
+    using DataPtr = std::shared_ptr<const Data>;
     HOLOSCAN_OPERATOR_FORWARD_ARGS(DataGeneratorOp)
     DataGeneratorOp() = default;
 
@@ -57,10 +57,12 @@ public:
     {
         spec.output<Tensor>(output_name);
 
-        // Register converters for arguments not defined by Holoscan
-        register_converter<DataGenerator>();
+        // Register converters for arguments not defined by Holoscan.
+        // Use DataPtr instead of std::function<Data()> because holoscan::Arg wraps any nullary
+        // callable as std::function<void()> (Arg::set_value_ in arg.hpp), which breaks the param.
+        register_converter<DataPtr>();
 
-        spec.param(data_generator_, "data_generator", "DataGenerator", "Data Generator");
+        spec.param(data_, "data", "Data", "Data to emit");
     }
 
     void initialize() override
@@ -77,15 +79,17 @@ public:
     void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
         holoscan::ExecutionContext& context) override
     {
-        auto data = data_generator_.get()();
-        auto tensor = create_tensor(context.context(), allocator_->gxf_cid(), data);
+        auto data = data_.get();
+        if (!data)
+            throw std::runtime_error("DataGeneratorOp: no data");
+        auto tensor = create_tensor(context.context(), allocator_->gxf_cid(), *data);
         op_output.emit(tensor);
     }
 
 private:
     static inline const char* output_name = "output";
     std::shared_ptr<holoscan::Allocator> allocator_;
-    holoscan::Parameter<DataGenerator> data_generator_;
+    holoscan::Parameter<DataPtr> data_;
 };
 
 class DataValidatorOp : public holoscan::Operator {
@@ -122,10 +126,10 @@ private:
 class IQEncoderDecoderTestApp : public holoscan::Application {
 public:
     IQEncoderDecoderTestApp(
-        const DataGeneratorOp::DataGenerator& data_generator,
+        DataGeneratorOp::DataPtr data,
         const DataValidatorOp::DataValidator& data_validator,
         float scale = 1.0f)
-        : data_generator_(data_generator)
+        : data_(data)
         , data_validator_(data_validator)
         , scale_(scale)
     {
@@ -136,7 +140,7 @@ public:
         data_generator_op_ = make_operator<DataGeneratorOp>(
             "DataGenerator",
             make_condition<holoscan::CountCondition>(1),
-            holoscan::Arg("data_generator", data_generator_));
+            holoscan::Arg("data", data_));
         iq_encoder_op_ = make_operator<operators::IQEncoderOp>(
             "IQ Encoder",
             holoscan::Arg("scale", scale_));
@@ -153,7 +157,7 @@ public:
     }
 
 private:
-    const DataGeneratorOp::DataGenerator& data_generator_;
+    DataGeneratorOp::DataPtr data_;
     const DataValidatorOp::DataValidator& data_validator_;
     float scale_ = 1.0f;
 
@@ -167,9 +171,7 @@ TEST(IQEncoderDecoderTest, DefaultRange)
 {
     Data d { .0, .1, .2, .3, .4, .5, .6, .7 };
     IQEncoderDecoderTestApp app(
-        DataGeneratorOp::DataGenerator([&d] {
-            return d;
-        }),
+        std::make_shared<Data>(d),
         DataValidatorOp::DataValidator([&d](const Data& data) {
             EXPECT_TRUE(std::equal(data.begin(), data.end(), d.begin(), [](float lhs, float rhs) { return std::abs(lhs - rhs) <= 1.0f / SHRT_MAX; }));
         }));
@@ -180,9 +182,7 @@ TEST(IQEncoderDecoderTest, ClampedRange)
 {
     Data d { 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7 };
     IQEncoderDecoderTestApp app(
-        DataGeneratorOp::DataGenerator([&d] {
-            return d;
-        }),
+        std::make_shared<Data>(d),
         DataValidatorOp::DataValidator([](const Data& data) {
             EXPECT_TRUE(std::all_of(data.begin(), data.end(), [](float value) { return value == 1.0f; }));
         }));
@@ -194,9 +194,7 @@ TEST(IQEncoderDecoderTest, ScaledRange)
     Data d { 1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7 };
     float scale = 2.0f;
     IQEncoderDecoderTestApp app(
-        DataGeneratorOp::DataGenerator([&d] {
-            return d;
-        }),
+        std::make_shared<Data>(d),
         DataValidatorOp::DataValidator([&d, scale](const Data& data) {
             EXPECT_TRUE(std::equal(data.begin(), data.end(), d.begin(), [scale](float lhs, float rhs) { return std::abs(lhs - rhs) <= scale / SHRT_MAX; }));
         }),
@@ -210,11 +208,8 @@ TEST(IQEncoderDecoderTest, InvalidBufferSize)
         EXPECT_ANY_THROW({
             Data d(i, 0.0f);
             IQEncoderDecoderTestApp app(
-                DataGeneratorOp::DataGenerator([&d] {
-                    return d;
-                }),
-                DataValidatorOp::DataValidator([&d](const Data&) {
-                }));
+                std::make_shared<Data>(d),
+                DataValidatorOp::DataValidator([](const Data&) {}));
             app.run();
         });
     }
@@ -230,5 +225,5 @@ TEST(IQEncoderDecoderTest, InvalidBufferSize)
         static bool decode(const Node&, TYPE&) { throw std::runtime_error("Unsupported"); } \
     };
 
-YAML_CONVERTER(hololink::tests::DataGeneratorOp::DataGenerator);
+YAML_CONVERTER(hololink::tests::DataGeneratorOp::DataPtr);
 YAML_CONVERTER(hololink::tests::DataValidatorOp::DataValidator);

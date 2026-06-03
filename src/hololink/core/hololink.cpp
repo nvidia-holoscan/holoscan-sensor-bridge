@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,6 +34,7 @@
 #include "deserializer.hpp"
 #include "logging_internal.hpp"
 #include "metadata.hpp"
+#include "reactor.hpp"
 #include "serializer.hpp"
 
 namespace hololink {
@@ -47,6 +48,37 @@ constexpr uint32_t SPI_DONE = 0b0000'0000'0001'0000;
 // SPI_CFG
 constexpr uint32_t SPI_CFG_CPOL = 0b0000'0000'0001'0000;
 constexpr uint32_t SPI_CFG_CPHA = 0b0000'0000'0010'0000;
+
+// uart registers
+//  address Ranges:
+//  0x0300_0400 - 0x0300_047F,Control Registers, RW
+//  0x0300_0480 - 0x0300_04FF,Status Registers, RO
+//  0x0300_0540 - 0x0300_05FF,Data Registers, RW
+//
+//  Detailed Register Map (port 0; add port_number * UART_CTRL_STRIDE etc. for other ports):
+//  CTRL0 - +0x00 - Primary Control Register, RW
+//  CTRL1 - +0x04 - Baud Rate Divisor, RW
+//  CTRL2 - +0x08 - Interrupt Enable Register, RW
+//  CTRL3 - +0x0C - Interrupt Clear Register, WO
+//  STATUS0 - +0x80 - Primary Status Register, RO
+//  STATUS1 - +0x84 - Interrupt Status Register, RO
+//  TX_DATA - +0x140 - Transmit Data, WO
+//  RX_DATA - +0x144 - Receive Data, RO
+//  LAST_RX - +0x148 - Last RX Byte, RO
+constexpr uint32_t UART = 0x0300'0400;
+constexpr uint32_t UART_CTRL0 = 0x00;
+constexpr uint32_t UART_CTRL1 = 0x04;
+constexpr uint32_t UART_CTRL2 = 0x08;
+constexpr uint32_t UART_CTRL3 = 0x0C;
+constexpr uint32_t UART_CTRL4 = 0x10;
+constexpr uint32_t UART_CTRL_STRIDE = 0x10;
+constexpr uint32_t UART_STATUS0 = 0x80;
+constexpr uint32_t UART_STATUS1 = 0x84;
+constexpr uint32_t UART_STATUS_STRIDE = 0x08;
+constexpr uint32_t UART_TX_DATA = 0x140;
+constexpr uint32_t UART_RX_DATA = 0x144;
+constexpr uint32_t UART_LAST_RX = 0x148;
+constexpr uint32_t UART_DATA_STRIDE = 0x0C;
 
 namespace {
 
@@ -192,6 +224,8 @@ Hololink::~Hololink()
         HSB_LOG_INFO("Removing hololink \"{}\"", it->first);
         it = hololink_by_serial_number.erase(it);
     }
+    auto reactor = hololink::core::Reactor::get_reactor();
+    reactor->reset_framework();
 }
 
 /*static*/ bool Hololink::enumerated(const Metadata& metadata)
@@ -210,8 +244,10 @@ Hololink::~Hololink()
 
 void Hololink::start()
 {
-    if (started_) {
-        throw std::runtime_error("Hololink is already started.");
+    // Calling start is idempotent.
+    bool expected = false;
+    if (!started_.compare_exchange_strong(expected, true)) {
+        return;
     }
 
     control_socket_.reset(socket(AF_INET, SOCK_DGRAM, 0));
@@ -260,20 +296,8 @@ void Hololink::stop()
 
 void Hololink::trigger_reset()
 {
-    std::shared_ptr<Spi> spi = get_spi(RESET_SPI_BUS, /*chip_select*/ 0, /*prescaler*/ 15,
-        /*cpol*/ 0, /*cpha*/ 1, /*width*/ 1);
-
-    //
-    std::vector<uint8_t> write_command_bytes { 0x01, 0x07 };
-    std::vector<uint8_t> write_data_bytes { 0x0C };
-    uint32_t read_byte_count = 0;
-    spi->spi_transaction(write_command_bytes, write_data_bytes, read_byte_count);
     //
     write_uint32(0x8, 0);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    //
-    write_data_bytes = { 0x0F };
-    spi->spi_transaction(write_command_bytes, write_data_bytes, read_byte_count);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
     //
     write_uint32(0x8, 0x3);
@@ -386,8 +410,7 @@ bool Hololink::write_uint32(Hololink::WriteData& write_data, const std::shared_p
                 break;
             }
             if (!timeout->retry()) {
-                throw TimeoutError(
-                    fmt::format("write_uint32({})", write_data.stringify()));
+                return write_timeout_error(fmt::format("write_uint32({})", write_data.stringify()));
             }
             write_retries.increment();
             current_sequence_check = false;
@@ -411,7 +434,7 @@ bool Hololink::write_uint32(Hololink::WriteData& write_data, const std::shared_p
                 }
                 if (!timeout->retry()) {
                     // We ran out of time, raise an exception.
-                    throw TimeoutError(
+                    return write_timeout_error(
                         fmt::format("write_uint32({})", write_data.stringify()));
                 }
                 write_retries.increment();
@@ -476,7 +499,7 @@ bool Hololink::write_uint32_block_(Hololink::WriteData write_data,
             }
         }
         uint32_t response_code = optional_response_code.value();
-        throw std::runtime_error(
+        return bad_write_response(response_code,
             fmt::format("write_uint32({}) response_code={:#X}({})", write_data.stringify(),
                 response_code, response_code_description(response_code)));
     }
@@ -525,7 +548,7 @@ bool Hololink::write_uint32_(uint32_t address, uint32_t value,
             }
         }
         uint32_t response_code = optional_response_code.value();
-        throw std::runtime_error(
+        return bad_write_response(response_code,
             fmt::format("write_uint32 address={:#X} value={:#X} response_code={:#X}({})", address,
                 value, response_code, response_code_description(response_code)));
     }
@@ -569,7 +592,7 @@ uint32_t Hololink::read_uint32(uint32_t address, const std::shared_ptr<Timeout>&
             return value.value();
         }
         if (!timeout->retry()) {
-            throw TimeoutError(fmt::format("read_uint32 address={:#x}", address));
+            return read_timeout_error(fmt::format("read_uint32 address={:#x}", address));
         }
         read_retries.increment();
         current_sequence_check = false;
@@ -613,8 +636,9 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
     }
     if (optional_response_code != RESPONSE_SUCCESS) {
         uint32_t response_code = optional_response_code.value();
-        throw std::runtime_error(
+        auto [status, result_list] = bad_read_response(response_code,
             fmt::format("read_uint32 response_code={}({})", response_code, response_code_description(response_code)));
+        return { status, result_list[0] };
     }
     uint8_t reserved;
     uint32_t response_address;
@@ -624,7 +648,8 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
             && deserializer->next_uint32_be(response_address) /* address */
             && deserializer->next_uint32_be(value)
             && deserializer->next_uint16_be(latched_sequence))) {
-        throw std::runtime_error("Unable to deserialize");
+        malformed_response("Unable to deserialize");
+        return { false, {} };
     }
     assert(response_address == address);
     HSB_LOG_DEBUG("read_uint32(address={:#x})={:#x}", address, value);
@@ -717,12 +742,13 @@ std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_block_(uint32_t ad
         }
         if (optional_response_code != RESPONSE_SUCCESS) {
             uint32_t response_code = optional_response_code.value();
-            throw std::runtime_error(
+            return bad_read_response(response_code,
                 fmt::format("read_uint32 response_code={}({})", response_code, response_code_description(response_code)));
         }
         uint8_t reserved;
         if (!(deserializer->next_uint8(reserved))) { /* reserved */
-            throw std::runtime_error("Unable to deserialize");
+            malformed_response("Unable to deserialize");
+            return { false, {} };
         }
         std::vector<uint32_t> result(count);
         for (unsigned i = 0; i < count; i++) {
@@ -730,16 +756,19 @@ std::tuple<bool, std::vector<uint32_t>> Hololink::read_uint32_block_(uint32_t ad
             uint32_t value;
             if (!(deserializer->next_uint32_be(response_address)
                     && deserializer->next_uint32_be(value))) {
-                throw std::runtime_error("Unable to deserialize block");
+                malformed_response("Unable to deserialize block");
+                return { false, {} };
             }
             if (response_address != (address + i * 4)) {
-                throw std::runtime_error("Unexpected response address");
+                malformed_response("Unexpected response address");
+                return { false, {} };
             }
             result[i] = value;
         }
         uint16_t latched_sequence;
         if (!(deserializer->next_uint16_be(latched_sequence))) {
-            throw std::runtime_error("Unable to deserialize latched_sequence");
+            malformed_response("Unable to deserialize latched_sequence");
+            return { false, {} };
         }
         return { true, result };
     }
@@ -776,7 +805,8 @@ std::tuple<bool, std::optional<uint32_t>, std::shared_ptr<core::Deserializer>> H
                 && deserializer->next_uint8(dummy) /* reply_flags */
                 && deserializer->next_uint16_be(reply_sequence)
                 && deserializer->next_uint8(response_code))) {
-            throw std::runtime_error("Unable to deserialize");
+            malformed_response("Unable to deserialize");
+            return { false, {}, nullptr };
         }
         HSB_LOG_TRACE("reply reply_sequence={} response_code={}({}) sequence={}", reply_sequence,
             response_code, response_code_description(response_code), sequence);
@@ -834,11 +864,15 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
         fd_set x = r;
         int result = select(control_socket_.get() + 1, &r, nullptr, &x, select_timeout);
         if (result == -1) {
+            if (errno == EINTR) {
+                // Go back and try it again.
+                continue;
+            }
             throw std::runtime_error(
                 fmt::format("select failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
         if (FD_ISSET(control_socket_.get(), &x)) {
-            HSB_LOG_ERROR("Error reading enumeration sockets.");
+            HSB_LOG_ERROR("Error reading control socket.");
             return {};
         }
         if (result == 0) {
@@ -952,7 +986,7 @@ public:
     {
         bool ok = hololink_.write_uint32(address, value, timeout);
         if (!ok) {
-            throw std::runtime_error(
+            hololink_.bad_write_response(RESPONSE_HOST_ERROR,
                 fmt::format("ACK failure writing SPI register {:#x}.", address));
         }
     }
@@ -961,7 +995,7 @@ public:
     {
         bool ok = hololink_.write_uint32(data, timeout);
         if (!ok) {
-            throw std::runtime_error("SPI controller read failure");
+            hololink_.bad_write_response(RESPONSE_HOST_ERROR, "SPI controller read failure");
         }
     }
 
@@ -975,7 +1009,7 @@ public:
         return hololink_.read_uint32(address, count, in_timeout);
     }
 
-    Hololink::NamedLock& spi_lock()
+    NamedLock& spi_lock()
     {
         return hololink_.spi_lock();
     }
@@ -1021,14 +1055,16 @@ public:
         if (value & SPI_BUSY) {
             // This would be because either the SPI port in the FPGA is broken
             // or another program is using this device.
-            throw std::runtime_error("Unexpected state; SPI port is busy.");
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR, "Unexpected state; SPI port is busy.");
+            return {};
         }
         // Clear the start bit in case a program crashed and didn't reset this.
         write_uint32(reg_control_, 0, timeout);
         // We should only read 0 in SPI_DONE
         value = read_uint32(reg_status_, timeout);
         if (value & SPI_DONE) {
-            throw std::runtime_error("Unexpected state; SPI port indicates invalid DONE.");
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR, "Unexpected state; SPI port indicates invalid DONE.");
+            return {};
         }
         // Set the configuration
         Hololink::WriteData write_data;
@@ -1066,8 +1102,8 @@ public:
             }
             if (!timeout->retry()) {
                 // timed out
-                HSB_LOG_DEBUG("Timed out.");
-                throw TimeoutError(fmt::format("spi_transaction control={:#x}", reg_control_));
+                hololink_.bad_read_response(RESPONSE_HOST_ERROR, fmt::format("spi_transaction control={:#x}", reg_control_));
+                return {};
             }
         }
         // <WORKAROUND> Data doesn't show up until we clear done
@@ -1078,7 +1114,8 @@ public:
         uint32_t read_words = (read_byte_total + 3) / 4;
         auto [status, content] = read_uint32(reg_data_buffer_, read_words, timeout);
         if (!status) {
-            throw std::runtime_error("Failed to read SPI data buffer");
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR, "Failed to read SPI data buffer");
+            return {};
         }
         std::vector<uint8_t> r(read_byte_total + 3);
         for (uint32_t i = 0, n = 0; i < read_byte_total; i += 4, n++) {
@@ -1115,8 +1152,781 @@ std::shared_ptr<Hololink::Spi> Hololink::get_spi(uint32_t bus_number, uint32_t c
     return std::make_shared<hololink::Spi>(*this, bus_number, chip_select, prescaler, cpol, cpha, width, spi_address);
 }
 
-class SoftwareSequencer
-    : public Hololink::Sequencer {
+class Uart
+    : public Hololink::Uart {
+
+    // UART parameters (pass these decimal values to the constructor / get_uart):
+    // Baud rate: 115200 (default), 57600, 38400, 19200, 9600
+    // Data bits: 8 (default), 7, 6, or 5
+    // Parity: 0 = NONE (default), 1 = ODD, 2 = EVEN (3 reserved)
+    // Stop bits: 1 = one stop bit (default), 15 = 1.5 stop bits, 2 = two stop bits
+    // Rx/Tx FIFO thresholds - configured via a separate function
+    // Internal Loopback Enable/Disable - configured via a separate function
+public:
+    Uart(Hololink& hololink,
+        uint32_t port_number = 0,
+        uint32_t baud_rate = 115200,
+        uint32_t data_bits = 8,
+        uint32_t parity = 0,
+        uint32_t stop_bits = 1,
+        uint32_t flow_control = 0,
+        uint32_t tx_almost_empty_threshold = 4,
+        uint32_t tx_almost_full_threshold = 252,
+        uint32_t rx_almost_empty_threshold = 4,
+        uint32_t rx_almost_full_threshold = 252)
+        : hololink_(hololink)
+        , port_number_(port_number)
+        , baud_rate_(baud_rate)
+        , data_bits_(data_bits)
+        , parity_(parity)
+        , stop_bits_(stop_bits)
+        , flow_control_(flow_control)
+        , tx_almost_empty_threshold_(tx_almost_empty_threshold)
+        , tx_almost_full_threshold_(tx_almost_full_threshold)
+        , rx_almost_empty_threshold_(rx_almost_empty_threshold)
+        , rx_almost_full_threshold_(rx_almost_full_threshold)
+    {
+        HSB_LOG_INFO("UART started, connection parameters: port={}, baud rate={}, data_bits={}, parity={}, stop_bits={}", port_number, baud_rate, data_bits, parity, stop_bits);
+        // in this implementation we allow up to 1 ports, so port number should be 0, future FPGA work will add more ports
+        if (port_number > 0) {
+            throw std::runtime_error("Invalid port number configuration");
+        }
+
+        // Register addresses: UART + register offset + port_number * block stride.
+        uart_ctrl0_ = UART + UART_CTRL0 + port_number * UART_CTRL_STRIDE;
+        uart_ctrl1_ = UART + UART_CTRL1 + port_number * UART_CTRL_STRIDE;
+        uart_ctrl2_ = UART + UART_CTRL2 + port_number * UART_CTRL_STRIDE;
+        uart_ctrl3_ = UART + UART_CTRL3 + port_number * UART_CTRL_STRIDE;
+        uart_status0_ = UART + UART_STATUS0 + port_number * UART_STATUS_STRIDE;
+        uart_status1_ = UART + UART_STATUS1 + port_number * UART_STATUS_STRIDE;
+        uart_tx_data_ = UART + UART_TX_DATA + port_number * UART_DATA_STRIDE;
+        uart_rx_data_ = UART + UART_RX_DATA + port_number * UART_DATA_STRIDE;
+        uart_last_rx_ = UART + UART_LAST_RX + port_number * UART_DATA_STRIDE;
+        HSB_LOG_DEBUG("UART registers addresses: uart_ctrl0_={:#x}, uart_ctrl1_={:#x}, uart_ctrl2_={:#x}, uart_ctrl3_={:#x}, uart_status0_={:#x}, uart_status1_={:#x}, uart_tx_data_={:#x}, uart_rx_data_={:#x}, uart_last_rx_={:#x}", uart_ctrl0_, uart_ctrl1_, uart_ctrl2_, uart_ctrl3_, uart_status0_, uart_status1_, uart_tx_data_, uart_rx_data_, uart_last_rx_);
+
+        // configure uart with the provided parameters
+        uart_configure(baud_rate, data_bits, parity, stop_bits, flow_control, tx_almost_empty_threshold, tx_almost_full_threshold, rx_almost_empty_threshold, rx_almost_full_threshold);
+
+        // dump registers values only when debug logging is enabled
+        if (hololink::logging::hsb_log_level <= hololink::logging::HsbLogLevel::HSB_LOG_LEVEL_DEBUG) {
+            uart_dump_registers();
+        }
+    }
+
+    // accessors for the configured parameters - read back from shadow params not register values to save Ethernet traffic
+    uint32_t baud_rate() const override { return baud_rate_; }
+    uint32_t data_bits() const override { return data_bits_; }
+    uint32_t parity() const override { return parity_; }
+    uint32_t stop_bits() const override { return stop_bits_; }
+    uint32_t flow_control() const override { return flow_control_; }
+    uint32_t tx_almost_empty_threshold() const override { return tx_almost_empty_threshold_; }
+    uint32_t tx_almost_full_threshold() const override { return tx_almost_full_threshold_; }
+    uint32_t rx_almost_empty_threshold() const override { return rx_almost_empty_threshold_; }
+    uint32_t rx_almost_full_threshold() const override { return rx_almost_full_threshold_; }
+
+    // IO operations
+    // write data to the uart
+    // data is a vector of bytes to write to the uart up to 256 bytes
+    void uart_write(const std::vector<uint8_t>& data) override
+    {
+        // FPGA has a single UART controller per port, FOR ALL INSTANCES accessing
+        // the same port, we need to serialize access between all of them.
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // validate incoming parameters
+        if (data.size() > 256) {
+            throw std::runtime_error("Data size cannot be greater than 256");
+        }
+        if (data.size() == 0) {
+            throw std::runtime_error("Data size cannot be zero");
+        }
+
+        HSB_LOG_DEBUG("UART write called, data size={} bytes", data.size());
+
+        //### STATUS0 (0x0300_0480) - Primary Status Register
+        // Bit 0: TX Busy (shift register sending) - not checked; only FIFO space is needed for writes
+        // Bit 2: TX FIFO Full
+        // Bit 3: TX FIFO Empty
+
+        // Create timeout to prevent infinite busy-wait loops
+        // 5 second timeout with 1ms retry interval for the entire write operation
+        auto timeout = std::make_shared<Timeout>(5.0f, 0.001f);
+
+        uint32_t value = 0;
+        size_t data_index = 0;
+
+        // write data to the uart until all data is written
+        while (data_index < data.size()) {
+            // read the status register
+            value = hololink_.read_uint32(uart_status0_);
+            if ((value & (1 << 2))) { // TX FIFO Full?
+                HSB_LOG_DEBUG("UART write called,tx fifo full");
+                if (!timeout->retry()) {
+                    throw TimeoutError("UART write: TX FIFO full timeout");
+                }
+                continue;
+            }
+
+            // write the data to the uart
+            hololink_.write_uint32(uart_tx_data_, data[data_index]);
+            HSB_LOG_DEBUG("UART write called, wrote byte={}", data[data_index]);
+            data_index++;
+        }
+    }
+
+    // read data from the uart
+    // bytes_num is the number of bytes to read from the uart up to 256 bytes which is the FIFO capacity
+    // bytes_read is the number of bytes actually read from the uart
+    // function returns the data read from the uart in a vector of bytes
+    std::vector<uint8_t> uart_read(size_t bytes_num, uint32_t& bytes_read) override
+    {
+        // FPGA has a single UART controller per port, FOR ALL INSTANCES accessing
+        // the same port, we need to serialize access between all of them.
+        std::lock_guard lock(hololink_.uart_lock());
+        HSB_LOG_DEBUG("UART read called");
+
+        // validate incoming parameters
+        if (bytes_num > 256) {
+            throw std::runtime_error("Max bytes cannot be greater than 256");
+        }
+        if (bytes_num == 0) {
+            throw std::runtime_error("Bytes to read cannot be zero");
+        }
+
+        std::vector<uint8_t> read_data(bytes_num);
+        uint16_t read_count = 0;
+
+        //### STATUS0 (0x0300_0480) - Primary Status Register
+        // Bits 1: Rx Busy - currently not used in function logic since the FPGA implementation sets this bit when the RX FIFO is not empty
+        // Bits 4: RX FIFO Full
+        // Bits 5: RX_FIFO_NOT_EMPTY: RX FIFO not empty (sticky)
+
+        uint32_t value = 0;
+
+        while (read_count < bytes_num) {
+            // read the status register
+            value = hololink_.read_uint32(uart_status0_);
+
+            if ((value & (1 << 5))) { // RX FIFO Not Empty
+                // read the data from the uart
+                read_data[read_count] = (uint8_t)(hololink_.read_uint32(uart_rx_data_) & 0xFF);
+                HSB_LOG_DEBUG("UART read called, read byte={}", read_data[read_count]);
+                read_count++;
+                // how to reset the RX FIFO Not Empty sticky bit?
+                // current FPGA implementation resets all sticky bits
+                // ToDo: add functionality for this
+                // uart_clear_sticky_bits();
+            } else { // RX FIFO Is Empty
+                HSB_LOG_DEBUG("UART read called,rx fifo is empty");
+                break; // break the loop if the RX FIFO is empty
+            }
+        }
+
+        // set the number of bytes read so user can know how many bytes were read
+        bytes_read = read_count;
+        return read_data;
+    }
+
+    void uart_configure(uint32_t baud_rate, uint32_t data_bits, uint32_t parity, uint32_t stop_bits,
+        uint32_t flow_control = 0, uint32_t tx_almost_empty_threshold = 4, uint32_t tx_almost_full_threshold = 252,
+        uint32_t rx_almost_empty_threshold = 4, uint32_t rx_almost_full_threshold = 252) override
+    {
+        // FPGA has a single UART controller per port, FOR ALL INSTANCES accessing
+        // the same port, we need to serialize access between all of them.
+        std::lock_guard lock(hololink_.uart_lock());
+
+        int baud_div = baud_rate_to_divisor(baud_rate);
+        baud_rate_ = baud_rate;
+
+        // validate incoming parameters
+        if (flow_control != 0 && flow_control != 1) {
+            throw std::runtime_error("Invalid flow control configuration (0=None, 1=RTS/CTS)");
+        }
+        flow_control_ = flow_control;
+
+        if (data_bits != 8 && data_bits != 7 && data_bits != 6 && data_bits != 5) {
+            throw std::runtime_error("Invalid data bits configuration");
+        }
+        data_bits_ = data_bits;
+
+        if (parity != 0 && parity != 1 && parity != 2) {
+            throw std::runtime_error("Invalid parity configuration");
+        }
+        parity_ = parity;
+
+        // stop bits configuration:
+        //  `00`: 1 stop bit (default)
+        //  `01`: 1.5 stop bits
+        //  `10`: 2 stop bits
+        stop_bits_ = stop_bits_to_encoding(stop_bits);
+
+        // validate TX FIFO thresholds
+        if (tx_almost_empty_threshold > 255) {
+            throw std::runtime_error("TX almost empty threshold cannot be greater than 255");
+        }
+        if (tx_almost_full_threshold > 255) {
+            throw std::runtime_error("TX almost full threshold cannot be greater than 255");
+        }
+        if (tx_almost_empty_threshold > tx_almost_full_threshold) {
+            throw std::runtime_error("TX almost empty threshold cannot be greater than almost full threshold");
+        }
+
+        // validate RX FIFO thresholds
+        if (rx_almost_empty_threshold > 255) {
+            throw std::runtime_error("RX almost empty threshold cannot be greater than 255");
+        }
+        if (rx_almost_full_threshold > 255) {
+            throw std::runtime_error("RX almost full threshold cannot be greater than 255");
+        }
+        if (rx_almost_empty_threshold > rx_almost_full_threshold) {
+            throw std::runtime_error("RX almost empty threshold cannot be greater than almost full threshold");
+        }
+
+        HSB_LOG_INFO("UART configure called, baud rate={}, data bits={}, parity={}, stop bits={}, flow control={}, tx thresholds=[{},{}], rx thresholds=[{},{}]",
+            baud_rate, data_bits, parity, stop_bits, flow_control, tx_almost_empty_threshold, tx_almost_full_threshold,
+            rx_almost_empty_threshold, rx_almost_full_threshold);
+
+        // configure the uart registers
+        // Disable UART
+        uart_disable();
+
+        // Reset TX and RX FIFOs (CTRL0 bits 8 and 9)
+        constexpr uint32_t UART_TX_FIFO_RST_BIT = 8;
+        constexpr uint32_t UART_RX_FIFO_RST_BIT = 9;
+        hololink_.write_uint32(uart_ctrl0_, (1u << UART_TX_FIFO_RST_BIT) | (1u << UART_RX_FIFO_RST_BIT));
+
+        // to save Ethernet traffic, we configure all the uart setting below directly
+        // and via the defined functions below
+        uint32_t value0 = hololink_.read_uint32(uart_ctrl0_);
+
+        uint32_t value1 = hololink_.read_uint32(uart_ctrl1_);
+
+        // set baud rate divisor
+        // CTRL1 (0x0300_0404) - Baud Rate and TX Thresholds
+        // Bits 15:0: BAUD_DIV - Baud rate divisor
+        value1 &= ~(0xFFFF << 0);
+        value1 |= (baud_div << 0);
+
+        // set data bits
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 5:4: Data Width Selection: 0=8 bits (default), 1=7 bits, 2=6 bits, 3=5 bits
+        // Convert data_bits (8,7,6,5) to register encoding (0,1,2,3)
+        uint32_t data_bits_encoding = (8 - data_bits_) & 0x3;
+        value0 &= ~(0x3 << 4);
+        value0 |= (data_bits_encoding << 4);
+
+        // set parity
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 7:6: Parity Mode: 0=NONE (default), 1=ODD, 2=EVEN, 3=Reserved
+        value0 &= ~(0x3 << 6);
+        value0 |= (parity_ << 6);
+
+        // set stop bits
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 13:12: Stop Bits Configuration: 0=1 stop bit (default), 1=1.5 stop bits, 2=2 stop bits, 3=Reserved
+        value0 &= ~(0x3 << 12);
+        value0 |= (stop_bits_ << 12);
+
+        // enable/disable flow control
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 14: Flow Control Enable
+        //  0: No flow control
+        //  1: RTS/CTS flow control
+        value0 &= ~(0x1 << 14);
+        value0 |= (flow_control_ << 14);
+
+        // set rx fifo thresholds
+        // ### CTRL0 (0x0300_0400) - RX Thresholds
+        // Bits 23:16: RX Almost Full Threshold (0-255, default: 252 when 0)
+        // Bits 31:24: RX Almost Empty Threshold (0-255, default: 4 when 0)
+        value0 &= ~(0xFF << 16);
+        value0 |= (rx_almost_full_threshold << 16);
+        value0 &= ~(0xFF << 24);
+        value0 |= (rx_almost_empty_threshold << 24);
+
+        // set tx fifo thresholds
+        // ### CTRL1 (0x0300_0404) - TX Thresholds
+        // Bits 23:16**: TX Almost Full Threshold (0-255, default: 252 when 0)
+        // Bits 31:24**: TX Almost Empty Threshold (0-255, default: 4 when 0)
+        value1 &= ~(0xFF << 16);
+        value1 |= (tx_almost_full_threshold << 16);
+        value1 &= ~(0xFF << 24);
+        value1 |= (tx_almost_empty_threshold << 24);
+
+        // clear FIFO reset bits (8 and 9) so the final CTRL0 write does not leave FIFOs in reset
+        value0 &= ~((1u << UART_TX_FIFO_RST_BIT) | (1u << UART_RX_FIFO_RST_BIT));
+
+        // write the values to the registers
+        HSB_LOG_DEBUG("UART configure called, value0={:#x}, value1={:#x}", value0, value1);
+
+        hololink_.write_uint32(uart_ctrl0_, value0);
+
+        hololink_.write_uint32(uart_ctrl1_, value1);
+
+        // enable all interrupts
+        hololink_.write_uint32(uart_ctrl2_, 0x0000000F);
+
+        // clear all sticky bits so status is clean after configure
+        uart_clear_sticky_bits(0x7F);
+
+        // Configure GPIO for flow control
+        // GPIO_DIR (0x0000002c): Set bit 11 always, set bit 8 only if flow control is enabled
+        // GPIO_MUX_EN (0x70000014): Set bit 9 always
+        uint32_t gpio_dir = hololink_.read_uint32(GPIO_DIRECTION_BASE_REGISTER);
+        if (flow_control_) {
+            // Enable flow control: set bits 8 and 11
+            gpio_dir |= (1 << 8); // Set bit 8
+            gpio_dir |= (1 << 11); // Set bit 11
+        } else {
+            // Disable flow control: set bit 11 only (clear bit 8)
+            gpio_dir &= ~(1 << 8); // Clear bit 8
+            gpio_dir |= (1 << 11); // Set bit 11
+        }
+        hololink_.write_uint32(GPIO_DIRECTION_BASE_REGISTER, gpio_dir);
+
+        // Set bit 9 of GPIO_MUX_EN (0x70000014)
+        uint32_t gpio_mux_en = hololink_.read_uint32(VSYNC_GPIO);
+        gpio_mux_en |= (1 << 9); // Set bit 9
+        hololink_.write_uint32(VSYNC_GPIO, gpio_mux_en);
+
+        // enable uart
+        uart_enable();
+    }
+
+    void uart_set_flow_control(uint32_t flow_control) override
+    {
+        if (flow_control != 0 && flow_control != 1) {
+            throw std::runtime_error("Invalid flow control configuration (0=None, 1=RTS/CTS)");
+        }
+        std::lock_guard lock(hololink_.uart_lock());
+        flow_control_ = flow_control;
+        uart_disable();
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x1 << 14);
+        value |= (flow_control << 14);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        uint32_t gpio_dir = hololink_.read_uint32(GPIO_DIRECTION_BASE_REGISTER);
+        if (flow_control) {
+            gpio_dir |= (1 << 8);
+            gpio_dir |= (1 << 11);
+        } else {
+            gpio_dir &= ~(1 << 8);
+            gpio_dir |= (1 << 11);
+        }
+        hololink_.write_uint32(GPIO_DIRECTION_BASE_REGISTER, gpio_dir);
+        uint32_t gpio_mux_en = hololink_.read_uint32(VSYNC_GPIO);
+        gpio_mux_en |= (1 << 9);
+        hololink_.write_uint32(VSYNC_GPIO, gpio_mux_en);
+        uart_enable();
+    }
+
+    void uart_set_baud_rate(uint32_t baud_rate) override
+    {
+        // CTRL1 (0x0300_0404) - Baud Rate and TX Thresholds
+        // Bits 15:0: BAUD_DIV - Baud rate divisor
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Convert baud rate to divisor
+        int baud_div = baud_rate_to_divisor(baud_rate);
+        baud_rate_ = baud_rate;
+
+        // Disable UART while changing baud rate to prevent corruption
+        uart_disable();
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl1_);
+        value &= ~(0x0000FFFF << 0);
+        value |= (baud_div << 0);
+        hololink_.write_uint32(uart_ctrl1_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    void uart_set_data_bits(uint32_t data_bits) override
+    {
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 5:4: Data Width Selection: 0=8 bits (default), 1=7 bits, 2=6 bits, 3=5 bits
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Validate input before any operations
+        if (data_bits != 8 && data_bits != 7 && data_bits != 6 && data_bits != 5) {
+            throw std::invalid_argument(
+                fmt::format("Invalid data bits configuration: {}. Valid values are 5, 6, 7, or 8", data_bits));
+        }
+
+        data_bits_ = data_bits;
+
+        // Disable UART while changing configuration
+        uart_disable();
+
+        // Convert data_bits (8,7,6,5) to register encoding (0,1,2,3)
+        uint32_t data_bits_encoding = (8 - data_bits) & 0x3;
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x3 << 4);
+        value |= (data_bits_encoding << 4);
+        hololink_.write_uint32(uart_ctrl0_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    void uart_set_parity(uint32_t parity) override
+    {
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 7:6: Parity Mode: 0=NONE (default), 1=ODD, 2=EVEN, 3=Reserved
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Validate parity value
+        if (parity != 0 && parity != 1 && parity != 2) {
+            throw std::runtime_error("Invalid parity configuration");
+        }
+        parity_ = parity;
+
+        // Disable UART while changing configuration
+        uart_disable();
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x3 << 6);
+        value |= (parity << 6);
+        hololink_.write_uint32(uart_ctrl0_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    void uart_set_stop_bits(uint32_t stop_bits) override
+    {
+        // ### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bits 13:12: Stop Bits Configuration: 0=1 stop bit (default), 1=1.5 stop bits, 2=2 stop bits, 3=Reserved
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Convert user-facing stop_bits to register encoding
+        uint32_t stop_bits_encoding = stop_bits_to_encoding(stop_bits);
+        stop_bits_ = stop_bits_encoding;
+
+        // Disable UART while changing configuration
+        uart_disable();
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x3 << 12);
+        value |= (stop_bits_encoding << 12);
+        hololink_.write_uint32(uart_ctrl0_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    void uart_set_tx_fifo_threshold(uint32_t tx_almost_empty_threshold, uint32_t tx_almost_full_threshold) override
+    {
+        // ### CTRL1 (0x0300_0404) - TX Thresholds
+        // Bits 23:16: TX Almost Full Threshold (0-255, default: 252 when 0)
+        // Bits 31:24: TX Almost Empty Threshold (0-255, default: 4 when 0)
+        // uart_lock() required to serialize with uart_write/uart_read and other config.
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Validate thresholds
+        if (tx_almost_empty_threshold > 255) {
+            throw std::runtime_error("TX almost empty threshold cannot be greater than 255");
+        }
+        if (tx_almost_full_threshold > 255) {
+            throw std::runtime_error("TX almost full threshold cannot be greater than 255");
+        }
+        if (tx_almost_empty_threshold > tx_almost_full_threshold) {
+            throw std::runtime_error("TX almost empty threshold cannot be greater than almost full threshold");
+        }
+
+        tx_almost_empty_threshold_ = tx_almost_empty_threshold;
+        tx_almost_full_threshold_ = tx_almost_full_threshold;
+
+        // Disable UART while changing configuration
+        uart_disable();
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl1_);
+        value &= ~(0xFF << 16);
+        value |= (tx_almost_full_threshold << 16);
+        value &= ~(0xFF << 24);
+        value |= (tx_almost_empty_threshold << 24);
+        hololink_.write_uint32(uart_ctrl1_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    void uart_set_rx_fifo_threshold(uint32_t rx_almost_empty_threshold, uint32_t rx_almost_full_threshold) override
+    {
+        // ### CTRL0 (0x0300_0400) - RX Thresholds
+        // Bits 23:16: RX Almost Full Threshold (0-255, default: 252 when 0)
+        // Bits 31:24: RX Almost Empty Threshold (0-255, default: 4 when 0)
+        std::lock_guard lock(hololink_.uart_lock());
+
+        // Validate thresholds
+        if (rx_almost_empty_threshold > 255) {
+            throw std::runtime_error("RX almost empty threshold cannot be greater than 255");
+        }
+        if (rx_almost_full_threshold > 255) {
+            throw std::runtime_error("RX almost full threshold cannot be greater than 255");
+        }
+        if (rx_almost_empty_threshold > rx_almost_full_threshold) {
+            throw std::runtime_error("RX almost empty threshold cannot be greater than almost full threshold");
+        }
+
+        rx_almost_empty_threshold_ = rx_almost_empty_threshold;
+        rx_almost_full_threshold_ = rx_almost_full_threshold;
+
+        // Disable UART while changing configuration
+        uart_disable();
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0xFF << 16);
+        value |= (rx_almost_full_threshold << 16);
+        value &= ~(0xFF << 24);
+        value |= (rx_almost_empty_threshold << 24);
+        hololink_.write_uint32(uart_ctrl0_, value);
+
+        // Re-enable UART
+        uart_enable();
+    }
+
+    // Public configuration operations
+    void uart_disable() override
+    {
+        // disable uart and rx/tx
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 0: UART Enable (1=enabled, 0=disabled)
+        // Bit 1: TX Enable (1=enabled, 0=disabled)
+        // Bit 2: RX Enable (1=enabled, 0=disabled)
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+
+        value &= ~(0x7 << 0);
+
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART disable called, value={:#x}", value);
+    }
+
+    void uart_enable() override
+    {
+        // enable uart and rx/tx
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 0: UART Enable (1=enabled, 0=disabled)
+        // Bit 1: TX Enable (1=enabled, 0=disabled)
+        // Bit 2: RX Enable (1=enabled, 0=disabled)
+
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+
+        value |= (0x7 << 0);
+
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART enable called, value={:#x}", value);
+    }
+
+    void uart_tx_disable() override
+    {
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 1: TX Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x1 << 1);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART tx disable called, value={:#x}", value);
+    }
+
+    void uart_tx_enable() override
+    {
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 1: TX Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value |= (0x1 << 1);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART tx enable called, value={:#x}", value);
+    }
+
+    void uart_rx_disable() override
+    {
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 2: RX Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x1 << 2);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART rx disable called, value={:#x}", value);
+    }
+
+    void uart_rx_enable() override
+    {
+        // CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 2: RX Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value |= (0x1 << 2);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART rx enable called, value={:#x}", value);
+    }
+
+    void uart_enable_internal_loopback() override
+    {
+        //### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 3: Internal UART Loopback Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value |= (0x1 << 3);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART enable internal loopback called");
+    }
+
+    void uart_disable_internal_loopback() override
+    {
+        //### CTRL0 (0x0300_0400) - Primary Control Register
+        // Bit 3: Internal UART Loopback Enable (1=enabled, 0=disabled)
+        std::lock_guard lock(hololink_.uart_lock());
+        uint32_t value = hololink_.read_uint32(uart_ctrl0_);
+        value &= ~(0x1 << 3);
+        hololink_.write_uint32(uart_ctrl0_, value);
+        HSB_LOG_DEBUG("UART disable internal loopback called");
+    }
+
+    // dump registers values debug function - used for debugging purposes
+    // here we can see all sticky bits values
+    // add were needed to debug the uart functionality
+    void uart_dump_registers() override
+    {
+        uint32_t value0 = hololink_.read_uint32(uart_ctrl0_);
+        uint32_t value1 = hololink_.read_uint32(uart_ctrl1_);
+        HSB_LOG_DEBUG("UART dump registers called, ctrl0={:#x}, ctrl1={:#x}", value0, value1);
+
+        uint32_t value2 = hololink_.read_uint32(uart_ctrl2_);
+        uint32_t value3 = hololink_.read_uint32(uart_ctrl3_);
+        HSB_LOG_DEBUG("UART dump registers called, ctrl2={:#x}, ctrl3={:#x}", value2, value3);
+        uint32_t svalue0 = hololink_.read_uint32(uart_status0_);
+        uint32_t svalue1 = hololink_.read_uint32(uart_status1_);
+        HSB_LOG_DEBUG("UART dump registers called, status0={:#x}, status1={:#x}", svalue0, svalue1);
+    }
+
+    void uart_clear_sticky_bits(uint32_t bitmask) override
+    {
+        // Clear sticky bits using a bitmask
+        // ## CTRL3 (0x0300_040C) - Interrupt Clear Register (Write-Only)
+        // Each bit set to 1 in the bitmask will clear the corresponding sticky bit
+        //
+        // Bit positions:
+        //   Bit 0: tx_fifo_empty
+        //   Bit 1: tx_fifo_almost_full
+        //   Bit 2: tx_fifo_almost_empty
+        //   Bit 3: rx_parity_error
+        //   Bit 4: rx_frame_error
+        //   Bit 5: tx_overflow
+        //   Bit 6: rx_overflow
+        //
+        // Example usage:
+        //   0x01 - Clear bit 0 (TX FIFO empty)
+        //   0x07 - Clear bits 0, 1, 2 (all TX FIFO flags)
+        //   0x78 - Clear bits 3, 4, 5, 6 (all error flags)
+        //   0x7F - Clear all sticky bits
+
+        // Validate bitmask (only bits 0-6 are valid)
+        if (bitmask & ~0x7Fu) {
+            throw std::runtime_error("Invalid bitmask: only bits 0-6 are valid for sticky bit clearing");
+        }
+
+        // Write bitmask directly to clear sticky bits (write-1-to-clear)
+        hololink_.write_uint32(uart_ctrl3_, bitmask);
+
+        HSB_LOG_DEBUG("UART clear sticky bits called, bitmask={:#x}", bitmask);
+    }
+
+private:
+    /**
+     * @brief Convert baud rate to divisor value for UART configuration
+     *
+     * For 19.53125 MHz APB clock with 8x oversampling:
+     * BAUD_DIV = (APB_CLK_FREQ / (8 * BAUD_RATE)) - 1
+     *
+     * @param baud_rate Baud rate in bps (9600, 19200, 38400, 57600, or 115200)
+     * @return int Baud divisor value
+     * @throws std::runtime_error if baud rate is not supported
+     */
+    int baud_rate_to_divisor(uint32_t baud_rate) const
+    {
+        // For 19.53125 MHz APB clock with 8x oversampling:
+        // BAUD_DIV = (APB_CLK_FREQ / (8 * BAUD_RATE)) - 1
+        // 115200 baud: BAUD_DIV = 20 (0.91% error - excellent!)
+        // 57600 baud: BAUD_DIV = 41 (0.89% error)
+        // 38400 baud: BAUD_DIV = 62 (0.78% error)
+        // 19200 baud: BAUD_DIV = 126 (0.16% error)
+        // 9600 baud: BAUD_DIV = 254 (0.02% error)
+        switch (baud_rate) {
+        case 115200:
+            return 20;
+        case 57600:
+            return 41;
+        case 38400:
+            return 62;
+        case 19200:
+            return 126;
+        case 9600:
+            return 254;
+        default:
+            throw std::runtime_error("Invalid baud rate configuration");
+        }
+    }
+
+    /**
+     * @brief Convert user-facing stop_bits value to register encoding
+     *
+     * Register encoding: 0=1 stop bit (default), 1=1.5 stop bits, 2=2 stop bits, 3=Reserved
+     *
+     * @param stop_bits User-facing value: 1, 15 (for 1.5), or 2
+     * @return uint32_t Register encoding: 0, 1, or 2
+     * @throws std::runtime_error if stop_bits is not valid
+     */
+    uint32_t stop_bits_to_encoding(uint32_t stop_bits) const
+    {
+        switch (stop_bits) {
+        case 1:
+            return 0; // 1 stop bit
+        case 15:
+            return 1; // 1.5 stop bits (represented as integer 15)
+        case 2:
+            return 2; // 2 stop bits
+        default:
+            throw std::runtime_error("Invalid stop bits configuration");
+        }
+    }
+    Hololink& hololink_;
+    uint32_t port_number_;
+    uint32_t baud_rate_;
+    uint32_t data_bits_;
+    uint32_t parity_;
+    uint32_t stop_bits_;
+    uint32_t flow_control_;
+    uint32_t tx_almost_empty_threshold_;
+    uint32_t tx_almost_full_threshold_;
+    uint32_t rx_almost_empty_threshold_;
+    uint32_t rx_almost_full_threshold_;
+    // uart registers addresses for multiple ports usage
+    uint32_t uart_ctrl0_;
+    uint32_t uart_ctrl1_;
+    uint32_t uart_ctrl2_;
+    uint32_t uart_ctrl3_;
+    uint32_t uart_status0_;
+    uint32_t uart_status1_;
+    uint32_t uart_tx_data_;
+    uint32_t uart_rx_data_;
+    uint32_t uart_last_rx_;
+};
+
+std::shared_ptr<Hololink::Uart> Hololink::get_uart(uint32_t port_number, uint32_t baud_rate,
+    uint32_t data_bits, uint32_t parity, uint32_t stop_bits, uint32_t flow_control)
+{
+    (void)uart_lock(); // ensure the named lock is instantiated
+    return std::make_shared<hololink::Uart>(this[0], port_number, baud_rate, data_bits, parity, stop_bits, flow_control);
+}
+
+/**
+ * Software-triggered sequencer (SW_EVENT).
+ */
+class SoftwareSequencer : public Hololink::Sequencer {
 public:
     SoftwareSequencer(Hololink& hololink)
         : Hololink::Sequencer()
@@ -1133,13 +1943,99 @@ public:
         hololink_.configure_apb_event(event, location());
     }
 
-public:
+private:
     Hololink& hololink_;
 };
 
 std::shared_ptr<Hololink::Sequencer> Hololink::software_sequencer()
 {
     auto r = std::make_shared<SoftwareSequencer>(this[0]);
+    return r;
+}
+
+/**
+ * Sequencer for frame-related events (e.g. SIF_0/1_FRAME_START or END).
+ */
+class FrameSequencer : public Hololink::Sequencer {
+public:
+    FrameSequencer(Hololink& hololink, Hololink::Event event)
+        : Hololink::Sequencer()
+        , hololink_(hololink)
+        , event_(event)
+    {
+    }
+
+    void enable() override
+    {
+        done();
+        assign_location(event_);
+        write(hololink_);
+        hololink_.configure_apb_event(event_, location());
+    }
+
+private:
+    Hololink& hololink_;
+    Hololink::Event event_;
+};
+
+std::shared_ptr<Hololink::Sequencer> Hololink::sif0_frame_start_sequencer()
+{
+    auto r = std::make_shared<FrameSequencer>(this[0], Hololink::Event::SIF_0_FRAME_START);
+    return r;
+}
+
+std::shared_ptr<Hololink::Sequencer> Hololink::sif1_frame_start_sequencer()
+{
+    auto r = std::make_shared<FrameSequencer>(this[0], Hololink::Event::SIF_1_FRAME_START);
+    return r;
+}
+
+std::shared_ptr<Hololink::Sequencer> Hololink::sif0_frame_end_sequencer()
+{
+    auto r = std::make_shared<FrameSequencer>(this[0], Hololink::Event::SIF_0_FRAME_END);
+    return r;
+}
+
+std::shared_ptr<Hololink::Sequencer> Hololink::sif1_frame_end_sequencer()
+{
+    auto r = std::make_shared<FrameSequencer>(this[0], Hololink::Event::SIF_1_FRAME_END);
+    return r;
+}
+
+/**
+ * Sequencer for GPIO-related events.
+ */
+class GpioSequencer : public Hololink::Sequencer {
+public:
+    GpioSequencer(Hololink& hololink, Hololink::Event event)
+        : Hololink::Sequencer()
+        , hololink_(hololink)
+        , event_(event)
+    {
+    }
+
+    void enable() override
+    {
+        done();
+        assign_location(event_);
+        write(hololink_);
+        hololink_.configure_apb_event(event_, location());
+    }
+
+private:
+    Hololink& hololink_;
+    Hololink::Event event_;
+};
+
+std::shared_ptr<Hololink::Sequencer> Hololink::gpio0_sequencer()
+{
+    auto r = std::make_shared<GpioSequencer>(this[0], Hololink::Event::GPIO0);
+    return r;
+}
+
+std::shared_ptr<Hololink::Sequencer> Hololink::gpio1_sequencer()
+{
+    auto r = std::make_shared<GpioSequencer>(this[0], Hololink::Event::GPIO1);
     return r;
 }
 
@@ -1163,7 +2059,7 @@ public:
     {
         bool ok = hololink_.write_uint32(address, value, timeout);
         if (!ok) {
-            throw std::runtime_error(
+            hololink_.bad_write_response(RESPONSE_HOST_ERROR,
                 fmt::format("ACK failure writing I2C register {:#x}.", address));
         }
     }
@@ -1172,7 +2068,7 @@ public:
     {
         bool ok = hololink_.write_uint32(data, timeout);
         if (!ok) {
-            throw std::runtime_error("I2C ACK failure");
+            hololink_.bad_write_response(RESPONSE_HOST_ERROR, "I2C ACK failure");
         }
     }
 
@@ -1226,23 +2122,26 @@ public:
             }
             if (!timeout->retry()) {
                 // timed out
-                HSB_LOG_DEBUG("Timed out.");
-                throw TimeoutError(
+                hololink_.bad_read_response(RESPONSE_HOST_ERROR,
                     fmt::format("i2c_transaction i2c_address={:#x}", peripheral_i2c_address));
+                return {};
             }
         }
         hololink_.clear_apb_event(Hololink::Event::I2C_BUSY);
         // Check for errors.
         if (value & I2C_FSM_ERR) {
-            throw std::runtime_error("I2C port indicates I2C_FSM_ERR.");
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR, "I2C port indicates I2C_FSM_ERR.");
+            return {};
         }
         if (value & I2C_I2C_ERR) {
-            throw std::runtime_error("I2C port indicates I2C_I2C_ERR.");
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR, "I2C port indicates I2C_I2C_ERR.");
+            return {};
         }
         std::vector<uint8_t> r;
         if (value & I2C_I2C_NAK) {
             if (!ignore_nak) {
-                throw std::runtime_error("I2C port indicates I2C_I2C_NAK.");
+                hololink_.bad_read_response(RESPONSE_HOST_ERROR, "I2C port indicates I2C_I2C_NAK.");
+                return {};
             }
             HSB_LOG_DEBUG("Ignoring I2C NAK.");
             return r;
@@ -1267,7 +2166,7 @@ public:
     /**
      *
      */
-    Hololink::NamedLock& i2c_lock()
+    NamedLock& i2c_lock()
     {
         return hololink_.i2c_lock();
     }
@@ -1513,7 +2412,7 @@ uint32_t Hololink::GPIO::get_supported_pin_num(void)
 /** Constructs a lock using the shm_open() call to access a named
  * semaphore with the given name.
  */
-Hololink::NamedLock::NamedLock(Hololink& hololink, std::string name)
+NamedLock::NamedLock(std::string name)
     : fd_(-1)
 {
     // We use lockf on this file as our interprocess locking
@@ -1521,18 +2420,17 @@ Hololink::NamedLock::NamedLock(Hololink& hololink, std::string name)
     // we don't leave the lock held.  (An earlier implementation
     // using shm_open didn't guarantee releasing the lock if we exited due
     // to the user pressing control/C.)
-    std::string formatted_name = hololink.device_specific_filename(name);
     int permissions = 0666; // make sure other processes can write
-    fd_ = open(formatted_name.c_str(), O_WRONLY | O_CREAT, permissions);
+    fd_ = open(name.c_str(), O_WRONLY | O_CREAT, permissions);
     if (fd_ >= 0) {
         fchmod(fd_, permissions); // Make sure requested permissions aren't masked by umask
     } else {
         throw std::runtime_error(
-            fmt::format("open({}, ...) failed with errno={}: \"{}\"", formatted_name, errno, strerror(errno)));
+            fmt::format("open({}, ...) failed with errno={}: \"{}\"", name, errno, strerror(errno)));
     }
 }
 
-Hololink::NamedLock::~NamedLock() noexcept(false)
+NamedLock::~NamedLock() noexcept(false)
 {
     int r = close(fd_);
     if (r != 0) {
@@ -1541,9 +2439,18 @@ Hololink::NamedLock::~NamedLock() noexcept(false)
     }
 }
 
-void Hololink::NamedLock::lock()
+void NamedLock::lock()
 {
-    // Block until we're the owner.
+    // Lock out other threads; this can be called
+    // multiple times by the same thread.
+    process_mutex_.lock();
+    // Then lock the public lock, so that others
+    // are stopped too.  We may block here, no problem.
+    // Note that lockf is recursive too, we won't
+    // block if we already held this.  process_mutex_
+    // is also necessary because this lock isn't thread
+    // specific-- any thread in the program can add
+    // to the lock count and not block.
     int r = lockf(fd_, F_LOCK, 0);
     if (r != 0) {
         throw std::runtime_error(
@@ -1551,37 +2458,57 @@ void Hololink::NamedLock::lock()
     }
 }
 
-void Hololink::NamedLock::unlock()
+void NamedLock::unlock()
 {
-    // Let another process take ownership.
+    // We only get here with both fd_ and process_mutex_ locked.
     int r = lockf(fd_, F_ULOCK, 0);
     if (r != 0) {
         throw std::runtime_error(
             fmt::format("lockf failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
+    process_mutex_.unlock();
 }
 
-Hololink::NamedLock& Hololink::i2c_lock()
+NamedLock& Hololink::i2c_lock()
 {
-    static NamedLock lock(this[0], "hololink-i2c-lock");
+    static std::string lock_name = device_specific_filename("hololink-i2c-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
-Hololink::NamedLock& Hololink::spi_lock()
+NamedLock& Hololink::spi_lock()
 {
-    static NamedLock lock(this[0], "hololink-spi-lock");
+    static std::string lock_name = device_specific_filename("hololink-spi-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
-Hololink::NamedLock& Hololink::lock()
+NamedLock& Hololink::uart_lock()
 {
-    static NamedLock lock(this[0], "hololink-lock");
+    static std::string lock_name = device_specific_filename("hololink-uart-lock");
+    static NamedLock lock(lock_name);
+    return lock;
+}
+
+NamedLock& Hololink::lock()
+{
+    static std::string lock_name = device_specific_filename("hololink-lock");
+    static NamedLock lock(lock_name);
     return lock;
 }
 
 void Hololink::on_reset(std::shared_ptr<Hololink::ResetController> reset_controller)
 {
     reset_controllers_.push_back(reset_controller);
+}
+
+void Hololink::on_async_event(std::shared_ptr<Hololink::AsyncEventListener> listener)
+{
+    if (!listener) {
+        throw std::runtime_error("Invalid AsyncEventListener");
+    }
+    std::lock_guard<std::mutex> lock(async_event_listeners_mutex_);
+    async_event_listeners_.push_back(listener);
 }
 
 std::string Hololink::device_specific_filename(std::string name)
@@ -1604,6 +2531,10 @@ Hololink::ResetController::~ResetController()
 {
 }
 
+Hololink::AsyncEventListener::~AsyncEventListener()
+{
+}
+
 bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 {
     while (true) {
@@ -1623,7 +2554,8 @@ bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 bool Hololink::ptp_synchronized()
 {
     constexpr uint32_t SYNCHRONIZED = 0xF;
-    ptp_sync_stat_ = read_uint32(FPGA_PTP_SYNC_STAT);
+    std::shared_ptr<Timeout> timeout = std::make_shared<Timeout>(.5);
+    ptp_sync_stat_ = read_uint32(FPGA_PTP_SYNC_STAT, timeout);
     if ((ptp_sync_stat_ & SYNCHRONIZED) == SYNCHRONIZED) {
         return true;
     }
@@ -1932,7 +2864,78 @@ void Hololink::async_event_thread()
             throw std::runtime_error(fmt::format("Buffer underflow in async event message"));
         }
         HSB_LOG_DEBUG("async_event_thread received {} bytes from={} interrupt_active={:#x} interrupt_state={:#x} timestamp_s={}, timestamp_ns={}.", received.size(), peer_ip, interrupt_active, interrupt_state, timestamp_s, timestamp_ns);
+
+        // Notify any registered async event listeners.
+        std::vector<std::shared_ptr<AsyncEventListener>> listeners;
+        {
+            std::lock_guard<std::mutex> lock(async_event_listeners_mutex_);
+            listeners = async_event_listeners_;
+        }
+        for (const auto& listener : listeners) {
+            if (!listener) {
+                continue;
+            }
+            try {
+                // Call appropriate callbacks for each event based on interrupt_state.
+
+                // Call GPIO callback if GPIO is active
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::GPIO0))) {
+                    listener->on_gpio0_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::GPIO1))) {
+                    listener->on_gpio1_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+
+                // For frame events, we still check interrupt_active to only notify on transitions
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::SIF_0_FRAME_START))) {
+                    listener->on_sif0_frame_start_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::SIF_0_FRAME_END))) {
+                    listener->on_sif0_frame_end_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::SIF_1_FRAME_START))) {
+                    listener->on_sif1_frame_start_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+                if (interrupt_active & (1U << static_cast<uint32_t>(Event::SIF_1_FRAME_END))) {
+                    listener->on_sif1_frame_end_event(interrupt_state, timestamp_s, timestamp_ns);
+                }
+            } catch (const std::exception& e) {
+                HSB_LOG_ERROR("async_event_thread listener exception: {}", e.what());
+            } catch (...) {
+                HSB_LOG_ERROR("async_event_thread listener unknown exception.");
+            }
+        }
     }
+}
+
+bool Hololink::write_timeout_error(const std::string& message)
+{
+    HSB_LOG_ERROR(message);
+    throw TimeoutError(message);
+}
+
+uint32_t Hololink::read_timeout_error(const std::string& message)
+{
+    HSB_LOG_ERROR(message);
+    throw TimeoutError(message);
+}
+
+bool Hololink::bad_write_response(uint32_t response_code, const std::string& message)
+{
+    HSB_LOG_ERROR(message);
+    throw TransactionError(message);
+}
+
+std::tuple<bool, std::vector<uint32_t>> Hololink::bad_read_response(uint32_t response_code, const std::string& message)
+{
+    HSB_LOG_ERROR(message);
+    throw TransactionError(message);
+}
+
+void Hololink::malformed_response(const std::string& message)
+{
+    HSB_LOG_ERROR(message);
+    throw TransactionError(message);
 }
 
 /**
@@ -2019,6 +3022,18 @@ void Hololink::Sequencer::assign_location(Hololink::Event event)
     case Hololink::Event::SW_EVENT:
         address = APB_RAM + 0x800;
         break;
+    case Hololink::Event::GPIO0:
+        address = APB_RAM + 0x300;
+        break;
+    case Hololink::Event::GPIO1:
+        address = APB_RAM + 0x400;
+        break;
+    case Hololink::Event::SIF_0_FRAME_START:
+        address = APB_RAM + 0x500;
+        break;
+    case Hololink::Event::SIF_1_FRAME_START:
+        address = APB_RAM + 0x600;
+        break;
     default:
         throw std::runtime_error(fmt::format("Sequencer assign_location with unexpected event={}", static_cast<int>(event)));
     }
@@ -2095,6 +3110,8 @@ Hololink::PtpSynchronizer::PtpSynchronizer(Hololink& hololink)
     : hololink_(hololink)
     , frequency_(0)
     , frequency_control_(0)
+    , delay_ns_(0)
+    , active_(false)
 {
 }
 
@@ -2103,8 +3120,11 @@ void Hololink::PtpSynchronizer::set_frequency(unsigned frequency)
     // The first time we're set up, we require they provide
     // a frequency value.
     if (frequency_ == 0) {
-        // VSYNC Frequency: 0=10Hz, 1=30Hz, 2=60Hz, 3=90Hz, 4=120Hz
+        // VSYNC Frequency: 0=10Hz, 1=30Hz, 2=60Hz, 3=90Hz, 4=120Hz, 5=1Hz
         switch (frequency) {
+        case 1:
+            frequency_control_ = 5;
+            break;
         case 10:
             frequency_control_ = 0;
             break;
@@ -2138,26 +3158,55 @@ void Hololink::PtpSynchronizer::set_frequency(unsigned frequency)
     }
 }
 
+void Hololink::PtpSynchronizer::set_delay(unsigned delay_ns)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    delay_ns_ = delay_ns;
+
+    if (active_) {
+        // update the delay if the synchronizer is active
+        hololink_.write_uint32(VSYNC_CONTROL, 0); // Disable VSYNC
+        hololink_.write_uint32(VSYNC_DELAY, delay_ns_); // VSYNC delay (ns)
+        hololink_.write_uint32(VSYNC_CONTROL, 1); // Enable VSYNC
+    }
+}
+
 void Hololink::PtpSynchronizer::setup()
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (active_) {
+        HSB_LOG_ERROR("PtpSynchronizer: Already setup");
+        return;
+    }
+
     HSB_LOG_INFO("PtpSynchronizer: Setting up PTP synchronization with frequency {} Hz", frequency_);
 
     // Configure FPGA registers for VSYNC timing
     hololink_.write_uint32(VSYNC_CONTROL, 0); // Disable VSYNC
     hololink_.write_uint32(VSYNC_FREQUENCY, frequency_control_); // Set frequency control
     hololink_.write_uint32(VSYNC_START, 0); // VSYNC Start Value (For Active Low, use 0x1)
-    hololink_.write_uint32(VSYNC_DELAY, 0); // VSYNC delay (ns)
+    hololink_.write_uint32(VSYNC_DELAY, delay_ns_); // VSYNC delay (ns)
     hololink_.write_uint32(VSYNC_EXPOSURE, 0xF4240); // Exposure time (1ms)
     hololink_.write_uint32(VSYNC_CONTROL, 1); // Enable VSYNC
     hololink_.write_uint32(VSYNC_GPIO, 0xF); // Set GPIO as OUT
+
+    active_ = true;
 }
 
 void Hololink::PtpSynchronizer::shutdown()
 {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!active_) {
+        HSB_LOG_ERROR("PtpSynchronizer: Already shut down");
+        return;
+    }
+
     HSB_LOG_INFO("PtpSynchronizer: Shutting down PTP synchronization");
 
     // Disable VSYNC
     hololink_.write_uint32(VSYNC_CONTROL, 0);
+
+    active_ = false;
 }
 
 bool Hololink::PtpSynchronizer::is_enabled()

@@ -31,8 +31,10 @@ from ._emulation import (
     I2CPeripheral,
     I2CStatus,
     IPAddress,
-    LinuxDataPlane,
+    RoCEv2DataPlane,
 )
+
+LinuxDataPlane = RoCEv2DataPlane
 
 __all__ = [
     "COEDataPlane",
@@ -45,6 +47,7 @@ __all__ = [
     "I2CPeripheral",
     "I2CStatus",
     "IPAddress",
+    "RoCEv2DataPlane",
     "LinuxDataPlane",
     "sensors",
 ]

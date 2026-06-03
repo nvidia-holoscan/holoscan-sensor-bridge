@@ -50,7 +50,7 @@ class ProfilerOperator(holoscan.core.Operator):
         tensor = in_message.get("")
         data = cp.asarray(tensor, dtype=cp.uint8).get()
         deserializer = hololink_module.Deserializer(data)
-        for _ in range(self._samples_per_frame):
+        while deserializer.remaining() > 0:
             timestamp_ns = deserializer.next_uint32_le()
             timestamp_s = deserializer.next_uint32_le()
             timestamp_s += timestamp_ns * SEC_PER_NS

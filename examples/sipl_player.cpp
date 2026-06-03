@@ -25,11 +25,15 @@
 #include <hololink/operators/packed_format_converter/packed_format_converter.hpp>
 #include <hololink/operators/sipl_capture/sipl_capture.hpp>
 
+#include <future>
+#include <memory>
+#include <vector>
+
 class SIPLMetadataPrinterOp : public holoscan::Operator {
 public:
     HOLOSCAN_OPERATOR_FORWARD_ARGS(SIPLMetadataPrinterOp)
 
-    SIPLMetadataPrinterOp(const std::vector<hololink::operators::SIPLCaptureOp::CameraInfo>& camera_info)
+    SIPLMetadataPrinterOp(const hololink::operators::SIPLCaptureService::CameraInfo& camera_info)
         : camera_info_(camera_info)
     {
     }
@@ -43,47 +47,184 @@ public:
     {
         auto entity = op_input.receive<holoscan::gxf::Entity>("input");
         if (entity) {
-            for (const auto& camera : camera_info_) {
-                // Print out the HSB metadata.
-                HOLOSCAN_LOG_INFO("[{}] frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}, bytes={}",
-                    camera.output_name,
-                    metadata()->get<int64_t>(camera.output_name + "_frame_number"),
-                    metadata()->get<int64_t>(camera.output_name + "_timestamp_s"),
-                    metadata()->get<int64_t>(camera.output_name + "_timestamp_ns"),
-                    metadata()->get<int64_t>(camera.output_name + "_metadata_s"),
-                    metadata()->get<int64_t>(camera.output_name + "_metadata_ns"),
-                    metadata()->get<int64_t>(camera.output_name + "_crc"),
-                    metadata()->get<int64_t>(camera.output_name + "_bytes_written"));
+            // Print out the HSB metadata.
+            const auto& camera = camera_info_;
+            HOLOSCAN_LOG_INFO("[{}] frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}, bytes={}",
+                camera.output_name,
+                metadata()->get<int64_t>(camera.output_name + "_frame_number"),
+                metadata()->get<int64_t>(camera.output_name + "_timestamp_s"),
+                metadata()->get<int64_t>(camera.output_name + "_timestamp_ns"),
+                metadata()->get<int64_t>(camera.output_name + "_metadata_s"),
+                metadata()->get<int64_t>(camera.output_name + "_metadata_ns"),
+                metadata()->get<int64_t>(camera.output_name + "_crc"),
+                metadata()->get<int64_t>(camera.output_name + "_bytes_written"));
 
-                // The SIPL image metadata is written to "{camera_name}_metadata"
-                // Print out the start/end timestamps as an example.
-                const auto& image_metadata = metadata()->get<nvsipl::INvSIPLClient::ImageMetaData>(camera.output_name + "_metadata");
-                HOLOSCAN_LOG_INFO("    SIPL Metadata: start time={}, end time={}",
-                    image_metadata.frameCaptureStartTSC,
-                    image_metadata.frameCaptureTSC);
+            // The SIPL image metadata is written to "{camera_name}_metadata"
+            // Print out the start/end timestamps as an example.
+            const auto& image_metadata = metadata()->get<nvsipl::INvSIPLClient::ImageMetaData>(camera.output_name + "_metadata");
+            HOLOSCAN_LOG_INFO("    SIPL Metadata: start time={}, end time={}",
+                image_metadata.frameCaptureStartTSC,
+                image_metadata.frameCaptureTSC);
 
-                // The ISP statistics, when using ISP, are written to "{camera_name}_isp_stats"
-                // Print out the average values for the first LAC region as an example.
-                if (metadata()->has_key(camera.output_name + "_isp_stats")) {
-                    const auto& isp_stats = metadata()->get<nvsipl::IspStatsInfo>(camera.output_name + "_isp_stats");
-                    const auto& lac_data = isp_stats.ispStatsData.lacStatsData[0].data[0];
-                    HOLOSCAN_LOG_INFO("    LAC Averages (window 0): ({:.4f}, {:.4f}, {:.4f}, {:.4f})",
-                        lac_data.average[0][0],
-                        lac_data.average[0][1],
-                        lac_data.average[0][2],
-                        lac_data.average[0][3]);
-                }
+            // The ISP statistics, when using ISP, are written to "{camera_name}_isp_stats"
+            // Print out the average values for the first LAC region as an example.
+            if (metadata()->has_key(camera.output_name + "_isp_stats")) {
+                const auto& isp_stats = metadata()->get<nvsipl::IspStatsInfo>(camera.output_name + "_isp_stats");
+                const auto& lac_data = isp_stats.ispStatsData.lacStatsData[0].data[0];
+                HOLOSCAN_LOG_INFO("    LAC Averages (window 0): ({:.4f}, {:.4f}, {:.4f}, {:.4f})",
+                    lac_data.average[0][0],
+                    lac_data.average[0][1],
+                    lac_data.average[0][2],
+                    lac_data.average[0][3]);
             }
         }
     }
 
 private:
-    const std::vector<hololink::operators::SIPLCaptureOp::CameraInfo>& camera_info_;
+    hololink::operators::SIPLCaptureService::CameraInfo camera_info_;
 };
 
-class Application : public holoscan::Application {
+namespace {
+
+void add_raw_flow(
+    holoscan::Application& app,
+    const std::shared_ptr<hololink::operators::SIPLCameraOutputOp>& sipl_output,
+    const hololink::operators::SIPLCaptureService::CameraInfo& info,
+    const std::shared_ptr<holoscan::ops::HolovizOp>& visualizer)
+{
+    using namespace holoscan;
+
+    const int32_t storage_type_device_memory = 1;
+    const size_t num_blocks = 4;
+    size_t size = info.width * info.height * 2;
+    auto converter_pool = app.make_resource<holoscan::BlockMemoryPool>(
+        fmt::format("converter_pool_{}", info.output_name),
+        storage_type_device_memory, size, num_blocks);
+
+    auto packed_format_converter = app.make_operator<hololink::operators::PackedFormatConverterOp>(
+        fmt::format("packed_format_converter_{}", info.output_name),
+        Arg("allocator", converter_pool),
+        Arg("in_tensor_name", info.output_name),
+        Arg("out_tensor_name", info.output_name));
+    packed_format_converter->configure(
+        info.offset, info.bytes_per_line, info.width, info.height, info.pixel_format, 0);
+
+    auto image_processor = app.make_operator<hololink::operators::ImageProcessorOp>(
+        fmt::format("image_processor_{}", info.output_name),
+        Arg("optical_black", 0),
+        Arg("bayer_format", static_cast<int>(info.bayer_format)),
+        Arg("pixel_format", static_cast<int>(info.pixel_format)));
+
+    size = info.width * info.height * 2 * 4;
+    auto demosaic_pool = app.make_resource<holoscan::BlockMemoryPool>(
+        fmt::format("demosaic_pool_{}", info.output_name),
+        storage_type_device_memory, size, num_blocks);
+
+    auto bayer_demosaic = app.make_operator<holoscan::ops::BayerDemosaicOp>(
+        fmt::format("bayer_demosaic_{}", info.output_name),
+        Arg("pool", demosaic_pool),
+        Arg("generate_alpha", true),
+        Arg("alpha_value", 65535),
+        Arg("bayer_grid_pos", static_cast<int>(info.bayer_format)),
+        Arg("in_tensor_name", info.output_name),
+        Arg("out_tensor_name", info.output_name));
+
+    app.add_flow(sipl_output, packed_format_converter, { { "output", "input" } });
+    app.add_flow(packed_format_converter, image_processor, { { "output", "input" } });
+    app.add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
+    app.add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
+}
+
+} // namespace
+
+/// Holoscan application for a single camera, sharing a SIPLCaptureService with other instances.
+class SiplCameraApplication : public holoscan::Application {
 public:
-    Application(
+    SiplCameraApplication(
+        std::shared_ptr<hololink::operators::SIPLCaptureService> sipl_service,
+        uint32_t camera_index,
+        bool raw_output,
+        bool headless,
+        bool fullscreen,
+        int frame_limit,
+        bool print_metadata)
+        : sipl_service_(std::move(sipl_service))
+        , camera_index_(camera_index)
+        , raw_output_(raw_output)
+        , headless_(headless)
+        , fullscreen_(fullscreen)
+        , frame_limit_(frame_limit)
+        , print_metadata_(print_metadata)
+    {
+        enable_metadata(print_metadata);
+    }
+
+    void compose() override
+    {
+        using namespace holoscan;
+
+        const auto& camera_info = sipl_service_->get_camera_info();
+        const auto& info = camera_info.at(camera_index_);
+
+        std::shared_ptr<Condition> condition;
+        if (frame_limit_) {
+            condition = make_condition<CountCondition>(
+                fmt::format("count_{}", info.output_name), frame_limit_);
+        } else {
+            condition = make_condition<BooleanCondition>(
+                fmt::format("ok_{}", info.output_name), true);
+        }
+
+        auto sipl_output = make_operator<hololink::operators::SIPLCameraOutputOp>(
+            fmt::format("sipl_output_{}", info.output_name),
+            sipl_service_,
+            camera_index_,
+            condition);
+
+        if (print_metadata_) {
+            auto sipl_metadata_printer = make_operator<SIPLMetadataPrinterOp>(
+                fmt::format("sipl_metadata_printer_{}", info.output_name),
+                info);
+            add_flow(sipl_output, sipl_metadata_printer, { { "output", "input" } });
+        }
+
+        ops::HolovizOp::InputSpec::View view;
+        view.offset_x_ = 0;
+        view.offset_y_ = 0;
+        view.width_ = 1;
+        view.height_ = 1;
+
+        ops::HolovizOp::InputSpec spec(info.output_name, ops::HolovizOp::InputType::COLOR);
+        spec.views_.push_back(view);
+
+        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
+            fmt::format("holoviz_{}", info.output_name),
+            Arg("tensors", std::vector<ops::HolovizOp::InputSpec> { spec }),
+            Arg("window_title", info.output_name),
+            Arg("fullscreen", fullscreen_),
+            Arg("headless", headless_));
+
+        if (!raw_output_) {
+            add_flow(sipl_output, visualizer, { { "output", "receivers" } });
+        } else {
+            add_raw_flow(*this, sipl_output, info, visualizer);
+        }
+    }
+
+private:
+    std::shared_ptr<hololink::operators::SIPLCaptureService> sipl_service_;
+    uint32_t camera_index_;
+    bool raw_output_;
+    bool headless_;
+    bool fullscreen_;
+    int frame_limit_;
+    bool print_metadata_;
+};
+
+/// Holoscan application that tiles all cameras into one Holoviz window.
+class SiplPlayerApplication : public holoscan::Application {
+public:
+    SiplPlayerApplication(
         const std::string& camera_config,
         const std::string& json_config,
         bool raw_output,
@@ -122,20 +263,27 @@ public:
         }
 
         // SIPL capture operator captures either the RAW or ISP-Processed image via NvSIPL.
-        auto sipl_capture = make_operator<hololink::operators::SIPLCaptureOp>(
-            "sipl_capture",
-            camera_config_,
-            json_config_,
-            raw_output_,
-            condition);
-        const auto& camera_info = sipl_capture->get_camera_info();
+        sipl_service_ = std::make_shared<hololink::operators::SIPLCaptureService>(
+            camera_config_, json_config_, raw_output_);
+        const auto& camera_info = sipl_service_->get_camera_info();
 
-        if (print_metadata_) {
-            // Print out the metadata provided by NvSIPL.
-            auto sipl_metadata_printer = make_operator<SIPLMetadataPrinterOp>(
-                "sipl_metadata_printer",
-                camera_info);
-            add_flow(sipl_capture, sipl_metadata_printer, { { "output", "input" } });
+        std::vector<std::shared_ptr<hololink::operators::SIPLCameraOutputOp>> sipl_outputs;
+        for (uint32_t camera_index = 0; camera_index < camera_info.size(); ++camera_index) {
+            const auto& info = camera_info[camera_index];
+            auto sipl_output = make_operator<hololink::operators::SIPLCameraOutputOp>(
+                fmt::format("sipl_output_{}", info.output_name),
+                sipl_service_,
+                camera_index,
+                condition);
+            sipl_outputs.push_back(sipl_output);
+
+            if (print_metadata_) {
+                // Print out the metadata provided by NvSIPL.
+                auto sipl_metadata_printer = make_operator<SIPLMetadataPrinterOp>(
+                    fmt::format("sipl_metadata_printer_{}", info.output_name),
+                    info);
+                add_flow(sipl_output, sipl_metadata_printer, { { "output", "input" } });
+            }
         }
 
         // Holoviz is used to render the image(s).
@@ -162,7 +310,9 @@ public:
         if (!raw_output_) {
             // When capturing ISP-processed images from SIPL, output directly
             // from SIPL to the vizualizer.
-            add_flow(sipl_capture, visualizer, { { "output", "receivers" } });
+            for (const auto& sipl_output : sipl_outputs) {
+                add_flow(sipl_output, visualizer, { { "output", "receivers" } });
+            }
         } else {
             // If capturing RAW, we need to do the following between the SIPL capture and Holoviz:
             //   1) Convert the packed RAW to 16-bit Bayer (PackedFormatConverterOp)
@@ -170,51 +320,7 @@ public:
             //   3) Demosaic the Bayer to RGB.
             // These operators only process one buffer each, so each camera needs separate instances.
             for (uint32_t camera_index = 0; camera_index < camera_info.size(); ++camera_index) {
-                const auto& info = camera_info[camera_index];
-
-                // Convert packed RAW to 16-bit Bayer.
-                const int32_t storage_type_device_memory = 1;
-                const size_t num_blocks = 2;
-                size_t size = info.width * info.height * 2; // 16-bit Bayer
-                auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
-                    fmt::format("converter_pool_{}", info.output_name),
-                    storage_type_device_memory, size, num_blocks);
-
-                auto packed_format_converter = make_operator<hololink::operators::PackedFormatConverterOp>(
-                    fmt::format("packed_format_converter_{}", info.output_name),
-                    Arg("allocator", converter_pool),
-                    Arg("in_tensor_name", info.output_name),
-                    Arg("out_tensor_name", info.output_name));
-                packed_format_converter->configure(
-                    info.offset, info.bytes_per_line, info.width, info.height, info.pixel_format, 0);
-
-                // Perform basic ISP operations.
-                auto image_processor = make_operator<hololink::operators::ImageProcessorOp>(
-                    fmt::format("image_processor_{}", info.output_name),
-                    Arg("optical_black", 0),
-                    Arg("bayer_format", static_cast<int>(info.bayer_format)),
-                    Arg("pixel_format", static_cast<int>(info.pixel_format)));
-
-                // Bayer demosaic to RGBA buffer.
-                size = info.width * info.height * 2 * 4; // 16-bit RGBA
-                auto demosaic_pool = make_resource<holoscan::BlockMemoryPool>(
-                    fmt::format("demosaic_pool_{}", info.output_name),
-                    storage_type_device_memory, size, num_blocks);
-
-                auto bayer_demosaic = make_operator<holoscan::ops::BayerDemosaicOp>(
-                    fmt::format("bayer_demosaic_{}", info.output_name),
-                    Arg("pool", demosaic_pool),
-                    Arg("generate_alpha", true),
-                    Arg("alpha_value", 65535),
-                    Arg("bayer_grid_pos", static_cast<int>(info.bayer_format)),
-                    Arg("in_tensor_name", info.output_name),
-                    Arg("out_tensor_name", info.output_name));
-
-                // Define the application flow.
-                add_flow(sipl_capture, packed_format_converter, { { "output", "input" } });
-                add_flow(packed_format_converter, image_processor, { { "output", "input" } });
-                add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
-                add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
+                add_raw_flow(*this, sipl_outputs[camera_index], camera_info[camera_index], visualizer);
             }
         }
     }
@@ -227,23 +333,59 @@ private:
     bool fullscreen_;
     int frame_limit_;
     bool print_metadata_;
+    std::shared_ptr<hololink::operators::SIPLCaptureService> sipl_service_;
 };
+
+void run_separate_applications(
+    const std::string& camera_config,
+    const std::string& json_config,
+    bool raw_output,
+    bool headless,
+    bool fullscreen,
+    int frame_limit,
+    bool print_metadata)
+{
+    auto sipl_service = std::make_shared<hololink::operators::SIPLCaptureService>(
+        camera_config, json_config, raw_output);
+    const auto& camera_info = sipl_service->get_camera_info();
+
+    std::vector<std::shared_ptr<SiplCameraApplication>> apps;
+    std::vector<std::future<void>> futures;
+    apps.reserve(camera_info.size());
+    futures.reserve(camera_info.size());
+
+    for (uint32_t camera_index = 0; camera_index < camera_info.size(); ++camera_index) {
+        auto app = std::make_shared<SiplCameraApplication>(
+            sipl_service,
+            camera_index,
+            raw_output,
+            headless,
+            fullscreen,
+            frame_limit,
+            print_metadata);
+        apps.push_back(app);
+        futures.push_back(std::async(std::launch::async, [app]() { app->run(); }));
+    }
+
+    for (auto& future : futures) {
+        future.get();
+    }
+}
 
 int main(int argc, char** argv)
 {
     using namespace hololink::args;
     OptionsDescription options_description("Allowed options");
 
-    hololink::logging::hsb_log_level = hololink::logging::HSB_LOG_LEVEL_DEBUG;
-
     // clang-format off
     options_description.add_options()
-        ("camera-config", value<std::string>()->default_value(""), "Camera configuration to use")
+        ("camera-config", value<std::string>()->default_value(""), "Camera config to use")
         ("json-config", value<std::string>()->default_value(""), "JSON configuration file to use")
         ("list-configs", bool_switch()->default_value(false), "List available camera configurations then exit")
         ("raw", bool_switch()->default_value(false), "Use RAW capture path (uses CUDA-based ISP)")
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
+        ("separate", bool_switch()->default_value(false), "Run each camera in a separate Holoscan application")
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
         ("metadata", bool_switch()->default_value(false), "Print frame metadata")
         ;
@@ -253,18 +395,26 @@ int main(int argc, char** argv)
 
     try {
         if (variables_map["list-configs"].as<bool>()) {
-            hololink::operators::SIPLCaptureOp::list_available_configs(
+            hololink::operators::SIPLCaptureService::list_available_configs(
                 variables_map["json-config"].as<std::string>());
         } else {
-            auto app = std::make_unique<Application>(
-                variables_map["camera-config"].as<std::string>(),
-                variables_map["json-config"].as<std::string>(),
-                variables_map["raw"].as<bool>(),
-                variables_map["headless"].as<bool>(),
-                variables_map["fullscreen"].as<bool>(),
-                variables_map["frame-limit"].as<int>(),
-                variables_map["metadata"].as<bool>());
-            app->run();
+            const auto camera_config = variables_map["camera-config"].as<std::string>();
+            const auto json_config = variables_map["json-config"].as<std::string>();
+            const auto raw_output = variables_map["raw"].as<bool>();
+            const auto headless = variables_map["headless"].as<bool>();
+            const auto fullscreen = variables_map["fullscreen"].as<bool>();
+            const auto separate = variables_map["separate"].as<bool>();
+            const auto frame_limit = variables_map["frame-limit"].as<int>();
+            const auto print_metadata = variables_map["metadata"].as<bool>();
+
+            if (separate) {
+                run_separate_applications(
+                    camera_config, json_config, raw_output, headless, fullscreen, frame_limit, print_metadata);
+            } else {
+                auto app = std::make_unique<SiplPlayerApplication>(
+                    camera_config, json_config, raw_output, headless, fullscreen, frame_limit, print_metadata);
+                app->run();
+            }
         }
         return 0;
     } catch (const std::exception& e) {

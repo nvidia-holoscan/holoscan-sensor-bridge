@@ -59,11 +59,16 @@ docker run \
     --gpus all \
     --runtime=nvidia \
     --shm-size=1gb \
+    --ulimit stack=33554432 \
     --privileged \
     --name "$NAME" \
     -v $PWD:$PWD \
     -v $ROOT:$ROOT \
     -v $HOME:$HOME \
+    $(if [ -d /opt/nvidia/pva-sdk-2.9 ]; then echo "-v /opt/nvidia/pva-sdk-2.9:/opt/nvidia/pva-sdk-2.9"; fi) \
+    $(if [ -d /etc/pva ]; then echo "-v /etc/pva:/etc/pva"; fi) \
+    $(if [ -d /usr/lib/aarch64-linux-gnu/nvidia ]; then echo "-v /usr/lib/aarch64-linux-gnu/nvidia:/usr/lib/aarch64-linux-gnu/nvidia"; fi) \
+    $(if [ -d /usr/lib/aarch64-linux-gnu/tegra ]; then echo "-v /usr/lib/aarch64-linux-gnu/tegra:/usr/lib/aarch64-linux-gnu/tegra"; fi) \
     -v /sys/bus/pci/devices:/sys/bus/pci/devices \
     -v /sys/kernel/mm/hugepages:/sys/kernel/mm/hugepages \
     -v /dev:/dev \
@@ -76,5 +81,6 @@ docker run \
     -e NVIDIA_VISIBLE_DEVICES=all \
     -e DISPLAY=$DISPLAY \
     -e enableRawReprocess=2 \
+    -e rawReprocessModulePartName="A6V26" \
     hololink-demo:$VERSION \
     $*

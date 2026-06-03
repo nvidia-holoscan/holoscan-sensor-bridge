@@ -1,0 +1,107 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.# IO pins
+
+ldc_set_location -site {F16} [get_ports PCLK_IN]
+ldc_set_location -site {F15} [get_ports RESET_N]
+ldc_set_location -site {E16} [get_ports SWRST_N]
+ldc_set_port -iobuf {PULLMODE=NONE IO_TYPE=LVCMOS18} [get_ports PCLK_IN]
+ldc_set_port -iobuf {PULLMODE=UP IO_TYPE=LVCMOS18} [get_ports RESET_N]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports SWRST_N]
+#FLASH
+ldc_set_location -site {C16} [get_ports FLASH_SPI_MSCK]
+ldc_set_location -site {C15} [get_ports FLASH_SPI_MCSN]
+ldc_set_location -site {C14} [get_ports {FLASH_SPI_MOSI[0]}]
+ldc_set_location -site {D16} [get_ports {FLASH_SPI_MOSI[1]}]
+ldc_set_location -site {D15} [get_ports {FLASH_SPI_MOSI[2]}]
+ldc_set_location -site {D12} [get_ports {FLASH_SPI_MOSI[3]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports FLASH_SPI_MSCK]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports FLASH_SPI_MCSN]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports {FLASH_SPI_MOSI[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports {FLASH_SPI_MOSI[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports {FLASH_SPI_MOSI[2]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports {FLASH_SPI_MOSI[3]}]
+# Camera SPI
+ldc_set_location -site {G15} [get_ports CTRL_SPI_MOSI]
+ldc_set_location -site {C13} [get_ports CTRL_SPI_SCSN]
+ldc_set_location -site {G13} [get_ports CTRL_SPI_SSCK]
+ldc_set_location -site {G11} [get_ports CTRL_SPI_MISO]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18 GLITCHFILTER=ON} [get_ports CTRL_SPI_MOSI]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18 GLITCHFILTER=ON} [get_ports CTRL_SPI_SCSN]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18 GLITCHFILTER=ON} [get_ports CTRL_SPI_SSCK]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports CTRL_SPI_MISO]
+# Camera LVDS Data
+#ldc_set_location -site {E15} [get_ports {LVDS_CAM_RDY[0]}]
+ldc_set_location -site {E15} [get_ports LVDS_CAM_RDY]
+ldc_set_location -site {M14} [get_ports {LVDS_CAM_DCLK[0]}]
+ldc_set_location -site {P15} [get_ports {LVDS_CAM_DATA[0]}]
+ldc_set_location -site {T12} [get_ports {LVDS_CAM_DATA[1]}]
+ldc_set_location -site {R4} [get_ports {LVDS_CAM_DATA[2]}]
+ldc_set_location -site {R9} [get_ports {LVDS_CAM_DATA[3]}]
+ldc_set_location -site {R3} [get_ports {LVDS_CAM_DATA[4]}]
+ldc_set_location -site {M16} [get_ports {LVDS_CAM_DATA[5]}]
+ldc_set_location -site {P10} [get_ports {LVDS_CAM_DATA[6]}]
+ldc_set_location -site {R12} [get_ports {LVDS_CAM_DATA[7]}]
+ldc_set_location -site {R16} [get_ports {LVDS_CAM_DATA[8]}]
+ldc_set_location -site {R5} [get_ports {LVDS_CAM_DATA[9]}]
+ldc_set_location -site {P6} [get_ports {LVDS_CAM_DATA[10]}]
+#ldc_set_location -site {E16} [get_ports {LVDS_CAM_RDY[1]}]
+ldc_set_location -site {L7} [get_ports {LVDS_CAM_DCLK[1]}]
+ldc_set_location -site {T9} [get_ports {LVDS_CAM_DATA[11]}]
+ldc_set_location -site {L6} [get_ports {LVDS_CAM_DATA[12]}]
+ldc_set_location -site {N4} [get_ports {LVDS_CAM_DATA[13]}]
+ldc_set_location -site {P1} [get_ports {LVDS_CAM_DATA[14]}]
+ldc_set_location -site {R11} [get_ports {LVDS_CAM_DATA[15]}]
+ldc_set_location -site {R1} [get_ports {LVDS_CAM_DATA[16]}]
+ldc_set_location -site {T3} [get_ports {LVDS_CAM_DATA[17]}]
+ldc_set_location -site {P3} [get_ports {LVDS_CAM_DATA[18]}]
+ldc_set_location -site {M3} [get_ports {LVDS_CAM_DATA[19]}]
+ldc_set_location -site {L4} [get_ports {LVDS_CAM_DATA[20]}]
+ldc_set_location -site {N2} [get_ports {LVDS_CAM_DATA[21]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports LVDS_CAM_RDY]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DCLK[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[2]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[3]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[4]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[5]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[6]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[7]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[8]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[9]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[10]}]
+#ldc_set_port -iobuf {IO_TYPE=LVCMOS18} [get_ports {LVDS_CAM_RDY[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DCLK[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[11]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[12]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[13]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[14]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[15]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[16]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[17]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[18]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[19]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[20]}]
+ldc_set_port -iobuf {IO_TYPE=LVDS} [get_ports {LVDS_CAM_DATA[21]}]
+# SYS Config
+ldc_set_sysconfig {CONFIGIO_VOLTAGE_BANK0=1.8 CONFIGIO_VOLTAGE_BANK1=1.8}
+ldc_set_vcc -bank 0 1.8
+ldc_set_vcc -bank 1 1.8
+ldc_set_vcc -bank 3 1.8
+ldc_set_vcc -bank 4 1.8
+ldc_set_vcc -bank 5 1.8
+create_clock -name {clk_byte_o} -period 10 [get_pins -hierarchical URWDCKHS]
+create_clock -name {clk_hs_o} -period 10 [get_pins -hierarchical UCRXWCHS]
+set_clock_groups -group [get_clocks clk_hs_o] -group [get_clocks {mipi_rx[*].mipi_bridge_inst/sclk_o}] -group [get_clocks u_lvds_pll/clkos3_o] -group [get_clocks clk_byte_o] -asynchronous

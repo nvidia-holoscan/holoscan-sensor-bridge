@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,6 +25,8 @@
 #include <memory>
 #include <string>
 
+#include "../operator_util.hpp"
+
 #include <holoscan/core/fragment.hpp>
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/operator_spec.hpp>
@@ -49,6 +51,7 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyComputeCrcOp(holoscan::Fragment* fragment,
+        const py::args& args,
         int cuda_device_ordinal,
         const std::string& name = "compute_crc",
         uint64_t frame_size = 0)
@@ -56,6 +59,7 @@ public:
             holoscan::Arg { "cuda_device_ordinal", cuda_device_ordinal },
             holoscan::Arg { "frame_size", frame_size } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
@@ -70,6 +74,7 @@ public:
 
     // Define a constructor that fully initializes the object.
     PyCheckCrcOp(holoscan::Fragment* fragment,
+        const py::args& args,
         std::shared_ptr<ComputeCrcOp> compute_crc_op,
         const std::string& name = "check_crc",
         const std::string& computed_crc_metadata_name = "computed_crc")
@@ -77,6 +82,7 @@ public:
             holoscan::Arg { "compute_crc_op", compute_crc_op },
             holoscan::Arg { "computed_crc_metadata_name", computed_crc_metadata_name } })
     {
+        add_positional_condition_and_resource_args(this, args);
         name_ = name;
         fragment_ = fragment;
         compute_crc_op_ = compute_crc_op;
@@ -105,7 +111,7 @@ PYBIND11_MODULE(_compute_crc, m)
 
     py::class_<ComputeCrcOp, PyComputeCrcOp, holoscan::Operator,
         std::shared_ptr<ComputeCrcOp>>(m, "ComputeCrcOp")
-        .def(py::init<holoscan::Fragment*, int, const std::string&, uint64_t>(),
+        .def(py::init<holoscan::Fragment*, const py::args&, int, const std::string&, uint64_t>(),
             "fragment"_a, "cuda_device_ordinal"_a = 0,
             "name"_a = "compute_crc"s, "frame_size"_a = 0)
         .def("setup", &ComputeCrcOp::setup, "spec"_a);
@@ -113,13 +119,15 @@ PYBIND11_MODULE(_compute_crc, m)
     py::class_<CheckCrcOp, PyCheckCrcOp, holoscan::Operator,
         std::shared_ptr<CheckCrcOp>>(m, "CheckCrcOp")
         .def(py::init<holoscan::Fragment*,
+                 const py::args&,
                  std::shared_ptr<ComputeCrcOp>,
                  const std::string&,
                  const std::string&>(),
             "fragment"_a,
             "compute_crc_op"_a,
             "name"_a,
-            "computed_crc_metadata_name"_a = "computed_crc"s)
+            "computed_crc_metadata_name"_a = "computed_crc"s,
+            py::keep_alive<0, 3>()) // keep compute_crc_op alive while CheckCrcOp lives
         .def("setup", &CheckCrcOp::setup, "spec"_a);
 } // PYBIND11_MODULE
 

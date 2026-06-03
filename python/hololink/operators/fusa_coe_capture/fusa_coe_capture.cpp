@@ -109,6 +109,8 @@ PYBIND11_MODULE(_fusa_coe_capture, m)
                       "start_byte"_a, "received_bytes_per_line"_a,
                       "pixel_width"_a, "pixel_height"_a, "pixel_format"_a,
                       "trailing_bytes"_a = 0)
+                  .def("configure_frame_size", &FusaCoeCaptureOp::configure_frame_size,
+                      "frame_size_bytes"_a)
                   .def("receiver_start_byte", &FusaCoeCaptureOp::receiver_start_byte)
                   .def("received_line_bytes", &FusaCoeCaptureOp::received_line_bytes,
                       "line_bytes"_a)

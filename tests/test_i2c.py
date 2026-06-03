@@ -16,6 +16,7 @@
 # See README.md for detailed information.
 
 import ctypes
+import dataclasses
 import logging
 import time
 
@@ -62,6 +63,15 @@ class UpdateCameraOp(holoscan.core.Operator):
             logging.info(f"{self._frame_count=}")
 
 
+@dataclasses.dataclass
+class MetadataRecord:
+    crc: int  # CRC accumulated by HSB FPGA
+    check_crc: int  # CRC calculated over received buffer; should be same as above
+    image_crc: int  # CRC calculated over demosaic'd data; for image validation
+    imm_data: int
+    bytes_written: int
+
+
 # test IMX274 settings synchronized with frame-end.
 class Imx274I2cTestApplication(holoscan.core.Application):
     def __init__(
@@ -91,7 +101,6 @@ class Imx274I2cTestApplication(holoscan.core.Application):
         self._frame_limit = frame_limit
         self._watchdog = watchdog
         self._patterns = patterns
-        self._buckets = []
 
     def compose(self):
         logging.info("compose")
@@ -105,7 +114,7 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -134,6 +143,17 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             hololink_channel=self._hololink_channel,
             device=self._camera,
         )
+        compute_crc = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_crc",
+            frame_size=frame_size,
+        )
+        check_crc = hololink_module.operators.CheckCrcOp(
+            self,
+            name="check_crc",
+            compute_crc_op=compute_crc,
+            computed_crc_metadata_name="check_crc",
+        )
 
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
@@ -147,16 +167,19 @@ class Imx274I2cTestApplication(holoscan.core.Application):
         )
 
         rgba_components_per_pixel = 4
+        rgba_image_size = (
+            self._camera._width
+            * rgba_components_per_pixel
+            * ctypes.sizeof(ctypes.c_uint16)
+            * self._camera._height
+        )
         bayer_pool = holoscan.resources.BlockMemoryPool(
             self,
             name="pool",
             # storage_type of 1 is device memory
             storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=2,
+            block_size=rgba_image_size,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -168,7 +191,19 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             interpolation_mode=0,
         )
 
-        # We always observe the image configured two frames ago;
+        compute_image_crc = hololink_module.operators.ComputeCrcOp(
+            self,
+            name="compute_image_crc",
+            frame_size=rgba_image_size,
+        )
+        check_image_crc = hololink_module.operators.CheckCrcOp(
+            self,
+            name="check_image_crc",
+            compute_crc_op=compute_image_crc,
+            computed_crc_metadata_name="image_crc",
+        )
+
+        # The current received frame was configured two frames ago;
         # self._pattern_queue keeps track of this.
         def update_camera_callback(operator):
             n = operator._frame_count % len(self._patterns)
@@ -187,17 +222,6 @@ class Imx274I2cTestApplication(holoscan.core.Application):
         self._pattern_queue = [pattern, pattern]
 
         #
-        def color_profiler_callback(buckets):
-            pattern = self._pattern_queue.pop(0)
-            self._buckets.append((pattern, buckets))
-
-        color_profiler = operators.ColorProfiler(
-            self,
-            name="color_profiler",
-            callback=color_profiler_callback,
-            out_tensor_name="output",
-        )
-
         visualizer = holoscan.operators.HolovizOp(
             self,
             name="holoviz",
@@ -213,22 +237,32 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             watchdog=self._watchdog,
         )
 
+        self._record_metadata = operators.RecordMetadataOp(
+            self,
+            name="record_metadata",
+            metadata_class=MetadataRecord,
+        )
+
         #
         self.add_flow(receiver_operator, update_camera, {("output", "input")})
-        self.add_flow(update_camera, csi_to_bayer_operator, {("output", "input")})
+        self.add_flow(update_camera, compute_crc, {("output", "input")})
+        self.add_flow(compute_crc, check_crc, {("output", "input")})
+        self.add_flow(check_crc, csi_to_bayer_operator, {("output", "input")})
         self.add_flow(
             csi_to_bayer_operator, image_processor_operator, {("output", "input")}
         )
         self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, color_profiler, {("transmitter", "input")})
-        self.add_flow(color_profiler, visualizer, {("output", "receivers")})
+        self.add_flow(demosaic, compute_image_crc, {("transmitter", "input")})
+        self.add_flow(compute_image_crc, check_image_crc, {("output", "input")})
+        self.add_flow(check_image_crc, self._record_metadata, {("output", "input")})
+        self.add_flow(self._record_metadata, visualizer, {("output", "receivers")})
         self.add_flow(visualizer, watchdog, {("camera_pose_output", "input")})
 
 
 # fmt: off
 imx274_expected_color_profile = {
-    10: [260280, 258120, 1080, 0, 257040, 2160, 258120, 0, 0, 257040, 2160, 260280, 0, 0, 257040, 260280],
-    11: [0, 0, 0, 0, 0, 1920, 228480, 0, 0, 456960, 3840, 462720, 0, 0, 456960, 462720],
+    10: 0xA9072F9B,
+    11: 0xD5A4409B,
 }
 # fmt: on
 
@@ -274,9 +308,13 @@ def test_imx274_synchronized_i2c_settings(
         hololink_channel,
         expander_configuration=0,
     )
+    ready_frame = 10  # ignore this many initial frames while the pipeline initializes
+    initial_timeout = utils.timeout_sequence(
+        [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
+    )
     with utils.Watchdog(
         "frame-reception",
-        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
+        initial_timeout=initial_timeout,
     ) as watchdog:
         # Set up the application
         application = Imx274I2cTestApplication(
@@ -299,7 +337,6 @@ def test_imx274_synchronized_i2c_settings(
             hololink.reset()
             camera.setup_clock()
             camera.configure(camera_mode)
-            camera.set_digital_gain_reg(0x4)
             application.run()
         finally:
             hololink.stop()
@@ -308,10 +345,17 @@ def test_imx274_synchronized_i2c_settings(
     # to longer startup for some pipeline elements
     shutdown_frames = frame_limit - 10
     bad = False
-    settled_buckets = application._buckets[operators.COLOR_PROFILER_START_FRAME :]
-    for n, (pattern, buckets) in enumerate(settled_buckets):
-        ok = imx274_expected_color_profile[pattern] == list(buckets)
-        message = f"{n=} {pattern=} {buckets=} {ok=}"
+    records = application._record_metadata.get_record()
+    pattern_queue = application._pattern_queue
+    # records is a list of MetadataRecord
+    for n, record in enumerate(records):
+        pattern = pattern_queue.pop(0)
+        received_crc = record.crc
+        check_crc = record.check_crc  # should be same as received_crc
+        image_crc = record.image_crc
+        expected_image_crc = imx274_expected_color_profile[pattern]
+        message = f"{n=} {received_crc=:#x} {check_crc=:#x} {pattern=} {expected_image_crc=:#x} {image_crc=:#x}"
+        ok = (received_crc == check_crc) and (image_crc == expected_image_crc)
         if ok:
             logging.debug(message)
             continue
@@ -370,8 +414,6 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
         self._frame_limit = frame_limit
         self._watchdog = watchdog
         self._patterns = patterns
-        self._buckets_left = []
-        self._buckets_right = []
         # These are HSDK controls-- because we have stereo
         # camera paths going into the same visualizer, don't
         # raise an error when each path present metadata
@@ -392,8 +434,8 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             ibv_port,
             hololink_channel,
             update_camera_callback,
-            color_profiler_callback,
             out_tensor_name,
+            metadata_class,
         ):
             camera.set_mode(camera_mode)
 
@@ -405,7 +447,7 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 block_size=camera._width
                 * ctypes.sizeof(ctypes.c_uint16)
                 * camera._height,
-                num_blocks=2,
+                num_blocks=4,
             )
             csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
                 self,
@@ -435,6 +477,18 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 device=camera,
             )
 
+            compute_crc = hololink_module.operators.ComputeCrcOp(
+                self,
+                name=f"compute_crc_{context}",
+                frame_size=frame_size,
+            )
+            check_crc = hololink_module.operators.CheckCrcOp(
+                self,
+                name=f"check_crc_{context}",
+                compute_crc_op=compute_crc,
+                computed_crc_metadata_name="check_crc",
+            )
+
             pixel_format = camera.pixel_format()
             bayer_format = camera.bayer_format()
             image_processor_operator = hololink_module.operators.ImageProcessorOp(
@@ -447,16 +501,19 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             )
 
             rgba_components_per_pixel = 4
+            rgba_image_size = (
+                camera._width
+                * rgba_components_per_pixel
+                * ctypes.sizeof(ctypes.c_uint16)
+                * camera._height
+            )
             bayer_pool = holoscan.resources.BlockMemoryPool(
                 self,
                 name=f"bayer_pool_{context}",
                 # storage_type of 1 is device memory
                 storage_type=1,
-                block_size=camera._width
-                * rgba_components_per_pixel
-                * ctypes.sizeof(ctypes.c_uint16)
-                * camera._height,
-                num_blocks=2,
+                block_size=rgba_image_size,
+                num_blocks=4,
             )
             demosaic = holoscan.operators.BayerDemosaicOp(
                 self,
@@ -468,29 +525,44 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 interpolation_mode=0,
             )
 
+            compute_image_crc = hololink_module.operators.ComputeCrcOp(
+                self,
+                name=f"compute_image_crc_{context}",
+                frame_size=rgba_image_size,
+            )
+            check_image_crc = hololink_module.operators.CheckCrcOp(
+                self,
+                name=f"check_image_crc_{context}",
+                compute_crc_op=compute_image_crc,
+                computed_crc_metadata_name="image_crc",
+            )
+
             update_camera = UpdateCameraOp(
                 self,
                 name=f"update_camera_{context}",
                 callback=update_camera_callback,
             )
 
-            #
-            color_profiler = operators.ColorProfiler(
+            record_metadata = operators.RecordMetadataOp(
                 self,
-                name=f"color_profiler_{context}",
-                callback=color_profiler_callback,
+                name=f"record_metadata_{context}",
+                metadata_class=metadata_class,
                 out_tensor_name=out_tensor_name,
             )
-
+            #
             self.add_flow(receiver_operator, update_camera, {("output", "input")})
-            self.add_flow(update_camera, csi_to_bayer_operator, {("output", "input")})
+            self.add_flow(update_camera, compute_crc, {("output", "input")})
+            self.add_flow(compute_crc, check_crc, {("output", "input")})
+            self.add_flow(check_crc, csi_to_bayer_operator, {("output", "input")})
             self.add_flow(
                 csi_to_bayer_operator, image_processor_operator, {("output", "input")}
             )
             self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-            self.add_flow(demosaic, color_profiler, {("transmitter", "input")})
+            self.add_flow(demosaic, compute_image_crc, {("transmitter", "input")})
+            self.add_flow(compute_image_crc, check_image_crc, {("output", "input")})
+            self.add_flow(check_image_crc, record_metadata, {("output", "input")})
 
-            return condition, color_profiler
+            return condition, record_metadata
 
         # LEFT
         def update_camera_callback_left(operator):
@@ -499,15 +571,11 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             self._camera_left.synchronized_test_pattern_update(next_pattern)
             self._pattern_queue_left.append(next_pattern)
 
-        def color_profiler_callback_left(buckets):
-            pattern = self._pattern_queue_left.pop(0)
-            self._buckets_left.append((pattern, buckets))
-
         pattern = self._patterns[-1]
         self._camera_left.test_pattern(pattern)
         self._pattern_queue_left = [pattern, pattern]
 
-        condition_left, color_profiler_left = compose_camera(
+        condition_left, self._metadata_recorder_left = compose_camera(
             "left",
             self._camera_left,
             self._camera_mode_left,
@@ -515,8 +583,8 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             self._ibv_port_left,
             self._hololink_channel_left,
             update_camera_callback_left,
-            color_profiler_callback_left,
             out_tensor_name="left",
+            metadata_class=MetadataRecord,
         )
 
         # RIGHT
@@ -526,14 +594,10 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             self._camera_right.synchronized_test_pattern_update(next_pattern)
             self._pattern_queue_right.append(next_pattern)
 
-        def color_profiler_callback_right(buckets):
-            pattern = self._pattern_queue_right.pop(0)
-            self._buckets_right.append((pattern, buckets))
-
         self._camera_right.test_pattern(pattern)
         self._pattern_queue_right = [pattern, pattern]
 
-        condition_right, color_profiler_right = compose_camera(
+        condition_right, self._metadata_recorder_right = compose_camera(
             "right",
             self._camera_right,
             self._camera_mode_right,
@@ -541,8 +605,8 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             self._ibv_port_right,
             self._hololink_channel_right,
             update_camera_callback_right,
-            color_profiler_callback_right,
             out_tensor_name="right",
+            metadata_class=MetadataRecord,
         )
         #
         left_spec = holoscan.operators.HolovizOp.InputSpec(
@@ -586,8 +650,12 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
             watchdog=self._watchdog,
         )
         #
-        self.add_flow(color_profiler_left, visualizer, {("output", "receivers")})
-        self.add_flow(color_profiler_right, visualizer, {("output", "receivers")})
+        self.add_flow(
+            self._metadata_recorder_left, visualizer, {("output", "receivers")}
+        )
+        self.add_flow(
+            self._metadata_recorder_right, visualizer, {("output", "receivers")}
+        )
         self.add_flow(visualizer, watchdog, {("camera_pose_output", "input")})
 
 
@@ -661,9 +729,13 @@ def test_stereo_imx274_synchronized_i2c_settings(
     )
     hololink = hololink_channel_left.hololink()
     assert hololink is hololink_channel_right.hololink()
+    ready_frame = 10  # ignore this many initial frames while the pipeline initializes
+    initial_timeout = utils.timeout_sequence(
+        [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
+    )
     with utils.Watchdog(
         "frame-reception",
-        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
+        initial_timeout=initial_timeout,
     ) as watchdog:
         ibv_port_left, ibv_port_right = 1, 1
         # Set up the application
@@ -691,26 +763,28 @@ def test_stereo_imx274_synchronized_i2c_settings(
             hololink.reset()
             camera_left.setup_clock()
             camera_left.configure(camera_mode_left)
-            camera_left.set_digital_gain_reg(0x4)
             camera_right.configure(camera_mode_right)
-            camera_right.set_digital_gain_reg(0x4)
             application.run()
         finally:
             hololink.stop()
 
-    def check_buckets(context, histogram):
-        start_frames = 10
+    def check_records(context, records, pattern_queue):
         # the pipeline sees frames that we don't due
         # to longer startup for some pipeline elements
         shutdown_frames = frame_limit - 10
         bad = False
-        for n, (pattern, buckets) in enumerate(histogram):
-            ok = imx274_expected_color_profile[pattern] == list(buckets)
-            message = f"{context} {n=} {pattern=} {buckets=} {ok=}"
+        for n, record in enumerate(records):
+            pattern = pattern_queue.pop(0)
+            received_crc = record.crc
+            check_crc = record.check_crc  # should be same as received_crc
+            image_crc = record.image_crc
+            expected_image_crc = imx274_expected_color_profile[pattern]
+            message = f"{context=} {n=} {received_crc=:#x} {check_crc=:#x} {pattern=} {expected_image_crc=:#x} {image_crc=:#x}"
+            ok = (received_crc == check_crc) and (image_crc == expected_image_crc)
             if ok:
                 logging.debug(message)
                 continue
-            if n < start_frames:
+            if n < ready_frame:
                 logging.debug(message)
                 logging.info(f"Frame {n} didn't match but is during startup; ignoring.")
                 continue
@@ -724,8 +798,18 @@ def test_stereo_imx274_synchronized_i2c_settings(
             bad = True
         return bad
 
-    check_buckets("left", application._buckets_left)
-    check_buckets("right", application._buckets_right)
+    bad_left = check_records(
+        "left",
+        application._metadata_recorder_left.get_record(),
+        application._pattern_queue_left,
+    )
+    bad_right = check_records(
+        "right",
+        application._metadata_recorder_right.get_record(),
+        application._pattern_queue_right,
+    )
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
+
+    assert not bad_left and not bad_right

@@ -73,7 +73,7 @@ class HoloscanApplication(holoscan.core.Application):
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
             self,
@@ -118,7 +118,7 @@ class HoloscanApplication(holoscan.core.Application):
             * rgba_components_per_pixel
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
-            num_blocks=2,
+            num_blocks=4,
         )
         demosaic = holoscan.operators.BayerDemosaicOp(
             self,
@@ -171,7 +171,7 @@ def main():
         help="Logging level to display",
     )
     parser.add_argument(
-        "--camera",
+        "--cam",
         type=int,
         default=0,
         choices=(0, 1),
@@ -210,6 +210,12 @@ def main():
         default=0x05,
         help="Configure exposure.",
     )
+    parser.add_argument(
+        "--flip",
+        default="none",
+        choices=["none", "h", "v", "hv"],
+        help="Choose between none, h, v or hv (for horizontal, vertical, or both)",
+    )
     args = parser.parse_args()
     hololink_module.logging_level(args.log_level)
     logging.info("Initializing.")
@@ -224,11 +230,12 @@ def main():
 
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
+    # get a handle to the camera
+    md = hololink_module.Metadata(channel_metadata)
+    hololink_module.DataChannel.use_sensor(md, args.cam)
+    hololink_channel = hololink_module.DataChannel(md)
     camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.camera, args.resolution
+        hololink_channel, args.cam, args.resolution, img_flip=args.flip
     )
 
     # Set up the application

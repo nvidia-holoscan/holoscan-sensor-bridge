@@ -34,6 +34,7 @@ namespace hololink::csi {
 class CsiConverter {
 public:
     CsiConverter() = default;
+    virtual ~CsiConverter() = default;
 
     /**
      * Camera drivers use this call to train this object on

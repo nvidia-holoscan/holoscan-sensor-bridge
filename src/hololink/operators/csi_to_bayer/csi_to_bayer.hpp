@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,13 +18,13 @@
 #ifndef SRC_OPERATORS_CSI_TO_BAYER_CSI_TO_BAYER
 #define SRC_OPERATORS_CSI_TO_BAYER_CSI_TO_BAYER
 
+#include "hololink/common/cuda_helper.hpp"
 #include <memory>
 
 #include <hololink/core/csi_controller.hpp>
 #include <hololink/core/csi_formats.hpp>
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/parameter.hpp>
-#include <holoscan/utils/cuda_stream_handler.hpp>
 
 #include <cuda.h>
 
@@ -50,27 +50,44 @@ public:
     uint32_t received_line_bytes(uint32_t line_bytes) override;
     uint32_t transmitted_line_bytes(hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) override;
     void configure(uint32_t start_byte, uint32_t bytes_per_line, uint32_t pixel_width, uint32_t pixel_height, hololink::csi::PixelFormat pixel_format, uint32_t trailing_bytes) override;
+
+    /**
+     * Get the length of the CSI data in bytes
+     */
     size_t get_csi_length();
+
+    /**
+     * Get the size of the sub frame in bytes.
+     * If sub_frame_rows_ is non-zero, this will return the size of the sub frame in bytes.
+     * Otherwise, it will return the size of the full frame in bytes.
+     */
+    size_t get_sub_frame_size();
 
 private:
     holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> allocator_;
     holoscan::Parameter<int> cuda_device_ordinal_;
     holoscan::Parameter<std::string> out_tensor_name_;
+    holoscan::Parameter<uint32_t> sub_frame_rows_;
 
     CUcontext cuda_context_ = nullptr;
     CUdevice cuda_device_ = 0;
     bool is_integrated_ = false;
     bool host_memory_warning_ = false;
 
-    holoscan::CudaStreamHandler cuda_stream_handler_;
-
     std::shared_ptr<hololink::common::CudaFunctionLauncher> cuda_function_launcher_;
+
+    size_t sub_frame_memory_size_ = 0;
+    common::UniqueCUdeviceptr sub_frame_memory_;
+
     uint32_t pixel_width_ = 0;
     uint32_t pixel_height_ = 0;
     hololink::csi::PixelFormat pixel_format_ = hololink::csi::PixelFormat::RAW_8;
     uint32_t start_byte_ = 0;
     uint32_t bytes_per_line_ = 0;
     size_t csi_length_ = 0;
+
+    size_t frame_size_ = 0; ///< the size of the frame in bytes, might be different from the csi_length_ if sub_frame_rows_ is set
+
     bool configured_ = false;
 };
 

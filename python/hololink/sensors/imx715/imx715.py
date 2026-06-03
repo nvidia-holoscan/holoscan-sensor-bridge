@@ -219,7 +219,6 @@ class Imx715Cam:
         return VERSION
 
     def set_cmd(self, register, value):
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(register)
@@ -237,12 +236,18 @@ class Imx715Cam:
             serializer.append_uint8(crc)
 
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(200 / 1000)
 
     def cam_reset(self):
@@ -281,7 +286,6 @@ class Imx715Cam:
 
         crc = 0x00
         self.set_cmd(CMD_ID_SET_CTRL, payload_len)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_SET_CTRL)
@@ -376,12 +380,18 @@ class Imx715Cam:
         serializer.append_uint8(crc)
 
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_lane_cfg(self, lane):
@@ -394,7 +404,6 @@ class Imx715Cam:
 
     def set_stream_mode(self):
         self.set_cmd(CMD_ID_SET_CTRL, 0x000B)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_SET_CTRL)
@@ -413,17 +422,22 @@ class Imx715Cam:
         crc ^= self._mode
         serializer.append_uint8(crc)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_stream_config(self):
         self.set_cmd(CMD_ID_STREAM_CONFIG, 0x000E)
-        self._i2c_expander.configure(self._i2c_expander_configuration.value)
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
         serializer.append_uint16_be(CMD_ID_STREAM_CONFIG)
@@ -473,12 +487,18 @@ class Imx715Cam:
         serializer.append_uint8(0x01)
         serializer.append_uint8(crc)
         read_byte_count = 0
-        self._i2c.i2c_transaction(
-            CAM_I2C_ADDRESS,
-            write_bytes[: serializer.length()],
-            read_byte_count,
-            timeout=None,
-        )
+        i2c_lock = self._hololink.i2c_lock()
+        i2c_lock.lock()
+        try:
+            self._i2c_expander.configure(self._i2c_expander_configuration.value)
+            self._i2c.i2c_transaction(
+                CAM_I2C_ADDRESS,
+                write_bytes[: serializer.length()],
+                read_byte_count,
+                timeout=None,
+            )
+        finally:
+            i2c_lock.unlock()
         time.sleep(300 / 1000)
 
     def set_mode(self, imx715_mode):

@@ -15,6 +15,12 @@
 
 include(pybind11_add_hololink_module)
 
+copy_hololink_python_files(
+    TARGET_NAME copy_hololink_sensors_camera_imx274_files
+    DESTINATION sensors/camera/imx274
+    FILES __init__.py
+)
+
 pybind11_add_hololink_module(
     CPP_CMAKE_TARGET native_imx274_camera_sensor
     CLASS_NAME "NativeImx274Sensor"

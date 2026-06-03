@@ -134,8 +134,12 @@ static void log_and_throw(const std::string& msg) {
   throw std::runtime_error(msg);
 }
 
-// Parallel Thread Execution - a Cuda compilation result.
-using CudaPtx = std::string;
+// NVRTC compilation artifact (CUBIN - driver-ready SASS). Stored as a byte
+// buffer in a std::string for convenience. We emit CUBIN rather than PTX to
+// bypass the driver's PTX->SASS JIT, which is rejected on R580.00 when the
+// NVRTC toolchain is newer than the driver (CUDA_ERROR_UNSUPPORTED_PTX_VERSION).
+// See NVBugs 6110136, 6059987.
+using CudaBinary = std::string;
 
 // A wrapper class for nvrtcProgram
 class CudaProgram {
@@ -178,13 +182,14 @@ public:
     return log;
   }
 
-  // Get the PTX (The compilation artifact)
-  CudaPtx get_ptx() const {
-    size_t ptx_size;
-    NVRTC_CHECK(nvrtcGetPTXSize(program_, &ptx_size));
-    CudaPtx ptx(ptx_size, '\0');
-    NVRTC_CHECK(nvrtcGetPTX(program_, ptx.data()));
-    return ptx;
+  // Get the CUBIN (the compilation artifact - real-arch SASS, loadable via
+  // cuModuleLoadDataEx without driver-side PTX JIT).
+  CudaBinary get_cubin() const {
+    size_t cubin_size;
+    NVRTC_CHECK(nvrtcGetCUBINSize(program_, &cubin_size));
+    CudaBinary cubin(cubin_size, '\0');
+    NVRTC_CHECK(nvrtcGetCUBIN(program_, cubin.data()));
+    return cubin;
   }
 
 private:
@@ -197,8 +202,8 @@ private:
 class CudaModule {
 public:
   CudaModule() = default;
-  CudaModule(const CudaPtx& ptx) {
-    CudaCheck(cuModuleLoadDataEx(&module_, ptx.data(), 0, nullptr, nullptr));
+  CudaModule(const CudaBinary& cubin) {
+    CudaCheck(cuModuleLoadDataEx(&module_, cubin.data(), 0, nullptr, nullptr));
   }
 
   CudaModule(CudaModule&) = delete;
@@ -406,9 +411,13 @@ extern "C" __global__ void )" << cuda_kernel_name << R"((float* output, int coun
   HSB_LOG_DEBUG("Expression Evaluator Cuda code:\n{}", cuda_code);
   CudaProgram cuda_program(cuda_code);
 
-  // Compile
+  // Compile. NVRTC must target a real SM (sm_<m><n>) to emit CUBIN; see
+  // CudaBinary comment above. Query the active context's device so we match
+  // the GPU at runtime rather than a build-time assumption.
+  const std::string arch_option = "--gpu-architecture=" + hololink::common::current_device_sm_arch();
   std::vector<std::string> include_paths;
   std::vector<const char*> options;
+  options.push_back(arch_option.c_str());
   std::stringstream ss_paths(cuda_toolkit_include_paths_);
   std::string token;
 
@@ -421,7 +430,7 @@ extern "C" __global__ void )" << cuda_kernel_name << R"((float* output, int coun
   cuda_program.compile(options);
 
   // Create a Cuda module and get the Cuda Function
-  CudaModule cuda_module(cuda_program.get_ptx());
+  CudaModule cuda_module(cuda_program.get_cubin());
   CUfunction cuda_function(cuda_module.get_function(cuda_kernel_name));
   
   // Create an Expression object and return it

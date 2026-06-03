@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -24,7 +24,6 @@
 
 #include <holoscan/core/operator.hpp>
 #include <holoscan/core/parameter.hpp>
-#include <holoscan/utils/cuda_stream_handler.hpp>
 
 #include <hololink/common/cuda_helper.hpp>
 
@@ -50,14 +49,13 @@ private:
     bool is_integrated_ = false;
     bool host_memory_warning_ = false;
 
-    holoscan::CudaStreamHandler cuda_stream_handler_;
-
     std::shared_ptr<hololink::common::CudaFunctionLauncher> cuda_function_launcher_;
 
     hololink::common::UniqueCUdeviceptr histogram_memory_;
     hololink::common::UniqueCUdeviceptr white_balance_gains_memory_;
 
     uint32_t histogram_threadblock_size_;
+    int64_t expected_frame_number_ = 0;
 };
 
 } // namespace hololink::operators

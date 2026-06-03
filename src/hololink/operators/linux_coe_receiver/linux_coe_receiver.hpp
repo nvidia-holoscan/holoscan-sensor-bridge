@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
  * All rights reserved. SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -91,8 +91,14 @@ public:
      * the complete frame is observed.
      * @param metadata is updated with statistics
      * collected with the video frame.
+     * @param cuda_stream is the CUDA stream to use for the copy.
      */
-    bool get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetadata& metadata);
+    bool get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetadata& metadata, CUstream cuda_stream);
+
+    /**
+     * Returns false if get_next_frame may block.
+     */
+    bool frames_ready();
 
     /**
      * If the application schedules the call to get_next_frame after this
@@ -166,11 +172,9 @@ protected:
     LinuxCoeReceiverDescriptor* busy_;
 
     /**
-     * This stream allows us to copy our receiver cache
-     * memory into GPU without waiting for the GPU device
-     * to be completely idle.
+     *
      */
-    CUstream cu_stream_;
+    CUevent event_;
 
     /**
      * Callback the application layer can use to learn that
