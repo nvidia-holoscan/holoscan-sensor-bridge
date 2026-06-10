@@ -13,7 +13,7 @@ includes:
 
 When host PTP support is properly configured, this time is synchronized with the host
 time to within one microsecond. HSDK operators can access this metadata using
-[APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_create_app.html#dynamic-application-metadata).
+[APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/using-the-sdk/create-an-application#dynamic-application-metadata).
 Notes:
 
 - Timestamps are comparable to the clock values read from the

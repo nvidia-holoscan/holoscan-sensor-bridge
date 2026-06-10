@@ -98,7 +98,7 @@ $ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_
 ## Running the TAO PeopleNet example
 
 The tao-peoplenet example demonstrates running inference on a live video feed.
-[Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
+[Tao PeopleNet](https://docs.nvidia.com/tao/archive/5.3.0/text/model_zoo/cv_models/peoplenet.html)
 provides a model that given an image can detect persons, bags, and faces. In this
 example, when those items are detected, bounding boxes are shown as an overlay over the
 live video.
