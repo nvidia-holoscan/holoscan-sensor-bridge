@@ -1,6 +1,6 @@
 # Application structure
 
-[Holoscan](http://docs.nvidia.com/holoscan/sdk-user-guide) applications are built by
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide) applications are built by
 specifying sequences of operators. Connecting the output of one operator to the input of
 another operator (via the `add_flow` API) configures Holoscan's pipeline and specifies
 when individual operators can run.
