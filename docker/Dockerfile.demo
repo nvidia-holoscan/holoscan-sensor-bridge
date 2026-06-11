@@ -62,7 +62,7 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     && apt-get install -y \
         python3-requests \
         python3-yaml \
-        libnvinfer-bin \
+        libnvinfer-bin="10.*" \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the HoloLink Python wheel built above
