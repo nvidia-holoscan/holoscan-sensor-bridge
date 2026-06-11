@@ -1,9 +1,9 @@
 # Application structure
 
-[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_core.html)
-applications are built by specifying sequences of operators. Connecting the output of
-one operator to the input of another operator (via the `add_flow` API) configures
-Holoscan's pipeline and specifies when individual operators can run.
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide) applications are built by
+specifying sequences of operators. Connecting the output of one operator to the input of
+another operator (via the `add_flow` API) configures Holoscan's pipeline and specifies
+when individual operators can run.
 
 Holoscan sensor bridge leverages this framework by providing operators and objects that
 send and receive data in Holoscan applications. There are additional operators for
@@ -310,7 +310,7 @@ functionality as `RoceReceiverOp` but at considerably lower performance.
 
 A demonstration application where inference is used to generate a video overlay is
 included in examples/tao_peoplenet.py. The
-[Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
+[Tao PeopleNet](https://docs.nvidia.com/tao/archive/5.3.0/text/model_zoo/cv_models/peoplenet.html)
 is used to determine the locations of persons, bags, and faces in the live video stream.
 This example program draws bounding boxes on an overlay illustrating where those objects
 are detected in the video frame.
