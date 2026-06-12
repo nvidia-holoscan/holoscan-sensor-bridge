@@ -18,6 +18,7 @@
 #include "hololink/emulation/data_plane.hpp"
 #include "hololink/emulation/hsb_emulator.hpp"
 #include "hololink/emulation/i2c_interface.hpp"
+#include "hololink/emulation/sensors/test_sensor.hpp"
 #include "hololink/emulation/sensors/vb1940_emulator.hpp"
 #include <pybind11/pybind11.h>
 
@@ -27,6 +28,23 @@ namespace hololink::emulation {
 
 PYBIND11_MODULE(_emulation_sensors, m)
 {
+
+    py::enum_<sensors::TestPatternMode>(m, "TestPatternMode")
+        .value("CONSTANT", sensors::TestPatternMode::CONSTANT)
+        .value("INCREMENTING", sensors::TestPatternMode::INCREMENTING);
+
+    py::class_<sensors::TestSensor, I2CPeripheral>(m, "TestSensor")
+        .def(py::init<>())
+        .def("reset", &sensors::TestSensor::reset, "reset the TestSensor")
+        .def("attach_to_i2c", &sensors::TestSensor::attach_to_i2c, "attach the TestSensor to an I2C controller")
+        .def("i2c_transaction", &sensors::TestSensor::i2c_transaction, "perform an I2C transaction")
+        .def("is_streaming", &sensors::TestSensor::is_streaming, "check if TestSensor is streaming")
+        .def("get_frame_size", &sensors::TestSensor::get_frame_size, "get the frame size in bytes")
+        .def("get_frame_rate_hz", &sensors::TestSensor::get_frame_rate_hz, "get the frame rate in Hz")
+        .def("get_pattern_mode", &sensors::TestSensor::get_pattern_mode, "get the pattern mode")
+        .def("get_constant_byte", &sensors::TestSensor::get_constant_byte, "get the constant pattern byte");
+
+    m.attr("TEST_I2C_ADDRESS") = sensors::TEST_I2C_ADDRESS;
 
     py::class_<sensors::Vb1940Emulator, I2CPeripheral>(m, "Vb1940Emulator")
         .def(py::init<>())

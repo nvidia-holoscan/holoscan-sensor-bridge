@@ -178,7 +178,8 @@ void sleep_frame_rate(struct timespec* frame_start_time, struct LoopConfig& loop
         delta_sec--;
         delta_nsec += NS_PER_SEC;
     }
-    int delta_ms = static_cast<int>(MS_PER_SEC / loop_config.frame_rate_per_second - MS_PER_SEC * (delta_sec + delta_nsec * SEC_PER_NS));
+    auto frames_per_second = std::max(loop_config.frame_rate_per_second, 1u);
+    int delta_ms = static_cast<int>(MS_PER_SEC / frames_per_second - MS_PER_SEC * (delta_sec + delta_nsec * SEC_PER_NS));
     if (delta_ms > 0) {
         std::this_thread::sleep_for(std::chrono::milliseconds(delta_ms));
     }
@@ -408,5 +409,96 @@ void loop_stereo_vb1940(struct LoopConfig& loop_config, sensors::Vb1940Emulator&
         }
         
         sleep_frame_rate(&frame_start_time, loop_config);
+    }
+}
+
+void generate_test_frame(DLTensor& frame_data, sensors::TestSensor& test_sensor, uint64_t frame_index)
+{
+    const bool is_gpu = frame_data.device.device_type == kDLCUDA;
+    if (frame_data.data) {
+        if (is_gpu) {
+            cudaFree(frame_data.data);
+        } else {
+            delete[] static_cast<uint8_t*>(frame_data.data);
+        }
+        frame_data.data = nullptr;
+    }
+
+    const uint32_t frame_size = test_sensor.get_frame_size();
+    if (frame_size == 0) {
+        frame_data.shape[0] = 0;
+        return;
+    }
+
+    uint8_t* host_data = new uint8_t[frame_size];
+    test_sensor.fill_frame(host_data, frame_index);
+
+    if (is_gpu) {
+        uint8_t* gpu_data = nullptr;
+        cudaError_t error = cudaMalloc(&gpu_data, frame_size);
+        if (error != cudaSuccess) {
+            delete[] host_data;
+            throw std::runtime_error("CUDA allocation failed for test frame: " + std::string(cudaGetErrorString(error)));
+        }
+        error = cudaMemcpy(gpu_data, host_data, frame_size, cudaMemcpyHostToDevice);
+        delete[] host_data;
+        if (error != cudaSuccess) {
+            cudaFree(gpu_data);
+            throw std::runtime_error("CUDA Memcpy failed for test frame: " + std::string(cudaGetErrorString(error)));
+        }
+        frame_data.data = gpu_data;
+    } else {
+        frame_data.data = host_data;
+    }
+    frame_data.shape[0] = static_cast<int64_t>(frame_size);
+}
+
+void loop_single_test(struct LoopConfig& loop_config, sensors::TestSensor& test_sensor, DataPlane& data_plane, DLTensor& frame_data)
+{
+    bool streaming = false;
+    unsigned int frame_count = 0;
+    uint64_t frame_index = 0;
+    while (!loop_config.num_frames || (frame_count < loop_config.num_frames)) {
+        struct timespec frame_start_time;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start_time);
+
+        if (!streaming && test_sensor.is_streaming()) {
+            streaming = true;
+            generate_test_frame(frame_data, test_sensor, frame_index);
+        } else if (!test_sensor.is_streaming()) {
+            streaming = false;
+        }
+
+        if (streaming) {
+            const int64_t expected_size = static_cast<int64_t>(test_sensor.get_frame_size());
+            if (frame_data.shape[0] != expected_size) {
+                generate_test_frame(frame_data, test_sensor, frame_index);
+            } else {
+                if (frame_data.device.device_type == kDLCUDA) {
+                    uint8_t* host_data = new uint8_t[expected_size];
+                    test_sensor.fill_frame(host_data, frame_index);
+                    cudaError_t error = cudaMemcpy(frame_data.data, host_data, expected_size, cudaMemcpyHostToDevice);
+                    delete[] host_data;
+                    if (error != cudaSuccess) {
+                        throw std::runtime_error("CUDA Memcpy failed for test frame: " + std::string(cudaGetErrorString(error)));
+                    }
+                } else {
+                    test_sensor.fill_frame(static_cast<uint8_t*>(frame_data.data), frame_index);
+                }
+            }
+
+            const int64_t sent_bytes = data_plane.send(frame_data);
+            if (sent_bytes < 0) {
+                throw std::runtime_error("Error sending data: " + std::to_string(errno) + " " + std::string(strerror(errno)));
+            }
+            if (sent_bytes > 0) {
+                frame_count++;
+                frame_index++;
+            }
+        }
+
+        LoopConfig rate_config = loop_config;
+        rate_config.frame_rate_per_second = test_sensor.get_frame_rate_hz();
+        sleep_frame_rate(&frame_start_time, rate_config);
     }
 }
