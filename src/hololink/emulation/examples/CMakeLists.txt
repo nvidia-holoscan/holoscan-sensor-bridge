@@ -156,6 +156,24 @@ if (CUDAToolkit_FOUND)
         CUDA::cudart
     )
     
+    add_executable(serve_coe_test_data
+        serve_coe_test_data.cpp
+    )
+    set_target_properties(serve_coe_test_data PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
+
+    target_include_directories(serve_coe_test_data PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
+        ${CUDAToolkit_INCLUDE_DIRS}
+    )
+
+    target_link_libraries(serve_coe_test_data PRIVATE
+        hololink::emulation
+        hololink::emulation::coe
+        hololink::emulation::sensors
+        emulator_utils
+        CUDA::cudart
+    )
+
     add_executable(serve_coe_stereo_vb1940_frames
         serve_coe_stereo_vb1940_frames.cpp
     )

@@ -127,6 +127,19 @@ if(HOLOLINK_BUILD_FUSA)
     )
 
   list(APPEND EXAMPLE_INSTALL_TARGETS fusa_coe_vb1940_player)
+
+  add_executable(fusa_coe_test_sensor_receiver
+    fusa_coe_test_sensor_receiver.cpp
+    )
+
+  target_link_libraries(fusa_coe_test_sensor_receiver
+    PRIVATE
+      hololink
+      hololink::operators::fusa_coe_capture
+      holoscan::core
+    )
+
+  list(APPEND EXAMPLE_INSTALL_TARGETS fusa_coe_test_sensor_receiver)
 endif() # HOLOLINK_BUILD_FUSA
 
 if(HOLOLINK_BUILD_ROCE)

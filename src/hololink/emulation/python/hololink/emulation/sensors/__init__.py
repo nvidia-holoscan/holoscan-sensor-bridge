@@ -15,8 +15,16 @@
 #
 # See README.md for detailed information.
 
-from ._emulation_sensors import Vb1940Emulator
+from ._emulation_sensors import (
+    TEST_I2C_ADDRESS,
+    TestPatternMode,
+    TestSensor,
+    Vb1940Emulator,
+)
 
 __all__ = [
+    "TEST_I2C_ADDRESS",
+    "TestPatternMode",
+    "TestSensor",
     "Vb1940Emulator",
 ]

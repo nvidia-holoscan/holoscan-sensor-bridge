@@ -14,6 +14,7 @@
 # limitations under the License.
 
 add_library(emulation_sensors STATIC
+  test_sensor.cpp
   vb1940_emulator.cpp
 )
 target_compile_options(emulation_sensors PRIVATE -DHOLOSCAN_SDK_VERSION=${HOLOSCAN_SDK_VERSION} -g3)
@@ -39,7 +40,8 @@ install(TARGETS emulation_sensors
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-emulation-sensors)
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/vb1940_emulator.hpp
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/test_sensor.hpp
+              ${CMAKE_CURRENT_SOURCE_DIR}/vb1940_emulator.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation/sensors
         COMPONENT hololink-emulation-sensors)
 
