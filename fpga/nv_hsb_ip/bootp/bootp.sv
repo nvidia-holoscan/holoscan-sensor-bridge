@@ -363,8 +363,24 @@ logic [23:0] pkt_cnt_be;
 assign pkt_cnt_be = {pkt_cnt[out_host_idx][7:0],pkt_cnt[out_host_idx][15:8],pkt_cnt[out_host_idx][23:16]};
 
 logic [BOOTP_VEND_DATA_WIDTH-1:0] bootp_vend_data;
+logic  [7:0]             i_hsb_stat_sync;
+
+// i_hsb_stat[0] is generated in ptp_top.sv @ i_ptp_clk, 
+// therefore, in bootp block it need to be sync on i_hif_clk 
+data_sync #(
+  .DATA_WIDTH    (8),
+  .RESET_VALUE   (0),
+  .SYNC_DEPTH    (2),
+  .RST_SYNC      ("TRUE")
+) i_hsb_stat_sync_inst (
+  .clk (i_clk),
+  .rst_n (~i_rst),
+  .sync_in (i_hsb_stat),
+  .sync_out (i_hsb_stat_sync)
+);
+  
 assign bootp_vend_data = {
-  i_hsb_stat, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, 16'd0, bootp_vend_prefix
+  i_hsb_stat_sync, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, 16'd0, bootp_vend_prefix
 };
 
 vec_to_axis #(
