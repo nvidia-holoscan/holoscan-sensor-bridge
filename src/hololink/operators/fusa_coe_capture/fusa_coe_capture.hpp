@@ -17,18 +17,14 @@
 
 #pragma once
 
-#include <deque>
-#include <map>
-#include <queue>
+#include <functional>
+#include <string>
 #include <vector>
 
 #include <hololink/core/csi_controller.hpp>
 #include <holoscan/holoscan.hpp>
 
-#include <NvFusaCaptureExternal.hpp>
-#include <nvscibuf.h>
-
-#include <cuda.h>
+#include "fusa_coe_capture_core.hpp"
 
 namespace hololink {
 class DataChannel;
@@ -43,7 +39,6 @@ class FusaCoeCaptureOp : public holoscan::Operator, public csi::CsiConverter {
 public:
     HOLOSCAN_OPERATOR_FORWARD_ARGS(FusaCoeCaptureOp)
 
-    // holoscan::Operator methods.
     void setup(holoscan::OperatorSpec& spec) override;
     void start() override;
     void stop() override;
@@ -51,7 +46,6 @@ public:
         holoscan::OutputContext& op_output,
         holoscan::ExecutionContext& context) override;
 
-    // csi::CsiConverter methods.
     uint32_t receiver_start_byte() override;
     uint32_t received_line_bytes(uint32_t line_bytes) override;
     uint32_t transmitted_line_bytes(csi::PixelFormat pixel_format,
@@ -61,27 +55,12 @@ public:
         csi::PixelFormat pixel_format,
         uint32_t trailing_bytes) override;
 
-    // Provides a configure_converter implementation in order to configure a downstream operator
-    // that is responsible for converting the packetized pixel formats that this outputs.
     void configure_converter(csi::CsiConverter& converter);
-
-    // Configure the receiver for non-CSI/image data.
     void configure_frame_size(uint32_t frame_size_bytes);
 
-    // Callback for releasing the wrapped buffers that were passed to downstream operators.
     static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
 
 private:
-    bool alloc_buffers();
-    bool alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size);
-    void free_buffers();
-    bool register_buffers();
-    void unregister_buffers();
-    bool issue_capture();
-    void acquire_buffer_thread_func();
-
-    const uint32_t capture_queue_depth_ = 4;
-
     holoscan::Parameter<std::string> interface_;
     holoscan::Parameter<std::vector<uint8_t>> mac_addr_;
     holoscan::Parameter<uint32_t> timeout_;
@@ -89,58 +68,9 @@ private:
     holoscan::Parameter<DataChannel*> hololink_channel_;
     holoscan::Parameter<std::function<void()>> device_start_;
     holoscan::Parameter<std::function<void()>> device_stop_;
+    holoscan::Parameter<bool> cpu_output_;
 
-    uint32_t start_byte_;
-    uint32_t bytes_per_line_;
-    uint32_t pixel_width_;
-    uint32_t pixel_height_;
-    uint32_t trailing_bytes_;
-    csi::PixelFormat pixel_format_;
-    bool csi_pixel_format_;
-    bool configured_ = false;
-
-    CUcontext cuda_context_ = nullptr;
-    CUdevice cuda_device_ = 0;
-
-    NvSciBufModule sci_buf_module_ = nullptr;
-
-    NvFusaCaptureExternal::CoeSettings coe_settings_ = { 0 };
-    NvFusaCaptureExternal::INvFusaCaptureCoeHandler* coe_handler_ = nullptr;
-
-    std::thread acquire_thread_;
-    std::atomic<bool> stop_thread_;
-    std::mutex buffer_mutex_;
-    std::condition_variable buffer_acquired_;
-    std::condition_variable buffer_available_;
-
-    struct BufferInfo {
-        BufferInfo(FusaCoeCaptureOp* parent, uint32_t index)
-            : parent_(parent)
-            , index_(index)
-        {
-        }
-
-        NvSciBufObj sci_buf_ = nullptr;
-        size_t size_ = 0;
-        void* cpu_ptr_ = nullptr;
-        cudaExternalMemory_t cuda_ext_mem_ = nullptr;
-        void* cuda_device_ptr_ = 0;
-
-        // Holds reference to parent for the sake of the release callback.
-        FusaCoeCaptureOp* parent_ = nullptr;
-        uint32_t index_ = 0;
-    };
-
-    std::deque<BufferInfo*> available_buffers_; // Buffers available for new capture requests.
-    std::queue<BufferInfo*> in_flight_captures_; // Buffers in use for in-flight captures.
-    BufferInfo* acquired_buffer_ = nullptr; // Last buffer acquired from capture.
-
-    uint32_t next_reissue_index_ = 0; // Next expected buffer index for FIFO-ordered issue.
-
-    // Pending buffers that have been wrapped and passed to downstream operators and have not yet
-    // been released. This map is static since the callback provides only the CUDA device pointer.
-    static std::map<void*, BufferInfo*> pending_buffers_;
-    static std::mutex pending_buffers_mutex_;
+    fusa_coe_capture::FusaCoeCaptureCore core_;
 };
 
 } // namespace hololink::operators

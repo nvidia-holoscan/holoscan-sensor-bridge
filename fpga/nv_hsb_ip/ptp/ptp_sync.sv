@@ -33,6 +33,7 @@ module ptp_sync (
   output [79:0]   o_sync_t1_ts,
   output [79:0]   o_sync_t2_ts,
   output [47:0]   o_sync_cf_ns,
+  output [47:0]   o_follow_up_cf_ns,
   output          o_sync_ld
 );
 
@@ -45,6 +46,7 @@ enum logic [1:0] {IDLE, SYNC, FOLLOW_UP} state;
 logic [79:0] sync_t1_ts;
 logic [79:0] sync_t2_ts;
 logic [47:0] sync_cf_ns;
+logic [47:0] follow_up_cf_ns;
 logic [15:0] sync_srcportid;
 logic [63:0] sync_clkid;
 logic [15:0] sync_seq_id;
@@ -62,6 +64,7 @@ always_ff @(posedge i_pclk) begin
     sync_t1_ts       <= '0;
     sync_t2_ts       <= '0;
     sync_cf_ns       <= '0;
+    follow_up_cf_ns  <= '0;
     sync_ld          <= 1'b0;
     state            <= IDLE;
   end
@@ -75,11 +78,12 @@ always_ff @(posedge i_pclk) begin
         sync_srcportid <= i_src_portid;
         sync_clkid     <= i_src_clkid;
         sync_t2_ts     <= {i_sec, i_nano_sec};
+        sync_cf_ns     <= i_cf_ns;
         state          <= SYNC;
         if (!two_step) begin
           sync_ld       <= 1'b1;
           dly_req       <= 1'b1;
-          sync_cf_ns    <= i_cf_ns;
+          follow_up_cf_ns <= '0;
           sync_t1_ts    <= i_timestamp;
           state         <= IDLE;
         end
@@ -93,22 +97,23 @@ always_ff @(posedge i_pclk) begin
         sync_srcportid <= i_src_portid;
         sync_clkid     <= i_src_clkid;
         sync_t2_ts     <= {i_sec, i_nano_sec};
+        sync_cf_ns    <= i_cf_ns;
         state          <= SYNC;
         if (!two_step) begin
           sync_ld       <= 1'b1;
           dly_req       <= 1'b1;
-          sync_cf_ns    <= i_cf_ns;
           sync_t1_ts    <= i_timestamp;
+          follow_up_cf_ns <= '0;
           state         <= IDLE;
         end
       end
         else if (i_follow_up_msg_vld) begin
         if (i_seq_id == sync_seq_id && i_src_portid == sync_srcportid && i_src_clkid == sync_clkid) begin
-          dly_req       <= 1'b1;
-          sync_ld       <= 1'b1;
-          sync_cf_ns    <= i_cf_ns;
-          sync_t1_ts    <= i_timestamp;
-          state         <= IDLE;
+          dly_req          <= 1'b1;
+          sync_ld          <= 1'b1;
+          follow_up_cf_ns  <= i_cf_ns;
+          sync_t1_ts       <= i_timestamp;
+          state            <= IDLE;
         end
       end
     end
@@ -116,10 +121,11 @@ always_ff @(posedge i_pclk) begin
   end
 end
 
-assign o_sync_t1_ts    = sync_t1_ts;
-assign o_sync_t2_ts    = sync_t2_ts;
-assign o_sync_cf_ns    = sync_cf_ns;
-assign o_sync_ld       = sync_ld;
-assign o_dly_req       = dly_req;
+assign o_sync_t1_ts      = sync_t1_ts;
+assign o_sync_t2_ts      = sync_t2_ts;
+assign o_sync_cf_ns      = sync_cf_ns;
+assign o_follow_up_cf_ns = follow_up_cf_ns;
+assign o_sync_ld         = sync_ld;
+assign o_dly_req         = dly_req;
 
 endmodule

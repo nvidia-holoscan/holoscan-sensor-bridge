@@ -75,8 +75,6 @@ logic        al;
 logic        tick;
 logic        tick_high;
 logic        tick_low;
-logic        nack;
-logic        ack;
 logic        sda,sda_r;
 logic        scl,scl_r;
 logic        peri_ack;

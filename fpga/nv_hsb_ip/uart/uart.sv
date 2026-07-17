@@ -265,7 +265,6 @@ logic [1:0]            rx_sync;
 logic                  rx_falling_edge;
 logic                  rx_glitch_error;  // Indicates glitch detected (majority vote failed)
 logic                  rx_sampled_bit;   // Bit sampled at center of period (for non-glitch mode)
-logic                  rx_parity_received;
 logic                  rx_parity_error_reg;
 logic                  rx_frame_error_reg;
 logic                  rx_discard_frame;   // Set on bad start/mid-frame glitch; frame not presented at end
@@ -347,7 +346,7 @@ logic rx_bit_valid;  // Unified signal: bit is ready and valid
 logic rx_bit_value;  // Unified signal: the sampled/voted bit value
 assign rx_sample_point = (rx_oversample_cnt == (OVERSAMPLE >> 1)) || // center of start bit, data bit or 1 stop bit
                          ((stop_bits_mode == 2'b01) && rx_oversample_cnt == OVERSAMPLE + (OVERSAMPLE>>2)) || // center of 1.5 stop bit
-                         (rx_oversample_cnt == (OVERSAMPLE + OVERSAMPLE >> 1)); // center of 2 stop bit
+                         (rx_oversample_cnt == (OVERSAMPLE + (OVERSAMPLE >> 1))); // center of 2 stop bit
 // Unified bit sampling/voting logic
 always_comb begin
   if (rx_oversample_cnt >= OVERSAMPLE - 1) begin

@@ -66,8 +66,8 @@ add_library(emulation_host STATIC
     spi.cpp
     net.cpp
     tim.c
-    apb_events.cpp
     stm32_system.c
+    ${HSB_EMULATOR_TARGET}/board.c
 )
 
 target_include_directories(emulation_host
@@ -77,6 +77,44 @@ target_include_directories(emulation_host
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
+)
+
+# When ON, the STM32 hardware CRC peripheral is used for the RoCEv2 iCRC and the
+# zlib software fallback (and its include path) is dropped. When OFF, the build
+# pulls in ZLIB_PATH so common/rocev2_transmitter.cpp can #include <zlib.h>.
+option(CRC_OFFLOAD "Use the STM32 hardware CRC peripheral instead of zlib's software crc32" OFF)
+
+# Publish platform-specific include paths and compile definitions for emulation_common
+# to consume. processed in src/CMakeLists.txt: this subdir runs before common/.
+# BUILD_INTERFACE only: STM32 toolchain headers and our build-tree paths must not
+# leak into the exported install interface (no STM32 install target exists, and
+# absolute build paths break relocatability).
+#
+# IMPORTANT: each include path is wrapped in its own $<BUILD_INTERFACE:...>. A
+# single $<BUILD_INTERFACE:${LIST_VAR}> with a multi-element CMake list (e.g.
+# STM32_CMSIS_INCLUDE_DIR contains both CMSIS/Include and CMSIS/Device/.../Include)
+# triggers a CMake list-in-genex pitfall: the inner ';' is split during property
+# evaluation, the leading '/' on items after the first is dropped by
+# target_include_directories' relative-path handling, and the first item ends up
+# concatenated under CMAKE_CURRENT_SOURCE_DIR of the declaring directory.
+set(_hsb_platform_iface_includes
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/${HSB_EMULATOR_TARGET}
+    ${STM32_HAL_INCLUDE_DIR}
+    ${STM32_CMSIS_INCLUDE_DIR}
+    ${STM32_BOARD_INCLUDE_DIR})
+if(NOT CRC_OFFLOAD)
+    list(APPEND _hsb_platform_iface_includes ${ZLIB_PATH})
+endif()
+foreach(_dir IN LISTS _hsb_platform_iface_includes)
+    target_include_directories(hsb_platform INTERFACE
+        $<BUILD_INTERFACE:${_dir}>)
+endforeach()
+unset(_hsb_platform_iface_includes)
+target_compile_definitions(hsb_platform INTERFACE
+    $<BUILD_INTERFACE:${STM32_HAL_DEFINES}>
+    $<BUILD_INTERFACE:${HSB_HAL_DEFINES}>
+    $<BUILD_INTERFACE:$<$<BOOL:${CRC_OFFLOAD}>:CRC_OFFLOAD>>
 )
 
 target_compile_definitions(emulation_host PUBLIC ${HSB_HAL_DEFINES})
@@ -90,28 +128,21 @@ target_link_libraries(emulation_host
 
 set_property(TARGET emulation_host PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-add_library(emulationroce STATIC
-    rocev2_data_plane.cpp
-    rocev2_transmitter.cpp
-    ${ZLIB_PATH}/crc32.c
-)
+##### Transport sources — published to PARENT_SCOPE
+#
+# The actual emulationroce / emulationcoe libraries are assembled
+# in ../CMakeLists.txt from these lists plus the matching common/ sources.
 
-target_include_directories(emulationroce 
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
-    PRIVATE
-        ${ZLIB_PATH}
-)
-target_link_libraries(emulationroce 
-    PUBLIC 
-        emulation_host
-        emulation_common
-        stm32_hal_driver
-        dlpack::dlpack
-)
-#target_compile_definitions(emulationroce PRIVATE "-Dlocal")
-set_property(TARGET emulationroce PROPERTY POSITION_INDEPENDENT_CODE ON)
+set(EMULATIONROCE_PLATFORM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/rocev2_data_plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/rocev2_transmitter.cpp
+    PARENT_SCOPE)
 
-add_library(hololink::emulation::roce ALIAS emulationroce)
+set(EMULATIONCOE_PLATFORM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/coe_data_plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/coe_transmitter.cpp
+    PARENT_SCOPE)
+
+install(TARGETS emulation_host stm32_hal_driver
+    EXPORT HololinkTargets
+    COMPONENT hololink-emulation)

@@ -30,6 +30,7 @@ module ptp_calc #(
   input         [79:0]      i_sync_t1_ts,
   input         [79:0]      i_sync_t2_ts,
   input         [47:0]      i_sync_cf_ns,
+  input         [47:0]      i_follow_up_cf_ns,
   input                     i_sync_ld,
   //Offset Measurement
   output signed [W_OFM-1:0] o_ofm,
@@ -41,6 +42,7 @@ module ptp_calc #(
   input         [79:0]      i_dly_t3_ts,
   input         [79:0]      i_dly_t4_ts,
   input         [47:0]      i_dly_cf_ns,
+  input         [47:0]      i_dly_follow_up_cf_ns,
   input                     i_dly_ld,
   output        [W_DLY-1:0] o_mean_dly,
   output                    o_mean_dly_vld
@@ -54,7 +56,7 @@ enum logic [3:0] {
   SYNC_TS1_MULTI,
   SYNC_TS2_MULTI,
   SYNC_SUB,
-  SYNC_CF,
+  SYNC_CF_ADD,
   SYNC_CORR,
   SYNC_ADD_DLY
 } sync_state;
@@ -141,6 +143,8 @@ end
 
 logic        [63:0]      sync_ts1_fp;
 logic        [63:0]      sync_ts2_fp;
+logic        [W_DLY-1:0] sync_cf;
+logic        [W_DLY-1:0] dly_cf;
 logic signed [W_OFM-1:0] sync_diff;
 logic signed [W_OFM-1:0] corr_sync;
 logic signed [W_OFM-1:0] ofm_no_dly;
@@ -165,9 +169,13 @@ logic        [W_DLY-1:0] dly_asymm;
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
     dly_asymm <= '0;
+    sync_cf <= '0;
+    dly_cf <= '0;
   end
   else begin
     dly_asymm <= i_cfg_dly_asymm[W_DLY-1:0] + i_ip_dly_asymm[W_DLY-1:0];
+    sync_cf <= i_sync_cf_ns[W_DLY-1:0] + i_follow_up_cf_ns[W_DLY-1:0];
+    dly_cf <= i_dly_cf_ns[W_DLY-1:0] + i_dly_follow_up_cf_ns[W_DLY-1:0];
   end
 end
 always_ff @(posedge i_pclk) begin
@@ -211,10 +219,10 @@ always_ff @(posedge i_pclk) begin
     end
     SYNC_SUB: begin
       sync_diff    <= sync_ts1_fp[W_OFM-1:0] - sync_ts2_fp[W_OFM-1:0];
-      sync_state   <= SYNC_CF;
+      sync_state   <= SYNC_CF_ADD;
     end
-    SYNC_CF: begin
-      ofm_no_dly  <= signed'(sync_diff) + signed'({1'b0,i_sync_cf_ns[W_DLY-1:0]});
+    SYNC_CF_ADD: begin
+      ofm_no_dly  <= signed'(sync_diff) + signed'({1'b0,sync_cf[W_DLY-1:0]});
       sync_state  <= SYNC_CORR;
     end
     SYNC_CORR: begin
@@ -278,7 +286,7 @@ always_ff @(posedge i_pclk) begin
         dly_state <= DLY_CF_SM;
       end
       DLY_CF_SM: begin
-        dly_sm    <= signed'(dly_diff) + signed'({1'b0,i_dly_cf_ns[W_DLY-1:0]});
+        dly_sm    <= signed'(dly_diff) + signed'({1'b0,dly_cf[W_DLY-1:0]});
         if (i_P2P) begin
           dly_ts    <= i_dly_t3_ts;
           dly_state <= DLY_TS3_MULTI;

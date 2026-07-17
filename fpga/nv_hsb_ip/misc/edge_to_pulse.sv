@@ -31,7 +31,7 @@ logic [WIDTH-1:0] edge_reg;
 logic [WIDTH-1:0] pulse_reg;
 
 always_ff @(posedge clk) begin
-  if (!rst) begin
+  if (rst) begin
     edge_reg <= '0;
   end
   else begin
@@ -53,7 +53,7 @@ generate
 
     logic [$clog2(PULSE_WIDTH)-1:0] pulse_counter;
     always_ff @(posedge clk) begin
-      if (!rst) begin
+      if (rst) begin
         pulse_reg[i]  <= '0;
         pulse_counter <= '0;
       end

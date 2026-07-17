@@ -16,11 +16,14 @@
  *
  * See README.md for detailed information.
  */
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/socket.h>
+#include <sys/uio.h>
 #ifndef __linux__
 #include <sys/sysctl.h>
 // sockaddr_dl and link_ntoa (not really used)
@@ -245,7 +248,7 @@ uint32_t get_broadcast_address(const IPAddress& ip_address)
             // broadcast address should have 1s in last 0s of subnet mask. This is not strictly exact, but a good heuristic.
             in_addr_t expected_broadcast_address = 0;
             in_addr_t subnet_mask = ip_address.subnet_mask;
-            uint64_t bit_mask = 1;
+            uint32_t bit_mask = 1;
             while (bit_mask < subnet_mask) {
                 if (subnet_mask & bit_mask) {
                     break;
@@ -262,3 +265,41 @@ uint32_t get_broadcast_address(const IPAddress& ip_address)
 }
 
 } // namespace hololink::emulation
+
+// Free utility (global namespace, matching calculate_buffer_length convention).
+// Shared Linux wire emit for the COE/RoCEv2 transmitters and control_plane_reply.
+// Walks the scatter/gather chain into an iovec and sendmsg's it over the provided
+// BSD socket.
+//   skip_head_bytes: bytes to drop from the FIRST chunk. COE rides on a raw AF_PACKET
+//   socket (kernel ships the full frame) -> 0. RoCEv2 rides on a UDP socket (kernel
+//   rebuilds L2) -> ETHER_HDR_LEN. control_plane_reply rides on a UDP socket and only
+//   needs the UDP payload -> ETHER_HDR_LEN + IP_HDR_LEN + UDP_HDR_LEN.
+int16_t eth_socket_send(int fd, const void* dest_addr, socklen_t addr_len,
+    ETH_BufferTypeDef* tx_buffers, size_t skip_head_bytes)
+{
+    constexpr int kMaxIov = 8;
+    struct iovec ios[kMaxIov];
+    int n = 0;
+    ios[n].iov_base = reinterpret_cast<void*>(tx_buffers->buffer + skip_head_bytes);
+    ios[n].iov_len = tx_buffers->len - skip_head_bytes;
+    n++;
+    for (ETH_BufferTypeDef* cur = tx_buffers->next; cur && n < kMaxIov; cur = cur->next, n++) {
+        ios[n].iov_base = reinterpret_cast<void*>(cur->buffer);
+        ios[n].iov_len = cur->len;
+    }
+    struct msghdr msg = {
+        .msg_name = const_cast<void*>(dest_addr),
+        .msg_namelen = addr_len,
+        .msg_iov = &ios[0],
+        .msg_iovlen = (unsigned int)n,
+        .msg_control = nullptr,
+        .msg_controllen = 0,
+        .msg_flags = 0,
+    };
+    ssize_t bytes_sent = sendmsg(fd, &msg, 0);
+    if (bytes_sent < 0) {
+        fprintf(stderr, "sendmsg failed: %d - %s\n", errno, strerror(errno));
+        return -1;
+    }
+    return (int16_t)bytes_sent;
+}

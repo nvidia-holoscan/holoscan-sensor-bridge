@@ -61,13 +61,8 @@ always_comb begin
   end
 end
 
-integer i;
-always_comb begin
-  idx = '0;
-  for (i=0;i<W_KEEP;i=i+1) begin
-    idx = idx + tkeep_r[i];
-  end
-end
+
+assign idx = $countones(tkeep_r);
 
 genvar j;
 generate

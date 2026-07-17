@@ -28,7 +28,9 @@ kernel_map = {
     "bayer8p_to_T_X2Rc10Rb10Ra10_kernel": None,
     "bayer8p_to_10p_kernel": None,
     "bayer8p_to_T_R12_PK_ISP_kernel": None,
+    "bayer8p_to_12p_kernel": None,
     "generate_bayerGB8p_kernel": None,
+    "generate_bayerRG8p_kernel": None,
 }
 
 
@@ -114,6 +116,42 @@ def bayer8p_to_T_R12_PK_ISP(src):
         blocks_per_grid,
         threads_per_block,
         (dest, line_bytes, src, pixel_height, pixel_width),
+    )
+    return dest
+
+
+# pack 8-bit bayer pattern into 12-bit-per-pixel slots without rescaling (2 pixels per 3 bytes)
+# every 2 input bytes (px0, px1) -> 3 output bytes {px0, px1, 0x00}
+def bayer8p_to_12p(src):
+    if src.ndim != 2:
+        raise ValueError("src must be a 2D array")
+    pixel_height, pixel_width = src.shape
+    line_bytes = (pixel_width + 1) // 2 * 3
+    line_bytes = ((line_bytes + 7) >> 3) << 3
+    dest = cp.zeros((pixel_height, line_bytes), dtype=cp.uint8)
+    threads_per_block = (32, 32)
+    blocks_per_grid = (
+        (pixel_width + 2 * threads_per_block[0] - 1) // (2 * threads_per_block[0]),
+        (pixel_height + threads_per_block[1] - 1) // threads_per_block[1],
+    )
+    kernel_map["bayer8p_to_12p_kernel"](
+        blocks_per_grid,
+        threads_per_block,
+        (dest, line_bytes, src, pixel_height, pixel_width),
+    )
+    return dest
+
+
+# generate 8-bit bayer pattern (RGGB)
+def generate_bayerRG8p(pixel_height, pixel_width):
+    threads_per_block = (32, 32)
+    blocks_per_grid = (
+        (pixel_width + threads_per_block[0] - 1) // threads_per_block[0],
+        (pixel_height + threads_per_block[1] - 1) // threads_per_block[1],
+    )
+    dest = cp.zeros((pixel_height, pixel_width), dtype=cp.uint8)
+    kernel_map["generate_bayerRG8p_kernel"](
+        blocks_per_grid, threads_per_block, (dest, pixel_height, pixel_width)
     )
     return dest
 
@@ -271,6 +309,111 @@ def loop_single_vb1940(loop_config, vb1940, data_plane, gpu=False):
             if sent_bytes < 0:
                 raise RuntimeError(f"Error sending data: {sent_bytes}")
             if sent_bytes > 0:  # only increment frame_count if data was sent
+                frame_count += 1
+
+        sleep_frame_rate(last_frame_time, loop_config.frame_rate_per_second)
+
+
+# generate an imx274 csi-2 format frame with optional packetization (query data_plane.packetizer_enabled())
+def generate_imx274_frame(is_gpu, imx274, packetize):
+    frame_generator = None
+    if imx274.get_pixel_bits() == 10:
+        if packetize:
+            frame_generator = bayer8p_to_T_X2Rc10Rb10Ra10
+        else:
+            frame_generator = bayer8p_to_10p
+    elif imx274.get_pixel_bits() == 12:
+        if packetize:
+            frame_generator = bayer8p_to_T_R12_PK_ISP
+        else:
+            frame_generator = bayer8p_to_12p
+
+    pixel_height = imx274.get_pixel_height()
+    pixel_width = imx274.get_pixel_width()
+    start_byte = imx274.get_image_start_byte()
+    line_bytes = imx274.get_bytes_per_line()
+    proto_frame = generate_bayerRG8p(pixel_height, pixel_width)
+    if frame_generator:
+        proto_frame = frame_generator(proto_frame)
+    image_size = proto_frame.shape[1] * proto_frame.shape[0]
+    if packetize:
+        line_bytes = image_size // pixel_height
+        if imx274.get_pixel_bits() == 12:
+            start_byte = 256 + line_bytes * 16
+        else:
+            start_byte = 256 + line_bytes * 8
+    frame = cp.zeros((start_byte + image_size,), dtype=cp.uint8)
+    frame[start_byte : start_byte + image_size] = proto_frame.flatten()
+
+    if is_gpu:
+        return frame
+    return cp.asnumpy(frame)
+
+
+# the thread loop for serving a frame (configured on host side) in imx274 csi-2 format as if from a single imx274 sensor
+def loop_single_imx274(loop_config, imx274, data_plane, gpu=False):
+    """Initialize and run data serving loop"""
+    streaming = False
+    frame_count = 0
+
+    while not loop_config.num_frames or (frame_count < loop_config.num_frames):
+        last_frame_time = time.time_ns()
+
+        if not streaming and imx274.is_streaming():
+            streaming = True
+            frame_data = generate_imx274_frame(
+                gpu, imx274, data_plane.packetizer_enabled()
+            )
+        elif not imx274.is_streaming():
+            streaming = False
+
+        if streaming:
+            sent_bytes = data_plane.send(frame_data)
+            if sent_bytes < 0:
+                raise RuntimeError(f"Error sending data: {sent_bytes}")
+            if sent_bytes > 0:  # only increment frame_count if data was sent
+                frame_count += 1
+
+        sleep_frame_rate(last_frame_time, loop_config.frame_rate_per_second)
+
+
+# the thread loop for serving two frames simultaneously (configured on host side) in imx274 csi-2 format as if from stereo imx274 sensors
+def loop_stereo_imx274(
+    loop_config, imx274_0, data_plane_0, imx274_1, data_plane_1, gpu=False
+):
+    """Initialize and run data serving loop"""
+    streaming = False
+    frame_count = 0
+
+    while not loop_config.num_frames or (frame_count < loop_config.num_frames):
+        last_frame_time = time.time_ns()
+
+        if not streaming and imx274_0.is_streaming() and imx274_1.is_streaming():
+            streaming = True
+            tensor_0 = generate_imx274_frame(
+                gpu, imx274_0, data_plane_0.packetizer_enabled()
+            )
+            tensor_1 = generate_imx274_frame(
+                gpu, imx274_1, data_plane_1.packetizer_enabled()
+            )
+        elif not imx274_0.is_streaming() and not imx274_1.is_streaming():
+            streaming = False
+
+        if streaming:
+            sent_bytes_0 = 0
+            sent_bytes_1 = 0
+
+            if imx274_0.is_streaming():
+                sent_bytes_0 = data_plane_0.send(tensor_0)
+                if sent_bytes_0 < 0:
+                    raise RuntimeError(f"Error sending data: {sent_bytes_0}")
+
+            if imx274_1.is_streaming():
+                sent_bytes_1 = data_plane_1.send(tensor_1)
+                if sent_bytes_1 < 0:
+                    raise RuntimeError(f"Error sending data: {sent_bytes_1}")
+
+            if sent_bytes_0 + sent_bytes_1 > 0:
                 frame_count += 1
 
         sleep_frame_rate(last_frame_time, loop_config.frame_rate_per_second)

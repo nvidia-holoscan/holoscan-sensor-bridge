@@ -75,6 +75,17 @@ reset_sync mipi_u_rst (
     .o_srst_n  ( mipi_rst_n    ) 
 );
 
+reset_sync fifo_u_rst (
+    .i_clk     ( sclk_o             ),
+    .i_arst_n  ( dphy_rstn          ),
+    .i_srst    ( 1'b0               ),
+    .i_locked  ( pll_locked         ),
+    .o_arst    (                    ),
+    .o_arst_n  (                    ),
+    .o_srst    ( fifo_rst           ), 
+    .o_srst_n  (                    ) 
+);
+
 reset_sync mipi_sft_rst (
     .i_clk     ( mipi_sync_clk  ),
     .i_arst_n  ( dphy_rstn      ),
@@ -226,6 +237,13 @@ data_sync #(
        .ecc_byte_error_o    (                     ),    // ECC Error Flags
        .ecc_1bit_error_o    (                     ),    // ECC Error Flags
        .ecc_2bit_error_o    (                     ),    // ECC Error Flags
+       .dt2_o               (                     ),
+       .vc2_o               (                     ),
+       .wc2_o               (                     ),
+       .ecc2_o              (                     ),
+       .sp2_en_o            (                     ),
+       .lp2_en_o            (                     ),
+       .lp2_av_en_o         (                     ),
        .dphy_rxdatawidth_hs_o(                    ),
        .dphy_cfg_num_lanes_o (                    ),
        .pd_dphy_i           ( !dphy_rstn_sync     ),    // Power Down
@@ -235,7 +253,6 @@ data_sync #(
        .lp_av_en_o          (                     ),
        .skewcal_det_o       (                     ),
        .skewcal_done_o      (                     ));
-
 
   always @(posedge clk_byte_hs_o or posedge mipi_rst) begin
     if (mipi_rst) begin
@@ -358,7 +375,7 @@ endgenerate
     .W_USER           ( 4                      )
   ) u_axis_pack  (
     .clk              ( clk_byte_hs_o          ),
-    .rst              ( mipi_rst               ),
+    .rst              ( !mipi_rst_n            ),
     .i_axis_tvalid    ( mipi_axis_tvalid       ),
     .i_axis_tdata     ( mipi_axis_tdata        ),
     .i_axis_tlast     ( mipi_axis_tlast        ),
@@ -378,7 +395,7 @@ endgenerate
     .DWIDTH             ( 64 + 8 + 1 + 4                                                  )
   ) u_axis_pck_reg (
     .clk                ( clk_byte_hs_o                                                   ),
-    .rst                ( mipi_rst                                                        ),
+    .rst                ( !mipi_rst_n                                                     ),
     .i_axis_rx_tvalid   ( pck_axis_tvalid                                                 ),
     .i_axis_rx_tdata    ( {pck_axis_tdata,pck_axis_tlast,pck_axis_tuser,pck_axis_tkeep}   ),
     .o_axis_rx_tready   ( pck_axis_tready                                                 ),
@@ -403,9 +420,9 @@ endgenerate
       .OUT_W_USER    ( 5      )
     ) u_axis_buffer (
       .in_clk            ( clk_byte_hs_o         ),
-      .in_rst            ( mipi_rst              ),
+      .in_rst            ( !mipi_rst_n           ),
       .out_clk           ( sclk_o                ),
-      .out_rst           ( !lvds_ready_sync      ),
+      .out_rst           ( fifo_rst              ),
       .i_axis_rx_tvalid  ( reg_axis_tvalid       ),
       .i_axis_rx_tdata   ( reg_axis_tdata        ),
       .i_axis_rx_tlast   ( reg_axis_tlast        ),

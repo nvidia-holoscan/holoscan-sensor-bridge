@@ -78,6 +78,9 @@ class HSBLiteFlasherBase(ABC):
         """Flash the device. Override in subclass."""
         pass
 
+    def establish_board_state(self):
+        pass
+
 
 # =============================================================================
 # Flasher Implementations
@@ -120,6 +123,12 @@ class HSBLiteFlasherModern(HSBLiteFlasherBase):
         return _flash_strategies.hsb_lite_flash_2507(
             self.ip_address, clnx_path, cpnx_path
         )
+
+    def establish_board_state(self):
+        print(
+            f"[hsb_lite] Establishing board state for {self.ip_address}: connect, reset"
+        )
+        _flash_strategies.hsb_lite_reset(self.ip_address)
 
 
 # =============================================================================
@@ -188,6 +197,7 @@ def do_flash(
     print(f"  CPNX: {cpnx_path}")
 
     try:
+        flasher.establish_board_state()
         success = flasher.flash(clnx_path, cpnx_path)
     except (FileNotFoundError, OSError, ValueError, RuntimeError) as e:
         print(f"[hsb_lite] ERROR: {e}")

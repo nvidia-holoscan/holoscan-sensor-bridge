@@ -30,6 +30,7 @@
 #include "dlpack/dlpack.h"
 #include "hololink/emulation/data_plane.hpp"
 #include "hololink/emulation/hsb_config.hpp"
+#include "hololink/emulation/sensors/imx274_emulator.hpp"
 #include "hololink/emulation/sensors/test_sensor.hpp"
 #include "hololink/emulation/sensors/vb1940_emulator.hpp"
 
@@ -57,6 +58,12 @@ std::shared_ptr<uint8_t> load_data(const std::string& filename, int64_t& n_bytes
 // if frame_data.device.device_type == kDLCUDA, use cudaFree(frame_data.data), otherwise use delete[] static_cast<uint8_t*>(frame_data.data)
 void generate_vb1940_frame(DLTensor& frame_data, hololink::emulation::sensors::Vb1940Emulator& vb1940, bool packetize = false);
 
+// generate an imx274 csi-2 format frame.
+// to generate data on GPU, set frame_data.device.device_type = kDLCUDA. 0 or other values will generate data on host device using new[].
+// cleanup of the buffer in frame_data is left to the caller. Note that the examples leak this memory
+// if frame_data.device.device_type == kDLCUDA, use cudaFree(frame_data.data), otherwise use delete[] static_cast<uint8_t*>(frame_data.data)
+void generate_imx274_frame(DLTensor& frame_data, hololink::emulation::sensors::IMX274Emulator& imx274, bool packetize = false);
+
 /////// loop execution methods //////
 // initialize and loop through frames from the file `filename`, loading data into the `tensor`
 void loop_single_from_file(struct LoopConfig& loop_config, std::string& filename, hololink::emulation::DataPlane& channel, DLTensor& tensor);
@@ -70,6 +77,12 @@ void loop_single_vb1940(struct LoopConfig& loop_config, hololink::emulation::sen
 
 // the thread loop for serving two frames simultaneously (configured on host side) in vb1940 csi-2 format as if from stereo vb1940 sensors
 void loop_stereo_vb1940(struct LoopConfig& loop_config, hololink::emulation::sensors::Vb1940Emulator& vb1940_0, hololink::emulation::DataPlane& data_plane_0, DLTensor& tensor_0, hololink::emulation::sensors::Vb1940Emulator& vb1940_1, hololink::emulation::DataPlane& data_plane_1, DLTensor& tensor_1);
+
+// the thread loop for serving a frame (configured on host side) in imx274 csi-2 format as if from a single imx274 sensor
+void loop_single_imx274(struct LoopConfig& loop_config, hololink::emulation::sensors::IMX274Emulator& imx274, hololink::emulation::DataPlane& data_plane, DLTensor& frame_data);
+
+// the thread loop for serving two frames simultaneously (configured on host side) in imx274 csi-2 format as if from stereo imx274 sensors
+void loop_stereo_imx274(struct LoopConfig& loop_config, hololink::emulation::sensors::IMX274Emulator& imx274_0, hololink::emulation::DataPlane& data_plane_0, DLTensor& tensor_0, hololink::emulation::sensors::IMX274Emulator& imx274_1, hololink::emulation::DataPlane& data_plane_1, DLTensor& tensor_1);
 
 // generate a test frame buffer from TestSensor configuration
 void generate_test_frame(DLTensor& frame_data, hololink::emulation::sensors::TestSensor& test_sensor, uint64_t frame_index);

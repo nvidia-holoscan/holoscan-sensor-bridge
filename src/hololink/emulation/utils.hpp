@@ -41,6 +41,11 @@
     }
 #endif
 
+#ifndef STRINGIFY
+#define STRINGIFY(x) STRINGIFY_(x)
+#define STRINGIFY_(x) #x
+#endif
+
 namespace hololink::emulation {
 
 #define UUID_SIZE 16
@@ -60,6 +65,20 @@ int uuid_parse(const char* uuid_s, uuid_t uuid);
 
 // out must be at least 37 characters long (32 hex characters + 4 hyphens + null terminator)
 void uuid_unparse_lower(uuid_t uu, char* out);
+
+extern "C" void Error_Handler(const char* str);
+
+#define CHECK_STATUS(expr, error_message) \
+    do {                                  \
+        int status = (expr);              \
+        if (status) {                     \
+            Error_Handler(error_message); \
+        }                                 \
+    } while (0)
+
+#ifndef COUNTOF
+#define COUNTOF(array) (sizeof(array) / sizeof(array[0]))
+#endif
 
 } // namespace hololink::emulation
 

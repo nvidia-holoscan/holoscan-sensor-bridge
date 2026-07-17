@@ -20,6 +20,7 @@ module bridge_pkt_proc
   import regmap_pkg::*;
 #(
   parameter         AXI_DWIDTH                 = 64,
+  parameter         AXI_UWIDTH                 = 17,
   parameter         NUM_HOST                   = 2,
   parameter         NUM_SENSOR                 = 8,
   parameter         SIF_DWIDTH                 = 64,
@@ -72,7 +73,7 @@ module bridge_pkt_proc
   output  logic   [  NUM_HOST-1:0]  o_hif_axis_tvalid,
   output  logic   [AXI_DWIDTH-1:0]  o_hif_axis_tdata [NUM_HOST-1:0],
   output  logic   [  NUM_HOST-1:0]  o_hif_axis_tlast,
-  output  logic   [  NUM_HOST-1:0]  o_hif_axis_tuser,
+  output  logic   [AXI_UWIDTH-1:0]  o_hif_axis_tuser [NUM_HOST-1:0],
   output  logic   [KEEP_WIDTH-1:0]  o_hif_axis_tkeep [NUM_HOST-1:0],
   input   logic   [NUM_HOST  -1:0]  i_hif_axis_tready,
 
@@ -86,6 +87,7 @@ module bridge_pkt_proc
 
 localparam HIF_MUX_WIDTH = $clog2(NUM_HOST + NUM_SENSOR);
 localparam SIF_MUX_WIDTH = $clog2(NUM_HOST + NUM_SENSOR);
+localparam W_SENSOR_IDX  = (NUM_SENSOR <= 1) ? 1 : $clog2(NUM_SENSOR);
 
 logic [($clog2(NUM_HOST)):0] ptp_port;
 assign ptp_port = '0;
@@ -148,7 +150,6 @@ logic   [  NUM_HOST-1:0] hif_buf_axis_tready;
 logic   [           1:0] sif_mux_axis_tuser [NUM_SENSOR-1:0];
 logic   [NUM_SENSOR-1:0] sif_mux_axis_tvalid;
 
-logic   [  NUM_HOST-1:0]  axis_sop;
 logic   [  NUM_HOST-1:0]  mac_req;
 logic   [  TOTAL_TX-1:0]  dest_port [NUM_HOST];
 logic   [  TOTAL_TX-1:0]  pkt_active;
@@ -166,8 +167,8 @@ logic [47:0]      hif_cf;
 logic [47:0]      hif_cf_be;  //big endian
 
 logic [HIF_MUX_WIDTH:0]         gnt_idx;
-logic [$clog2(NUM_SENSOR)-1:0]  sif_gnt_idx;
-logic [$clog2(NUM_SENSOR)-1:0]  r_sif_gnt_idx [IS_PTP_DEL:0];
+logic [W_SENSOR_IDX-1:0]        sif_gnt_idx;
+logic [W_SENSOR_IDX-1:0]        r_sif_gnt_idx [IS_PTP_DEL:0];
 
 logic [NUM_SENSOR-1:0] is_ptp;
 logic [NUM_SENSOR-1:0] is_ptp_mac;
@@ -367,7 +368,6 @@ logic   [  NUM_HOST-1:0] hif_mux_axis_tready;
 
 logic   [AXI_DWIDTH-1:0] sif_mux_axis_tdata [NUM_SENSOR];
 logic   [KEEP_WIDTH-1:0] sif_mux_axis_tkeep [NUM_SENSOR];
-logic   [NUM_SENSOR-1:0] sif_mux_axis_tready;
 
 logic   [NUM_SENSOR-1:0] sif_tx_axis_tvalid;
 logic   [AXI_DWIDTH-1:0] sif_tx_axis_tdata [NUM_SENSOR];
@@ -397,12 +397,13 @@ logic [  NUM_HOST-1:0]  self_mask [NUM_HOST];
 rrarb #(
   .WIDTH(NUM_HOST)
 ) u_rrarb_host (
-  .clk    ( i_pclk       ),    // Clock
-  .rst_n  ( !i_prst      ),    // Asynchronous reset active low
-  .rst    ( 1'b0         ),    // Synchronous reset active high
-  .idle   ( '1           ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
-  .req    ( hif_req      ),    // vector of requests
-  .gnt    ( hif_gnt      )     // onehot0 vector of grants
+  .clk     ( i_pclk       ),    // Clock
+  .rst_n   ( !i_prst      ),    // Asynchronous reset active low
+  .rst     ( 1'b0         ),    // Synchronous reset active high
+  .idle    ( '1           ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
+  .req     ( hif_req      ),    // vector of requests
+  .gnt_idx (              ),
+  .gnt     ( hif_gnt      )     // onehot0 vector of grants
 );
 
 generate
@@ -417,22 +418,17 @@ endgenerate
 rrarb #(
   .WIDTH(NUM_SENSOR)
 ) u_rrarb_sensor (
-  .clk    ( i_pclk    ),    // Clock
-  .rst_n  ( !i_prst   ),    // Asynchronous reset active low
-  .rst    ( 1'b0      ),    // Synchronous reset active high
-  .idle   ( '1        ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
-  .req    ( sif_req   ),    // vector of requests
-  .gnt    ( sif_gnt   )     // onehot0 vector of grants
+  .clk     ( i_pclk       ),    // Clock
+  .rst_n   ( !i_prst      ),    // Asynchronous reset active low
+  .rst     ( 1'b0         ),    // Synchronous reset active high
+  .idle    ( '1           ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
+  .req     ( sif_req      ),    // vector of requests
+  .gnt_idx ( sif_gnt_idx  ),
+  .gnt     ( sif_gnt      )     // onehot0 vector of grants
 );
 
 always_comb begin
-  gnt_idx = '0;
-  for (int i = 0; i < NUM_SENSOR; i++) begin
-    if (sif_gnt[i]) begin
-      gnt_idx = i;
-      sif_gnt_idx = i;
-    end
-  end
+  gnt_idx = sif_gnt_idx;
   for (int i = 0; i < NUM_HOST; i++) begin
     if (hif_gnt[i]) begin
       gnt_idx = i+NUM_SENSOR;
@@ -507,14 +503,12 @@ logic   [AXI_DWIDTH-1:0] hif_demux_axis_tdata [TOTAL_TX-1:0];
 logic   [  TOTAL_TX-1:0] hif_demux_axis_tlast;
 logic   [           1:0] hif_demux_axis_tuser [TOTAL_TX-1:0];
 logic   [KEEP_WIDTH-1:0] hif_demux_axis_tkeep [TOTAL_TX-1:0];
-logic   [  TOTAL_TX-1:0] hif_demux_axis_tready;
 
 logic   [  TOTAL_TX-1:0] hsif_demux_axis_tvalid;
 logic   [AXI_DWIDTH-1:0] hsif_demux_axis_tdata [TOTAL_TX-1:0];
 logic   [  TOTAL_TX-1:0] hsif_demux_axis_tlast;
 logic   [           1:0] hsif_demux_axis_tuser [TOTAL_TX-1:0];
 logic   [KEEP_WIDTH-1:0] hsif_demux_axis_tkeep [TOTAL_TX-1:0];
-logic   [  TOTAL_TX-1:0] hsif_demux_axis_tready;
 
 
 generate
@@ -605,10 +599,12 @@ generate
       .o_axis_tx_tvalid  ( o_hif_axis_tvalid   [i] ),
       .o_axis_tx_tdata   ( o_hif_axis_tdata    [i] ),
       .o_axis_tx_tlast   ( o_hif_axis_tlast    [i] ),
-      .o_axis_tx_tuser   ( o_hif_axis_tuser    [i] ),
+      .o_axis_tx_tuser   (                         ),
       .o_axis_tx_tkeep   ( o_hif_axis_tkeep    [i] ),
       .i_axis_tx_tready  ( i_hif_axis_tready   [i] )
     );
+
+    assign o_hif_axis_tuser[i] = 'd0; 
 
   end
 endgenerate

@@ -33,7 +33,7 @@ generate
   for(s_idx=0; s_idx < DATA_WIDTH; s_idx++) begin: FILTER_SYNC
     always @(posedge clk or negedge rst_n) begin
       if (!rst_n) begin
-        filter_pipe[s_idx] <= {DATA_WIDTH{RESET_VALUE}};
+        filter_pipe[s_idx] <= {FILTER_DEPTH{RESET_VALUE}};
         sync_out   [s_idx] <= RESET_VALUE;
       end
       else begin

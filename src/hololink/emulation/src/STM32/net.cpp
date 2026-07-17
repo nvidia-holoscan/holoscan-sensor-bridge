@@ -19,8 +19,10 @@
 
 #include "STM32/net.hpp"
 #include "STM32/stm32_system.h"
+#include "board.h"
 #include "inttypes.h"
 #include "string.h"
+#include "utils.hpp"
 #include <cstdlib>
 
 #ifndef N_RX_BUFFER_DESC
@@ -79,70 +81,7 @@ void generate_mac_address(void)
     MAC_ADDRESS[5] = hash & 0xFF;
 }
 
-// overrides the HAL_ETH_MspInit function to initialize the ETH and GPIO in STM32 HAL Driver
-extern "C" void HAL_ETH_MspInit(ETH_HandleTypeDef* ethHandle)
-{
-
-    GPIO_InitTypeDef gpio_cfg = { 0 };
-    if (ethHandle->Instance == ETH) {
-        // enable ETH clock
-        __HAL_RCC_ETH_CLK_ENABLE();
-
-        // RMII MDC, RX Data 0, RX Data 1 pins
-        gpio_cfg.Pin = GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5;
-        gpio_cfg.Mode = GPIO_MODE_AF_PP;
-        gpio_cfg.Pull = GPIO_NOPULL;
-        gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-        gpio_cfg.Alternate = GPIO_AF11_ETH;
-        HAL_GPIO_Init(GPIOC, &gpio_cfg);
-
-        // RMII REF CLK, MDIO, CRS DV pins
-        gpio_cfg.Pin = GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_7;
-        gpio_cfg.Mode = GPIO_MODE_AF_PP;
-        gpio_cfg.Pull = GPIO_NOPULL;
-        gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-        gpio_cfg.Alternate = GPIO_AF11_ETH;
-        HAL_GPIO_Init(GPIOA, &gpio_cfg);
-
-        // RMII TX Data 1 pin
-        gpio_cfg.Pin = GPIO_PIN_13;
-        gpio_cfg.Mode = GPIO_MODE_AF_PP;
-        gpio_cfg.Pull = GPIO_NOPULL;
-        gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-        gpio_cfg.Alternate = GPIO_AF11_ETH;
-        HAL_GPIO_Init(GPIOB, &gpio_cfg);
-
-        // RMII TX Enable, TX Data 0 pins
-        gpio_cfg.Pin = GPIO_PIN_11 | GPIO_PIN_13;
-        gpio_cfg.Mode = GPIO_MODE_AF_PP;
-        gpio_cfg.Pull = GPIO_NOPULL;
-        gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-        gpio_cfg.Alternate = GPIO_AF11_ETH;
-        HAL_GPIO_Init(GPIOG, &gpio_cfg);
-    }
-}
-
-// overrides the HAL_ETH_MspDeInit function to de-initialize the ETH and GPIO in STM32 HAL Driver
-extern "C" void HAL_ETH_MspDeInit(ETH_HandleTypeDef* ethHandle)
-{
-
-    if (ethHandle->Instance == ETH) {
-        ETH_HANDLE = nullptr;
-
-        // disable ETH clock
-        __HAL_RCC_ETH_CLK_DISABLE();
-
-        // de-init RMII
-        // RMII MDC, RX Data 0, RX Data 1 pins
-        HAL_GPIO_DeInit(GPIOC, GPIO_PIN_1 | GPIO_PIN_4 | GPIO_PIN_5);
-        // RMII REF CLK, MDIO, CRS DV pins
-        HAL_GPIO_DeInit(GPIOA, GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_7);
-        // RMII TX Data 1 pin
-        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_13);
-        // RMII TX Enable
-        HAL_GPIO_DeInit(GPIOG, GPIO_PIN_11 | GPIO_PIN_13);
-    }
-}
+// HAL_ETH_MspInit / HAL_ETH_MspDeInit live in the board-specific source (board.c).
 
 char INET_NTOP_ERROR[] = "-1.-1.-1.-1";
 
@@ -211,10 +150,7 @@ void init_rx_buffer_pool(void)
     }
 }
 
-extern "C" void ETH_IRQHandler(void)
-{
-    HAL_ETH_IRQHandler(ETH_HANDLE);
-}
+// ETH_IRQHandler lives in the board-specific source (board.c).
 
 void send_arp_reply(struct ether_header* eth_hdr, uint8_t* buffer_start)
 {
@@ -414,7 +350,7 @@ cleanup:
     return 0;
 }
 
-/* ETH init function */
+/* Ethernet HAL init function */
 int net_init(ETH_HandleTypeDef* heth)
 {
     // already initialized
@@ -425,7 +361,7 @@ int net_init(ETH_HandleTypeDef* heth)
         return -1;
     }
 
-    heth->Instance = ETH;
+    heth->Instance = STM32_CONF_ETH_INSTANCE;
     // TODO: replace this with a calculation from UID
     heth->Init.MACAddr = &MAC_ADDRESS[0];
     heth->Init.MediaInterface = HAL_ETH_RMII_MODE;
@@ -434,7 +370,7 @@ int net_init(ETH_HandleTypeDef* heth)
     heth->Init.RxBuffLen = RX_BUFFER_SIZE;
 
     if (HAL_ETH_Init(heth) != HAL_OK) {
-        Error_Handler();
+        hololink::emulation::Error_Handler("Failed to initialize Ethernet");
     }
 
     int return_status = 0;
@@ -565,4 +501,23 @@ std::string IPAddress_to_string(const IPAddress& ip_address)
     return std::string(inet_ntoa(addr));
 }
 
+} // namespace hololink::emulation
+
+// Shared STM32 wire emit for the COE and RoCEv2 transmitters. Wraps the scatter/gather
+// list in an ETH_TxPacketConfigTypeDef and calls the blocking HAL transmit. Caller's
+// stack-allocated tx_buffers must outlive the call (blocking transmit guarantees this).
+// Defined at file scope to match the declaration in STM32/net.hpp.
+int16_t eth_hal_send(ETH_HandleTypeDef* eth_handle, ETH_BufferTypeDef* tx_buffers)
+{
+    ETH_TxPacketConfigTypeDef tx_config = {
+        .Attributes = ETH_TX_PACKETS_FEATURES_CSUM | ETH_TX_PACKETS_FEATURES_CRCPAD,
+        .Length = calculate_buffer_length(tx_buffers),
+        .TxBuffer = tx_buffers,
+        .CRCPadCtrl = ETH_CRC_PAD_INSERT,
+        .ChecksumCtrl = ETH_CHECKSUM_IPHDR_PAYLOAD_INSERT_PHDR_CALC,
+    };
+    if (HAL_ETH_Transmit(eth_handle, &tx_config, HSB_DEFAULT_TIMEOUT_MSEC) != HAL_OK) {
+        return -1;
+    }
+    return (int16_t)tx_config.Length;
 }

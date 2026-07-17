@@ -75,7 +75,6 @@ end
 else begin
   //If there are multiple controller ports, then arbitrate
   logic               psel_active;
-  logic [W_MPORT-1:0] apb_midx_grant;
   logic [N_MPORT-1:0] apb_midx_req_onehot;
   logic [N_MPORT-1:0] apb_midx_grant_onehot;
   logic [3:0]         delay_cnt;
@@ -94,22 +93,14 @@ else begin
     .WIDTH(N_MPORT),
     .STICKY_EN(0)
   ) rrarb_inst (
-    .clk  ( i_apb_clk             ),
-    .rst_n( !i_apb_reset          ),
-    .rst  ( 1'b0                  ),
-    .idle ( (state == IDLE)       ),
-    .req  ( apb_midx_req_onehot   ),
-    .gnt  ( apb_midx_grant_onehot )
+    .clk     ( i_apb_clk             ),
+    .rst_n   ( !i_apb_reset          ),
+    .rst     ( 1'b0                  ),
+    .idle    ( (state == IDLE)       ),
+    .req     ( apb_midx_req_onehot   ),
+    .gnt_idx ( apb_midx              ),
+    .gnt     ( apb_midx_grant_onehot )
   );
-
-  always_comb begin
-    apb_midx = '0;
-    for (int i=0; i<N_MPORT; i++) begin
-      if (apb_midx_grant_onehot[i]) begin
-        apb_midx = i[W_MPORT-1:0];
-      end
-    end
-  end
 
   assign psel_active = |apb_midx_grant_onehot;
 

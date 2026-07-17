@@ -358,11 +358,9 @@ assign rx_fifo_not_empty = !rx_fifo_empty;
 logic [7:0] uart_tx_data;
 logic       uart_tx_valid;
 logic       uart_tx_ready;
-logic       uart_tx_done;
 logic [7:0] uart_rx_data;
 logic       uart_rx_valid;
 logic       uart_rx_ready;
-logic       uart_rx_done;
 
 uart #(
   .OVERSAMPLE                ( 8                         ),
@@ -502,7 +500,7 @@ edge_to_pulse #(
   .EDGE_TYPE("RISING")
 ) uart_int_pulse_gen (
   .clk(clk),
-  .rst(rst_n),
+  .rst(i_arst),
   .i_edge({tx_empty_int_status, tx_afull_int_status, tx_aempty_int_status, rx_not_empty_int_status, rx_glitch_error_int_status}),
   .o_pulse(uart_int_status_pulse)
 );

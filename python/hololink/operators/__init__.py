@@ -28,7 +28,6 @@ _OBJECTS = {
     "ComputePvaCrcOp": "pva_crc",
     "CsiToBayerOp": "csi_to_bayer",
     "FusaCoeCaptureOp": "fusa_coe_capture",
-    "HsbControllerOp": "hsb_controller_op",
     "ImageProcessorOp": "image_processor",
     "ImageShiftToUint8Operator": "image_shift_to_uint8_operator",
     "IQDecoderOp": "iq_dec",
@@ -52,10 +51,7 @@ _OBJECTS = {
     "UdpTransmitterOp": "udp_transmitter",
 }
 
-_MODULES = [
-    "linux_controller_receiver",
-    "roce_controller_receiver",
-]
+_MODULES = []
 
 
 __all__ = []

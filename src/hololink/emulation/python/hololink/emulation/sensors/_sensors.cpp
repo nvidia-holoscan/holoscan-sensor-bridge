@@ -18,6 +18,7 @@
 #include "hololink/emulation/data_plane.hpp"
 #include "hololink/emulation/hsb_emulator.hpp"
 #include "hololink/emulation/i2c_interface.hpp"
+#include "hololink/emulation/sensors/imx274_emulator.hpp"
 #include "hololink/emulation/sensors/test_sensor.hpp"
 #include "hololink/emulation/sensors/vb1940_emulator.hpp"
 #include <pybind11/pybind11.h>
@@ -57,7 +58,43 @@ PYBIND11_MODULE(_emulation_sensors, m)
         .def("get_bytes_per_line", &sensors::Vb1940Emulator::get_bytes_per_line, "get the bytes per line")
         .def("get_image_start_byte", &sensors::Vb1940Emulator::get_image_start_byte, "get the image start byte")
         .def("get_pixel_bits", &sensors::Vb1940Emulator::get_pixel_bits, "get the pixel bits")
-        .def("get_csi_length", &sensors::Vb1940Emulator::get_csi_length, "get the CSI length");
+        .def("get_csi_length", &sensors::Vb1940Emulator::get_csi_length, "get the CSI length")
+        .def(
+            "set_eeprom_data",
+            [](sensors::Vb1940Emulator& self, py::buffer data) {
+                const py::buffer_info info = data.request();
+                if (info.ndim != 1) {
+                    throw py::value_error(
+                        "set_eeprom_data expects a 1-D buffer");
+                }
+                if (info.itemsize != 1) {
+                    throw py::value_error(
+                        "set_eeprom_data expects a byte buffer (itemsize==1)");
+                }
+                // For a 1-D itemsize-1 buffer, C-contiguous means strides[0] == 1.
+                if (!info.strides.empty() && info.strides[0] != 1) {
+                    throw py::value_error(
+                        "set_eeprom_data expects a contiguous buffer");
+                }
+                self.set_eeprom_data(static_cast<const uint8_t*>(info.ptr),
+                    static_cast<size_t>(info.size));
+            },
+            "populate the rig calibration EEPROM region served at I²C 0x51")
+        .attr("EEPROM_REGION_BYTES")
+        = sensors::Vb1940Emulator::EEPROM_REGION_BYTES;
+
+    py::class_<sensors::IMX274Emulator, I2CPeripheral>(m, "IMX274Emulator")
+        .def(py::init<>())
+        .def("reset", &sensors::IMX274Emulator::reset, "reset the IMX274Emulator")
+        .def("attach_to_i2c", &sensors::IMX274Emulator::attach_to_i2c, "attach the IMX274Emulator to an I2C controller")
+        .def("i2c_transaction", &sensors::IMX274Emulator::i2c_transaction, "perform an I2C transaction")
+        .def("is_streaming", &sensors::IMX274Emulator::is_streaming, "check if IMX274Emulator is streaming")
+        .def("get_pixel_width", &sensors::IMX274Emulator::get_pixel_width, "get the pixel width")
+        .def("get_pixel_height", &sensors::IMX274Emulator::get_pixel_height, "get the pixel height")
+        .def("get_bytes_per_line", &sensors::IMX274Emulator::get_bytes_per_line, "get the bytes per line")
+        .def("get_image_start_byte", &sensors::IMX274Emulator::get_image_start_byte, "get the image start byte")
+        .def("get_pixel_bits", &sensors::IMX274Emulator::get_pixel_bits, "get the pixel bits")
+        .def("get_csi_length", &sensors::IMX274Emulator::get_csi_length, "get the CSI length");
 
 } // PYBIND11_MODULE
 

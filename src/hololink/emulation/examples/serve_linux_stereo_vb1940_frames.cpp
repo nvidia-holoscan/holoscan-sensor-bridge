@@ -62,7 +62,7 @@ void print_usage(char const* program_name)
            "        Note: for roce receivers, this should be on the same subnet "
            "        as the receiver and physically connected\n"
            "    -r, --frame-rate FRAME_RATE: FRAME_RATE in frames per second at which to serve the file (default: %d)\n"
-           "    -f, --num-frames NUM_FRAMES: number of frames to serve (default: %d - infinite)\n"
+           "    -l, --frame-limit NUM_FRAMES: number of frames to serve (default: %d - infinite)\n"
            "    -g, --gpu: serve the data from the GPU.\n"
            "    Example: %s --frame-rate 60 --frame-limit 10 192.168.0.12\n",
         program_name, DEFAULT_FRAME_RATE_PER_SECOND, DEFAULT_NUM_FRAMES, program_name);
@@ -101,7 +101,10 @@ void parse_args(int argc, char** argv, struct LoopConfig& loop_config, bool& gpu
         case 'l': {
             long frame_limit = atol(optarg);
             if (frame_limit < 0) {
-                throw std::invalid_argument("frame-limit must be a non-negative integer");
+                throw std::invalid_argument("frame-limit must be a non-negative integer <= " + std::to_string(UINT_MAX));
+            }
+            if (frame_limit > UINT_MAX) {
+                throw std::invalid_argument("frame-limit must be less than or equal to " + std::to_string(UINT_MAX) + " (unsigned int max)");
             }
             loop_config.num_frames = static_cast<unsigned int>(frame_limit);
             break;
@@ -126,7 +129,13 @@ int main(int argc, char** argv)
         .frame_rate_per_second = DEFAULT_FRAME_RATE_PER_SECOND
     };
     bool gpu = false;
-    parse_args(argc, argv, loop_config, gpu);
+    try {
+        parse_args(argc, argv, loop_config, gpu);
+    } catch (const std::invalid_argument& e) {
+        fprintf(stderr, "%s\n", e.what());
+        print_usage(program_name);
+        exit(EXIT_FAILURE);
+    }
     if (optind >= argc) {
         fprintf(stderr, "ip address not provided\n");
         print_usage(program_name);

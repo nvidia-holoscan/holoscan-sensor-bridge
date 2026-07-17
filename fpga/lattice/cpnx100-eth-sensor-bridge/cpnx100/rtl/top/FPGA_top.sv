@@ -125,9 +125,12 @@ module FPGA_top
   /* synthesis syn_keep=1 nomerge=""*/
   logic                     i2s_ref_clk;
   /* synthesis syn_keep=1 nomerge=""*/
+  logic                     i2s_ref_rst;
 
   logic                     uart_tx;
   logic                     uart_rx;  
+  logic                     uart_cts;
+  logic                     uart_rts;
 
   assign usr_clk_locked = &usr_clk_rdy;
 
@@ -149,6 +152,7 @@ module FPGA_top
     // .o_i2s_clk_ext   ( i2s_clk_ext    ),
     // .o_i2s_mclk_ext  ( i2s_mclk_ext   ),
     .o_i2s_ref_clk   ( i2s_ref_clk    ),
+    .o_i2s_ref_rst   ( i2s_ref_rst    ),
 
     .i_pb_rst_n      ( RESET_N        ), // asynchronous active low board reset
     .i_sw_rst        ( sw_sys_rst     ), // software controlled active high reset
@@ -157,7 +161,7 @@ module FPGA_top
     .o_pcs_rst_n     ( pcs_rst_n      )  // ethernet pcs active low reset
   );
 
-  assign SWRST_N = '1; //!sys_rst;
+  assign SWRST_N = !sys_rst;
   assign PTP_CAM_CLK = ptp_cam_24m_clk;
 
 
@@ -248,6 +252,7 @@ module FPGA_top
         // PCS clock
         .i_pcs_clk        ( pcs_clk                   ),
         .i_pcs_rst_n      ( pcs_rst_n                 ),
+        .i_sys_rst_n      ( ~sys_rst                  ),
         .o_usr_clk        ( usr_clk               [i] ),
         .o_usr_clk_rdy    ( usr_clk_rdy           [i] ),
         // APB Interface, abp clk domain
@@ -406,7 +411,7 @@ module FPGA_top
   apb_m2s delayed_io_apb_m2s;
   apb_s2m delayed_io_apb_s2m;
 
-  FPGA_delayed_io #(
+  delayed_io #(
     .NUM_OUTPUTS  ( 1 ),
     .W_OFSET      ( 8 )
   ) u_delayed_io (
@@ -447,7 +452,8 @@ module FPGA_top
 // I2S Instantiation
 //------------------------------------------------------------------------------
   logic I2S_LRCLK;
-  logic I2S_SDATA;
+  logic I2S_SDATA_TX;
+  logic I2S_SDATA_RX;
 
   // APB interface structs for both modules
   apb_m2s i2s_apb_m2s;
@@ -516,55 +522,6 @@ module FPGA_top
   assign apb6_s2m_array[0] = vsync_apb_s2m;
   assign apb6_s2m_array[1] = delayed_io_apb_s2m;
 
-  // New i2s_peripheral_top instantiation
-  i2s_top #(
-    .AXI_DWIDTH     ( 32           ),  // Match the 32-bit interface
-    .I2S_DWIDTH     ( 32           ),  // I2S data width
-    .TX_FIFO_DEPTH  ( 8            ),  // TX buffer depth
-    .RX_FIFO_DEPTH  ( 8            ),  // RX buffer depth  
-    .APB_ADDR_WIDTH ( 12           )   // APB address space width
-  ) u_i2s (
-    // Clock and Reset
-    .i_apb_clk         ( apb_clk            ),
-    .i_apb_rst         ( apb_rst            ),
-    // .i_ref_clk         ( apb_clk            ), // Use APB clock as reference
-    .i_ref_clk         ( i2s_ref_clk        ), // Use APB clock as reference
-    .i_axis_clk        ( apb_clk            ), // Use APB clock for AXI-Stream
-    
-    // APB Configuration Interface
-    .i_apb_m2s         ( i2s_apb_m2s        ),
-    .o_apb_s2m         ( i2s_apb_s2m        ),
-    
-    // Host AXI-Stream TX Interface (Host to I2S)
-    .i_tx_axis_tvalid  ( sif_tx_axis_tvalid[0] ),
-    .i_tx_axis_tdata   ( sif_tx_axis_tdata[0]  ),
-    .i_tx_axis_tkeep   ( sif_tx_axis_tkeep[0]  ),
-    .i_tx_axis_tlast   ( sif_tx_axis_tlast[0]  ),
-    .i_tx_axis_tuser   ( sif_tx_axis_tuser[0]  ),
-    .o_tx_axis_tready  ( sif_tx_axis_tready[0] ),
-    
-    // Host AXI-Stream RX Interface (I2S to Host) - Unused
-    .o_rx_axis_tvalid  (                    ), // Not connected - TX only
-    .o_rx_axis_tdata   (                    ), // Not connected - TX only
-    .o_rx_axis_tkeep   (                    ), // Not connected - TX only
-    .o_rx_axis_tlast   (                    ), // Not connected - TX only
-    .o_rx_axis_tuser   (                    ), // Not connected - TX only
-    .i_rx_axis_tready  ( 1'b0               ), // Not ready - TX only
-    
-    // I2S Physical Interface
-    .o_i2s_bclk        ( i2s_clk_ext        ), // Not connected
-    .o_i2s_lrclk       ( I2S_LRCLK          ),
-    .o_i2s_sdata_tx    ( I2S_SDATA          ),
-    .i_i2s_sdata_rx    ( 1'b0               ), // Not connected - TX only
-    .o_i2s_mclk_out    ( i2s_mclk_ext       ), // Not connected
-    
-    // Status and Interrupts
-    .o_tx_underrun     (                    ), // Not connected
-    .o_rx_overrun      (                    ), // Not connected
-    .o_pll_locked      (                    ), // Not connected
-    .o_irq             (                    )  // Not connected
-  );
-
 //------------------------------------------------------------------------------
 // Camera LVDS Data
 //------------------------------------------------------------------------------
@@ -578,12 +535,12 @@ module FPGA_top
   logic [`DATAUSER_WIDTH-1:0]    sif_rx_axis_tuser [`SENSOR_RX_IF_INST-1:0];
   logic [`SENSOR_RX_IF_INST-1:0] sif_rx_axis_tready;
 
-  logic [`SENSOR_RX_IF_INST-1:0] cam_drdy_i;
+  logic [`SENSOR_RX_IF_INST-2:0] cam_drdy_i;
 
   assign CAM_DRDY = &cam_drdy_i;
 
   generate
-    for (i=0; i<`SENSOR_RX_IF_INST; i++) begin: cam_sensor_rcvr
+    for (i=0; i<`SENSOR_RX_IF_INST-1; i++) begin: cam_sensor_rcvr
       assign sif_rx_clk[i] = hif_clk;
 
       cam_rcvr u_cam_rcvr (
@@ -625,7 +582,7 @@ module FPGA_top
 //-------------------------------------------------------------------------
 // VSYNC
 //-------------------------------------------------------------------------
-  logic [7:0]  gpio_mux_en;
+  logic [9:0]  gpio_mux_en;
   logic        vsync;
 
   vsync_gen u_vsync_gen (
@@ -660,63 +617,139 @@ module FPGA_top
     end
   end
 
+  logic [3:0] i2s_tkeep;
+  assign sif_rx_axis_tkeep[2] = {2{i2s_tkeep}};
+  i2s_top #(
+    .AXI_DWIDTH     ( 32           ),  // Match the 32-bit interface
+    .TX_FIFO_DEPTH  ( 8            ),  // TX buffer depth
+    .RX_FIFO_DEPTH  ( 8            ),  // RX buffer depth  
+    .APB_ADDR_WIDTH ( 12           )   // APB address space width
+  ) u_i2s (
+    // Clock and Reset
+    .i_apb_clk         ( apb_clk            ),
+    .i_apb_rst         ( apb_rst            ),
+    .i_ref_clk         ( i2s_ref_clk        ),
+    .i_ref_rst         ( i2s_ref_rst        ),
+    .i_axis_clk        ( apb_clk            ),
+    .i_axis_rst        ( apb_rst            ),
+    
+    // APB Configuration Interface
+    .i_apb_m2s         ( i2s_apb_m2s        ),
+    .o_apb_s2m         ( i2s_apb_s2m        ),
+    
+    // Host AXI-Stream TX Interface (Host to I2S)
+    .i_tx_axis_tvalid  ( sif_tx_axis_tvalid[0]  ),
+    .i_tx_axis_tdata   ( sif_tx_axis_tdata [0]  ),
+    .i_tx_axis_tkeep   ( sif_tx_axis_tkeep [0]  ),
+    .i_tx_axis_tlast   ( sif_tx_axis_tlast [0]  ),
+    .i_tx_axis_tuser   ( sif_tx_axis_tuser [0]  ),
+    .o_tx_axis_tready  ( sif_tx_axis_tready[0]  ),
+    
+    // Host AXI-Stream RX Interface (I2S to Host) - Unused
+    .o_rx_axis_tvalid  ( sif_rx_axis_tvalid [2] ), // Not connected - TX only
+    .o_rx_axis_tdata   ( sif_rx_axis_tdata  [2] ), // Not connected - TX only
+    .o_rx_axis_tkeep   ( i2s_tkeep          ), // Not connected - TX only
+    .o_rx_axis_tlast   ( sif_rx_axis_tlast  [2] ), // Not connected - TX only
+    .o_rx_axis_tuser   ( sif_rx_axis_tuser  [2] ), // Not connected - TX only
+    .i_rx_axis_tready  ( sif_rx_axis_tready [2] ), // Not ready - TX only
+    
+    // I2S Physical Interface
+    .o_i2s_bclk        ( i2s_clk_ext        ), // Not connected
+    .o_i2s_lrclk       ( I2S_LRCLK          ),
+    .o_i2s_sdata_tx    ( I2S_SDATA_TX       ),
+    .i_i2s_sdata_rx    ( I2S_SDATA_RX       ), // Not connected - TX only
+    .o_i2s_mclk_out    ( i2s_mclk_ext       ), // Not connected
+    
+    // Status and Interrupts
+    .o_tx_underrun     (                    ), // Not connected
+    .o_rx_overrun      (                    ), // Not connected
+    .o_pll_locked      (                    ), // Not connected
+    .o_irq             (                    )  // Not connected
+  );
+
+  assign sif_rx_clk[2] = apb_clk;
+
   ///////////////////////////////////////
   //MUX DEBUG SIGNALS INTO GPIO
   ///////////////////////////////////////
+  logic [15:0] gpio_in;    // Input read values
   logic [15:0] gpio_out;
+  logic [15:0] gpio_dir;   // 0=output, 1=input
   logic [15:0] gpio_tri;
 
-  for (i=0; i<3; i++) begin
-    assign gpio_tri[i] = gpio_out[i];
-  end
-  for (i=8; i<12; i++) begin
-    assign gpio_tri[i] = gpio_out[i];
-  end
+  // Read inputs (separate from driving logic)
+  assign gpio_in = GPIO;
 
-  assign gpio_tri[3]  = gpio_mux_en[3] ? 1'b1               : gpio_out[3]; //VCC
-  assign gpio_tri[4]  = gpio_mux_en[3] ? i2s_mclk_ext       : gpio_out[4];
-  assign gpio_tri[5]  = gpio_mux_en[3] ? I2S_LRCLK          : gpio_out[5];
-  assign gpio_tri[6]  = gpio_mux_en[3] ? i2s_clk_ext        : gpio_out[6];
-  assign gpio_tri[7]  = gpio_mux_en[3] ? I2S_SDATA          : gpio_out[7];
+  // Generate blocks for pass-through assignments
+  generate
+    for (i=1; i<3; i++) begin: gpio_passthru_1
+      assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
+    end
+  endgenerate
 
-  assign gpio_tri[12] = gpio_mux_en[2] ? ptp_sensor_pll_locked : gpio_out[12];
-  assign gpio_tri[13] = gpio_mux_en[2] ? synth_lock_sync[1]    : gpio_out[13];
-  assign gpio_tri[14] = gpio_mux_en[1] ? vsync                 : gpio_out[14];
-  assign gpio_tri[15] = gpio_mux_en[0] ? sys_pps_stretch       : gpio_out[15];
+  generate
+    for (i=8; i<9; i++) begin: gpio_passthru_2
+      assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
+    end
+  endgenerate
 
-  //TODO: GPIO MUX for UART?
-  assign GPIO = {gpio_tri[15:1], delayed_io_pin};
-  //assign GPIO = {gpio_tri[15:12], 1'bz, uart_tx, gpio_tri[9:1], delayed_io_pin};
-  //assign uart_rx = GPIO[11];
+  generate
+    for (i=11; i<12; i++) begin: gpio_passthru_3
+      assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
+    end
+  endgenerate
+
+  // Special function pins with mux
+  assign gpio_tri[0]  = gpio_dir[0]  ? 1'bz : (gpio_mux_en[8] ? delayed_io_pin        : gpio_out[0]);
+  assign gpio_tri[3]  = gpio_dir[3]  ? 1'bz : (gpio_mux_en[3] ? 1'b1                  : gpio_out[3]); //VCC
+  assign gpio_tri[4]  = gpio_dir[4]  ? 1'bz : (gpio_mux_en[3] ? i2s_mclk_ext          : gpio_out[4]);
+  assign gpio_tri[5]  = gpio_dir[5]  ? 1'bz : (gpio_mux_en[3] ? I2S_LRCLK             : gpio_out[5]);
+  assign gpio_tri[6]  = gpio_dir[6]  ? 1'bz : (gpio_mux_en[3] ? i2s_clk_ext           : gpio_out[6]);
+  assign gpio_tri[7]  = gpio_dir[7]  ? 1'bz : (gpio_mux_en[3] ? I2S_SDATA_TX          : gpio_out[7]);
+  assign gpio_tri[9]  = gpio_dir[9]  ? 1'bz : (gpio_mux_en[9] ? uart_rts             : gpio_out[9]);
+  assign gpio_tri[10] = gpio_dir[10] ? 1'bz : (gpio_mux_en[9] ? uart_tx               : gpio_out[10]);
+  assign gpio_tri[12] = gpio_dir[12] ? 1'bz : (gpio_mux_en[2] ? ptp_sensor_pll_locked : gpio_out[12]);
+  assign gpio_tri[13] = gpio_dir[13] ? 1'bz : (gpio_mux_en[2] ? synth_lock_sync[1]    : gpio_out[13]);
+  assign gpio_tri[14] = gpio_dir[14] ? 1'bz : (gpio_mux_en[1] ? vsync                 : gpio_out[14]);
+  assign gpio_tri[15] = gpio_dir[15] ? 1'bz : (gpio_mux_en[0] ? sys_pps_stretch       : gpio_out[15]);
+
+  assign GPIO = gpio_tri[15:0];
+  // GPIO 8  -> UART CTS
+  // GPIO 9  -> UART RTS
+  // GPIO 10 -> UART TX
+  // GPIO 11 -> UART RX
+  assign uart_cts = GPIO[8];
+  assign uart_rx = GPIO[11];
+  assign I2S_SDATA_RX = GPIO[8];
 
   ///////////////////////////////////////
   //CAM GPIO
   ///////////////////////////////////////
+  logic [14:0] cam_gpio_in;
   logic [14:0] cam_gpio_out;
+  logic [14:0] cam_gpio_dir;
   logic [14:0] cam_gpio_tri;
+
+  assign cam_gpio_in = CAM_GPIO;
 
   generate
     for (i=0; i<3; i++) begin
-      assign cam_gpio_tri[i] = cam_gpio_out[i];
+      assign cam_gpio_tri[i] = cam_gpio_dir[i] ? 1'bz : cam_gpio_out[i];
     end
-  endgenerate
   
-  generate
     for (i=4; i<6; i++) begin
-      assign cam_gpio_tri[i] = cam_gpio_out[i];
+      assign cam_gpio_tri[i] = cam_gpio_dir[i] ? 1'bz : cam_gpio_out[i];
     end
-  endgenerate
-  
-  generate
+
     for (i=9; i<15; i++) begin
-      assign cam_gpio_tri[i] = cam_gpio_out[i];
+      assign cam_gpio_tri[i] = cam_gpio_dir[i] ? 1'bz : cam_gpio_out[i];
     end
   endgenerate
 
-  assign cam_gpio_tri[3] = gpio_mux_en[4] ? vsync          : cam_gpio_out[3];
-  assign cam_gpio_tri[6] = gpio_mux_en[5] ? vsync          : cam_gpio_out[6];
-  assign cam_gpio_tri[7] = gpio_mux_en[6] ? vsync          : cam_gpio_out[7];
-  assign cam_gpio_tri[8] = gpio_mux_en[7] ? vsync          : cam_gpio_out[8];
+  assign cam_gpio_tri[3] = cam_gpio_dir[3] ? 1'bz : (gpio_mux_en[4] ? vsync : cam_gpio_out[3]); 
+  assign cam_gpio_tri[6] = cam_gpio_dir[6] ? 1'bz : (gpio_mux_en[5] ? vsync : cam_gpio_out[6]); 
+  assign cam_gpio_tri[7] = cam_gpio_dir[7] ? 1'bz : (gpio_mux_en[6] ? vsync : cam_gpio_out[7]); 
+  assign cam_gpio_tri[8] = cam_gpio_dir[8] ? 1'bz : (gpio_mux_en[7] ? vsync : cam_gpio_out[8]); 
 
   assign CAM_GPIO = cam_gpio_tri[14:0];
 
@@ -749,9 +782,7 @@ module FPGA_top
     end
   endgenerate
   
-  
-  //assign sif_event = {10'h0, sof, GPIO[1], gpio_out[0], sif_rx_axis_tlast[1:0]};
-  assign sif_event = {10'h0, sof, GPIO[1], delayed_io_pin, sif_rx_axis_tlast[1:0]};
+  assign sif_event = {10'h0, sof, gpio_in[1], gpio_in[0], sif_rx_axis_tlast[1:0]};
 
 //------------------------------------------------------------------------------
 // HOLOLINK Top Instantiation
@@ -838,9 +869,15 @@ module FPGA_top
     .i_i2c_sda         ( i2c_sda            ),
     .o_i2c_scl_en      ( i2c_scl_en         ),
     .o_i2c_sda_en      ( i2c_sda_en         ),
+    // UART Interface
+    .o_uart_tx         ( uart_tx            ),
+    .i_uart_rx         ( uart_rx            ),
+    .i_uart_cts        ( uart_cts           ),
+    .o_uart_rts        ( uart_rts           ),
     // GPIO
+    .i_gpio            ( {cam_gpio_in,  gpio_in}  ),
     .o_gpio            ( {cam_gpio_out, gpio_out} ),
-    .i_gpio            ( {CAM_GPIO, GPIO}   ),
+    .o_gpio_dir        ( {cam_gpio_dir, gpio_dir} ),
   //------------------------------------------------------------------------------
   // sensor reset
   //------------------------------------------------------------------------------

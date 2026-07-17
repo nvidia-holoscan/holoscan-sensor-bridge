@@ -101,7 +101,7 @@ void RoceReceiverOp::start_receiver()
     static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     size_t received_frame_size = metadata_address + hololink::METADATA_SIZE;
     size_t buffer_size = hololink::core::round_up(received_frame_size * pages_.get(), getpagesize());
-    frame_memory_.reset(new hololink::ReceiverMemoryDescriptor(frame_context_, buffer_size));
+    frame_memory_ = std::make_shared<hololink::ReceiverMemoryDescriptor>(frame_context_, buffer_size);
     HSB_LOG_INFO("frame_size={:#x} frame={:#x} buffer_size={:#x}", frame_size_.get(), frame_memory_->get(), buffer_size);
 
     const std::string& peer_ip = hololink_channel_->peer_ip();
@@ -158,6 +158,14 @@ void RoceReceiverOp::stop_receiver()
 bool RoceReceiverOp::frames_ready()
 {
     return receiver_->frames_ready();
+}
+
+std::shared_ptr<void> RoceReceiverOp::frame_memory_owner()
+{
+    // Hand the base class an owning reference to the frame buffer so tensors it
+    // wraps keep the buffer alive until every downstream consumer is done, even
+    // after stop_receiver() drops our reference.
+    return frame_memory_;
 }
 
 std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get_next_frame(double timeout_ms, CUstream cuda_stream)

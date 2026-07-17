@@ -32,6 +32,7 @@ module axis_buffer #(
                     parameter  OUTPUT_SKID        = 1,
                     parameter  NO_BACKPRESSURE    = 0,
                     parameter  OUT_W_USER         = W_USER,
+                    parameter  [W_USER-1:0] USER_LAST_BEAT_MASK = '0,
                     localparam IN_W_USER          = W_USER
 )
 (
@@ -62,6 +63,7 @@ module axis_buffer #(
 
 localparam CENTER_WIDTH = (IN_DWIDTH <= OUT_DWIDTH) ? OUT_DWIDTH : IN_DWIDTH;
 localparam CENTER_WUSER = (IN_W_USER <= OUT_W_USER) ? OUT_W_USER : IN_W_USER;
+localparam [CENTER_WUSER-1:0] CENTER_USER_LAST_BEAT_MASK = {{(CENTER_WUSER-W_USER){1'b0}}, USER_LAST_BEAT_MASK};
 
 
 localparam FIFO_ADDR_W     = $clog2(BUF_DEPTH) + 1;
@@ -436,7 +438,8 @@ logic   [(OUT_DWIDTH/8)-1:0]        w_axis_tx_tkeep;
 axis_gearbox #(
   .DIN_WIDTH  ( CENTER_WIDTH ),
   .DOUT_WIDTH ( OUT_DWIDTH   ),
-  .W_USER     ( CENTER_WUSER )
+  .W_USER     ( CENTER_WUSER ),
+  .USER_LAST_BEAT_MASK ( CENTER_USER_LAST_BEAT_MASK )
 ) u_axis_out_gearbox (
   .clk                ( out_clk           ),
   .rst                ( out_rst           ),

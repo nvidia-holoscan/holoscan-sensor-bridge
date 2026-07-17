@@ -58,7 +58,6 @@ assign stat_reg = '{default:0};
 logic                   ram_ena, ram_ena_q;
 logic [          31:0]  timer;
 logic [          31:0]  data_cnt;
-logic                   axis_mux;
 logic [          31:0]  window_size;
 logic [          31:0]  wait_time;
 logic [          31:0]  window_num, window_cnt; 

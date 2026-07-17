@@ -16,290 +16,172 @@
 //------------------------------------------------------------------------------
 // I2S RX AXI-Stream Buffer Module
 //
-// This module provides clock domain crossing and buffering for I2S receive
-// data path. It converts from simple valid/ready interface in the I2S clock 
-// domain to AXI-Stream interface in the host clock domain.
+// Thin wrapper around axis_buffer providing clock domain crossing and
+// buffering for the I2S receive data path. Converts from a simple valid/ready
+// interface in the I2S clock domain to AXI-Stream in the host clock domain.
 //
-// Features:
-// - Dual-clock FIFO for clock domain crossing
-// - Configurable FIFO depth
-// - Almost-full/empty thresholds for flow control
-// - Overrun detection and handling
-// - Packet formation for AXI-Stream output
+// axis_buffer handles: gearbox (sample width -> AXI width), dual-clock FIFO,
+// and output skid buffer. This wrapper adds I2S-specific concerns:
+// - BCLK-gated input handshake
+// - Packet formation (tlast every PKT_SIZE AXI beats)
+// - Overrun detection
 //------------------------------------------------------------------------------
 
 module i2s_axis_buffer_rx #(
-  parameter I2S_DWIDTH  = 32,              // I2S data width
-  parameter AXI_DWIDTH  = 64,              // AXI-Stream data width
-  parameter FIFO_DEPTH  = 1024,            // FIFO depth (must be power of 2)
-  parameter AFULL_THRESH = FIFO_DEPTH * 3/4, // Almost full threshold
-  parameter AEMPTY_THRESH = FIFO_DEPTH / 4,  // Almost empty threshold
-  parameter PKT_SIZE    = 64,              // Samples per AXI-Stream packet
-  localparam AXI_KWIDTH = AXI_DWIDTH/8,    // AXI-Stream keep width
-  localparam ADDR_WIDTH = $clog2(FIFO_DEPTH) // FIFO address width
+  parameter AXI_DWIDTH    = 64,
+  parameter FIFO_DEPTH    = 1024,
+  parameter AFULL_THRESH  = FIFO_DEPTH * 3/4,
+  parameter AEMPTY_THRESH = FIFO_DEPTH / 4,
+  localparam AXI_KWIDTH      = AXI_DWIDTH/8,
+  localparam MAX_SAMPLE_BITS = 32,
+  localparam PKT_CNT_W      = 16
 )(
   //----------------------------------------------------------------------------
   // I2S Clock Domain (I2S side)
   //----------------------------------------------------------------------------
-  input                    i_ref_clk,      // Reference clock
-  input                    i_i2s_rst,      // I2S reset (active high)
-  input                    i_bclk_posedge, // BCLK positive edge
-  input                    i_bclk_negedge, // BCLK negative edge
-  
-  // I2S Input Interface
-  input                    i_i2s_valid,    // I2S data valid
-  input  [I2S_DWIDTH-1:0]  i_i2s_data,     // I2S data
-  output                   o_i2s_ready,    // I2S ready
-  
+  input                         i_ref_clk,
+  input                         i_i2s_rst,
+  input                         i_bclk_posedge,
+
+  input                         i_i2s_valid,
+  input  [MAX_SAMPLE_BITS-1:0]  i_i2s_data,
+  output                        o_i2s_ready,
+
   //----------------------------------------------------------------------------
   // AXI-Stream Clock Domain (Host side)
   //----------------------------------------------------------------------------
-  input                    i_axi_clk,      // AXI-Stream clock
-  input                    i_axi_rst,      // AXI-Stream reset (active high)
-  
-  // AXI-Stream Output
-  output                   o_axis_tvalid,  // AXI data valid
-  output [AXI_DWIDTH-1:0]  o_axis_tdata,   // AXI data
-  output [AXI_KWIDTH-1:0]  o_axis_tkeep,   // AXI data keep
-  output                   o_axis_tlast,   // AXI packet boundary
-  input                    i_axis_tready,  // AXI ready
-  
+  input                         i_axi_clk,
+  input                         i_axi_rst,
+
+  output                        o_axis_tvalid,
+  output [AXI_DWIDTH-1:0]       o_axis_tdata,
+  output [AXI_KWIDTH-1:0]       o_axis_tkeep,
+  output                        o_axis_tlast,
+  input                         i_axis_tready,
+
+  //----------------------------------------------------------------------------
+  // Configuration
+  //----------------------------------------------------------------------------
+  input  [PKT_CNT_W-1:0]       i_pkt_size,
+
   //----------------------------------------------------------------------------
   // Status and Control
   //----------------------------------------------------------------------------
-  output                   o_fifo_full,    // FIFO full flag
-  output                   o_fifo_empty,   // FIFO empty flag
-  output                   o_fifo_afull,   // FIFO almost full
-  output                   o_fifo_aempty,  // FIFO almost empty
-  output [ADDR_WIDTH:0]    o_fifo_count,   // FIFO fill count
-  output                   o_overrun       // Overrun error flag
+  output                        o_fifo_full,
+  output                        o_fifo_empty,
+  output                        o_fifo_afull,
+  output                        o_fifo_aempty,
+  output                        o_overrun
 );
 
 //------------------------------------------------------------------------------
-// Internal Signals
+// I2S input → AXI-Stream (BCLK-gated)
 //------------------------------------------------------------------------------
 
-  // FIFO interface signals
-  logic                    fifo_wr_en;
-  logic [I2S_DWIDTH-1:0]   fifo_wr_data;
-  logic                    fifo_full;
-  logic                    fifo_afull;
-  
-  logic                    fifo_rd_en;
-  logic [I2S_DWIDTH-1:0]   fifo_rd_data;
-  logic                    fifo_empty;
-  logic                    fifo_aempty;
-  logic                    fifo_rd_valid;
-  
-  logic [ADDR_WIDTH:0]     fifo_wr_count;
-  logic [ADDR_WIDTH:0]     fifo_rd_count;
-  
-  // Width conversion signals
-  logic                    conv_valid;
-  logic [AXI_DWIDTH-1:0]   conv_data;
-  logic [AXI_KWIDTH-1:0]   conv_keep;
-  logic                    conv_ready;
-  
-  // Packet formation signals
-  logic [$clog2(PKT_SIZE):0] sample_count;
-  logic                    pkt_last;
-  
-  // Overrun detection
-  logic                    overrun_flag;
+  localparam I2S_KWIDTH = MAX_SAMPLE_BITS / 8;
+
+  logic buf_rx_tvalid;
+  assign buf_rx_tvalid = i_i2s_valid && i_bclk_posedge;
 
 //------------------------------------------------------------------------------
-// FIFO Write Interface (I2S side)
+// axis_buffer: gearbox + dual-clock FIFO + skid buffer
 //------------------------------------------------------------------------------
 
-  assign fifo_wr_en   = i_i2s_valid && o_i2s_ready && i_bclk_posedge;
-  assign fifo_wr_data = i_i2s_data;
-  assign o_i2s_ready  = !fifo_full;
+  logic                    buf_tx_tvalid;
+  logic [AXI_DWIDTH-1:0]  buf_tx_tdata;
+  logic [AXI_KWIDTH-1:0]  buf_tx_tkeep;
+  logic                    buf_tx_tready;
+  logic                    buf_fifo_full;
+  logic                    buf_fifo_afull;
 
-//------------------------------------------------------------------------------
-// Dual-Clock FIFO Instance
-//------------------------------------------------------------------------------
+  axis_buffer #(
+    .IN_DWIDTH          ( MAX_SAMPLE_BITS     ),
+    .OUT_DWIDTH         ( AXI_DWIDTH          ),
+    .BUF_DEPTH          ( FIFO_DEPTH          ),
+    .DUAL_CLOCK         ( 1                   ),
+    .WAIT2SEND          ( 0                   ),
+    .LATENCY_CNT        ( 0                   ),
+    .OUTPUT_SKID        ( 1                   ),
+    .ALMOST_FULL_DEPTH  ( AFULL_THRESH        ),
+    .ALMOST_EMPTY_DEPTH ( AEMPTY_THRESH       ),
+    .W_USER             ( 1                   )
+  ) u_axis_buffer (
+    .in_clk             ( i_ref_clk           ),
+    .in_rst             ( i_i2s_rst           ),
+    .out_clk            ( i_axi_clk           ),
+    .out_rst            ( i_axi_rst           ),
 
-  dc_fifo_stub #(
-    .DATA_WIDTH   ( I2S_DWIDTH     ),
-    .FIFO_DEPTH   ( FIFO_DEPTH     ),
-    .ALMOST_FULL  ( AFULL_THRESH   ),
-    .ALMOST_EMPTY ( AEMPTY_THRESH  ),
-    .MEM_STYLE    ( "BLOCK"        )
-  ) u_dc_fifo (
-    // Asynchronous reset
-    .wrrst        ( i_i2s_rst      ),
-    .rdrst        ( i_axi_rst      ),
-    // Write side (Reference clock domain with BCLK enable)
-    .wrclk        ( i_ref_clk      ),
-    .wren         ( fifo_wr_en     ),
-    .wrdin        ( fifo_wr_data   ),
-    .wrcount      ( fifo_wr_count  ),
-    .full         ( fifo_full      ),
-    .afull        ( fifo_afull     ),
-    .over         (                ), // Unconnected
-    
-    // Read side (AXI clock domain)
-    .rdclk        ( i_axi_clk      ),
-    .rden         ( fifo_rd_en     ),
-    .rddout       ( fifo_rd_data   ),
-    .rdval        ( fifo_rd_valid  ),
-    .rdcount      ( fifo_rd_count  ),
-    .empty        ( fifo_empty     ),
-    .aempty       ( fifo_aempty    ),
-    .under        (                )  // Unconnected
+    .i_axis_rx_tvalid   ( buf_rx_tvalid       ),
+    .i_axis_rx_tdata    ( i_i2s_data          ),
+    .i_axis_rx_tlast    ( 1'b0                ),
+    .i_axis_rx_tuser    ( 1'b0                ),
+    .i_axis_rx_tkeep    ( {I2S_KWIDTH{1'b1}}  ),
+    .o_axis_rx_tready   ( o_i2s_ready         ),
+
+    .o_fifo_aempty      ( o_fifo_aempty       ),
+    .o_fifo_afull       ( buf_fifo_afull      ),
+    .o_fifo_empty       ( o_fifo_empty        ),
+    .o_fifo_full        ( buf_fifo_full       ),
+
+    .o_axis_tx_tvalid   ( buf_tx_tvalid       ),
+    .o_axis_tx_tdata    ( buf_tx_tdata        ),
+    .o_axis_tx_tlast    (                     ),
+    .o_axis_tx_tuser    (                     ),
+    .o_axis_tx_tkeep    ( buf_tx_tkeep        ),
+    .i_axis_tx_tready   ( buf_tx_tready       )
   );
 
-//------------------------------------------------------------------------------
-// Width Conversion (I2S samples to AXI-Stream)
-//------------------------------------------------------------------------------
-
-generate
-  if (I2S_DWIDTH == AXI_DWIDTH) begin: gen_no_conv
-    // No conversion needed - direct connection
-    assign fifo_rd_en   = !fifo_empty && conv_ready;
-    assign conv_valid   = fifo_rd_valid;
-    assign conv_data    = fifo_rd_data;
-    assign conv_keep    = {AXI_KWIDTH{1'b1}};
-    
-  end else if (I2S_DWIDTH < AXI_DWIDTH) begin: gen_upsize
-    // Upsize from narrower I2S to wider AXI
-    localparam RATIO = AXI_DWIDTH / I2S_DWIDTH;
-    localparam CNT_WIDTH = $clog2(RATIO);
-    
-    logic [CNT_WIDTH-1:0]  sample_cnt;
-    logic [AXI_DWIDTH-1:0] data_reg;
-    logic [AXI_KWIDTH-1:0] keep_reg;
-    logic                  data_valid;
-    
-    always_ff @(posedge i_axi_clk) begin
-      if (i_axi_rst) begin
-        sample_cnt <= '0;
-        data_reg   <= '0;
-        keep_reg   <= '0;
-        data_valid <= 1'b0;
-      end else begin
-        if (fifo_rd_valid && fifo_rd_en) begin
-          data_reg   <= {data_reg[AXI_DWIDTH-I2S_DWIDTH-1:0], fifo_rd_data};
-          keep_reg   <= {keep_reg[AXI_KWIDTH-I2S_DWIDTH/8-1:0], {(I2S_DWIDTH/8){1'b1}}};
-          sample_cnt <= sample_cnt + 1'b1;
-          if (sample_cnt == (RATIO - 1)) begin
-            data_valid <= 1'b1;
-            sample_cnt <= '0;
-          end
-        end else if (conv_valid && conv_ready) begin
-          data_valid <= 1'b0;
-          keep_reg   <= '0;
-        end
-      end
-    end
-    
-    assign fifo_rd_en = !fifo_empty && (!data_valid || conv_ready);
-    assign conv_valid = data_valid;
-    assign conv_data  = data_reg;
-    assign conv_keep  = keep_reg;
-    
-  end else begin: gen_downsize
-    // Downsize from wider I2S to narrower AXI
-    localparam RATIO = I2S_DWIDTH / AXI_DWIDTH;
-    localparam CNT_WIDTH = $clog2(RATIO);
-    
-    logic [CNT_WIDTH-1:0]  sample_cnt;
-    logic [I2S_DWIDTH-1:0] data_reg;
-    logic                  data_valid;
-    logic                  data_available;
-    
-    always_ff @(posedge i_axi_clk) begin
-      if (i_axi_rst) begin
-        sample_cnt     <= '0;
-        data_reg       <= '0;
-        data_valid     <= 1'b0;
-        data_available <= 1'b0;
-      end else begin
-        if (fifo_rd_valid && fifo_rd_en) begin
-          data_reg       <= fifo_rd_data;
-          data_available <= 1'b1;
-          sample_cnt     <= '0;
-        end else if (conv_valid && conv_ready) begin
-          data_reg   <= data_reg >> AXI_DWIDTH;
-          sample_cnt <= sample_cnt + 1'b1;
-          if (sample_cnt == (RATIO - 1)) begin
-            data_available <= 1'b0;
-          end
-        end
-        
-        data_valid <= data_available;
-      end
-    end
-    
-    assign fifo_rd_en = !fifo_empty && !data_available;
-    assign conv_valid = data_valid;
-    assign conv_data  = data_reg[AXI_DWIDTH-1:0];
-    assign conv_keep  = {AXI_KWIDTH{1'b1}};
-    
-  end
-endgenerate
+  assign o_fifo_full  = buf_fifo_full;
+  assign o_fifo_afull = buf_fifo_afull;
 
 //------------------------------------------------------------------------------
-// Packet Formation
+// Packet Formation (tlast every PKT_SIZE AXI beats)
 //------------------------------------------------------------------------------
+
+  logic [PKT_CNT_W-1:0] sample_count;
+  logic                  pkt_last;
 
   always_ff @(posedge i_axi_clk) begin
     if (i_axi_rst) begin
       sample_count <= '0;
-      pkt_last     <= 1'b0;
-    end else begin
-      if (conv_valid && conv_ready) begin
-        if (sample_count >= (PKT_SIZE - 1)) begin
-          sample_count <= '0;
-          pkt_last     <= 1'b1;
-        end else begin
-          sample_count <= sample_count + 1'b1;
-          pkt_last     <= 1'b0;
-        end
-      end else begin
-        pkt_last <= 1'b0;
-      end
+    end else if (buf_tx_tvalid && buf_tx_tready) begin
+      if (pkt_last)
+        sample_count <= '0;
+      else
+        sample_count <= sample_count + 1'b1;
     end
   end
+
+  // i_pkt_size == 0 disables packetization (tlast never asserts)
+  assign pkt_last = (i_pkt_size != '0) && (sample_count >= (i_pkt_size - PKT_CNT_W'(1)));
 
 //------------------------------------------------------------------------------
 // AXI-Stream Output
 //------------------------------------------------------------------------------
 
-  assign o_axis_tvalid = conv_valid;
-  assign o_axis_tdata  = conv_data;
-  assign o_axis_tkeep  = conv_keep;
-  assign o_axis_tlast  = pkt_last;
-  assign conv_ready    = i_axis_tready;
+  assign o_axis_tvalid = buf_tx_tvalid;
+  assign o_axis_tdata  = buf_tx_tdata;
+  assign o_axis_tkeep  = (pkt_last && buf_tx_tvalid) ? buf_tx_tkeep : {AXI_KWIDTH{1'b1}};
+  assign o_axis_tlast  = pkt_last && buf_tx_tvalid;
+  assign buf_tx_tready = i_axis_tready;
 
 //------------------------------------------------------------------------------
 // Overrun Detection
 //------------------------------------------------------------------------------
 
-  // Detect overrun condition
+  logic overrun_flag;
+
   always_ff @(posedge i_ref_clk) begin
     if (i_i2s_rst) begin
       overrun_flag <= 1'b0;
     end else begin
-      if (i_i2s_valid && fifo_full) begin
+      if (i_i2s_valid && buf_fifo_full)
         overrun_flag <= 1'b1;
-      end
-      // Clear overrun flag when FIFO has space again
-      if (!fifo_afull) begin
+      if (!buf_fifo_afull)
         overrun_flag <= 1'b0;
-      end
     end
   end
 
-//------------------------------------------------------------------------------
-// Status Output Assignments
-//------------------------------------------------------------------------------
+  assign o_overrun    = overrun_flag;
 
-  assign o_fifo_full   = fifo_full;
-  assign o_fifo_empty  = fifo_empty;
-  assign o_fifo_afull  = fifo_afull;
-  assign o_fifo_aempty = fifo_aempty;
-  assign o_fifo_count  = fifo_wr_count; // Use write side count for I2S domain
-  assign o_overrun     = overrun_flag;
-
-endmodule 
+endmodule

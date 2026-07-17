@@ -81,7 +81,7 @@ def main():
         print("Frame rate must be a positive integer")
         sys.exit(1)
     if args.frame_limit < 0:
-        print("Frame limit must be a positive integer")
+        print("Frame limit must be a non-negative integer")
         sys.exit(1)
 
     loop_config = LoopConfig(

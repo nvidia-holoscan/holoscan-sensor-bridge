@@ -37,6 +37,7 @@
 
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/common/holoargs.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
 #include <hololink/core/hololink.hpp>
@@ -309,7 +310,7 @@ int main(int argc, char** argv)
     OptionsDescription options_description("fusa_coe_test_sensor_receiver options");
     // clang-format off
     options_description.add_options()
-        ("hololink", value<std::string>()->default_value("192.168.0.2"), "IP address of Hololink board")
+        ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
         ("sensor", value<uint32_t>()->default_value(0), "Sensor index (I2C bus = CAM_I2C_BUS + sensor)")
         ("frame-size", value<uint32_t>()->default_value(256), "Test frame payload size in bytes")
         ("frame-rate", value<uint32_t>()->default_value(30), "TestSensor frame rate in Hz")

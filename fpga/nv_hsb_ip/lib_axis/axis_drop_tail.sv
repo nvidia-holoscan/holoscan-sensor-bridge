@@ -164,7 +164,8 @@ assign o_axis_tx_tvalid = reg_axis_tvalid [DROP_CYCLES-1] & cycle_is_valid;
 assign o_axis_tx_tdata  = reg_axis_tdata  [DROP_CYCLES-1];
 assign o_axis_tx_tlast  = (drop_full_cycle ? (tlast_seen[2:0] == 'b001) : (tlast_seen[2:0] == 'b011));
 assign o_axis_tx_tuser  = reg_axis_tuser  [DROP_CYCLES-1];
-assign o_axis_tx_tkeep  = (!o_axis_tx_tlast) ? '1              :             // if not last, keep all bits
-                          (drop_full_cycle)  ? tkeep_remaining : tkeep_calc; // if drop full cycle, use remaining bits
+assign o_axis_tx_tkeep  = (!o_axis_tx_tlast)              ? '1              :  // if not last, keep all bits
+                          (drop_full_cycle && DROP_MOD != 0) ? tkeep_remaining :  // full beat dropped, non-zero partial: use preceding beat
+                                                               tkeep_calc;        // all other cases: use computed tkeep
 
 endmodule

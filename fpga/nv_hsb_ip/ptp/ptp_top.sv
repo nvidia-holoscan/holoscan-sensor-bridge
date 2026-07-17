@@ -21,6 +21,7 @@ module ptp_top
   parameter HIF_CLK_FREQ = 156250000, // clock period in Hz
   parameter PTP_CLK_FREQ = 100000000, // clock period in Hz
   parameter AXI_DWIDTH   = 64,
+  parameter W_USER       = 4,
   parameter NUM_HOST     = 2,
   parameter W_NUM_HOST   = NUM_HOST>1 ? $clog2(NUM_HOST) : 1,
   parameter KEEP_WIDTH   = AXI_DWIDTH/8,
@@ -42,14 +43,14 @@ module ptp_top
   input  [AXI_DWIDTH-1:0] i_axis_tdata,
   input  [KEEP_WIDTH-1:0] i_axis_tkeep,
   input                   i_axis_tvalid,
-  input                   i_axis_tuser,
+  input  [ W_USER-1:0]    i_axis_tuser,
   input                   i_axis_tlast,
   output                  o_axis_tready,
 
   output [AXI_DWIDTH-1:0] o_axis_tdata,
   output [KEEP_WIDTH-1:0] o_axis_tkeep,
   output                  o_axis_tvalid,
-  output                  o_axis_tuser,
+  output [ W_USER-1:0]    o_axis_tuser,
   output                  o_axis_tlast,
   input                   i_axis_tready,
 
@@ -70,8 +71,11 @@ localparam PTP_EGRESS_WIDTH   = 68*8; //Ethernet L2 is added in EGRESS module
 localparam PTP_INGRESS_WIDTH  = 76*8; //1588 Delay-Resp msg = 68 bytes
 
 //Ingress wires
-logic [           7:0] ptp_rx_data [PTP_INGRESS_WIDTH/8];
 logic                  ptp_rx_vld;
+logic [           7:0] ptp_rx_data [PTP_INGRESS_WIDTH/8];
+logic [    W_USER-1:0] ptp_rx_axis_tuser;
+
+logic [2:0] pps_det;
 
 //Parse wires
 logic        sync_msg_vld;
@@ -97,6 +101,7 @@ logic        dly_req;
 logic [79:0] sync_t1_ts;
 logic [79:0] sync_t2_ts;
 logic [47:0] sync_cf_ns;
+logic [47:0] follow_up_cf_ns;
 logic        sync_ld;
 
 //P2P wires
@@ -105,6 +110,7 @@ logic [79:0] dly_t2_ts;
 logic [79:0] dly_t3_ts;
 logic [79:0] dly_t4_ts;
 logic [47:0] dly_cf_ns;
+logic [47:0] dly_follow_up_cf_ns;
 logic        dly_ld;
 
 //First Rx Logic
@@ -151,8 +157,12 @@ logic [31:0] dly_asymm;
 logic [ 1:0] avg_fact;
 logic [ 1:0] ptp_profile;
 logic        is_gPTP;
+logic        is_gPTP_sync;
 logic        is_1588_e2e;
 logic        is_1588_p2p;
+logic [ 7:0] ptp_domain;
+logic [ 2:0] ptp_pcp;
+logic [ 2:0] ptp_pcp_sync;
 
 //Control Registers
 assign dpll_cfg1_en    = ctrl_reg[ptp_ctrl][0];
@@ -163,6 +173,8 @@ assign dpll_cfg1       = ctrl_reg[ptp_ctrl_dpll_cfg1];
 assign dpll_cfg2       = ctrl_reg[ptp_ctrl_dpll_cfg2];
 assign avg_fact        = ctrl_reg[ptp_ctrl_avg_fact][1:0];
 assign ptp_profile     = ctrl_reg[ptp_ctrl_profile][1:0];
+assign ptp_domain      = ctrl_reg[ptp_ctrl_domain][7:0];
+assign ptp_pcp         = ctrl_reg[ptp_ctrl_pcp][2:0];
 
 assign is_1588_e2e = (ptp_profile == 2'h0) ? 1'b1 : 1'b0;
 assign is_1588_p2p = (ptp_profile == 2'h2) ? 1'b1 : 1'b0;
@@ -171,7 +183,7 @@ assign is_gPTP     = (ptp_profile == 2'h1) ? 1'b1 : 1'b0;
 //Status Registers
 assign stat_reg[ptp_sync_ts_0 - stat_ofst] = sync_t1_ts[31:0];
 assign stat_reg[ptp_sync_cf_0 - stat_ofst] = sync_cf_ns[31:0];
-assign stat_reg[ptp_sync_stat - stat_ofst] = {28'd0,first_dly_rx_dpll_en,first_sync_rx_dpll_en,first_dly_rx,first_sync_rx};
+assign stat_reg[ptp_sync_stat - stat_ofst] = {28'd0,first_dly_rx_dpll_en,first_sync_rx_dpll_en,first_dly_rx &&!pps_det[2],first_sync_rx};
 assign stat_reg[ptp_ofm       - stat_ofst] = { {32-W_OFM{ofm[W_OFM-1]}}, ofm[W_OFM-1:0]};
 assign stat_reg[ptp_mean_dly  - stat_ofst] = { {32-W_DLY{mean_dly[W_DLY-1]}}, mean_dly[W_DLY-1:0]};
 assign stat_reg[ptp_inc       - stat_ofst] = inc[31:0];
@@ -179,7 +191,7 @@ assign stat_reg[ptp_fa_adj    - stat_ofst] = { {32-W_FA{fa_adj[W_FA-1]}}, fa_adj
 assign stat_reg[ptp_dly_cf_0  - stat_ofst] = dly_cf_ns[31:0];
 assign stat_reg[ptp_ip_dly_asymm - stat_ofst] = ip_dly_asymm;
 
-localparam  [(ptp_nctrl*32)-1:0] RST_VAL = {'0,32'h3,32'h2,32'h2,32'h38,32'h0,32'h3,32'h0};
+localparam  [(ptp_nctrl*32)-1:0] RST_VAL = {32'h0,32'h3,32'h2,32'h2,32'h38,32'h0,32'h3,32'h0};
 
 s_apb_reg #(
   .N_CTRL           ( ptp_nctrl         ),
@@ -203,7 +215,7 @@ s_apb_reg #(
 //------------------------------------------------------------------------------------------------//
 // First Sync Logic
 //------------------------------------------------------------------------------------------------//
-logic [2:0] pps_det;
+
 logic       latch_sync;
 logic       latch_dly;
 logic       dpll_en_ff;
@@ -293,6 +305,7 @@ ptp_ingress #(
   .i_axis_tuser       ( i_axis_tuser      ),
   .i_axis_tlast       ( i_axis_tlast      ),
   .o_axis_tready      ( o_axis_tready     ),
+  .o_inp_axis_tuser   ( ptp_rx_axis_tuser ),
   .o_ptp_ingress_data ( ptp_rx_data       ),
   .o_ptp_ingress_vld  ( ptp_rx_vld        )
 );
@@ -308,6 +321,8 @@ ptp_parser #(
   .i_is_gPTP                     ( is_gPTP                     ),
   .i_ptp_rx_data                 ( ptp_rx_data                 ),
   .i_ptp_rx_vld                  ( ptp_rx_vld                  ),
+  .i_ptp_domain                  ( ptp_domain                  ),
+  .i_ptp_rx_axis_tuser           ( ptp_rx_axis_tuser           ),
   .o_sync_msg_vld                ( sync_msg_vld                ),
   .o_follow_up_msg_vld           ( follow_up_msg_vld           ),
   .o_dly_resp_msg_vld            ( dly_resp_msg_vld            ),
@@ -369,6 +384,7 @@ ptp_sync u_ptp_sync   (
   .o_sync_t1_ts        ( sync_t1_ts        ),
   .o_sync_t2_ts        ( sync_t2_ts        ),
   .o_sync_cf_ns        ( sync_cf_ns        ),
+  .o_follow_up_cf_ns   ( follow_up_cf_ns   ),
   .o_sync_ld           ( sync_ld           )
 );
 
@@ -397,6 +413,7 @@ ptp_dly #(
   .i_two_step                    ( two_step                    ),
   .i_cf_ns                       ( cf_ns                       ),
   .i_timestamp                   ( timestamp                   ),
+  .i_ptp_domain                  ( ptp_domain                  ),
   .i_seq_id                      ( seq_id                      ),
   .i_src_clkid                   ( src_clkid                   ),
   .i_src_portid                  ( src_portid                  ),
@@ -412,6 +429,7 @@ ptp_dly #(
   .o_dly_t3_ts                   ( dly_t3_ts                   ),
   .o_dly_t4_ts                   ( dly_t4_ts                   ),
   .o_dly_cf_ns                   ( dly_cf_ns                   ),
+  .o_dly_follow_up_cf_ns         ( dly_follow_up_cf_ns         ),
   .o_dly_ld                      ( dly_ld                      )
 );
 
@@ -431,6 +449,7 @@ ptp_calc #(
   .i_sync_t1_ts       ( sync_t1_ts                       ),
   .i_sync_t2_ts       ( sync_t2_ts                       ),
   .i_sync_cf_ns       ( sync_cf_ns                       ),
+  .i_follow_up_cf_ns  ( follow_up_cf_ns                  ),
   .i_sync_ld          ( sync_ld && first_sync_rx_dpll_en ),
   .o_ofm              ( ofm      [W_OFM-1:0]             ),
   .o_ofm_vld          ( ofm_vld                          ),
@@ -439,6 +458,7 @@ ptp_calc #(
   .i_dly_t3_ts        ( dly_t3_ts                        ),
   .i_dly_t4_ts        ( dly_t4_ts                        ),
   .i_dly_cf_ns        ( dly_cf_ns                        ),
+  .i_dly_follow_up_cf_ns ( dly_follow_up_cf_ns           ),
   .i_dly_ld           ( dly_ld && first_dly_rx_dpll_en   ),
   .o_mean_dly         ( mean_dly [W_DLY-1:0]             ),
   .o_mean_dly_vld     ( mean_dly_vld                     )
@@ -469,17 +489,16 @@ dpll #(
 ptp_egress #(
   .AXI_DWIDTH        ( AXI_DWIDTH       ),
   .NUM_HOST          ( NUM_HOST         ),
+  .W_USER            ( W_USER           ),
   .KEEP_WIDTH        ( KEEP_WIDTH       ),
   .PTP_EGRESS_WIDTH  ( PTP_EGRESS_WIDTH )
 ) u_ptp_egress (
-  .i_pclk            ( i_pclk           ),
-  .i_prst            ( i_prst           ),
+  .i_hif_clk         ( i_hif_clk        ),
+  .i_hif_rst         ( i_hif_rst        ),
   .i_ptp_egress_data ( ptp_tx_data      ),
   .i_ptp_egress_vld  ( ptp_tx_vld       ),
   .i_ptp_egress_len  ( ptp_tx_len       ),
   .o_ptp_egress_busy (                  ),
-  .i_hif_clk         ( i_hif_clk        ),
-  .i_hif_rst         ( i_hif_rst        ),
   .o_axis_tdata      ( o_axis_tdata     ),
   .o_axis_tkeep      ( o_axis_tkeep     ),
   .o_axis_tvalid     ( o_axis_tvalid    ),

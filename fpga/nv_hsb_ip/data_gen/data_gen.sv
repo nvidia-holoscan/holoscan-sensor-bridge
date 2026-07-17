@@ -30,6 +30,7 @@ module data_gen
   input  apb_m2s              i_apb_m2s,
   output apb_s2m              o_apb_s2m,
 
+  input  logic                i_pps,
   output logic                o_data_gen_axis_mux,
 
   output logic                o_axis_tvalid,
@@ -62,7 +63,6 @@ logic                   data_gen_ena_negedge;
 logic                   prbs_mode;
 logic                   cnt_mode;
 logic [GEN_DWIDTH-1:0]  prbs_dout;
-logic [GEN_DWIDTH-1:0]  prbs_dout_reg /* synthesis noprune */;
 logic [    W_DATA-1:0]  prbs_dout_vec;
 logic [          31:0]  prbs_seed;
 logic [GEN_DWIDTH-1:0]  counter_gen;
@@ -80,8 +80,8 @@ assign div_msb = output_div_cnt[16];
 `endif
 logic [          31:0]  data_gen_size;
 logic [          31:0]  data_gen_counter;
-logic                   axis_mux;
-
+logic                   pps_sync_mode;
+logic                   pps;
 
 assign data_gen_ena  = ctrl_reg[sen_rx_data_gen_ena][0];
 assign cont_mode     = ctrl_reg[sen_rx_data_gen_ena][1];
@@ -91,6 +91,11 @@ assign data_gen_size = ctrl_reg[sen_rx_data_gen_size][31:0];
 assign output_div    = ctrl_reg[sen_rx_data_gen_output_rate][15:0];
 
 assign prbs_seed = ctrl_reg[sen_rx_prbs_seed];
+
+assign pps_sync_mode = 1'b0;
+//assign pps_sync_mode  = ctrl_reg[sen_rx_data_gen_pps_sync][0];
+
+assign pps = i_pps;
 
 s_apb_reg #(
   .N_CTRL                   ( sen_rx_data_gen_nctrl ),
@@ -148,11 +153,14 @@ always_ff @(posedge i_sif_clk) begin
         data_gen_counter <= '0;
         output_div_cnt   <= '0;
         axis_tlast       <= 1'b0;
-        if (data_gen_ena_posedge) begin
-          state    <= GEN_DATA;
-        end
-        else begin
-          state <= IDLE;
+        if (pps_sync_mode) begin
+          if (pps && data_gen_ena) begin
+            state <= GEN_DATA;
+          end
+        end else if (data_gen_ena_posedge) begin
+            state <= GEN_DATA;
+        end else begin
+            state <= IDLE;
         end
       end
       GEN_DATA: begin

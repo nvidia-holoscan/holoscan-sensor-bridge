@@ -17,54 +17,10 @@
 
 import argparse
 import logging
-import time
 
 import holoscan
 
 import hololink as hololink_module
-
-SLEEP_TIME = 1
-
-
-def enable_i2s(hololink):
-    hololink.write_uint32(0x70000014, 0x0000000F)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000010, 0x00000004)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x8000000C, 0x00000002)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000008, 0x00000003)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000004, 0x00000002)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x80000000, 0x00000003)
-    logging.info("Finished setting I2S")
-
-
-def set_tx_af_ae(hololink, af=0x00001600, ae=0x00001000):
-    # set sensor tx out
-    hololink.write_uint32(0x01200004, af)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x01200008, ae)
-    time.sleep(SLEEP_TIME)
-    hololink.write_uint32(0x01200000, 0x00000004)
-    logging.info("Finished setting TX almost full & empty")
-
-
-def set_tx_pause(hololink):
-    # set sensor tx 0 out
-    hololink.write_uint32(0x01200000, 0x00000003)
-    time.sleep(SLEEP_TIME)
-    # set tx 0 host pause mapping
-    hololink.write_uint32(0x0120000C, 0x00000001)
-    time.sleep(SLEEP_TIME)
-    logging.info("Finished setting TX and pause")
-
-
-def en_i2s_tx(hololink):
-    enable_i2s(hololink)
-    set_tx_af_ae(hololink, 0x00000800, 0x00000400)
-    set_tx_pause(hololink)
 
 
 class AudioRoceTransmitApp(holoscan.core.Application):
@@ -186,7 +142,9 @@ def main():
 
     hololink = hololink_channel.hololink()
     hololink.start()
-    en_i2s_tx(hololink)
+    # Configure the I2S peripheral for TX (get_i2s defaults: mclk_div=16, no
+    # loopback, 24-bit I2S stereo, TX/RX enabled).
+    hololink.get_i2s(channel_metadata)
 
     app.run()
 

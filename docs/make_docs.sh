@@ -15,55 +15,117 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 #
-# See README.md for detailed information.
+# See docs/user_guide/README.md for detailed information.
+#
+# Usage:
+#   docs/make_docs.sh [--preview|--dev] [--no-docker] ...
+#   DOCKER_OPTS='-e MY_VAR=1' docs/make_docs.sh   # extra docker run flags
+#
+# DOCKER_OPTS: optional extra flags passed to `docker run` (unset = none).
 
 set -o errexit
-set -o xtrace
+
+usage() {
+    cat <<EOF
+Usage: docs/make_docs.sh [options]
+
+Build and validate Fern docs (default). Preview only with --preview.
+
+Options:
+  --preview, --dev       Run fern docs dev (local preview; uses the docs container by default)
+  --login                Log in to Fern (device-code in Docker; browser on host)
+  --no-docker            Run on the host instead of the docs container
+  --docker               Use the docs container (default)
+  --skip-fern-check      Pipeline only; skip fern check
+  --publish              Publish docs to production (docs.nvidia.com)
+  --publish-preview      Publish a remote Fern docs preview (CI)
+  --preview-id ID        Preview id for --publish-preview
+  --delete-preview-id ID Delete a remote preview before publishing
+  --force                Skip overwrite confirmation for remote preview publish (CI only)
+  --port PORT            Preview server port (default: 3000; backend uses PORT+1)
+  --container-name NAME  Docker container name (default: docs)
+  --help                 Show this help
+
+Environment:
+  DOCKER_OPTS            Extra flags for docker run (optional; default: empty).
+  FERN_TOKEN             Non-expiring Fern org API token from 'fern token', for
+                         publishing (optional). The 'fern login' credential in
+                         ~/.fern is shared into the container automatically and
+                         is NOT used as FERN_TOKEN.
+EOF
+}
 
 SCRIPT=`realpath "$0"`
 HERE=`dirname "$SCRIPT"`
 ROOT=`cd $HERE && git rev-parse --show-toplevel`
-VERSION=`cat $ROOT/VERSION`
 
-DEFAULT_COMMAND="make -C user_guide clean html"
+ARGS=""
 CONTAINER_NAME="docs"
 
-while [ $# -ge 1 ]
-do
-case "$1" in
-    "--interactive")
-        INTERACTIVE="-ti"
-        DEFAULT_COMMAND="/bin/bash -l"
-        ;;
-    "--container-name")
-        shift
-        CONTAINER_NAME="$1"
-        ;;
-    *)
-        break
-        ;;
-esac
-shift
+while [ $# -ge 1 ]; do
+    case "$1" in
+        --preview|--dev)
+            ARGS="$ARGS --preview"
+            ;;
+        --login)
+            ARGS="$ARGS --login"
+            ;;
+        --no-docker)
+            ARGS="$ARGS --no-docker"
+            ;;
+        --docker)
+            ;;
+        --skip-fern-check)
+            ARGS="$ARGS --skip-fern-check"
+            ;;
+        --publish)
+            ARGS="$ARGS --publish"
+            ;;
+        --publish-preview)
+            ARGS="$ARGS --publish-preview"
+            ;;
+        --preview-id)
+            shift
+            ARGS="$ARGS --preview-id $1"
+            ;;
+        --delete-preview-id)
+            shift
+            ARGS="$ARGS --delete-preview-id $1"
+            ;;
+        --force)
+            ARGS="$ARGS --force"
+            ;;
+        --port)
+            shift
+            ARGS="$ARGS --port $1"
+            ;;
+        --container-name)
+            shift
+            CONTAINER_NAME="$1"
+            ;;
+        --help|-h)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "Unknown option: $1" >&2
+            usage
+            exit 1
+            ;;
+    esac
+    shift
 done
 
-# Build the container with tools for documentation generation.
-docker build \
-    --network=host \
-    --build-arg CONTAINER_VERSION=hololink-prototype:$VERSION \
-    -t hololink-docs:$VERSION \
-    -f $HERE/Dockerfile.docs \
-    $HERE
+# Do NOT copy ~/.fern/token into FERN_TOKEN. That file holds the `fern login` OAuth
+# credential (identity only; it may lack org permissions), whereas FERN_TOKEN must be a
+# non-expiring org API token from `fern token`. Injecting the login token as FERN_TOKEN
+# makes Fern reject it (FERN_TOKEN is read first) and fall back to an interactive login
+# prompt. The cached login credential is shared into the container via the mounted
+# ~/.fern instead; set FERN_TOKEN yourself only when you have a real org token.
 
-# Build the documentation itself.
-COMMAND=${1-$DEFAULT_COMMAND}
-docker run \
-    $DOCKER_OPTS \
-    --rm \
-    --net host \
-    --name "$CONTAINER_NAME" \
-    --user $(id -u):$(id -g) \
-    $INTERACTIVE \
-    -v $ROOT:$ROOT \
-    -w $HERE \
-    hololink-docs:$VERSION \
-    $COMMAND
+DOCKER_OPTS="${DOCKER_OPTS:-}"
+if [ -n "$DOCKER_OPTS" ]; then
+    echo "warning: DOCKER_OPTS is not used by build_hololink_docs.py; pass --no-docker and run natively if needed." >&2
+fi
+
+exec python3 "$HERE/scripts/build_hololink_docs.py" --container-name "$CONTAINER_NAME" $ARGS

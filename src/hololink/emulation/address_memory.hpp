@@ -28,6 +28,9 @@
 
 namespace hololink::emulation {
 
+class HSBEmulator;
+struct HSBEmulatorCtxt;
+
 /**
  * @class AddressMemory address_memory.hpp
  * @brief Representation of the internal memory space of the HSBEmulator and its registers.
@@ -88,6 +91,24 @@ public:
      * @return 0 on success, 1 on failure
      */
     virtual int read_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) = 0;
+};
+
+class RegisterMemory : public AddressMemory {
+public:
+    RegisterMemory() = default;
+
+    // see address_memory.hpp for documentation
+    int write(AddressValuePair& address_value) override;
+    int read(AddressValuePair& address_value) override;
+    int write_many(AddressValuePair* address_values, int num_addresses) override;
+    int read_many(AddressValuePair* address_values, int num_addresses) override;
+    int write_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) override;
+    int read_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) override;
+
+private:
+    friend class HSBEmulator;
+    void set_ctxt(HSBEmulatorCtxt* ctxt) { ctxt_ = ctxt; }
+    struct HSBEmulatorCtxt* ctxt_ { nullptr };
 };
 
 } // namespace hololink::emulation

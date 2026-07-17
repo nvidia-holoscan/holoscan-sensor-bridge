@@ -1,0 +1,324 @@
+## Overview
+
+Follow this tutorial to build a player for an IMX274 camera and see how a
+`hololink_module` application discovers, configures, and streams from a Holoscan Sensor
+Bridge board. Applications using the new `hololink_module` can talk to different HSB
+devices transparently, unlike those applications using the legacy API.
+
+An application accesses the capabilities it needs as *services* instead of constructing
+device classes directly. A service is requested by type through `get_service`, usually
+keyed by the enumeration metadata that identifies a specific board:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  hololink = hololink_module.HololinkInterfaceV1.get_service(metadata)
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto hololink = hololink::module::HololinkInterfaceV1::get_service(metadata);
+```
+
+</Tab>
+</Tabs>
+
+This indirection is what lets one application drive different boards — and different
+revisions of the same board — without recompiling. The [Background](#background) section
+explains how; the rest of this page builds a working player first.
+
+## IMX274 player tutorial
+
+This tutorial builds a player that receives video from an IMX274 camera and displays it.
+The complete program ships as `imx274_module_tutorial.py` (Python) and
+`imx274_module_tutorial` (C++); every snippet below is taken from it. Pick your language
+with the tabs.
+
+### Configuration
+
+You need a Holoscan Sensor Bridge board with an IMX274 camera attached, reachable at its
+default address `192.168.0.2`. The IMX274 is a stereo camera pair; at `192.168.0.2` this
+tutorial drives the first camera on the device. This tutorial assumes you have built and
+are running the demo container as described in [Host Setup](setup.mdx) and
+[Build](build.mdx). The program hard-codes its settings, so there is nothing to pass on
+the command line.
+
+### Application pipeline
+
+The player is a Holoscan pipeline of five operators. Data flows left to right:
+
+```none
+receiver -> csi_to_bayer -> image_processor -> demosaic -> holoviz
+```
+
+While data flow starts with the receiver operator, we can't construct it without knowing
+some configuration (specifically the receiver buffer size) that comes from
+`csi_to_bayer`. So build `CsiToBayerOp`, configure it against the camera, and read back
+the frame size:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  csi_op = hololink_module.operators.CsiToBayerOp(
+      self,
+      name="csi_to_bayer",
+      allocator=csi_to_bayer_pool,
+      cuda_device_ordinal=self._cuda_device_ordinal,
+  )
+  # Configuring the converter tells us how big each received frame is.
+  self._camera.configure_converter(csi_op)
+  frame_size = csi_op.get_csi_length()
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto csi_to_bayer_operator = make_operator<hololink::module::operators::CsiToBayerOp>(
+      "csi_to_bayer",
+      holoscan::Arg("allocator", csi_to_bayer_pool),
+      holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
+  // Configuring the converter tells us how big each received frame is.
+  camera_->configure_converter(csi_to_bayer_operator);
+
+  const size_t frame_size = csi_to_bayer_operator->get_csi_length();
+```
+
+</Tab>
+</Tabs>
+
+`RoceReceiverOp` configures itself from the enumeration metadata to listen for data on
+the enumerated channel. The `device_start` / `device_stop` callbacks start and stop the
+camera around streaming:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  receiver = hololink_module.operators.RoceReceiverOp(
+      self,
+      name="receiver",
+      enumeration_metadata=self._metadata,
+      frame_context=self._cuda_context,
+      frame_size=frame_size,
+      device_start=self._camera.start,
+      device_stop=self._camera.stop,
+  )
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto receiver_operator = make_operator<hololink::module::operators::RoceReceiverOp>(
+      "receiver",
+      holoscan::Arg("enumeration_metadata", metadata_),
+      holoscan::Arg("frame_context", cuda_context_),
+      holoscan::Arg("frame_size", frame_size),
+      holoscan::Arg("device_start", std::function<void()>([this] { camera_->start(); })),
+      holoscan::Arg("device_stop", std::function<void()>([this] { camera_->stop(); })));
+```
+
+</Tab>
+</Tabs>
+
+Three operators finish the pipeline:
+
+- `ImageProcessorOp` is a `hololink_module` operator that provides a naive ISP of Bayer
+  data (e.g. RGGB) using the GPU.
+- `BayerDemosaicOp` is a standard Holoscan operator that interpolates the Bayer grid
+  into RGBA.
+- `HolovizOp` is a standard Holoscan operator that displays the result.
+
+Wire the operators together:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  self.add_flow(receiver, csi_op, {("output", "input")})
+  self.add_flow(csi_op, image_proc, {("output", "input")})
+  self.add_flow(image_proc, demosaic, {("output", "receiver")})
+  self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
+  add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
+  add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
+  add_flow(demosaic, visualizer, { { "transmitter", "receivers" } });
+```
+
+</Tab>
+</Tabs>
+
+### Application initialization
+
+The main program is responsible for finding the board, configuring it, and then running
+the pipeline described above.
+
+Get the adapter — the object through which an application discovers and reaches boards —
+and wait for the board to announce itself. `wait_for_channel` blocks until the board at
+the given IP appears and returns its enumeration metadata:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  adapter = hololink_module.Adapter.get_adapter()
+  metadata = adapter.wait_for_channel(HOLOLINK_IP, DISCOVERY_TIMEOUT)
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto& adapter = hololink::module::Adapter::get_adapter();
+  hololink::module::EnumerationMetadata metadata
+      = adapter.wait_for_channel(HOLOLINK_IP, DISCOVERY_TIMEOUT);
+```
+
+</Tab>
+</Tabs>
+
+Construct the camera driver from that metadata. **The sensor driver is not a service: it
+is linked directly into your application, which is tightly coupled to this sensor.** The
+driver resolves the services it needs from the metadata internally:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  camera = hololink_module.sensors.imx274.Imx274Cam(metadata)
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto camera = std::make_shared<hololink::module::sensors::imx274::Imx274Cam>(
+      metadata);
+```
+
+</Tab>
+</Tabs>
+
+Bring up the board. Fetch the control-plane service, `start()` it to open a socket to
+the board, and `reset()` it into a known state. The framework never changes device state
+on its own, so you must `reset()` to be sure the board is in a known configuration. Then
+configure the camera:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  hololink = hololink_module.HololinkInterfaceV1.get_service(metadata)
+  # start() opens the control-plane socket; without it, no device I/O works.
+  hololink.start()
+  hololink.reset()
+  # configure() writes device registers, so it must run after reset().
+  camera.configure(CAMERA_MODE)
+  camera.set_digital_gain_reg(0x4)
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto hololink = hololink::module::HololinkInterfaceV1::get_service(metadata);
+  // start() opens the control-plane socket; without it, no device I/O works.
+  if (hololink->start() != HOLOLINK_MODULE_OK) {
+      throw std::runtime_error("HololinkInterface::start failed");
+  }
+  if (hololink->reset() != HOLOLINK_MODULE_OK) {
+      throw std::runtime_error("HololinkInterface::reset failed");
+  }
+  // configure() writes device registers, so it must run after reset().
+  camera->configure(CAMERA_MODE);
+  camera->set_digital_gain_reg(4);
+```
+
+</Tab>
+</Tabs>
+
+Run the application. When it exits, `stop()` the control plane to stop streaming and
+close the socket:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  app = HoloscanApplication(cu_context, cu_device_ordinal, metadata, camera)
+  app.run()
+  hololink.stop()
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  auto application = holoscan::make_application<HoloscanApplication>(
+      cu_context, cu_device_ordinal, metadata, camera);
+  application->run();
+  hololink->stop();
+```
+
+</Tab>
+</Tabs>
+
+### Build and run the application
+
+Run the installed example. With a camera attached and the board reachable at
+`192.168.0.2`, a Holoviz window opens and shows live video:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```sh
+  $ python3 examples/imx274_module_tutorial.py
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```sh
+  $ $BUILD_DIR/examples/imx274_module_tutorial
+```
+
+</Tab>
+</Tabs>
+
+## Background
+
+Services are what let one application work with different boards — and different board
+revisions — without recompiling:
+
+- Services are **versioned**: the version is part of the type name, for example
+  `HololinkInterfaceV1`. Once an interface is published it never changes; new
+  capabilities ship as the next version (for example `HololinkInterfaceV2`, usually an
+  extension of `V1`). Modules keep publishing older versions too, so already-deployed
+  applications keep working.
+- Each board's services are implemented in a **device-specific shared library**.
+- Device enumeration (bootp) provides a device **UUID**. That UUID and a "compat-id"
+  locate the shared object that implements the services for that board.
+- The shared object supplies the requested interface by binding its virtual methods at
+  runtime.
+- Requesting an interface a board does not implement raises an exception — unless you
+  pass `allow_null=true`, which tells the framework your application handles the
+  missing-service case itself.

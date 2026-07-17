@@ -70,15 +70,22 @@ SKIP=( \
 
 # Codespell checks for spelling mistakes.  Don't include PDF files or skills/.
 # skills/ uses NVCARPS-convention formatting validated separately (see ai_rules MR !22).
-CODESPELL_FILES=( `git ls-files | grep -v '.pdf$' | grep -v '^skills/'` )
+# Fern theme bundles under docs/user_guide/fern/dist/ are minified vendor assets.
+CODESPELL_FILES=()
+while IFS= read -r f; do
+    CODESPELL_FILES+=("$f")
+done < <(git ls-files | grep -v '.pdf$' | grep -v '^skills/' | grep -v '^docs/user_guide/fern/dist/')
 
-C_FILES=( `git ls-files | egrep '.(cpp|hpp)$' ` )
-# added explicit exclude on mdformat docs/user_guide/emulation.md because
-# it is completely messing up tables and code formatting blocks used by sphinx
+C_FILES=()
+while IFS= read -r f; do
+    C_FILES+=("$f")
+done < <(git ls-files | egrep '.(cpp|hpp)$')
+# added explicit exclude on mdformat docs/user_guide/emulation.mdx because
+# it is completely messing up tables and code formatting blocks
 # skills/ contains markdown-based Claude Code agent skill files authored under NVCARPS conventions.
 # They use formatting rules that differ from this project's mdformat rules and are validated
 # separately by the NVCARPS CI pipeline (see ai_rules MR !22).
-DOCS_FILES=( `git ls-files | egrep -v 'docs/user_guide/emulation.md' | egrep -v '^skills/' | egrep '.md$' ` )
+DOCS_FILES=( `git ls-files | egrep -v 'docs/user_guide/emulation.mdx' | egrep -v '^skills/' | egrep 'docs/user_guide/.*\.mdx$' ` )
 
 # Each command likes its list of inputs slightly different
 T=${SKIP[*]}
@@ -124,9 +131,9 @@ while [[ $# -gt 0 ]]; do
             isort $SKIP_ISORT --profile black .
             black "--extend-exclude=$SKIP_RE" .
             flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
-            clang-format --style=file:${ROOT}/.clang-format -i ${C_FILES[*]}
+            clang-format --style=file:${ROOT}/.clang-format -i "${C_FILES[@]}"
             mdformat $MDFORMAT ${DOCS_FILES[*]}
-            codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
+            codespell --ignore-words=$HERE/acceptable_words.txt "${CODESPELL_FILES[@]}"
             exit 0
             ;;
         --do-lint)
@@ -135,9 +142,9 @@ while [[ $# -gt 0 ]]; do
             isort --check-only $SKIP_ISORT --profile black .
             black --check "--extend-exclude=$SKIP_RE" .
             flake8 $FLAKE8 --extend-exclude=$SKIP_COMMAS
-            clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror ${C_FILES[*]}
+            clang-format --style=file:${ROOT}/.clang-format --dry-run -Werror "${C_FILES[@]}"
             mdformat --check $MDFORMAT ${DOCS_FILES[*]}
-            codespell --ignore-words=$HERE/acceptable_words.txt ${CODESPELL_FILES[*]}
+            codespell --ignore-words=$HERE/acceptable_words.txt "${CODESPELL_FILES[@]}"
             exit 0
             ;;
         --do-*)

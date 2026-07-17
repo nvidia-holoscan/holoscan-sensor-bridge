@@ -18,8 +18,11 @@
  */
 
 #include "STM32/i2c.hpp"
+#include "../../hsb_config.hpp"
 #include "STM32/hsb_emulator.hpp"
 #include "STM32/stm32_system.h"
+#include "board.h"
+#include "utils.hpp"
 #include <climits>
 #include <cstring>
 #include <limits.h>
@@ -29,6 +32,8 @@
 #define I2C_TIMEOUT 100
 
 bool i2c_initialized = false;
+
+static void (*Error_Handler)(const char* str) = hololink::emulation::Error_Handler;
 
 int i2c_init(I2C_HandleTypeDef* hi2c)
 {
@@ -40,8 +45,8 @@ int i2c_init(I2C_HandleTypeDef* hi2c)
         return 1;
     }
 
-    hi2c->Instance = I2C1;
-    hi2c->Init.Timing = 0x20303E5D;
+    hi2c->Instance = STM32_CONF_I2C_INSTANCE;
+    hi2c->Init.Timing = STM32_CONF_I2C_TIMING;
     hi2c->Init.OwnAddress1 = 0;
     hi2c->Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
     hi2c->Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
@@ -50,101 +55,59 @@ int i2c_init(I2C_HandleTypeDef* hi2c)
     hi2c->Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
     hi2c->Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
     if (HAL_I2C_Init(hi2c) != HAL_OK) {
-        Error_Handler();
+        Error_Handler("Failed to initialize I2C");
     }
 
     if (HAL_I2CEx_ConfigAnalogFilter(hi2c, I2C_ANALOGFILTER_ENABLE) != HAL_OK) {
-        Error_Handler();
+        Error_Handler("Failed to configure I2C analog filter");
     }
 
     if (HAL_I2CEx_ConfigDigitalFilter(hi2c, 0) != HAL_OK) {
-        Error_Handler();
+        Error_Handler("Failed to configure I2C digital filter");
     }
 
     i2c_initialized = true;
     return 0;
 }
 
-void HAL_I2C_MspInit(I2C_HandleTypeDef* hi2c)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-    RCC_PeriphCLKInitTypeDef PeriphClkInitStruct = { 0 };
-    if (hi2c->Instance == I2C1) {
-        PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_I2C1;
-        PeriphClkInitStruct.I2c1ClockSelection = RCC_I2C1CLKSOURCE_PCLK1;
-        if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK) {
-            Error_Handler();
-        }
-
-        __HAL_RCC_GPIOB_CLK_ENABLE();
-        /**I2C1 GPIO Configuration
-        PB6     ------> I2C1_SCL
-        PB9     ------> I2C1_SDA
-        */
-        GPIO_InitStruct.Pin = GPIO_PIN_6 | GPIO_PIN_9;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-        GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
-        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-        __HAL_RCC_I2C1_CLK_ENABLE();
-    }
-}
-
-void HAL_I2C_MspDeInit(I2C_HandleTypeDef* i2cHandle)
-{
-    if (i2cHandle->Instance == I2C1) {
-        __HAL_RCC_I2C1_CLK_DISABLE();
-        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_6);
-        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_9);
-    }
-}
+// HAL_I2C_MspInit / HAL_I2C_MspDeInit live in the board-specific source (board.c).
 
 namespace hololink::emulation {
 
-struct I2CControllerCtxt {
-    I2C_HandleTypeDef hi2c;
-    I2CController* i2c_controller;
-    uint32_t registers[(I2C_REG_CLK_CNT - I2C_REG_CONTROL) / REGISTER_SIZE + 1];
-    uint32_t data[I2C_DATA_BUFFER_SIZE / REGISTER_SIZE];
-    uint32_t control_address;
-    uint32_t data_address;
-    uint32_t status;
-    bool running { false };
-} I2C_CONTROLLER_CTXT = { .control_address = I2C_CTRL };
-// if we need to add more controllers, we can add more instances of I2C_CONTROLLER_CTXT and use a map of their control addresses to differentiate
+// File-scope STM32 extension (no heap). I2CController::ctxt_ holds a pointer to its
+// embedded `base` (the common I2CControllerCtxt).
+STM32I2CControllerCtxt I2C_CONTROLLER_CTXT = { .base = { .control_address = I2C_CTRL } };
+
+// Helper: downcast the common I2CControllerCtxt* held by I2CController::ctxt_ to the
+// STM32 extension. Standard-layout guarantees `&ext->base == ext`. Used to reach the
+// STM32-only HAL handle (hi2c).
+static inline STM32I2CControllerCtxt* stm32_i2c_ctxt(I2CControllerCtxt* base)
+{
+    return reinterpret_cast<STM32I2CControllerCtxt*>(base);
+}
 
 I2CController::I2CController(__attribute__((unused)) HSBEmulator& hsb_emulator, uint32_t controller_address)
 {
-    ctxt_.reset(&I2C_CONTROLLER_CTXT);
-    ctxt_.get_deleter() = [](I2CControllerCtxt* p) { (void)p; };
-    ctxt_->i2c_controller = this;
-    // ctxt_->control_address should already be set in the static instance
-    if (ctxt_->control_address != controller_address) {
-        Error_Handler();
+    // The file-scope static pool's slot was initialized with `.control_address =
+    // I2C_CTRL`. Reject mismatches early so a wrongly-wired HSBEmulator caller is
+    // caught before reset() overwrites the field.
+    if (I2C_CONTROLLER_CTXT.base.control_address != controller_address) {
+        Error_Handler("I2C controller address mismatch");
     }
-    ctxt_->data_address = ctxt_->control_address + I2C_REG_DATA_BUFFER;
-    ctxt_->status = I2C_IDLE;
-    memset(ctxt_->registers, 0, sizeof(ctxt_->registers));
-    memset(ctxt_->data, 0, sizeof(ctxt_->data));
-    ctxt_->running = false;
+    ctxt_.reset(&I2C_CONTROLLER_CTXT.base);
+    ctxt_.get_deleter() = [](I2CControllerCtxt*) { /* statically allocated */ };
+    reset(controller_address);
 }
 
 void I2CController::start()
 {
-    if (i2c_init(&ctxt_->hi2c)) {
+    if (i2c_init(&stm32_i2c_ctxt(ctxt_.get())->hi2c)) {
         return;
     }
     ctxt_->status = I2C_IDLE;
     memset(ctxt_->registers, 0, sizeof(ctxt_->registers));
     memset(ctxt_->data, 0, sizeof(ctxt_->data));
     ctxt_->running = true;
-}
-
-void I2CController::execute(uint32_t value)
-{
-    (void)value;
 }
 
 void I2CController::stop()
@@ -155,38 +118,6 @@ void I2CController::stop()
 bool I2CController::is_running()
 {
     return ctxt_->running;
-}
-
-void I2CController::i2c_execute()
-{
-    // not used in STM32 context
-}
-
-void I2CController::run()
-{
-    // not used in STM32 context
-}
-
-int i2c_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
-{
-    I2CControllerCtxt* i2c_ctxt = (I2CControllerCtxt*)ctxt;
-    struct AddressValuePair* cur = addr_val;
-    int n = 0;
-    while (n < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(cur);
-        if (address >= i2c_ctxt->data_address && address < i2c_ctxt->data_address + I2C_DATA_BUFFER_SIZE) {
-            AVP_SET_VALUE(cur, i2c_ctxt->data[(address - i2c_ctxt->data_address) / REGISTER_SIZE]);
-        } else if (i2c_ctxt->control_address + I2C_REG_STATUS == address) {
-            AVP_SET_VALUE(cur, i2c_ctxt->status);
-        } else if (address >= i2c_ctxt->control_address && address <= i2c_ctxt->control_address + I2C_REG_CLK_CNT) {
-            AVP_SET_VALUE(cur, i2c_ctxt->registers[(address - i2c_ctxt->control_address) / REGISTER_SIZE]);
-        } else { // not an I2C address
-            return n;
-        }
-        cur++;
-        n++;
-    }
-    return n;
 }
 
 void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value)
@@ -223,20 +154,20 @@ void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value)
 #else
     (void)general_call_address;
 #endif
-    if (HAL_I2C_IsDeviceReady(&i2c_ctxt->hi2c, peripheral_address, 2, I2C_TIMEOUT) != HAL_OK) {
+    if (HAL_I2C_IsDeviceReady(&stm32_i2c_ctxt(i2c_ctxt)->hi2c, peripheral_address, 2, I2C_TIMEOUT) != HAL_OK) {
         i2c_ctxt->status = I2C_I2C_NAK;
         return;
     }
 
     if (num_bytes_write) {
-        HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(&i2c_ctxt->hi2c, peripheral_address, (uint8_t*)&i2c_ctxt->data[0], num_bytes_write, I2C_TIMEOUT);
+        HAL_StatusTypeDef status = HAL_I2C_Master_Transmit(&stm32_i2c_ctxt(i2c_ctxt)->hi2c, peripheral_address, (uint8_t*)&i2c_ctxt->data[0], num_bytes_write, I2C_TIMEOUT);
         if (status != HAL_OK) {
             i2c_ctxt->status = I2C_I2C_ERR;
             return;
         }
     }
     if (num_bytes_read) {
-        HAL_StatusTypeDef status = HAL_I2C_Master_Receive(&i2c_ctxt->hi2c, peripheral_address, (uint8_t*)&i2c_ctxt->data[0], num_bytes_read, I2C_TIMEOUT);
+        HAL_StatusTypeDef status = HAL_I2C_Master_Receive(&stm32_i2c_ctxt(i2c_ctxt)->hi2c, peripheral_address, (uint8_t*)&i2c_ctxt->data[0], num_bytes_read, I2C_TIMEOUT);
         if (status != HAL_OK) {
             i2c_ctxt->status = I2C_I2C_ERR;
             return;
@@ -244,30 +175,6 @@ void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value)
     }
 
     i2c_ctxt->status = I2C_DONE;
-}
-
-int i2c_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
-{
-    I2CControllerCtxt* i2c_ctxt = (I2CControllerCtxt*)ctxt;
-    struct AddressValuePair* cur = addr_val;
-    int n = 0;
-    while (n < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(cur);
-        if (address >= i2c_ctxt->control_address && address <= i2c_ctxt->control_address + I2C_REG_CLK_CNT) {
-            i2c_ctxt->registers[(address - i2c_ctxt->control_address) / REGISTER_SIZE] = AVP_GET_VALUE(cur);
-            // if on the control address, execute the transaction command
-            if (address == i2c_ctxt->control_address) {
-                i2c_transaction(i2c_ctxt, i2c_ctxt->registers[0]);
-            }
-        } else if (address >= i2c_ctxt->data_address && address < i2c_ctxt->data_address + I2C_DATA_BUFFER_SIZE) {
-            i2c_ctxt->data[(address - i2c_ctxt->data_address) / REGISTER_SIZE] = AVP_GET_VALUE(cur);
-        } else { // not an I2C address; cannot write to I2C_REG_STATUS
-            return n;
-        }
-        cur++;
-        n++;
-    }
-    return n;
 }
 
 }

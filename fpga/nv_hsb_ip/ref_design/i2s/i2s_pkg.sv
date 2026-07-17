@@ -42,6 +42,10 @@ package i2s_pkg;
   localparam I2S_CLK_INT = 1'b0;    // Internal PLL
   localparam I2S_CLK_EXT = 1'b1;    // External clock
 
+  // LRCLK Slot Width Mode
+  localparam I2S_SLOT_FIXED = 1'b0; // Fixed 32-BCLK per channel (64x frame)
+  localparam I2S_SLOT_WORD  = 1'b1; // Word-size per channel (Philips spec)
+
   // Register Map Constants
   localparam I2S_N_CTRL_REGS = 9;   // Number of control registers
   localparam I2S_N_STAT_REGS = 4;   // Number of status registers
@@ -51,11 +55,11 @@ package i2s_pkg;
 // I2S Register Reset Values
 //------------------------------------------------------------------------------
   localparam [I2S_N_CTRL_REGS*32-1:0] I2S_CTRL_RST_VAL = {
-    32'h00000000,// CTRL8: Reserved
+    32'h00000001,// CTRL8: Slot mode (0=fixed 32-BCLK, 1=word-size)
     32'h00000000,// CTRL7: LRCLK polarity                                   
     32'h00000000,// CTRL6: Interrupts disabled
-    32'h00000000,// CTRL5: FIFO control
-    32'h00000004,// CTRL4: Stereo, internal clock, loopback mode
+    32'h00000040,// CTRL5: RX packet size (default 64 AXI beats)
+    32'h00000000,// CTRL4: Stereo, internal clock, loopback mode
     32'h00000002,// CTRL3: 24-bit I2S format
     32'h00000003,// CTRL2: BCLK divider
     32'h00000002,// CTRL1: MCLK divider

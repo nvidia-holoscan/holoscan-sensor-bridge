@@ -87,19 +87,13 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle);
  */
 int clock_gettime(clockid_t clock_id, struct timespec * tp);
 
-// helper function to get the delta in milliseconds between two timespecs and writing to BootpPacket::secs (delta time must fit in 16 bits)
-static inline uint32_t get_delta_msecs(const struct timespec* start_time, const struct timespec* end_time )
-{
-    time_t delta_sec = end_time->tv_sec - start_time->tv_sec;
-    uint32_t delta_nsec = 0;
-    if (start_time->tv_nsec > end_time->tv_nsec) {
-        delta_sec--;
-        delta_nsec = NSEC_PER_SEC + end_time->tv_nsec - start_time->tv_nsec;
-    } else {
-        delta_nsec = end_time->tv_nsec - start_time->tv_nsec;
-    }
-    return delta_sec * MSEC_PER_SEC + delta_nsec/NSEC_PER_MSEC;
-}
+/**
+ * @brief Block the calling thread for `milliseconds` ms. STM32 implementation
+ * forwards to HAL_Delay. Declared in hsb_emulator.hpp too; redeclared here so
+ * the C source files in this directory don't have to pull in the C++ header.
+ * @return Always 0.
+ */
+int msleep(unsigned milliseconds);
 
 #ifdef __cplusplus
 }

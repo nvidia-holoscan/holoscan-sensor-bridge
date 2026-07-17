@@ -89,6 +89,29 @@ add_custom_command(TARGET hsb_leopard_flash_strategies POST_BUILD
     COMMENT "Copying hsb_leopard_flash_strategies module to hsb_flasher directory"
 )
 
+# hsb_da326_flash_strategies pybind11 module
+pybind11_add_module(hsb_da326_flash_strategies
+    flash_tools/hsb_da326/flash_strategies.cpp
+    flash_tools/hsb_da326/micron_mt25ql256aba.cpp
+    flash_tools/hsb_da326/cpnx_flash.cpp
+    flash_tools/hsb_da326/hsb_da326_flash_2511.cpp
+)
+
+target_link_libraries(hsb_da326_flash_strategies
+    PRIVATE
+    hololink_core
+    traditional_peripherals
+    fmt::fmt-header-only
+)
+
+# Copy hsb_da326_flash_strategies module to hsb_flasher output directory
+add_custom_command(TARGET hsb_da326_flash_strategies POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+        $<TARGET_FILE:hsb_da326_flash_strategies>
+        $<TARGET_FILE_DIR:hsb_flasher>/$<TARGET_FILE_NAME:hsb_da326_flash_strategies>
+    COMMENT "Copying hsb_da326_flash_strategies module to hsb_flasher directory"
+)
+
 # Collect firmware_information files for dependency tracking
 file(GLOB_RECURSE FIRMWARE_INFO_FILES
     "${CMAKE_CURRENT_SOURCE_DIR}/firmware_information/*.yaml"
@@ -130,15 +153,16 @@ add_custom_target(firmware_flash_strategies_copy ALL
     DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/firmware_flash_strategies/.stamp
 )
 
-# Make hsb_flasher depend on these copy targets
+# Make hsb_flasher depend on copy targets and Python extension modules.
 add_dependencies(hsb_flasher
     firmware_information_copy
     firmware_flash_strategies_copy
     flash_strategies
     hsb_leopard_flash_strategies
+    hsb_da326_flash_strategies
 )
 
-install(TARGETS hsb_flasher flash_strategies hsb_leopard_flash_strategies traditional_peripherals_py
+install(TARGETS hsb_flasher flash_strategies hsb_leopard_flash_strategies hsb_da326_flash_strategies traditional_peripherals_py
     DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT hololink-tools
 )
@@ -184,6 +208,7 @@ if(HOLOLINK_BUILD_TESTS)
         firmware_flash_strategies_copy
         flash_strategies
         hsb_leopard_flash_strategies
+        hsb_da326_flash_strategies
     )
 
     add_test(NAME test_hsb_flasher COMMAND test_hsb_flasher)

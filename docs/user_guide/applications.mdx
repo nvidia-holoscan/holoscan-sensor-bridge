@@ -1,0 +1,970 @@
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_core.html)
+applications are built by specifying sequences of operators. Connecting the output of
+one operator to the input of another operator (via the `add_flow` API) configures
+Holoscan's pipeline and specifies when individual operators can run.
+
+Holoscan sensor bridge leverages this framework by providing operators and objects that
+send and receive data in Holoscan applications. There are additional operators for
+converting application-specific data (e.g. CSI-2 formatted video data) into formats that
+are acceptable inputs for other standard Holoscan operators. To see how a sensor bridge
+application works, we'll step through the example IMX274 player.
+
+## imx274_player
+
+The application in examples/imx274_player.py configures the following pipeline. When a
+loop through the pipeline finishes, execution restarts at the top, where new data is
+acquired and processed.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
+    c --> i[ImageProcessorOp]
+    i --> d[BayerDemosaicOp]
+    d --> v[HolovizOp]
+```
+
+- `RoceReceiverOp` wakes up when an end-of-frame UDP message is received. When it
+  finishes, the received frame data is available in GPU memory, along with metadata
+  which is published to the application layer. Holoscan sensor bridge uses
+  [RoCE v2](https://en.wikipedia.org/wiki/RDMA_over_Converged_Ethernet) to transmit data
+  plane traffic over UDP; this is why the receiver is called `RoceReceiverOp`.
+- `CsiToBayerOp` is aware that the received data is a CSI-2 RAW10 image, which it
+  translates into a [Bayer video frame](https://en.wikipedia.org/wiki/Bayer_filter).
+  Each pixel color component in this image is decoded and stored as a uint16 value. For
+  more information about RAW10, see the
+  [MIPI CSI-2 specification](https://www.mipi.org/specifications/csi-2).
+- `ImageProcessorOp` adjusts the received Bayer image color and brightness to make it
+  acceptable for display.
+- `BayerDemosaicOp` converts the Bayer image data into RGBA.
+- `HolovizOp` displays the RGBA image on the GUI.
+
+For each step in the pipeline, the image data is stored in a buffer in GPU memory.
+Pointers to that data are passed between each element in the pipeline, avoiding
+expensive memory copies between host and GPU memory. GPU acceleration is used to perform
+each operator's function, resulting in very low latency operation.
+
+The Python `imx274_player.py` and C++ `imx274_player.cpp` files initialize the sensor
+bridge device, camera, and pipeline in this way. To enhance readability, some details
+are skipped--be sure and check the actual example code for more details.
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  import hololink as hololink_module
+   
+  def main():
+      # Get handles to GPU
+      cuda.cuInit(0)
+      cu_device_ordinal = 0
+      cu_device = cuda.cuDeviceGet(cu_device_ordinal)
+      cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
+   
+      # Look for sensor bridge enumeration messages; return only the one we're looking for
+      channel_metadata = hololink_module.Enumerator.find_channel(channel_ip="192.168.0.2")
+      # Use that enumeration data to instantiate a data receiver object
+      hololink_channel = hololink_module.DataChannel(channel_metadata)
+   
+      # Now that we can communicate, create the camera controller
+      camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(hololink_channel, ...)
+   
+      # Set up our Holoscan pipeline
+      application = HoloscanApplication(cu_context, cu_device_ordinal, camera, hololink_channel, ...)
+      application.config(...)
+   
+      # Connect and initialize the sensor bridge device
+      hololink = hololink_channel.hololink()
+      hololink.start()  # Establish a connection to the sensor bridge device
+      hololink.reset()  # Drive the sensor bridge to a known state
+   
+      # Configure the camera for 4k at 60 frames per second
+      camera_mode = imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS
+      camera.setup_clock()
+      camera.configure(camera_mode)
+   
+      # Run our Holoscan pipeline
+      application.run()  # we don't usually return from this call.
+      hololink.stop()
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  #include &lt;hololink/core/data_channel.hpp&gt;
+  #include &lt;hololink/core/enumerator.hpp&gt;
+  #include &lt;hololink/core/hololink.hpp&gt;
+   
+  int main(int argc, char** argv)
+  {
+    // Get handles to GPU
+    cuInit(0);
+    int cu_device_ordinal = 0;
+    CUdevice cu_device;
+    cuDeviceGet(&cu_device, cu_device_ordinal);
+    CUcontext cu_context;
+    cuDevicePrimaryCtxRetain(&cu_context, cu_device);
+   
+    // Look for sensor bridge enumeration messages; return only the one we're looking for
+    hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+    // Use that enumeration data to instantiate a data receiver object
+    hololink::DataChannel hololink_channel(channel_metadata);
+   
+    // Import the IMX274 sensor module and the IMX274 mode
+    py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
+    py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
+   
+    // Now that we can communicate, create the camera controller
+    py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel, ...);
+   
+    // Set up our Holoscan pipeline
+    auto application = holoscan::make_application<HoloscanApplication>(...)
+    application->config(...)
+   
+    // Connect and initialize the sensor bridge device
+    std::shared_ptr&lt;hololink::Hololink&gt; hololink = hololink_channel.hololink();
+    hololink->start(); // Establish a connection to the sensor bridge device
+    hololink->reset(); // Drive the sensor bridge to a known state
+   
+    // Configure the camera for 4k at 60 frames per second
+    camera.attr("setup_clock")();
+    camera.attr("configure")(Imx274_Mode(0));
+   
+    // Run our Holoscan pipeline
+    application->run(); // we don't usually return from this call.
+    hololink->stop();
+  }
+```
+
+</Tab>
+</Tabs>
+
+Important details:
+
+- `Enumerator.find_channel` blocks the caller until an enumeration message that matches
+  the given criteria is found. If no matching device is found, this method will time out
+  (default 20 seconds) and raise an exception. Holoscan sensor bridge enumeration
+  messages are sent once per second.
+- Holoscan sensor bridge devices transmit enumeration messages for each data plane
+  controller, which currently correspond directly with each sensor bridge Ethernet
+  interface. If both interfaces on a device are connected to a host, the host will
+  receive a pair of distinct enumeration messages, one for each data port, from the same
+  sensor bridge device.
+- Enumeration messages are sent to the local broadcast address, and routers are not
+  allowed to forward these local broadcast messages to other networks. You must have a
+  local connection between the host and the sensor bridge device in order to enumerate
+  it.
+- `Enumerator.find_channel` returns a dictionary of name/value pairs containing
+  identifying information about the data port being discovered, including MAC ID, IP
+  address, versions of all the programmable components within the device, device serial
+  number, and which specific instance this data port controller is within the device.
+  While the IP address may change, the MAC ID, serial number, and data plane controller
+  instance are constant. The host does not need to request any of the data included in
+  this dictionary; its all broadcast by the sensor bridge device.
+- `DataChannel` is the local controller for a data plane on the sensor bridge device. It
+  contains the APIs for configuring the target addresses for packets transmitted on that
+  data plane-- this is used by the receiver operator, described below.
+- In this example, the `camera` object provides most of the APIs that the application
+  layer would access. When the application configures the camera, the camera object
+  knows how to work with the various sensor bridge controller objects to properly
+  configure `DataChannel`.
+- Usually there are multiple `DataChannel` instances on a single `Hololink` sensor
+  bridge device, and many APIs on the `Hololink` device will affect all the
+  `DataChannel` objects on that same device. In this example, calling `hololink.reset`
+  will reset all the data channels on this device; and in the stereo IMX274
+  configuration, calling `camera.setup_clock` sets the clock that is shared between both
+  cameras. For this reason, it's important that the application is careful about calling
+  `camera.setup_clock`--resetting the clock (e.g. on the second image sensor) while the
+  first camera is running can lead to undefined states.
+
+Holoscan, on the call to `application.run`, invokes the application's `compose` method,
+which includes this:
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  class HoloscanApplication(holoscan.core.Application):
+      def __init__(self, ..., camera, hololink_channel, ...):
+          ...
+          self._camera = camera
+          self._hololink_channel = hololink_channel
+          ...
+      def compose(self):
+          ...
+          # Create the CSI to bayer converter.
+          csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(...)
+   
+          # The call to camera.configure(...) earlier set our image dimensions
+          # and bytes per pixel.  This call asks the camera to configure the
+          # converter accordingly.
+          self._camera.configure_converter(csi_to_bayer_operator)
+   
+          # csi_to_bayer_operator now knows the image dimensions and bytes per pixel,
+          # and can compute the overall size of the received image data.
+          frame_size = csi_to_bayer_operator.get_csi_length()
+   
+          # Create a receiver object that fills out our frame buffer.  The receiver
+          # operator knows how to configure hololink_channel to send its data
+          # to us and to provide an end-of-frame indication at the right time.
+          receiver_operator = hololink_module.operators.RoceReceiverOp(
+              hololink_channel,
+              frame_size, ...)
+          ...
+          # Use add_flow to connect the operators together:
+          ...
+          #   receiver_operator.compute() will be followed by csi_to_bayer_operator.compute()
+          self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
+          ...
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+```cpp
+  class HoloscanApplication : public holoscan::Application {
+  public:
+      explicit HoloscanApplication(..., py::object camera, hololink::DataChannel& hololink_channel, ...)
+          : ...
+          , camera_(camera)
+          , hololink_channel_(hololink_channel)
+          ...
+      {
+      }
+   
+      void compose() override
+      {
+          ...
+          // Create the CSI to bayer converter.
+          auto csi_to_bayer_operator = make_operator&lt;hololink::operators::CsiToBayerOp&gt;(...);
+   
+          // The call to camera.attr("configure")(...) earlier set our image dimensions
+          // and bytes per pixel.  This call asks the camera to configure the
+          // converter accordingly.
+          camera_.attr("configure_converter")(csi_to_bayer_operator);
+   
+          // csi_to_bayer_operator now knows the image dimensions and bytes per pixel,
+          // and can compute the overall size of the received image data.
+          const size_t frame_size = csi_to_bayer_operator->get_csi_length();
+   
+          // Create a receiver object that fills out our frame buffer.  The receiver
+          // operator knows how to configure hololink_channel to send its data
+          // to us and to provide an end-of-frame indication at the right time.
+          auto receiver_operator = make_operator&lt;hololink::operators::RoceReceiverOp&gt;(
+              holoscan::Arg("hololink_channel", &hololink_channel_),
+              holoscan::Arg("frame_size", frame_size), ...);
+          ...
+          // Use add_flow to connect the operators together:
+          ...
+          //   receiver_operator.compute() will be followed by csi_to_bayer_operator.compute()
+          add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
+          ...
+      }
+   
+  private:
+      const py::object camera_;
+      hololink::DataChannel& hololink_channel_;
+  };
+```
+
+</Tab>
+</Tabs>
+
+Some key points:
+
+- `receiver_operator` has no idea it is dealing with video data. It's just informed of
+  the memory region(s) to fill and the size of a block of data. When a complete block of
+  data is received, the CPU will be notified so that pipeline processing can continue.
+- Given an expected frame size, the receiver buffer will allocate GPU memory large
+  enough for the received data plus additional metadata; that memory is allocated in a
+  way that meets hardware and subsequent operator requirements.
+- `csi_to_bayer_operator` is aware of memory layout for CSI-2 formatted image data. Our
+  call to `camera.configure_converter` allows the camera to communicate the image
+  dimensions and pixel depth; with that knowledge, the call to
+  `csi_to_bayer_operator.get_csi_length` can return the size of the memory block
+  necessary to manage these images. This memory size includes not only the image data
+  itself, but CSI-2 metadata, and GPU memory alignment requirements. Because
+  CsiToBayerOp is a GPU accelerated function, it may have special memory requirements
+  that the camera sensor object is not aware of.
+- `receiver_operator` coordinates with `holoscan_channel` to configure the sensor bridge
+  data plane. Configuration automatically handles setting the sensor bridge device with
+  our host Ethernet and IP addresses, destination memory addresses, security keys, and
+  frame size information.
+- the sensor bridge device, following configuration by the `holoscan_channel` object,
+  will start forwarding all received sensor data to the configured receiver. We haven't
+  instructed the camera to start streaming data yet, but at this point, we're ready to
+  receive it.
+- `receiver_operator` keeps track of a `device` parameter, which in this application is
+  our camera. When `receiver_operator.start` is called, it will call `device.start,`
+  which in our IMX274 implementation, will instruct the camera to begin streaming data.
+
+In this example, `receiver_operator` is a `RoceReceiverOp` instance, which takes
+advantage of the RDMA acceleration features present in the ConnectX firmware. With
+`RoceReceiverOp`, the CPU only sees an interrupt when the last packet for the frame is
+received--all frame data sent before that is written to GPU memory in the background. In
+systems without ConnectX devices, `LinuxReceiverOperator` provides the same
+functionality but uses the host CPU and Linux kernel to receive the ingress UDP
+requests; and the CPU writes that payload data to GPU memory. This provides the same
+functionality as `RoceReceiverOp` but at considerably lower performance.
+
+## linux_tsn_imx274_player
+
+`examples/linux_tsn_imx274_player.py` adds Time-Sensitive Networking (TSN) support on
+top of the standard Linux IMX274 player. Before the Holoscan pipeline starts, it
+programs the FPGA with a PTP profile and domain, and enables 802.1Q VLAN tagging on the
+sensor virtual port and the EVT channel. The video pipeline itself is identical to the
+Linux IMX274 player.
+
+```{mermaid}
+:align: center
+:caption: TSN IMX274 Player
+
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+
+graph
+    r[LinuxReceiverOperator] --> c[CsiToBayerOp]
+    c --> i[ImageProcessorOp]
+    i --> d[BayerDemosaicOp]
+    d --> v[HolovizOp]
+```
+
+### TSN configuration sequence
+
+VLAN parameters are stamped into the channel metadata before the `DataChannel` is
+constructed, using `DataChannel.use_vlan()`. PTP is programmed directly on the
+`Hololink` object after `reset()`. VLAN tagging is then applied automatically when the
+receiver calls `configure_roce()` or `configure_coe()`.
+
+```python
+# Before constructing the DataChannel:
+hololink_module.DataChannel.use_vlan(
+    channel_metadata,
+    vlan_id=args.vlan_id,
+    sensor_pcp=args.sensor_pcp,
+    evt_pcp=args.evt_pcp,
+)
+hololink_channel = hololink_module.DataChannel(channel_metadata)
+
+# After hololink.reset():
+hololink.configure_ptp(args.ptp_profile, args.ptp_domain)
+# VLAN tagging is applied automatically when the receiver configures the channel.
+```
+
+`DataChannel.use_vlan()` validates that `vlan_id` is in `[1, 4094]` and raises
+`ValueError` otherwise. The VLAN configuration covers two targets:
+
+- **Sensor VP** — tags sensor data traffic from the virtual port with the given VLAN ID
+  and `sensor_pcp`.
+- **EVT** — tags FPGA event notification traffic with the same VLAN ID and `evt_pcp`.
+
+### PTP API
+
+Three convenience methods are available on the `Hololink` object for PTP configuration:
+
+| Method                           | Profile written           | Use when                                      |
+| -------------------------------- | ------------------------- | --------------------------------------------- |
+| `configure_ptp(profile, domain)` | caller-supplied           | any profile, or switching profiles at runtime |
+| `configure_gptp(domain)`         | `1` (gPTP / IEEE 802.1AS) | running `gptp4l` on the host                  |
+| `configure_1588(domain)`         | `0` (IEEE 1588 E2E)       | running `ptp4l` on the host                   |
+
+`configure_gptp` and `configure_1588` are thin wrappers around `configure_ptp`.
+
+### Host-side VLAN requirement
+
+VLAN-tagged packets from the HSB arrive on the VLAN subinterface (e.g.
+`<iface>.<vlan-id>`). Create the subinterface and assign the sensor bridge IP to it:
+
+```sh
+sudo ip link add link <iface> name <iface>.<vlan-id> type vlan id <vlan-id>
+sudo ip link set <iface>.<vlan-id> up
+sudo ip addr add 192.168.0.101/32 dev <iface>.<vlan-id>
+```
+
+Without the subinterface, the kernel's VLAN demux delivers packets to the subinterface
+but the socket on the parent interface does not see them.
+
+## tao_peoplenet
+
+A demonstration application where inference is used to generate a video overlay is
+included in examples/tao_peoplenet.py. The
+[Tao PeopleNet](https://docs.nvidia.com/tao/tao-toolkit/text/model_zoo/cv_models/peoplenet.html)
+is used to determine the locations of persons, bags, and faces in the live video stream.
+This example program draws bounding boxes on an overlay illustrating where those objects
+are detected in the video frame.
+
+Pipeline structure:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
+    c --> i[ImageProcessorOp]
+    i --> d[BayerDemosaicOp]
+    d --> s[ImageShiftToUint8Operator]
+    s --> p[FormatConverterOp]
+    p --> fi[FormatInferenceInputOp]
+    fi --> in[InferenceOp]
+    in --> pf[PostprocessorOp]
+    s -- live video --> v[HolovizOp]
+    pf -- overlay --> v
+```
+
+Adding inference to the video pipeline is easy: just add the appropriate operators and
+data flows. In our case, we use the video mixer built in to `HolovizOp` to display the
+overlay generated by inference. `RoceReceiverOp` is specified to always provide the most
+recently received video frame, so if a pipeline takes more than one frame time to
+complete, the next iteration through the loop will always work on the most recently
+received video frame.
+
+## body_pose_estimation
+
+The Body Pose Estimation application takes input from a live video, performs inference
+using YOLOv8 pose model, and then shows keypoints overlaid onto the original video. The
+keypoints are:
+
+\[nose, left eye, right eye, left ear, right ear, left shoulder, right shoulder, left
+elbow, right elbow, left wrist, right wrist, left hip, right hip, left knee, right knee,
+left ankle, right ankle\]
+
+This application's pipeline is the same as the People Detection application:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
+    c --> i[ImageProcessorOp]
+    i --> d[BayerDemosaicOp]
+    d --> s[ImageShiftToUint8Operator]
+    s --> p[FormatConverterOp]
+    p --> fi[FormatInferenceInputOp]
+    fi --> in[InferenceOp]
+    in --> pf[PostprocessorOp]
+    s -- live video --> v[HolovizOp]
+    pf -- overlay --> v
+```
+
+The difference is that InferenceOp uses the YOLOv8 pose model and the post processor
+operator has logic that performs postprocessing specific to the YOLOv8 model.
+Specifically, it takes the output of Inference and filters out detections that have low
+scores and applies non-max suppression (nms) before sending the output to `HolovizOp`.
+
+## IMX274 Stereo live video demonstration
+
+Multiple receiver operators can be instantiated to support data feeds from multiple
+cameras. In `examples/stereo_imx274_player.py`, the same pipeline for live video feed is
+presented, except that it is instantiated twice, once for each camera on the IMX274
+stereo camera board. In this case, Holoscan cycles between each pipeline, providing two
+separate windows (one for each visualizer) on the display. Each `receiver_operator`
+instance is independent and runs simultaneously.
+
+For systems with only a single network connection, Holoscan Sensor Bridge can be
+configured to transmit both cameras data over the same network connection. The 10Gbps
+network port on HSB doesn't have the bandwidth to support two 4K 60FPS video streams, so
+support is limited to cameras in 1080p mode. See
+`examples/single_network_stereo_imx274_player.py` for an example showing how to
+configure HSB to work in this way. As before, each `receiver_operator` is independent,
+even when using the same network interface.
+
+## GPIO Example application
+
+This application demonstrates how to utilize the hololink GPIO interface and can be
+found under the `hololink/examples` folder.
+
+The hololink GPIO interface supports 16 GPIOs numbered 0..15. These GPIOs can be set as
+either **input** or **output** and have 2 logical values:
+
+- **High** - 3.3V can be measured on the GPIO pin
+- **Low** - 0V can b measured on the GPIO pin
+
+The following image maps the GPIO and ground pins on the hololink board:
+
+<img src="sensor_bridge_board_gpios.png" alt="GPIO Interface" width="100%"/>
+
+As can be observed from the image:
+
+- The 4 pins in the corners of the connector are ground pins (marked 'G' in the image
+  above)
+- The lower set of pins between the 2 lower ground pins are GPIO pins numbered 0 to 7
+- The upper set of pins between the 2 upper ground pins are GPIO pins numbered 8 to 15
+
+### GPIO Example application flow
+
+The GPIO Example is a simple application made up of 2 operators as can be seen in the
+following diagram:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    w[GpioSetOp] --> r[GpioReadOp]
+```
+
+- **GPIO Set Operator** - this operator sweeps through the 16 GPIO pins setting them one
+  by one to values and directions defined per 5 different pin configurations:
+
+1. **ALL_OUT_L**- All pins output low
+1. **ALL_OUT_H**- All pins output high
+1. **ALL_IN** - All pins input
+1. **ODD_OUT_H**- Odd pins output high, even pins input
+1. **EVEN_OUT_H** -Even pins output high, odd pins input
+
+Each cycle of this operator configures one pin to a direction and value and sends the
+last changed pin number and the current running configuration to the GPIO read
+operator.\
+Once all 16 pins are set per the currently running configuration,the operator will move
+on the next cycle to the next configuration.
+
+- **GPIO Read Operator** - This operator reads and displays the current value of the
+  last configured pin. It delays 10 seconds to allow the user to validate the pin level
+  and direction with an external measurement device like a multimeter or scope.
+
+### GPIO Software interface
+
+The GPIO interface is a class defined within the hololink module. It exports the
+following GPIO interface:
+
+1. **get_gpio()** - gets a GPIO interface instance from the hololink module
+1. **set_direction( pin, direction )** - sets the pin direction as input or output
+1. **get_direction( pin )** - gets the direction set for the pin
+1. **set_value( pin, value )** - for pins set as direction **output**, set the value of
+   the pin to high or low.
+1. **get_value( pin )** - for pins set as direction **input**, reads the value of the
+   pin (high or low).
+
+- **pin numbers** - range between 0 to 15.
+- **pin direction** - enumerated values: IN-1,OUT-0
+- **pin values** - enumerated values: HIGH-1,LOW-0
+
+## NVIDIA ISP for live capture
+
+Jetson boards have built in support for ISP (Image Signal Processing) unit for
+processing Bayer images and outputting images in standard color space(s). The ISP is
+operational in Jetson Orin AGX and Orin IGX in iGPU configuration.
+
+A sample ISP application presented in `examples/linux_hwisp_player.py` configures the
+following pipeline. When a loop through the pipeline finishes, execution restarts at the
+top, where new data is acquired and processed.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+ 
+    r[LinuxReceiverOperator] --> c[CsiToBayerOp]
+    c --> i[ArgusIspOp]
+    i --> v[HolovizOp]
+```
+
+`ArgusIspOp` allows the users to access the ISP via Argus API. This operator takes in
+Bayer uncompressed image of uint16 per pixel (MSB aligned) and outputs RGB888 image. It
+is available as C++ operator with Python bindings.
+
+The `ArgusIspOp` can be configured using following required parameters at the
+application level. Below is a snippet from an existing python based example.
+
+<Tabs>
+
+<Tab title="Python" language="python">
+
+```python
+  argus_isp = hololink_module.operators.ArgusIspOp(
+      self,
+      name="argus_isp",
+      bayer_format=bayer_format.value, # RGGB or other Bayer format
+      exposure_time_ms=16.67,          # Exposure time in milliseconds. 60fps is 16.67ms
+      analog_gain=10.0,                # Minimum Analog Gain
+      pixel_bit_depth=10,              # Effective bit depth of input per pixel
+      pool=isp_pool,
+  )
+```
+
+</Tab>
+</Tabs>
+
+The input to the `ArgusIspOp` is a Bayer Image uncompressed to uint16 per pixel. The
+values in uint16 should be MSB aligned. For example, if the camera sensor produces
+Raw10, the 10bits should be MSB aligned in 16bits. Currently supported output from
+`ArgusIspOp` is RGB888 in Rec 709 standard color space and gamma corrected.
+
+The glass to display latency of the pipeline mentioned above on Jetson Orin AGX is 37ms
+for a resolution of 1920x1080 at 60 fps.
+
+Please reach out to NVIDIA for further questions on ISP capabilities and usage.
+
+## ECam0M30ToF Player
+
+The `ecam0m30tof_player.py` application demonstrates the use of the ECam0M30ToF
+time-of-flight camera and showcases handling of depth and IR data in the pipeline. This
+application uses RoCE for high-performance data transmission and supports multiple
+camera modes for different use cases.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    r[RoceReceiverOp] --> c[CsiToBayerOp]
+    c --> i[ImageShiftAndProcessingOperator]
+    i --> v[HolovizOp]
+```
+
+The `ImageShiftAndProcessingOperator` is a new operator designed to process depth and IR
+data. It performs the following operations:
+
+- Converts depth data to grayscale for visualization
+- Handles dual-plane data (depth + IR) when in combined mode
+- Performs data format conversion and normalization
+
+The `HolovizOp` provides rendering for both Active IR and depth data, with depth data
+visualized using the `DEPTH_MAP` option for 3D rendering.
+
+## Audio Player
+
+The Hololink board includes an I2S (Inter‑IC Sound) audio peripheral that provides a
+digital audio link between the FPGA and external audio devices such as DACs, codecs, or
+amplifiers. It uses a 32‑bit AXI‑Stream interface on the FPGA side for audio samples and
+an APB register interface for configuration and status.
+
+On the board pins, the peripheral drives the standard I2S signals: a bit clock (BCLK), a
+word‑select / left‑right clock (LRCLK), a master clock (MCLK), and serial data (SDATA).
+Internally, configurable clock dividers derive MCLK, BCLK, and LRCLK from a reference
+clock to generate the desired audio sample rate.
+
+Two example applications are provided:
+
+- `linux_audio_player.py` – streams audio to the Hololink board using **UDP / Linux
+  sockets**.
+- `audio_player.py` – streams audio using **RoCE / RDMA**.
+
+Both use the same FPGA I2S path and require the same WAV file format described below.
+
+### UDP / Linux socket path (`linux_audio_player.py`)
+
+The `linux_audio_player.py` application demonstrates how to stream audio samples from a
+WAV file on the host to a Hololink board and play them out through the I2S interface
+using a UDP-based transport path.
+
+The application builds a simple Holoscan pipeline that packetizes audio samples and
+sends them to the Hololink device over UDP:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    p[AudioPacketizerOp] --> u[UdpTransmitterOp]
+```
+
+- `AudioPacketizerOp` reads audio data from a WAV file on the host, splits it into
+  fixed-size chunks (controlled by `chunk_size`), and publishes those chunks into the
+  Holoscan pipeline using a UDP-oriented packet format (IB-style header + CRC).
+- `UdpTransmitterOp` sends each audio chunk as UDP packets to the Hololink device at the
+  configured IP address (port 4791 by default).
+
+Before starting the Holoscan application, `linux_audio_player.py` configures the
+Hololink device to enable I2S transmit by writing to a set of device registers
+(functions `enable_i2s`, `set_tx_af_ae`, and `set_tx_pause`). This sets up the transmit
+FIFO thresholds and pause behavior so that the incoming UDP audio stream is played out
+on the I2S interface.
+
+You can run the application from the `examples` directory with:
+
+```bash
+python3 linux_audio_player.py \
+  --hololink <HOLINK_IP_ADDRESS> \
+  --wav-file </path/to/file.wav> \
+  [--chunk-size 192]
+```
+
+### RoCE path (`audio_player.py`)
+
+The `audio_player.py` application is a RoCE-based variant of the audio player that uses
+`RoceTransmitterOp` instead of `UdpTransmitterOp`. It streams the same WAV audio format
+over a RoCE link, relying on the RDMA stack for framing and reliability.
+
+The Holoscan pipeline is:
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph
+    p[AudioPacketizerOp] --> r[RoceTransmitterOp]
+```
+
+- `AudioPacketizerOp` again reads the WAV file and produces fixed-size audio payloads
+  (with no IB header or CRC in this configuration).
+- `RoceTransmitterOp` sends each payload buffer over the configured RoCE connection to
+  the Hololink board, which then forwards the samples into the same I2S playback path as
+  in the UDP-based example.
+
+From the `examples` directory, you can run:
+
+```bash
+python3 audio_player.py \
+  --hololink <HOLINK_IP_ADDRESS> \
+  --wav-file </path/to/file.wav> \
+  [--chunk-size 192] \
+  [--ibv-name <IB_DEVICE>] \
+  [--ibv-port <PORT>] \
+  [--ibv-qp <QP_NUM>] \
+  [--queue-size <N>]
+```
+
+**NOTE**: The current I2S/FPGA audio path and application are designed for a fixed audio
+format. The WAV file must use the following audio parameters:
+
+- **Channels**: Stereo
+- **Sample rate**: 48 kHz
+- **Sample size**: 24-bit
+- **Bit rate**: 2304 kbps
+
+## Sub-Frame Processing Applications
+
+Sub-frame processing is a feature that allows high-resolution sensor data frames to be
+processed incrementally as they arrive, rather than waiting for the complete frame to be
+received. This enables reduced memory requirements for processing large frames by using
+smaller sub-frame buffers.
+
+### What is Sub-Frame Processing?
+
+In traditional frame-based processing, a complete frame must be received before any
+processing or display can occur. For high-resolution sensors (e.g., 4K cameras at 60fps,
+high-density lidar point clouds, or radar data), this can introduce significant latency,
+as the entire frame must be buffered before processing begins.
+
+Sub-frame processing divides each frame into multiple horizontal strips (sub-frames)
+that are processed independently as they arrive. Each sub-frame contains a contiguous
+set of rows from the original frame. For example, a 2160-row tall image frame can be
+divided into sub-frames of 540 rows each, resulting in 4 sub-frames per complete frame.
+The same concept can be applied to other sensor data types that can be divided into
+horizontal strips.
+
+### Sub-Frame Processing Pipeline
+
+There are two display modes for sub-frame processing, depending on whether
+display-synchronized capture is required:
+
+**Sub-Frame Combiner Mode** (e.g., IMX274 examples): Sub-frames are accumulated into a
+complete frame buffer before display. Capture timing is independent of the display.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph TD
+    subgraph Sensor Data Source
+        S[Sensor]
+    end
+ 
+    subgraph Holoscan Sensor Bridge
+        R[ReceiverOp] --> C[CsiToBayerOp]
+    end
+ 
+    subgraph Holoscan Application
+        C --> I[ImageProcessorOp]
+        I --> D[BayerDemosaicOp]
+        D --> SC[SubFrameCombinerOp]
+        SC --> V[HolovizOp]
+    end
+ 
+    style S fill:#f9f,stroke:#333,stroke-width:2px
+    style R fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style I fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style SC fill:#bbf,stroke:#333,stroke-width:2px
+    style V fill:#bbf,stroke:#333,stroke-width:2px
+```
+
+**Sub-Frame Visualizer Mode** (e.g., VB1940 example): Sub-frames are composited directly
+to the display as they arrive. Capture is synchronized to the display refresh via FPGA
+PTP/PPS, minimizing end-to-end latency.
+
+```mermaid
+%%{init: {"theme": "base", "themeVariables": { }} }%%
+ 
+graph TD
+    subgraph Sensor Data Source
+        S[Sensor]
+    end
+ 
+    subgraph Holoscan Sensor Bridge
+        R[ReceiverOp] --> C[CsiToBayerOp]
+    end
+ 
+    subgraph Holoscan Application
+        C --> I[ImageProcessorOp]
+        I --> D[BayerDemosaicOp]
+        D --> SV[SubFrameVisualizerOp]
+    end
+ 
+    SV -->|FPO event + PTP/PPS| S
+ 
+    style S fill:#f9f,stroke:#333,stroke-width:2px
+    style R fill:#bbf,stroke:#333,stroke-width:2px
+    style C fill:#bbf,stroke:#333,stroke-width:2px
+    style I fill:#bbf,stroke:#333,stroke-width:2px
+    style D fill:#bbf,stroke:#333,stroke-width:2px
+    style SV fill:#9f9,stroke:#333,stroke-width:2px
+```
+
+### Operator-Specific Sub-Frame Behavior
+
+#### CsiToBayerOp
+
+When `sub_frame_rows` parameter is set to a non-zero value:
+
+- **Sub-frame accumulation**: Incoming packets are accumulated into sub-frame-sized
+  buffers
+- **Metadata handling**: The first sub-frame packet may contain a header (`start_byte_`)
+  that is skipped
+- **Sub-frame emission**: A sub-frame is emitted only when a complete sub-frame has been
+  accumulated
+- **Offset calculation**: Converts byte-based offsets to line-based offsets for
+  downstream operators
+- **Frame numbering**: Converts receiver frame numbers to full frame numbers based on
+  sub-frames per frame
+
+#### ImageProcessorOp
+
+Sub-frame processing affects white balance calculation:
+
+- **Histogram accumulation**: Histograms are accumulated across all sub-frames of a
+  frame
+- **White balance timing**: White balance gains are calculated when a new frame starts
+  (detected by frame number change)
+- **Gain application**: White balance gains from the previous frame are applied to
+  current sub-frames
+- **Per-sub-frame processing**: Optical black correction and histogram generation are
+  performed independently on each sub-frame
+- **Out-of-order handling**: Out-of-order sub-frames are handled by accumulating to the
+  existing histogram without recalculating WB gains
+
+#### SubFrameCombinerOp
+
+Combines sub-frames into complete frames:
+
+- **Frame tracking**: Tracks expected frame numbers to detect dropped sub-frames
+- **Row accumulation**: Accumulates rows from sub-frames into a complete frame buffer
+- **Emission**: Emits complete frames only when all sub-frames have been received
+- **Error handling**: Warns if sub-frames are dropped or arrive out of order
+
+#### SubFrameVisualizerOp
+
+Accumulates and visualizes sub-frames with display-synchronized camera capture. Unlike
+`SubFrameCombinerOp`, sub-frames are composited directly to the display as they arrive.
+The operator does not wait for a complete frame before rendering.
+
+A dedicated background thread listens for the display **First Pixel Out (FPO)** event,
+which fires once per display refresh at the start of each vertical blanking interval. On
+each FPO event the thread computes the optimal FPGA camera trigger time for the next
+capture by measuring the pipeline delay (time from FPGA trigger to first sub-frame
+arriving in `compute()`), then schedules the next capture so that the captured frame
+completes rendering just before the following vblank.
+
+This synchronization uses the FPGA **PTP/PPS single-pulse** output: one `set_delay()`
+call per FPO event advances the capture phase by one display period, producing a
+continuous 60 Hz trigger cadence that is phase-locked to the display refresh.
+
+Key behaviors:
+
+- **Pipelined capture**: Frame N+1 is captured while frame N is being rendered, keeping
+  the capture rate equal to the display refresh rate.
+- **Cached pipeline delay**: If a frame is still in-flight when the FPO fires, the last
+  measured pipeline delay is reused to avoid destabilizing the FPGA trigger phase.
+- **Slow-camera detection**: If `render_start_time` is unchanged between consecutive FPO
+  events, a warning is logged indicating that the camera rate is below the display rate.
+  Capture scheduling continues regardless.
+- **FPO fallback**: If `WaitForDisplayEvent` times out, `fpo_available_` is set to
+  `false` and `compute()` switches to a fallback render path that swaps buffers directly
+  rather than relying on the FPO-driven swap.
+
+Parameters:
+
+- **`ptp_synchronizer`**: Pointer to `PtpSynchronizer` from `ptp_pps_output(1)`.
+  Required for display sync; if `nullptr`, capture runs unsynchronized. Default:
+  `nullptr`.
+- **`full_frame_height`**: Total frame height in rows. Required for correct sub-frame
+  compositing.
+- **`fullscreen`**: Run in fullscreen mode. Default: `false`.
+- **`use_exclusive_display`**: Use exclusive display mode (lower latency, requires
+  display ownership). Default: `false`.
+- **`display_name`**: Display name for exclusive display mode. Default: `""`.
+- **`display_width`**: Display width in pixels. Default: `1920`.
+- **`display_height`**: Display height in pixels. Default: `1080`.
+- **`display_framerate`**: Display framerate in Hz×1000 (e.g., `60000` for 60 Hz).
+  Default: `59950`.
+- **`window_title`**: Window title for windowed mode. Default: `"Sub-Frame Visualizer"`.
+
+### Configuration
+
+Sub-frame processing is enabled by setting the `sub_frame_rows` parameter in
+`CsiToBayerOp`:
+
+- **`sub_frame_rows = 0`**: Disables sub-frame processing (default, full-frame mode)
+- **`sub_frame_rows > 0`**: Enables sub-frame processing with the specified number of
+  rows per sub-frame
+
+**Important constraint:** `sub_frame_rows` must evenly divide the frame height.
+
+The sub-frame size should be chosen based on:
+
+- **Network packet size**: Should align with expected packet sizes to minimize partial
+  sub-frames
+- **Memory constraints**: Smaller sub-frames use less memory per buffer, but require
+  more buffers to process a complete frame
+- **Display refresh rate**: Sub-frame size affects how smoothly data appears on display
+- **Latency requirements**: Smaller sub-frames can reduce end-to-end latency by enabling
+  earlier processing start, but this benefit must be balanced against increased
+  processing overhead from handling more sub-frames per frame
+- **Sensor data characteristics**: Different sensor types may benefit from different
+  sub-frame sizes based on their data structure and processing requirements
+
+### Limitations and Considerations
+
+- **Out-of-order arrival**: Sub-frames may arrive out of order due to network
+  conditions. Operators handle this by tracking frame numbers and sub-frame offsets.
+
+- **Dropped sub-frames**: If sub-frames are dropped, the final frame may be incomplete.
+  `SubFrameCombinerOp` will warn about dropped sub-frames and emit partial frames.
+
+- **White balance accuracy**: White balance gains are calculated from the previous
+  frame's histogram, which may not perfectly match the current frame's lighting
+  conditions.
+
+### Example: Sub-Frame IMX274 Player
+
+The sub-frame IMX274 player example (`sub_frame_imx274_player.py` or
+`sub_frame_imx274_player.cpp`) demonstrates the complete sub-frame processing pipeline
+without display synchronization:
+
+1. **Receiver**: Receives network packets containing partial frame data
+1. **CSI to Bayer**: Accumulates packets into sub-frames and converts to Bayer format
+1. **Image Processor**: Processes sub-frames and accumulates histograms for white
+   balance
+1. **Demosaic**: Converts Bayer sub-frames to RGBA
+1. **Sub-Frame Combiner**: Combines sub-frames into complete frames before display
+
+### Example: Sub-Frame VB1940 Player
+
+The sub-frame VB1940 player example (`sub_frame_vb1940_player.cpp`) demonstrates
+display-synchronized sub-frame capture and visualization using `SubFrameVisualizerOp`:
+
+1. **Receiver**: Receives network packets from the VB1940 camera via ConnectX RoCE
+1. **CSI to Bayer**: Accumulates packets into sub-frames and converts to Bayer format
+1. **Image Processor**: Applies optical black correction and white balance
+1. **Demosaic**: Converts Bayer sub-frames to RGBA
+1. **Sub-Frame Visualizer**: Composites sub-frames onto the display as they arrive,
+   while the FPO thread schedules the next FPGA camera capture synchronized to the
+   display refresh
+
+The `SubFrameVisualizerOp` uses `ptp_pps_output(1)` (single-pulse PPS mode) to trigger
+the FPGA camera. One `set_delay()` call is issued per FPO event, advancing the capture
+phase by one display period each tick. This produces a 60 Hz capture cadence that is
+phase-locked to the display, achieving minimum pipeline latency.
+
+See the [Sub-Frame Processing Examples](examples.mdx#sub-frame-processing-examples)
+section for instructions on running sub-frame examples.

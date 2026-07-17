@@ -16,299 +16,202 @@
 //------------------------------------------------------------------------------
 // I2S TX AXI-Stream Buffer Module
 //
-// This module provides clock domain crossing and buffering for I2S transmit
-// data path. It converts from AXI-Stream interface in the host clock domain
-// to simple valid/ready interface in the I2S clock domain.
+// Thin wrapper around axis_buffer providing clock domain crossing and
+// buffering for the I2S transmit data path. Converts from AXI-Stream in the
+// host clock domain to a simple valid/ready interface in the I2S clock domain.
 //
-// Features:
-// - Dual-clock FIFO for clock domain crossing
-// - Configurable FIFO depth
-// - Almost-full/empty thresholds for flow control
-// - Underrun detection and handling
+// The host always sends a flat stream of 32-bit samples:
+//   Stereo: L0, R0, L1, R1, ... (interleaved by the host)
+//   Mono:   S0, S1, S2, ...     (single-channel, no padding)
+//
+// axis_buffer gearboxes from AXI width to 32-bit samples. Stereo pairing
+// logic latches consecutive L/R samples before presenting them to the serdes.
+// In mono mode each sample is presented directly as L, with R=0.
 //------------------------------------------------------------------------------
 
 module i2s_axis_buffer_tx #(
-  parameter AXI_DWIDTH  = 64,              // AXI-Stream data width
-  parameter I2S_DWIDTH  = 32,              // I2S data width
-  parameter FIFO_DEPTH  = 1024,            // FIFO depth (must be power of 2)
-  parameter AFULL_THRESH = FIFO_DEPTH * 3/4, // Almost full threshold
-  parameter AEMPTY_THRESH = FIFO_DEPTH / 4,  // Almost empty threshold
-  localparam AXI_KWIDTH = AXI_DWIDTH/8,    // AXI-Stream keep width
-  localparam ADDR_WIDTH = $clog2(FIFO_DEPTH) // FIFO address width
+  parameter AXI_DWIDTH    = 64,
+  parameter FIFO_DEPTH    = 1024,
+  parameter AFULL_THRESH  = FIFO_DEPTH * 3/4,
+  parameter AEMPTY_THRESH = FIFO_DEPTH / 4,
+  localparam AXI_KWIDTH      = AXI_DWIDTH/8,
+  localparam MAX_SAMPLE_BITS = 32
 )(
   //----------------------------------------------------------------------------
   // AXI-Stream Clock Domain (Host side)
   //----------------------------------------------------------------------------
-  input                    i_axi_clk,      // AXI-Stream clock
-  input                    i_axi_rst,      // AXI-Stream reset (active high)
-  
+  input                          i_axi_clk,
+  input                          i_axi_rst,
+
+  input                          i_axis_tvalid,
+  input  [AXI_DWIDTH-1:0]       i_axis_tdata,
+  input  [AXI_KWIDTH-1:0]       i_axis_tkeep,
+  input                          i_axis_tlast,
+  output                         o_axis_tready,
+
+  //----------------------------------------------------------------------------
   // Configuration
-  input                    i_stereo_mode,  // 1=stereo, 0=mono
-  
-  // AXI-Stream Input
-  input                    i_axis_tvalid,  // AXI data valid
-  input  [AXI_DWIDTH-1:0]  i_axis_tdata,   // AXI data
-  input  [AXI_KWIDTH-1:0]  i_axis_tkeep,   // AXI data keep
-  input                    i_axis_tlast,   // AXI packet boundary
-  output                   o_axis_tready,  // AXI ready
-  
+  //----------------------------------------------------------------------------
+  input                          i_channel_mode,   // 0=stereo, 1=mono
+
   //----------------------------------------------------------------------------
   // I2S Clock Domain (I2S side)
   //----------------------------------------------------------------------------
-  input                    i_ref_clk,      // Reference clock
-  input                    i_i2s_rst,      // I2S reset (active high)
-  input                    i_bclk_posedge, // BCLK positive edge
-  input                    i_bclk_negedge, // BCLK negative edge
-  
-  // I2S Output Interface (doubled width for stereo L+R samples)
-  output                   o_i2s_valid,    // I2S data valid
-  output [I2S_DWIDTH-1:0]   o_i2s_sample_l, // I2S data left
-  output [I2S_DWIDTH-1:0]   o_i2s_sample_r, // I2S data right
-  input                    i_i2s_ready,    // I2S ready
-  
+  input                          i_ref_clk,
+  input                          i_i2s_rst,
+  input                          i_bclk_negedge,
+
+  output                         o_i2s_valid,
+  output                         o_i2s_last,
+  output                         o_i2s_data_avail,
+  output [MAX_SAMPLE_BITS-1:0]   o_i2s_sample_l,
+  output [MAX_SAMPLE_BITS-1:0]   o_i2s_sample_r,
+  input                          i_i2s_ready,
+
   //----------------------------------------------------------------------------
-  // Status and Control
+  // Status
   //----------------------------------------------------------------------------
-  output                   o_fifo_full,    // FIFO full flag
-  output                   o_fifo_empty,   // FIFO empty flag
-  output                   o_fifo_afull,   // FIFO almost full
-  output                   o_fifo_aempty,  // FIFO almost empty
-  output [ADDR_WIDTH:0]    o_fifo_count,   // FIFO fill count
-  output                   o_underrun      // Underrun error flag
+  output                         o_underrun
 );
 
 //------------------------------------------------------------------------------
-// Internal Signals
+// tkeep normalization: non-last beats must have tkeep all-ones
 //------------------------------------------------------------------------------
 
-  // FIFO interface signals (doubled width for L+R samples)
-  logic                    fifo_wr_en;
-  logic [I2S_DWIDTH*2-1:0] fifo_wr_data;
-  logic                    fifo_full;
-  logic                    fifo_afull;
-  
-  logic                    fifo_rd_en;
-  logic [I2S_DWIDTH*2-1:0] fifo_rd_data;
-  logic                    fifo_empty;
-  logic                    fifo_aempty;
-  logic                    fifo_rd_valid;
-  
-  logic [ADDR_WIDTH:0]     fifo_wr_count;
-  logic [ADDR_WIDTH:0]     fifo_rd_count;
-  
-  // Width conversion signals
-  logic                    conv_valid;
-  logic [I2S_DWIDTH*2-1:0] conv_data;
-  logic                    conv_ready;
-  
-  // Underrun detection
-  logic                    underrun_flag;
-  logic                    i2s_ready_sync;
+  logic [AXI_KWIDTH-1:0] axis_tkeep_norm;
+  assign axis_tkeep_norm = i_axis_tlast ? i_axis_tkeep : {AXI_KWIDTH{1'b1}};
 
 //------------------------------------------------------------------------------
-// Width Conversion (AXI-Stream to I2S samples)
+// axis_buffer: gearbox + dual-clock FIFO + skid buffer
+// Output is 32-bit individual samples (not stereo pairs).
 //------------------------------------------------------------------------------
 
-generate
-  if (AXI_DWIDTH == I2S_DWIDTH*2) begin: gen_no_conv
-    // Direct connection when AXI width matches doubled I2S width
-    assign conv_valid = i_axis_tvalid;
-    // Handle mono/stereo mode
-    assign conv_data  = i_stereo_mode ? i_axis_tdata : 
-                       {i_axis_tdata[I2S_DWIDTH-1:0], i_axis_tdata[I2S_DWIDTH-1:0]}; // Duplicate mono sample
-    assign o_axis_tready = conv_ready;
-    
-  end else if (AXI_DWIDTH > I2S_DWIDTH*2) begin: gen_downsize
-    // Downsize from wider AXI - extract samples based on mode
-    localparam RATIO_STEREO = AXI_DWIDTH / (I2S_DWIDTH*2);
-    localparam RATIO_MONO = AXI_DWIDTH / I2S_DWIDTH;
-    localparam CNT_WIDTH = $clog2(RATIO_MONO); // Use larger ratio for counter
-    
-    logic [CNT_WIDTH-1:0]  sample_cnt;
-    logic [AXI_DWIDTH-1:0] data_reg;
-    logic                  data_valid;
-    logic [3:0]            effective_ratio;
-    logic [5:0]            shift_amount;
-    
-    assign effective_ratio = i_stereo_mode ? RATIO_STEREO : RATIO_MONO;
-    assign shift_amount = i_stereo_mode ? (I2S_DWIDTH*2) : I2S_DWIDTH;
-    
-    always_ff @(posedge i_axi_clk) begin
-      if (i_axi_rst) begin
-        sample_cnt <= '0;
-        data_reg   <= '0;
-        data_valid <= 1'b0;
-      end else begin
-        if (i_axis_tvalid && o_axis_tready) begin
-          data_reg   <= i_axis_tdata;
-          data_valid <= 1'b1;
-          sample_cnt <= '0;
-        end else if (conv_valid && conv_ready) begin
-          data_reg   <= data_reg >> shift_amount;
-          sample_cnt <= sample_cnt + 1'b1;
-          if (sample_cnt == (effective_ratio - 1)) begin
-            data_valid <= 1'b0;
-          end
-        end
-      end
-    end
-    
-    assign conv_valid = data_valid;
-    // Handle mono/stereo mode in output
-    assign conv_data = i_stereo_mode ? data_reg[I2S_DWIDTH*2-1:0] :
-                      {data_reg[I2S_DWIDTH-1:0], data_reg[I2S_DWIDTH-1:0]}; // Duplicate mono
-    assign o_axis_tready = !data_valid || (conv_ready && (sample_cnt == (effective_ratio - 1)));
-    
-  end else begin: gen_upsize
-    // Upsize from narrower AXI - accumulate based on mode
-    localparam RATIO_STEREO = (I2S_DWIDTH*2) / AXI_DWIDTH;
-    localparam RATIO_MONO = I2S_DWIDTH / AXI_DWIDTH;
-    localparam CNT_WIDTH = $clog2(RATIO_STEREO); // Use larger ratio for counter
-    
-    logic [CNT_WIDTH-1:0]  sample_cnt;
-    logic [I2S_DWIDTH*2-1:0] data_reg;
-    logic                  data_valid;
-    logic [3:0]            effective_ratio;
-    
-    assign effective_ratio = i_stereo_mode ? RATIO_STEREO : RATIO_MONO;
-    
-    always_ff @(posedge i_axi_clk) begin
-      if (i_axi_rst) begin
-        sample_cnt <= '0;
-        data_reg   <= '0;
-        data_valid <= 1'b0;
-      end else begin
-        if (i_axis_tvalid && o_axis_tready) begin
-          data_reg <= {data_reg[I2S_DWIDTH*2-AXI_DWIDTH-1:0], i_axis_tdata};
-          sample_cnt <= sample_cnt + 1'b1;
-          if (sample_cnt == (effective_ratio - 1)) begin
-            data_valid <= 1'b1;
-            sample_cnt <= '0;
-          end
-        end else if (conv_valid && conv_ready) begin
-          data_valid <= 1'b0;
-        end
-      end
-    end
-    
-    assign conv_valid = data_valid;
-    // Handle mono/stereo mode in output
-    assign conv_data = i_stereo_mode ? data_reg :
-                      {data_reg[I2S_DWIDTH-1:0], data_reg[I2S_DWIDTH-1:0]}; // Duplicate mono
-    assign o_axis_tready = !data_valid;
-    
-  end
-endgenerate
+  logic                          buf_tx_tvalid;
+  logic [MAX_SAMPLE_BITS-1:0]    buf_tx_tdata;
+  logic                          buf_tx_tlast;
+  logic                          buf_tx_tready;
+  logic                          buf_fifo_empty;
 
-//------------------------------------------------------------------------------
-// Dual-Clock FIFO Instance
-//------------------------------------------------------------------------------
+  axis_buffer #(
+    .IN_DWIDTH          ( AXI_DWIDTH          ),
+    .OUT_DWIDTH         ( MAX_SAMPLE_BITS     ),
+    .BUF_DEPTH          ( FIFO_DEPTH          ),
+    .DUAL_CLOCK         ( 1                   ),
+    .WAIT2SEND          ( 0                   ),
+    .LATENCY_CNT        ( 0                   ),
+    .OUTPUT_SKID        ( 1                   ),
+    .ALMOST_FULL_DEPTH  ( AFULL_THRESH        ),
+    .ALMOST_EMPTY_DEPTH ( AEMPTY_THRESH       ),
+    .W_USER             ( 1                   )
+  ) u_axis_buffer (
+    .in_clk             ( i_axi_clk           ),
+    .in_rst             ( i_axi_rst           ),
+    .out_clk            ( i_ref_clk           ),
+    .out_rst            ( i_i2s_rst           ),
 
-  dc_fifo_stub #(
-    .DATA_WIDTH   ( I2S_DWIDTH*2   ),
-    .FIFO_DEPTH   ( FIFO_DEPTH     ),
-    .ALMOST_FULL  ( AFULL_THRESH   ),
-    .ALMOST_EMPTY ( AEMPTY_THRESH  ),
-    .MEM_STYLE    ( "BLOCK"        )
-  ) u_dc_fifo (
-    .wrrst        ( i_axi_rst      ),
-    .rdrst        ( i_i2s_rst      ),
-    // Write side (AXI clock domain)
-    .wrclk        ( i_axi_clk      ),
-    .wren         ( fifo_wr_en     ),
-    .wrdin        ( fifo_wr_data   ),
-    .wrcount      ( fifo_wr_count  ),
-    .full         ( fifo_full      ),
-    .afull        ( fifo_afull     ),
-    .over         (                ), // Unconnected
-    
-    // Read side (Reference clock domain with BCLK enable)
-    .rdclk        ( i_ref_clk      ),
-    .rden         ( fifo_rd_en     ),
-    .rddout       ( fifo_rd_data   ),
-    .rdval        ( fifo_rd_valid  ),
-    .rdcount      ( fifo_rd_count  ),
-    .empty        ( fifo_empty     ),
-    .aempty       ( fifo_aempty    ),
-    .under        (                )  // Unconnected
+    .i_axis_rx_tvalid   ( i_axis_tvalid       ),
+    .i_axis_rx_tdata    ( i_axis_tdata        ),
+    .i_axis_rx_tlast    ( i_axis_tlast        ),
+    .i_axis_rx_tuser    ( 1'b0                ),
+    .i_axis_rx_tkeep    ( axis_tkeep_norm     ),
+    .o_axis_rx_tready   ( o_axis_tready       ),
+
+    .o_fifo_aempty      (                     ),
+    .o_fifo_afull       (                     ),
+    .o_fifo_empty       ( buf_fifo_empty      ),
+    .o_fifo_full        (                     ),
+
+    .o_axis_tx_tvalid   ( buf_tx_tvalid       ),
+    .o_axis_tx_tdata    ( buf_tx_tdata        ),
+    .o_axis_tx_tlast    ( buf_tx_tlast        ),
+    .o_axis_tx_tuser    (                     ),
+    .o_axis_tx_tkeep    (                     ),
+    .i_axis_tx_tready   ( buf_tx_tready       )
   );
 
 //------------------------------------------------------------------------------
-// FIFO Write Interface
+// Stereo pairing / mono pass-through
+//
+// Stereo: latch first pop as L, second pop as R, then present pair.
+// Mono:   each pop is a complete sample (L), R=0.
 //------------------------------------------------------------------------------
 
-  assign fifo_wr_en   = conv_valid && conv_ready;
-  assign fifo_wr_data = conv_data;
-  assign conv_ready   = !fifo_full;
+  logic                          pair_phase;
+  logic [MAX_SAMPLE_BITS-1:0]    latched_l;
 
-//------------------------------------------------------------------------------
-// FIFO Read Interface
-//------------------------------------------------------------------------------
+  // Pop control: only advance the FIFO when the serdes has consumed the
+  // current sample. In stereo, the L-phase pop is unconditional (latching
+  // the L word while waiting for R); the R-phase pop waits for i_i2s_ready.
+  assign buf_tx_tready = buf_tx_tvalid && i_bclk_negedge &&
+                         (i_channel_mode ? i_i2s_ready
+                                         : (!pair_phase || i_i2s_ready));
 
-  logic [I2S_DWIDTH-1:0]   i2s_sample_l;    
-  logic [I2S_DWIDTH-1:0]   i2s_sample_r;
-  logic i2s_valid;
+  logic [MAX_SAMPLE_BITS-1:0] i2s_sample_l;
+  logic [MAX_SAMPLE_BITS-1:0] i2s_sample_r;
+  logic                       i2s_valid;
+  logic                       i2s_last;
+  logic                       i2s_data_avail;
 
   always_ff @(posedge i_ref_clk) begin
     if (i_i2s_rst) begin
-      i2s_sample_l <= 'b0;
-      i2s_sample_r <= 'b0;
-      i2s_valid    <= 'b0;
-    end
-    else if (i_bclk_negedge) begin
-      i2s_sample_r <= fifo_rd_data[I2S_DWIDTH-1:0];
-      i2s_sample_l <= fifo_rd_data[I2S_DWIDTH*2-1:I2S_DWIDTH];
-      i2s_valid    <= fifo_rd_en;
+      i2s_sample_l   <= '0;
+      i2s_sample_r   <= '0;
+      i2s_valid      <= 1'b0;
+      i2s_last       <= 1'b0;
+      i2s_data_avail <= 1'b0;
+      pair_phase     <= 1'b0;
+      latched_l      <= '0;
+    end else if (i_bclk_negedge) begin
+      if (i_channel_mode) begin
+        // Mono: present current buffer head directly; FIFO pops on i_i2s_ready
+        i2s_sample_l   <= buf_tx_tdata;
+        i2s_sample_r   <= '0;
+        i2s_valid      <= buf_tx_tvalid;
+        i2s_last       <= buf_tx_tlast && buf_tx_tvalid && buf_fifo_empty;
+        i2s_data_avail <= buf_tx_tvalid;
+      end else begin
+        // Stereo: pair consecutive L, R words
+        i2s_valid <= 1'b0;
+        if (buf_tx_tvalid) begin
+          if (!pair_phase) begin
+            latched_l  <= buf_tx_tdata;
+            pair_phase <= 1'b1;
+          end else if (i_i2s_ready) begin
+            i2s_sample_l <= latched_l;
+            i2s_sample_r <= buf_tx_tdata;
+            i2s_valid    <= 1'b1;
+            i2s_last     <= buf_tx_tlast && buf_fifo_empty;
+            pair_phase   <= 1'b0;
+          end
+        end
+        i2s_data_avail <= buf_tx_tvalid && pair_phase;
+      end
     end
   end
 
-  assign fifo_rd_en   = !fifo_empty && i_i2s_ready && i_bclk_negedge;
-  // assign o_i2s_valid  = fifo_rd_valid;
-  // assign o_i2s_sample_r = fifo_rd_data[I2S_DWIDTH-1:0];
-  // assign o_i2s_sample_l = fifo_rd_data[I2S_DWIDTH*2-1:I2S_DWIDTH];
-  assign o_i2s_valid    = i2s_valid;
-  assign o_i2s_sample_r = i2s_sample_r;
-  assign o_i2s_sample_l = i2s_sample_l;
+  assign o_i2s_valid      = i2s_valid;
+  assign o_i2s_last       = i2s_last;
+  assign o_i2s_data_avail = i2s_data_avail;
+  assign o_i2s_sample_l   = i2s_sample_l;
+  assign o_i2s_sample_r   = i2s_sample_r;
 
 //------------------------------------------------------------------------------
 // Underrun Detection
 //------------------------------------------------------------------------------
 
-  // Synchronize I2S ready to AXI clock domain for underrun detection
-  data_sync #(
-    .DATA_WIDTH  ( 1           ),
-    .SYNC_DEPTH  ( 2           )
-  ) u_ready_sync (
-    .clk         ( i_axi_clk   ),
-    .rst_n       ( !i_axi_rst  ),
-    .sync_in     ( i_i2s_ready ),
-    .sync_out    ( i2s_ready_sync )
-  );
+  logic underrun_flag;
 
-  // Detect underrun condition
   always_ff @(posedge i_ref_clk) begin
     if (i_i2s_rst) begin
       underrun_flag <= 1'b0;
     end else begin
-      if (i_i2s_ready && fifo_empty) begin
+      if (i_i2s_ready && !buf_tx_tvalid)
         underrun_flag <= 1'b1;
-      end
-      // Clear underrun flag when FIFO has data again
-      if (!fifo_empty) begin
+      if (buf_tx_tvalid)
         underrun_flag <= 1'b0;
-      end
     end
   end
 
-//------------------------------------------------------------------------------
-// Status Output Assignments
-//------------------------------------------------------------------------------
+  assign o_underrun = underrun_flag;
 
-  assign o_fifo_full   = fifo_full;
-  assign o_fifo_empty  = fifo_empty;
-  assign o_fifo_afull  = fifo_afull;
-  assign o_fifo_aempty = fifo_aempty;
-  assign o_fifo_count  = fifo_rd_count; // Use read side count for I2S domain
-  assign o_underrun    = underrun_flag;
-
-endmodule 
+endmodule

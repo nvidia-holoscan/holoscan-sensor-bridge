@@ -69,7 +69,6 @@ assign sys_apb_m2s = 0;
 typedef enum logic [2:0] {IDLE, SEQ_START, SEQ_BYTES, SEQ_WAIT, SEQ_DONE} states;
 states state;
 
-logic                           reg_err;
 logic [3:0]                     reg_seq;
 logic [$clog2(FIVE_MS_CNT)-1:0] wait_cntr;
 logic [7:0]                     byte_cntr;

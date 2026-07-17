@@ -62,7 +62,7 @@ package HOLOLINK_pkg;
 //-----------------------------------------------------
 
   `define DATAPATH_WIDTH  64                 // Sensor interface data width. This should be set to MAX width between SIF RX and TX widths
-                                             // Valid values: 8, 16, 64, 128, 512, 1024
+                                             // Valid values: 8, 16, 32, 64, 128, 512
   `define DATAKEEP_WIDTH  `DATAPATH_WIDTH/8  // Sensor interface data keep width
   `define DATAUSER_WIDTH  2                  // Sensor interface data user width
 
@@ -70,7 +70,7 @@ package HOLOLINK_pkg;
 // Sensor RX IF
 //-----------------------------------------------------
 
-  `define SENSOR_RX_IF_INST  2               // Number of Sensor RX Interface. Valid values: undefined, 1 - 32
+  `define SENSOR_RX_IF_INST  3               // Number of Sensor RX Interface. Valid values: undefined, 1 - 32
   //----------------------------------------------------------------------------------
   //If no Sensor RX Interfaces are used, then comment out "`define SENSOR_RX_IF_INST" 
   //This will remove Sensor RX IF I/Os from HOLOLINK_top module.
@@ -80,7 +80,7 @@ package HOLOLINK_pkg;
   `ifdef SENSOR_RX_IF_INST
     //`define SIF_RX_DATA_GEN             // If defined, Sensor RX Data Generator is instantiated. This can be used for bring-up. 
 
-    localparam integer  SIF_RX_WIDTH        [`SENSOR_RX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH}; // Define width for each interface. 
+    localparam integer  SIF_RX_WIDTH        [`SENSOR_RX_IF_INST-1:0] = {32   , 64   , 64   }; // Define width for each interface. 
     //--------------------------------------------------------------------------------
     // Sensor RX Packetizer Parameters
     // If RX_PACKETIZER_EN is set to 0, then Packetizer is disabled for that Sensor RX interface. 
@@ -88,11 +88,11 @@ package HOLOLINK_pkg;
     //                    {Sensor[1], Sensor[0]}
     // RX_PACKETIZER_EN = {        1,         1}
     //--------------------------------------------------------------------------------
-    localparam integer  SIF_RX_PACKETIZER_EN   [`SENSOR_RX_IF_INST-1:0] = '{default:1};               
-    localparam integer  SIF_RX_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {2   , 2   };
-    localparam integer  SIF_RX_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {2   , 2   };
-    localparam integer  SIF_RX_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {64  , 64  };
-    localparam integer  SIF_RX_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {3   , 3   };
+    localparam integer  SIF_RX_PACKETIZER_EN   [`SENSOR_RX_IF_INST-1:0] = {0   , 1   , 1   };               
+    localparam integer  SIF_RX_VP_COUNT        [`SENSOR_RX_IF_INST-1:0] = {2   , 2   , 2   };
+    localparam integer  SIF_RX_SORT_RESOLUTION [`SENSOR_RX_IF_INST-1:0] = {1   , 2   , 2   };
+    localparam integer  SIF_RX_VP_SIZE         [`SENSOR_RX_IF_INST-1:0] = {32  , 64  , 64  };
+    localparam integer  SIF_RX_NUM_CYCLES      [`SENSOR_RX_IF_INST-1:0] = {1   , 3   , 3   };
   `endif
 
 //-----------------------------------------------------
@@ -110,7 +110,7 @@ package HOLOLINK_pkg;
 // Host IF
 //-----------------------------------------------------
 
-  `define HOST_WIDTH      64                 // Host interface data width.                     Valid values: 8, 64, 128, 512
+  `define HOST_WIDTH      64                 // Host interface data width.                     Valid values: 8, 16, 32, 64, 128, 256, 512
   `define HOSTKEEP_WIDTH  `HOST_WIDTH/8      // Host interface data keep width
   `define HOSTUSER_WIDTH  1                  // Host interface data user width
   `define HOST_IF_INST    2                  // Host interface instantiation number.           Valid values: 1 - 32
@@ -122,6 +122,7 @@ package HOLOLINK_pkg;
 
   `define SPI_INST  2   // SPI interface instantiation number. Valid values: undefined, 1 - 8
   `define I2C_INST  4   // I2C interface instantiation number. Valid values: undefined, 1 - 8
+  `define UART_INST 1
   `define GPIO_INST 31  // INOUT GPIO instantiation number.    Valid values: 1 - 255
 
   localparam [`GPIO_INST-1:0] GPIO_RESET_VALUE ='0; 
@@ -138,7 +139,7 @@ package HOLOLINK_pkg;
 // System Initialization
 //
 // Initialization for the Host Interface registers so communication can be
-// established between the FPGA and the Host
+// established between the Device and the Host
 //------------------------------------------------------------------------------
 
   `define N_INIT_REG 22

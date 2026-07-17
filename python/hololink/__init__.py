@@ -20,7 +20,6 @@
 from . import hololink_core  # noqa: F401
 from . import (
     emulation,
-    hsb_controller,
     operators,
     renesas_bajoran_lite_ts1,
     renesas_bajoran_lite_ts2,
@@ -225,7 +224,6 @@ __all__ = [
     "csi",
     "gettid",
     "get_hsb_log_level",
-    "hsb_controller",
     "hsb_log_trace",
     "hsb_log_debug",
     "hsb_log_info",

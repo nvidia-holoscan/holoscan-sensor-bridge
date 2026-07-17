@@ -340,6 +340,7 @@ void ImageProcessorOp::stop()
 
     cuda_function_launcher_.reset();
     histogram_memory_.reset();
+    white_balance_gains_memory_.reset();
 
     CudaCheck(cuDevicePrimaryCtxRelease(cuda_device_));
     cuda_context_ = nullptr;
@@ -394,7 +395,7 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
     const cudaStream_t cuda_stream = input.receive_cuda_stream();
 
     // apply optical black if set
-    if (optical_black_ != 0.f) {
+    if (optical_black_ != 0) {
         cuda_function_launcher_->launch(
             "applyBlackLevel",
             { width, height, 1 },

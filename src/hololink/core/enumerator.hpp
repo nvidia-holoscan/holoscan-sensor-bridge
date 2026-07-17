@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -44,6 +44,7 @@ const std::string HOLOLINK_NANO_UUID = "d0f015e0-93b6-4473-b7d1-7dbd01cbeab5";
 const std::string HOLOLINK_100G_UUID = "7a377bf7-76cb-4756-a4c5-7dddaed8354b";
 const std::string MICROCHIP_POLARFIRE_UUID = "ed6a9292-debf-40ac-b603-a24e025309c1";
 const std::string LEOPARD_EAGLE_UUID = "f1627640-b4dc-48af-a360-c55b09b3d230";
+const std::string TT_DA326_UUID = "9957a9ac-36b5-4518-83ec-5d514aecb750";
 
 /**
  * Strategy that adjusts enumeration data based on FPGA UUID.
@@ -101,6 +102,7 @@ public:
         ~ReactorEnumerator();
 
         void start();
+        void stop();
         std::shared_ptr<CallbackHandle> register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback);
         void unregister_ip(const std::shared_ptr<CallbackHandle>& handle);
 
@@ -143,9 +145,10 @@ public:
      * @param channel_ip
      * @param timeout
      * @return Metadata&
+     * @throw std::runtime_error if the channel is not found within the timeout
      */
     static Metadata find_channel(const std::string& channel_ip,
-        const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(60.f));
+        const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(10.f));
 
     /**
      * @brief Register a callback for a specific IP address
@@ -200,7 +203,6 @@ public:
 
     static std::tuple<Metadata, std::vector<uint8_t>> handle_bootp_fd(int fd);
 
-protected:
     static void configure_default_enumeration_strategies();
 
 private:

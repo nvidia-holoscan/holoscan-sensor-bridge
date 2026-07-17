@@ -18,6 +18,7 @@ module ptp_ingress
 #(
   parameter  AXI_DWIDTH        = 64,
   parameter  KEEP_WIDTH        = AXI_DWIDTH/8,
+  parameter  W_USER            = 17,
   parameter  HIF_CLK_FREQ      = 156250000,
   parameter  PTP_CLK_FREQ      = 100000000,
   parameter  PTP_INGRESS_WIDTH = 64*8,
@@ -32,10 +33,11 @@ module ptp_ingress
   input  [AXI_DWIDTH-1:0]         i_axis_tdata,
   input  [KEEP_WIDTH-1:0]         i_axis_tkeep,
   input                           i_axis_tvalid,
-  input                           i_axis_tuser,
+  input  [ W_USER-1:0]            i_axis_tuser,
   input                           i_axis_tlast,
   output                          o_axis_tready,
 
+  output [ W_USER-1:0]            o_inp_axis_tuser,
   output [                   7:0] o_ptp_ingress_data   [PTP_INGRESS_WIDTH/8],
   output                          o_ptp_ingress_vld
 );
@@ -49,28 +51,28 @@ localparam BUF_DEPTH = PTP_CLK_FREQ >  HIF_CLK_FREQ ? 16 :
 logic [        AXI_DWIDTH-1:0] inp_axis_tdata;
 logic [    (AXI_DWIDTH/8)-1:0] inp_axis_tkeep;
 logic                          inp_axis_tvalid;
-logic                          inp_axis_tuser;
+logic [            W_USER-1:0] inp_axis_tuser;
 logic                          inp_axis_tlast;
 logic                          inp_axis_tready;
 
 logic [        AXI_DWIDTH-1:0] cdc_axis_tdata;
 logic [    (AXI_DWIDTH/8)-1:0] cdc_axis_tkeep;
 logic                          cdc_axis_tvalid;
-logic                          cdc_axis_tuser;
+logic [            W_USER-1:0] cdc_axis_tuser;
 logic                          cdc_axis_tlast;
 logic                          cdc_axis_tready;
 
 logic [        AXI_DWIDTH-1:0] drp_axis_tdata;
 logic [    (AXI_DWIDTH/8)-1:0] drp_axis_tkeep;
 logic                          drp_axis_tvalid;
-logic                          drp_axis_tuser;
+logic [            W_USER-1:0] drp_axis_tuser;
 logic                          drp_axis_tlast;
 logic                          drp_axis_tready;
 
 logic [        AXI_DWIDTH-1:0] ptp_axis_reg_tdata;
 logic [    (AXI_DWIDTH/8)-1:0] ptp_axis_reg_tkeep;
 logic                          ptp_axis_reg_tvalid;
-logic                          ptp_axis_reg_tuser;
+logic [            W_USER-1:0] ptp_axis_reg_tuser;
 logic                          ptp_axis_reg_tlast;
 logic                          ptp_axis_reg_tready;
 
@@ -89,7 +91,8 @@ assign inp_axis_tlast   = i_axis_tlast;
 
 axis_drop #(
   .DROP_WIDTH         ( 14*8                 ),
-  .DWIDTH             ( AXI_DWIDTH           )
+  .DWIDTH             ( AXI_DWIDTH           ),
+  .W_USER             ( W_USER               )
 ) ptp_axis_drop (
   .clk                ( i_hif_clk            ),
   .rst                ( i_hif_rst            ),
@@ -112,7 +115,7 @@ axis_buffer # (
   .OUT_DWIDTH ( AXI_DWIDTH     ),
   .DUAL_CLOCK ( 1              ),
   .BUF_DEPTH  ( BUF_DEPTH      ),
-  .W_USER     ( 1              )
+  .W_USER     ( W_USER         )
 ) u_axis_buffer (
   .in_clk            ( i_hif_clk             ),
   .in_rst            ( i_hif_rst             ),
@@ -137,7 +140,7 @@ axis_buffer # (
 );
 
 axis_reg #(
-  .DWIDTH                       ( AXI_DWIDTH+KEEP_WIDTH+1+1                                                        ),
+  .DWIDTH                       ( AXI_DWIDTH+KEEP_WIDTH+1+W_USER                                                   ),
   .SKID                         ( 1                                                                                )
 ) ptp_axis_reg (
   .clk                          ( i_pclk                                                                           ),
@@ -159,7 +162,7 @@ axis_to_vec #(
   .i_axis_rx_tvalid ( ptp_axis_reg_tvalid  ),
   .i_axis_rx_tdata  ( ptp_axis_reg_tdata   ),
   .i_axis_rx_tlast  ( ptp_axis_reg_tlast   ),
-  .i_axis_rx_tuser  ( ptp_axis_reg_tuser   ),
+  .i_axis_rx_tuser  (                      ),
   .i_axis_rx_tkeep  ( ptp_axis_reg_tkeep   ),
   .o_axis_rx_tready ( ptp_axis_reg_tready  ),
   .i_done           ( ptp_done             ),
@@ -179,6 +182,21 @@ assign o_ptp_ingress_data = ptp_ingress_byte;
 assign o_ptp_ingress_vld  = ptp_ingress_vld;
 assign ptp_done   = 1'b1;
 
+logic [ W_USER-1:0] axis_tuser;
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    axis_tuser <= 'd0;
+  end
+  else begin
+    if (ptp_ingress_vld) begin
+      axis_tuser <= ptp_axis_reg_tuser;
+    end
+  end
+end
+
+assign o_inp_axis_tuser = axis_tuser;
+
 `ifdef ASSERT_ON
   axis_checker #(
   .STBL_CHECK  (1),
@@ -186,7 +204,7 @@ assign ptp_done   = 1'b1;
   .MIN_PKTL_CHK (0),
   .MAX_PKTL_CHK (0),
   .AXI_TDATA   (AXI_DWIDTH),
-  .AXI_TUSER   (1),
+  .AXI_TUSER   (W_USER),
 `ifdef SIMULATION
     .SIMULATION(1),
 `endif

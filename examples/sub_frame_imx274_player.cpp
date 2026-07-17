@@ -185,7 +185,7 @@ int main(int argc, char** argv)
     // this is the case for the modes supported by the IMX274 sensor.
     uint32_t sub_frame_rows = 216;
     std::string configuration;
-    std::string hololink_ip = "192.168.0.2";
+    std::string hololink_ip = hololink::env_hololink_ip(0, "192.168.0.2");
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
     uint32_t ibv_port = 1;
     int32_t expander_configuration = 0;
