@@ -29,8 +29,35 @@
 #include <unordered_map>
 #include <vector>
 
+#include "address_map.hpp"
 #include "address_memory.hpp"
 #include "hsb_config.hpp"
+#include "net.hpp"
+
+// Platform policy for the control-plane callback maps. Linux uses the std::vector-backed
+// dynamic AddressMap (capacity 0 selects that specialization); STM32 uses fixed-capacity
+// arrays sized to the per-build CP_*_HANDLERS_MAX_NUM constants. These defaults match
+// the Linux build; STM32 overrides them via CMake compile definitions in src/CMakeLists.txt
+// so the same struct definition reaches every translation unit with the right sizes.
+#ifndef HSB_CP_WRITE_MAP_SIZE
+#define HSB_CP_WRITE_MAP_SIZE 0
+#endif
+#ifndef HSB_CP_READ_MAP_SIZE
+#define HSB_CP_READ_MAP_SIZE 0
+#endif
+
+// Target-portable millisecond sleep. Declared with C linkage so the STM32 build's
+// tim.c can supply the implementation directly (it forwards to HAL_Delay). The
+// linux build supplies it as a free function in hsb_emulator.cpp wrapping usleep,
+// and the TEMPLATE port has a stub in HSBTemplate.cpp pending a real implementation.
+// Returns 0 on success.
+#ifdef __cplusplus
+extern "C" {
+#endif
+int msleep(unsigned milliseconds);
+#ifdef __cplusplus
+}
+#endif
 
 namespace hololink::emulation {
 
@@ -61,10 +88,10 @@ using UniqueDel = std::unique_ptr<T, std::function<void(T*)>>;
 // forward declarations
 class DataPlane;
 class I2CPeripheral;
+class I2CController;
 struct I2CControllerCtxt;
 struct ControlMessage;
 class HSBEmulator;
-struct HSBEmulatorCtxt;
 
 /**
  * @brief callback function type for control plane callback
@@ -75,9 +102,87 @@ struct HSBEmulatorCtxt;
  */
 using ControlPlaneCallback_f = std::function<int(void* ctxt, struct AddressValuePair* addr_val, int count)>;
 
+struct ControlPlaneCallback {
+    ControlPlaneCallback_f callback;
+    void* ctxt;
+};
+
+struct AsyncEventCtxt {
+    // these are the registers themselves, held in an array for simpler access
+    uint32_t data[(CTRL_EVT_SW_EVENT - CTRL_EVENT) / REGISTER_SIZE];
+    uint32_t status;
+};
+
+// Size of the byte-addressable I2C data window the host can read/write via the control
+// plane. Referenced by HSBEmulator (for callback registration ranges), by the common
+// I2CControllerCtxt (sizes the `data` array), and by i2c_transaction (validates the
+// host-supplied transfer length). Defined once here so platform headers don't have to
+// keep their own duplicate `#define`.
+#define I2C_DATA_BUFFER_SIZE 0x100u
+
 /**
- * @brief class that manages I2C transaction events from the host
- * runs a separate thread for execution but only one event may ever be executed at a time for each controller
+ * @brief Common, target-invariant per-I2CController context.
+ *
+ * Each platform defines its own extension struct (LinuxI2CControllerCtxt,
+ * STM32I2CControllerCtxt) with `struct I2CControllerCtxt base` as its first member.
+ * Standard-layout C++ guarantees `&ext->base == reinterpret_cast<I2CControllerCtxt*>(ext)`,
+ * so the I2CController class can hold an `I2CControllerCtxt*` without knowing the platform
+ * extension, and platform code downcasts back via `reinterpret_cast<LinuxI2CControllerCtxt*>`
+ * (or STM32 equivalent) to reach the platform extras.
+ *
+ * `running` is a bare bool: I2C transactions execute synchronously inside the host
+ * control-plane callback (i2c_configure_cb -> i2c_transaction), there is no worker
+ * thread to coordinate. The Linux extension still carries an `i2c_mutex` because
+ * attach_i2c_peripheral() can be called from the application thread while the
+ * control-plane callback is running on its own thread; STM32 is single-threaded and
+ * needs no mutex.
+ */
+struct I2CControllerCtxt {
+    I2CController* i2c_controller { nullptr };
+    uint32_t registers[(I2C_REG_CLK_CNT - I2C_REG_CONTROL) / REGISTER_SIZE + 1];
+    uint32_t data[I2C_DATA_BUFFER_SIZE / REGISTER_SIZE];
+    uint32_t control_address { 0 };
+    uint32_t data_address { 0 };
+    uint32_t status { 0 };
+    bool running { false };
+};
+
+/**
+ * @brief Common, target-invariant per-HSBEmulator context.
+ *
+ * Each platform defines its own extension struct (LinuxHSBEmulatorCtxt,
+ * STM32HSBEmulatorCtxt) with `struct HSBEmulatorCtxt base` as its first member.
+ * Standard-layout C++ guarantees `&ext->base == reinterpret_cast<HSBEmulatorCtxt*>(ext)`,
+ * so HSBEmulator can hold a `HSBEmulatorCtxt*` without knowing the platform extension,
+ * and platform code can downcast back via `reinterpret_cast<LinuxHSBEmulatorCtxt*>`
+ * (or STM32 equivalent) to reach the platform extras.
+ *
+ * Synchronization: `running` is a plain bool. On platforms where HSBEmulator::start/
+ * stop/is_running may be called from concurrent threads (Linux), the platform extension
+ * supplies a mutex that the corresponding platform implementations acquire around every
+ * read/write of `running`. STM32 is single-threaded (cooperative loop in main()) so no
+ * mutex is needed there.
+ *
+ * AddressMap capacities are macro-driven (HSB_CP_WRITE_MAP_SIZE, HSB_CP_READ_MAP_SIZE)
+ * so the same struct definition compiles into a vector-backed map on Linux and a fixed-
+ * capacity map on STM32. Defaults at the top of this header match Linux; the STM32 build
+ * overrides via CMake compile definitions.
+ */
+struct HSBEmulatorCtxt {
+    HSBEmulator* hsb_emulator { nullptr };
+    RegisterMemory register_memory;
+    struct PTPConfig ptp_config;
+    struct AsyncEventCtxt async_event_ctxt;
+    uint32_t apb_ram_data[APB_RAM_DATA_SIZE / REGISTER_SIZE];
+    AddressMap<ControlPlaneCallback, HSB_CP_WRITE_MAP_SIZE> cp_write_map;
+    AddressMap<ControlPlaneCallback, HSB_CP_READ_MAP_SIZE> cp_read_map;
+    // True when HSBEmulator::start() has been called and the control plane is broadcasting.
+    // Bare bool; synchronize externally via the platform extension's running_mutex if needed.
+    bool running { false };
+};
+
+/**
+ * @brief class that manages virtual I2C peripherals from the host. This is mostly for the linux emulator where the use case is for virtual sensors
  * @note This should not be instantiated directly by user code. Use HSBEmulator::get_i2c() instead. The default and primary I2CController is at address hololink::I2C_CTRL.
  */
 class I2CController {
@@ -109,20 +214,17 @@ private:
     explicit I2CController(HSBEmulator& hsb_emulator, uint32_t controller_address);
 
     /**
-     * @brief start the I2C controller.
+     * @brief start the I2C controller. Initializes the underlying I2C hardware
+     * (STM32) or attached peripherals (Linux) and marks the controller running.
+     * No worker thread is launched: host-driven I2C transactions execute synchronously
+     * inside the i2c_configure_cb control-plane callback via the free-function
+     * i2c_transaction().
      */
     void start();
 
     /**
-     * @brief execute an I2C transaction.
-     *
-     * @param value The command register (bits 0-15) and peripheral address register (bits 16-22).
-     * @note This method is called by the HSBEmulator to schedule an I2C transaction. private as it should only be called by the HSBEmulator.
-     */
-    void execute(uint32_t value);
-
-    /**
-     * @brief stop the I2C controller.
+     * @brief stop the I2C controller. Stops attached peripherals (Linux) and marks
+     * the controller not running.
      */
     void stop();
 
@@ -132,15 +234,19 @@ private:
      */
     bool is_running();
 
+protected:
     /**
-     * @brief internal method that performs the actual i2c_transaction() call to the target peripheral
+     * @brief Initialize the platform-invariant fields of the already-allocated
+     * I2CControllerCtxt the subclass-shared ctxt_ points at. Wires control/data
+     * addresses, zeroes the register + data scratch, sets the back-pointer, and
+     * marks the controller stopped. Called by the platform-specific I2CController
+     * constructor right after it claims a ctxt slot.
+     *
+     * @param controller_address Base address of the I2C controller in the host
+     * register space. Matched against the address the host writes to trigger
+     * each I2C transaction.
      */
-    void i2c_execute();
-
-    /**
-     * @brief run the I2C controller thread.
-     */
-    void run();
+    void reset(uint32_t controller_address);
 
     UniqueDel<struct I2CControllerCtxt> ctxt_ = { nullptr };
 };
@@ -187,6 +293,17 @@ public:
      * @note It is safe to call this function multiple times
      */
     void stop();
+
+    /**
+     * @brief Reset the platform-invariant emulator state and (re-)register the control-plane
+     * callbacks that are identical on every target (HSB IP version, RESET_REG_CTRL, PTP, APB
+     * RAM, async events, I2C register block). Called from each platform's constructor after
+     * the ctxt_ and i2c_controller_ are wired up. Platform-specific callback registrations
+     * (GPIO/SPI on STM32; Linux peripheral attach) remain in the platform constructor.
+     *
+     * Future: a default reset callback is applied that will call this, but that callback can be overridden
+     */
+    void reset();
 
     /**
      * @brief Check if the emulator is running.
@@ -270,9 +387,8 @@ private:
     /**
      * @return The register map of the emulated fpga
      */
-    UniqueDel<AddressMemory>& get_memory() { return registers_; }
+    AddressMemory& get_memory();
 
-    UniqueDel<AddressMemory> registers_ = { nullptr }; // multiple devices may share this object using references
     UniqueDel<HSBEmulatorCtxt> ctxt_ = { nullptr };
 
     HSBConfiguration configuration_;

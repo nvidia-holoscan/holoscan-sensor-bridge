@@ -43,8 +43,8 @@
 #define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
 
 #define GPU_ROCE_MAX_RECV_INLINE_WQE 32
-#define DOCA_SEND_BLUE_FLAME 1
 #define DOCA_SIMULATE_RX_COMPUTE_TX 0
+#define DOCA_UNRELIABLE_BF 1
 
 enum gpu_roce_max_frame_size {
     GPU_ROCE_MAX_FRAME_SIZE_0B = 0,

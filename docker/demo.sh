@@ -52,6 +52,28 @@ done
 # done by Argus API and only ISP being used.
 # NOTE that we're currently testing with a value of 2 here.
 
+# PulseAudio: mount the host socket + cookie so ALSA device "pulse" works
+# inside the container (requires libasound2-plugins in hololink-demo).
+DEMO_PULSE_RUNDIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+DEMO_PULSE_NATIVE="${DEMO_PULSE_RUNDIR}/pulse/native"
+DEMO_XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-${HOME}/.config}"
+DEMO_PULSE_COOKIE_DIR="${DEMO_XDG_CONFIG_HOME}/pulse"
+DEMO_PULSE_DOCKER=""
+if [ -S "$DEMO_PULSE_NATIVE" ]; then
+    DEMO_ASOUND_CONF="${HERE}/asound.conf.pulse"
+    DEMO_PULSE_DOCKER="-v ${DEMO_PULSE_RUNDIR}/pulse:${DEMO_PULSE_RUNDIR}/pulse \
+        -e HOME=${HOME} \
+        -e XDG_RUNTIME_DIR=${DEMO_PULSE_RUNDIR} \
+        -e XDG_CONFIG_HOME=${DEMO_XDG_CONFIG_HOME} \
+        -e PULSE_SERVER=unix:${DEMO_PULSE_NATIVE}"
+    if [ -d "$DEMO_PULSE_COOKIE_DIR" ]; then
+        DEMO_PULSE_DOCKER="${DEMO_PULSE_DOCKER} -v ${DEMO_PULSE_COOKIE_DIR}:${DEMO_PULSE_COOKIE_DIR}"
+    fi
+    if [ -f "$DEMO_ASOUND_CONF" ]; then
+        DEMO_PULSE_DOCKER="${DEMO_PULSE_DOCKER} -v ${DEMO_ASOUND_CONF}:/etc/asound.conf:ro"
+    fi
+fi
+
 docker run \
     -it \
     --rm \
@@ -82,5 +104,6 @@ docker run \
     -e DISPLAY=$DISPLAY \
     -e enableRawReprocess=2 \
     -e rawReprocessModulePartName="A6V26" \
+    $DEMO_PULSE_DOCKER \
     hololink-demo:$VERSION \
-    $*
+    "$@"

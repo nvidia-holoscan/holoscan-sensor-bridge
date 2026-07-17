@@ -263,7 +263,7 @@ def analyze_latency(recorder_queue):
     def stats(name, values):
         if values:
             logging.info(
-                f"{name:<35} {min(values):>10.2f} {max(values):>10.2f} {sum(values)/len(values):>10.2f}"
+                f"{name:<35} {min(values):>10.2f} {max(values):>10.2f} {sum(values) / len(values):>10.2f}"
             )
 
     logging.info(f"\n{'Metric':<35} {'Min (ms)':>10} {'Max (ms)':>10} {'Avg (ms)':>10}")

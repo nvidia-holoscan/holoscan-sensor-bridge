@@ -15,6 +15,7 @@
 
 //This module will synchronize a one-cycle pulse in the source clock domain and create a one cycle pulse
 //in the destination clock domain.
+// If src_rst is active while dst_rst is not, the pulse will be lost.
 
 module pulse_sync (
   input logic             src_clk,

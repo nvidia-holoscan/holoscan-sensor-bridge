@@ -19,11 +19,10 @@
  
 #include "STM32/stm32_system.h"
 #include "STM32/tim.h"
+#include "board.h"
 #include <stdint.h>
 
-#include "core_cm7.h"
-
-#define N_TIMERS 6
+void Error_Handler(const char * str);
 
 int clock_gettime(__attribute__((unused)) clockid_t clock_id, struct timespec * tp) {
     if (!tp || clock_id != CLOCK_REALTIME) {
@@ -54,14 +53,12 @@ int tim_init(__attribute__((unused)) void * ctxt)
     return 0;
 }
 
-_Bool timer_initialized[N_TIMERS] = {0};
-_Bool timer_running[N_TIMERS] = {0};
-TIM_TypeDef * timer_map[N_TIMERS] = {TIM2, TIM3, TIM4, TIM5, TIM6, TIM7};
-IRQn_Type timer_irq[N_TIMERS] = {TIM2_IRQn, TIM3_IRQn, TIM4_IRQn, TIM5_IRQn, TIM6_DAC_IRQn, TIM7_IRQn};
+_Bool timer_initialized[STM32_CONF_TIMER_COUNT] = {0};
+_Bool timer_running[STM32_CONF_TIMER_COUNT] = {0};
 
 int get_timer_index(TIM_TypeDef* instance) {
-    for (int i = 0; i < N_TIMERS; i++) {
-        if (timer_map[i] == instance) {
+    for (int i = 0; i < STM32_CONF_TIMER_COUNT; i++) {
+        if (stm32_conf_timer_map[i] == instance) {
             return i;
         }
     }
@@ -81,12 +78,12 @@ int timer_init(TIM_HandleTypeDef* htim, uint32_t PreemptPriority, uint32_t SubPr
     HAL_TIM_Base_MspInit(htim);
     if (HAL_TIM_Base_Init(htim) != HAL_OK)
     {
-        Error_Handler();
+        Error_Handler(NULL);
     }
 
-    HAL_NVIC_SetPriority(timer_irq[index], PreemptPriority, SubPriority);
-    HAL_NVIC_EnableIRQ(timer_irq[index]);
-    
+    HAL_NVIC_SetPriority(stm32_conf_timer_irq[index], PreemptPriority, SubPriority);
+    HAL_NVIC_EnableIRQ(stm32_conf_timer_irq[index]);
+
     timer_initialized[index] = 1;
     return 0;
 }
@@ -133,7 +130,7 @@ int timer_deinit(TIM_HandleTypeDef* htim) {
     if (timer_stop(htim)) {
         return -3;
     }
-    HAL_NVIC_DisableIRQ(timer_irq[index]);
+    HAL_NVIC_DisableIRQ(stm32_conf_timer_irq[index]);
     HAL_TIM_Base_DeInit(htim);
     HAL_TIM_Base_MspDeInit(htim);
     timer_initialized[index] = 0;
@@ -146,28 +143,7 @@ void HAL_TIM_Base_MspInit(TIM_HandleTypeDef* tim_baseHandle) {
     if (index == -1) {
         return;
     }
-    switch (index) {
-        case 0:
-            __HAL_RCC_TIM2_CLK_ENABLE();
-            break;
-        case 1:
-            __HAL_RCC_TIM3_CLK_ENABLE();
-            break;
-        case 2:
-            __HAL_RCC_TIM4_CLK_ENABLE();
-            break;
-        case 3:
-            __HAL_RCC_TIM5_CLK_ENABLE();
-            break;
-        case 4:
-            __HAL_RCC_TIM6_CLK_ENABLE();
-            break;
-        case 5:
-            __HAL_RCC_TIM7_CLK_ENABLE();
-            break;
-        default:
-            return;
-    }
+    stm32_conf_timer_clock_enable(index);
 }
 
 // de-initialize the timer MSP
@@ -176,27 +152,15 @@ void HAL_TIM_Base_MspDeInit(TIM_HandleTypeDef* tim_baseHandle) {
     if (index == -1) {
         return;
     }
-    switch (index) {
-        case 0:
-            __HAL_RCC_TIM2_CLK_DISABLE();
-            break;
-        case 1:
-            __HAL_RCC_TIM3_CLK_DISABLE();
-            break;
-        case 2:
-            __HAL_RCC_TIM4_CLK_DISABLE();
-            break;
-        case 3:
-            __HAL_RCC_TIM5_CLK_DISABLE();
-            break;
-        case 4:
-            __HAL_RCC_TIM6_CLK_DISABLE();
-            break;
-        case 5:
-            __HAL_RCC_TIM7_CLK_DISABLE();
-            break;
-        default:
-            return;
-    }
+    stm32_conf_timer_clock_disable(index);
+}
+
+// Block the calling thread for `milliseconds` ms via the STM32 HAL SysTick-based
+// delay. Declared in hsb_emulator.hpp (extern "C") so C++ callers see it; also
+// in tim.h so peer C files in this directory can call it without pulling the
+// C++ header in.
+int msleep(unsigned milliseconds) {
+    HAL_Delay(milliseconds);
+    return 0;
 }
 

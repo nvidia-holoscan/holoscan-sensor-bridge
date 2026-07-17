@@ -19,6 +19,7 @@ See README.md for detailed information.
 #include "hsb_emulator.hpp"
 #include "net.hpp"
 #include "rocev2_data_plane.hpp"
+#include "utils.hpp"
 
 /*
 @brief Example sending gpio trigger status over RoCEv2 from MCU to host.
@@ -81,7 +82,7 @@ int main(void)
         if (get_send_flag()) {
             struct timespec current_time;
             if (clock_gettime(CLOCK_REALTIME, &current_time) != 0) {
-                Error_Handler();
+                Error_Handler(NULL);
             }
             data_plane.send((uint8_t*)&current_time, sizeof(current_time), DEFAULT_FRAME_METADATA); // pass frame metadata to ensure a full frame is written
         }

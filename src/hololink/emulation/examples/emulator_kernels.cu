@@ -131,6 +131,55 @@ extern "C" __global__ void bayer8p_to_T_R12_PK_ISP_kernel(uint8_t * dest, uint16
 }
 
 // CUDA kernel
+// pack 8-bit bayer pattern into 12-bit-per-pixel slots without rescaling (2 pixels per 3 bytes)
+// every 2 input bytes (px0, px1) -> 3 output bytes {px0, px1, 0x00}
+extern "C" __global__ void bayer8p_to_12p_kernel(uint8_t * dest, uint16_t line_bytes, uint8_t * src, uint16_t pixel_height, uint16_t pixel_width) {
+    int32_t ix = 2 * (blockIdx.x * blockDim.x + threadIdx.x);
+    int32_t iy = blockIdx.y * blockDim.y + threadIdx.y;
+
+    if (ix >= pixel_width || iy >= pixel_height) {
+        return;
+    }
+
+    int32_t src_offset = iy * pixel_width + ix;
+    int32_t dest_offset = iy * line_bytes + ix / 2 * 3;
+
+    dest[dest_offset + 0] = src[src_offset + 0];
+    dest[dest_offset + 1] = (ix + 1 < pixel_width) ? src[src_offset + 1] : 0;
+    dest[dest_offset + 2] = 0;
+}
+
+// CUDA kernel
+// generate 8-bit bayer pattern (RGGB)
+extern "C" __global__ void generate_bayerRG8p_kernel(uint8_t * data, uint16_t pixel_height, uint16_t pixel_width)
+{
+    int32_t row = blockIdx.y * blockDim.y + threadIdx.y;
+    int32_t col = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= pixel_height || col >= pixel_width) {
+        return;
+    }
+
+    // assign the green value as the row
+    // assign the red value as the column
+    // assign the blue value as the reverse column
+    
+    if (row & 0x01u) { // GB of RGGB pattern
+        if (col & 0x01u) { // blue
+            data[row * pixel_width + col] = bankers_round(1.0f *(pixel_width - col - 1) / pixel_width * MAX_8BIT_COLOR, MAX_8BIT_COLOR, 0);
+        } else { // green
+            data[row * pixel_width + col] = bankers_round((row - 1) * 1.0f / pixel_height * MAX_8BIT_COLOR, MAX_8BIT_COLOR, 0);
+        }
+    } else { // RG of RGGB pattern
+        if (col & 0x01u) { // green
+            data[row * pixel_width + col] = bankers_round(row * 1.0f / pixel_height * MAX_8BIT_COLOR, MAX_8BIT_COLOR, 0);
+        } else { // red
+            data[row * pixel_width + col] = bankers_round(col * 1.0f / pixel_width * MAX_8BIT_COLOR, MAX_8BIT_COLOR, 0);
+        }
+    }
+}
+
+
+// CUDA kernel
 // generate 8-bit bayer pattern (GBRG)
 extern "C" __global__ void generate_bayerGB8p_kernel(uint8_t * data, uint16_t pixel_height, uint16_t pixel_width)
 {

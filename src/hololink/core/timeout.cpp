@@ -86,9 +86,15 @@ Timeout::Timeout(const Timeout& source)
 
 bool Timeout::expired() const
 {
+    double remaining_s = 0.0;
+    return expired(remaining_s);
+}
+
+bool Timeout::expired(double& remaining_s) const
+{
     auto now = Clock::now();
-    bool expired = (now > deadline_);
-    if (expired) {
+    double time_to_deadline_s = std::chrono::duration_cast<std::chrono::duration<double>>(deadline_ - now).count();
+    if (time_to_deadline_s <= 0.0) {
         auto to_ms = [](auto duration) {
             return std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(duration).count();
         };
@@ -96,14 +102,12 @@ bool Timeout::expired() const
                       "timeout_={:.3f}ms expiry_={:.3f}ms retry_={:.3f}ms deadline_={:.3f}ms",
             to_ms(now.time_since_epoch()), to_ms(start_.time_since_epoch()),
             to_ms(timeout_), to_ms(expiry_.time_since_epoch()), to_ms(retry_), to_ms(deadline_.time_since_epoch()));
-    }
-    return expired;
-}
 
-float Timeout::trigger_s() const
-{
-    return std::chrono::duration_cast<std::chrono::duration<float>>(deadline_ - Clock::now())
-        .count();
+        remaining_s = 0.0;
+        return true;
+    }
+    remaining_s = time_to_deadline_s;
+    return false;
 }
 
 bool Timeout::retry()

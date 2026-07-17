@@ -90,6 +90,9 @@ else begin
       dval    <= '0;
     end
     else begin
+      if (wr_en) begin
+        wr_bin  <= wr_bin_nxt;
+      end
       if (rd_en) begin
         rd_bin  <= rd_bin_nxt;
       end

@@ -1,0 +1,93 @@
+navigation:
+  - section: Getting Started
+    contents:
+      - page: Introduction
+        path: ../introduction.mdx
+      - page: Hardware Setup
+        path: ../sensor_bridge_hardware_setup.mdx
+      - page: Host Setup
+        path: ../setup.mdx
+      - page: Build
+        path: ../build.mdx
+      - page: Examples
+        path: ../examples.mdx
+
+  - section: Applications
+    contents:
+      - page: Applications
+        path: ../applications.mdx
+      - page: Architecture
+        path: ../architecture.mdx
+      - page: Latency
+        path: ../latency.mdx
+      - page: New Sensors
+        path: ../new_sensors.mdx
+      - page: UDDF Drivers
+        path: ../uddf_drivers.mdx
+      - page: Hololink Module, Application Tutorial
+        path: ../module_imx274_tutorial.mdx
+      - page: Hololink Module, Device Driver Tutorial
+        path: ../module_device_tutorial.mdx
+
+  - section: Reference Designs
+    contents:
+    - page: MIPI CPNX Reference Design
+      path: ../mipi_cpnx_reference_design.mdx
+
+  - section: Emulation
+    contents:
+      - page: HSB Emulator
+        path: ../emulation.mdx
+
+  - section: FPGA IP
+    contents:
+      - page: Overview
+        path: ../overview.mdx
+      - page: Port Description
+        path: ../port_description.mdx
+      - page: Clocking and Reset
+        path: ../clocking_and_reset.mdx
+      - page: Dataplane
+        path: ../dataplane.mdx
+      - page: Control Plane
+        path: ../controlplane.mdx
+      - page: Peripheral Interface
+        path: ../peripheral_interface.mdx
+      - page: Register Interface
+        path: ../register_interface.mdx
+      - page: PTP
+        path: ../ptp.mdx
+      - page: PTP Application Note
+        path: ../ptp_app_note.mdx
+      - page: Virtual LAN (VLAN)
+        path: ../vlan.mdx
+      - page: IP Integration
+        path: ../ip_integration.mdx
+      - page: Simulation
+        path: ../simulation.mdx
+      - page: Hardware Debug
+        path: ../hardware_debug.mdx
+      - page: Known Limitations
+        path: ../known_limitations.mdx
+
+  - section: Firmware
+    contents:
+      - page: Firmware Setup
+        path: ../sensor_bridge_firmware_setup.mdx
+
+  - section: Support
+    contents:
+      - page: Troubleshooting
+        path: ../troubleshooting.mdx
+      - page: Notes
+        path: ../notes.mdx
+      - page: Release Notes
+        path: ../release_notes.mdx
+
+  - section: Resources
+    collapsed: true
+    contents:
+      - link: Holoscan SDK documentation
+        href: https://docs.nvidia.com/holoscan/sdk-user-guide
+      - link: GitHub repository
+        href: https://github.com/nvidia-holoscan/hololink

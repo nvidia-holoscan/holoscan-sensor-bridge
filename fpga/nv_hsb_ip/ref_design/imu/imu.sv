@@ -155,7 +155,6 @@ assign o_bus_en = reg_bus_en;
 // Data Buffer
 //------------------------------------------------------------------------------
 logic        db_wr_en;
-logic        wr_en;
 logic [31:0] db_wr_data;
 logic [6:0]  db_addr;
 logic [31:0] db_rd_data;
@@ -164,13 +163,11 @@ logic [7:0]  i2c_db_addr        ;
 logic [8:0]  transaction_cnt    ;
 logic [8:0]  wr_ptr             ;
 logic [8:0]  rd_ptr             ;
-logic [7:0]  i2c_db_data        ;
 logic [7:0]  rd_data            ;
 logic        ack_rise ;
 logic        cmd_ack_prev;
 logic        i2c_busy;
 logic        idle;
-logic        fsm_done;
 logic        i2c_al;
 logic        cmd_ack;
 logic        read;
@@ -249,19 +246,19 @@ logic [1:0] int_req_r;
 logic [1:0] int_r;
 logic [15:0] sample_cnt;
 logic        sample_last;
-logic        w_sync_int1;
 logic        sop;
 logic        eop;
 
 rrarb #(
-  .WIDTH ( 2                                    )
+  .WIDTH   ( 2                                    )
 ) int_arb (
-  .clk   ( i_aclk                               ),
-  .rst_n ( !i_arst                              ), 
-  .rst   ( 1'b0                                 ), 
-  .idle  ( ((state == I2C_IDLE) && !int_start)  ),
-  .req   ( int_req_r                            ),
-  .gnt   ( int_gnt                              )
+  .clk     ( i_aclk                               ),
+  .rst_n   ( !i_arst                              ), 
+  .rst     ( 1'b0                                 ), 
+  .idle    ( ((state == I2C_IDLE) && !int_start)  ),
+  .req     ( int_req_r                            ),
+  .gnt_idx (                                      ),
+  .gnt     ( int_gnt                              )
 );
 
 always_ff@(posedge i_aclk) begin

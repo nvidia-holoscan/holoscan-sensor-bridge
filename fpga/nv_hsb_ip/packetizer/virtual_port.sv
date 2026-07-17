@@ -180,6 +180,7 @@ logic       in_is_last;
 logic       in_is_last_sync;
 logic       out_is_last;
 logic       w_axis_tvalid;
+logic       r_fifo_aempty;
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
@@ -213,8 +214,8 @@ axis_buffer #(
   .WAIT2SEND         ( 0               ),
   .DUAL_CLOCK        ( 1               ),
   .ALMOST_FULL_DEPTH ( AF_FLAG         ),
-  .OUTPUT_SKID       ( 0               ),
   .ALMOST_EMPTY_DEPTH( AE_FLAG         ),
+  .OUTPUT_SKID       ( 1               ),
   .NO_BACKPRESSURE   ( 1               )
 ) axis_buffer (
   .in_clk           ( i_sclk          ),
@@ -239,8 +240,19 @@ axis_buffer #(
   .i_axis_tx_tready ( i_axis_tready   )
 );
 
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    r_fifo_aempty <= '1;
+  end
+  else begin
+    if (!fifo_aempty || i_axis_tready) begin
+      r_fifo_aempty <= fifo_aempty;
+    end
+  end
+end
+
 assign  o_axis_tkeep  = '1;
 assign  o_axis_tuser  = '0;
-assign  o_axis_tvalid = (!fifo_aempty || i_axis_tready || ((|tlast_buffered) && !out_is_last)) ? w_axis_tvalid : '0;
+assign  o_axis_tvalid = (!r_fifo_aempty || i_axis_tready || ((|tlast_buffered) && !out_is_last)) ? w_axis_tvalid : '0;
 
 endmodule

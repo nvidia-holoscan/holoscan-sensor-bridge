@@ -218,6 +218,9 @@ class HSBPolarFireEsbFlasherBase(ABC):
     def flash(self, cpnx_path: str) -> bool:
         pass
 
+    def establish_board_state(self):
+        pass
+
 
 # ===============================================
 # UDP Flasher Implementation
@@ -290,6 +293,7 @@ def do_flash(
     print(f"  SPI: {cpnx_path}")
 
     try:
+        flasher.establish_board_state()
         success = flasher.flash(cpnx_path)
     except (FileNotFoundError, OSError, ValueError, RuntimeError, ImportError) as e:
         print(f"[hsb_polarfire_esb] ERROR: {e}")

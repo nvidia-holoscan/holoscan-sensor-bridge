@@ -25,6 +25,7 @@
 #include <sys/stat.h>
 
 #include <cassert>
+#include <chrono>
 #include <cstdint>
 #include <filesystem>
 #include <thread>
@@ -79,6 +80,107 @@ constexpr uint32_t UART_TX_DATA = 0x140;
 constexpr uint32_t UART_RX_DATA = 0x144;
 constexpr uint32_t UART_LAST_RX = 0x148;
 constexpr uint32_t UART_DATA_STRIDE = 0x0C;
+
+// I2S registers (FPGA I2S peripheral, per the I2S register spec).
+//  Single I2S instance (no port stride).
+//
+//  Clock gate (standalone register in a separate SoC clock-control block):
+//   I2S_CLOCK_CTRL - 0x7000_0014 - feeds REF_CLK into the I2S APB block.
+//                                  ORing in I2S_CLOCK_ENABLE_VALUE turns it
+//                                  on. NOTE: 0x7000_0014 is also VSYNC_GPIO /
+//                                  GPIO_MUX_EN (shared with UART flow-control
+//                                  and VSYNC), so always RMW to preserve
+//                                  unrelated bits owned by those subsystems.
+//
+//  I2S APB block at I2S_APB (handles both TX and RX audio paths).
+//  Control registers (CTRL0..CTRL8 at 4-byte stride):
+//   CTRL0 - +0x00 - enable:  [0]=TX_ENABLE  [1]=RX_ENABLE
+//   CTRL1 - +0x04 - MCLK_DIV  (MCLK = REF_CLK / MCLK_DIV)
+//   CTRL2 - +0x08 - BCLK_DIV_SEL  (power-of-2: BCLK = MCLK / 2^sel, 0..8)
+//   CTRL3 - +0x0C - [1:0]=BIT_DEPTH  [3:2]=DATA_FORMAT
+//   CTRL4 - +0x10 - [0]=CHANNEL_MODE  [1]=CLOCK_SOURCE  [2]=LOOPBACK_MODE
+//   CTRL5 - +0x14 - FIFO_CTRL  (unused per spec; legacy 0x40 preserved)
+//   CTRL6 - +0x18 - interrupt enable (gating not implemented in FPGA)
+//   CTRL7 - +0x1C - [0]=LRCLK_POL
+//   CTRL8 - +0x20 - SLOT_MODE (default 0x1)
+//  Status registers (STAT0..STAT3 at 4-byte stride):
+//   STAT0 - +0x24 - [0]=CLK_LOCKED (hardcoded 1 in FPGA today)
+//   STAT1 - +0x28 - FIFO_STATUS  (unused: reads 0)
+//   STAT2 - +0x2C - [0]=TX_UNDERRUN  [1]=RX_OVERRUN
+//   STAT3 - +0x30 - DEBUG_INFO  (unused: reads 0)
+//
+//  Host-side AXI-stream TX FIFO block at I2S_TX_FIFO (separate block from
+//  the I2S APB; sits between the host RoCE side and the I2S peripheral):
+//   CTRL         - +0x00 - FIFO start / pause control
+//   ALMOST_FULL  - +0x04 - TX FIFO almost-full threshold
+//   ALMOST_EMPTY - +0x08 - TX FIFO almost-empty threshold
+//   PAUSE_LATCH  - +0x0C - latch pause after writing CTRL=pause
+constexpr uint32_t I2S_CLOCK_CTRL = 0x7000'0014;
+constexpr uint32_t I2S_CLOCK_ENABLE_VALUE = 0x0000'000F;
+
+constexpr uint32_t I2S_APB = 0x8000'0000;
+constexpr uint32_t I2S_CTRL0 = 0x00;
+constexpr uint32_t I2S_CTRL1 = 0x04;
+constexpr uint32_t I2S_CTRL2 = 0x08;
+constexpr uint32_t I2S_CTRL3 = 0x0C;
+constexpr uint32_t I2S_CTRL4 = 0x10;
+constexpr uint32_t I2S_CTRL5 = 0x14;
+constexpr uint32_t I2S_CTRL6 = 0x18;
+constexpr uint32_t I2S_CTRL7 = 0x1C;
+constexpr uint32_t I2S_CTRL8 = 0x20;
+constexpr uint32_t I2S_STAT0 = 0x24;
+constexpr uint32_t I2S_STAT1 = 0x28;
+constexpr uint32_t I2S_STAT2 = 0x2C;
+constexpr uint32_t I2S_STAT3 = 0x30;
+
+// CTRL0 bits
+constexpr uint32_t I2S_CTRL0_TX_ENABLE = 1u << 0;
+constexpr uint32_t I2S_CTRL0_RX_ENABLE = 1u << 1;
+
+// CTRL3 fields
+constexpr uint32_t I2S_CTRL3_BIT_DEPTH_SHIFT = 0;
+constexpr uint32_t I2S_CTRL3_BIT_DEPTH_MASK = 0x3u;
+constexpr uint32_t I2S_CTRL3_DATA_FORMAT_SHIFT = 2;
+constexpr uint32_t I2S_CTRL3_DATA_FORMAT_MASK = 0x3u;
+
+// CTRL4 fields
+constexpr uint32_t I2S_CTRL4_CHANNEL_MODE = 1u << 0;
+constexpr uint32_t I2S_CTRL4_CLOCK_SOURCE = 1u << 1;
+constexpr uint32_t I2S_CTRL4_LOOPBACK = 1u << 2;
+
+// CTRL7 fields
+constexpr uint32_t I2S_CTRL7_LRCLK_POL = 1u << 0;
+
+// STAT0 / STAT2 bits
+constexpr uint32_t I2S_STAT0_CLK_LOCKED = 1u << 0;
+constexpr uint32_t I2S_STAT2_TX_UNDERRUN = 1u << 0;
+constexpr uint32_t I2S_STAT2_RX_OVERRUN = 1u << 1;
+
+// CTRL5 = 0x40 is preserved verbatim from the captured working bring-up
+// sequence; the FPGA spec says CTRL5 is unused, so this write is a no-op.
+constexpr uint32_t I2S_CTRL5_LEGACY_VALUE = 0x0000'0040;
+// CTRL8 SLOT_MODE default per FPGA spec.
+constexpr uint32_t I2S_CTRL8_SLOT_MODE_DEFAULT = 0x0000'0001;
+
+constexpr uint32_t I2S_TX_FIFO = 0x0120'0000;
+constexpr uint32_t I2S_TX_FIFO_CTRL = 0x00;
+constexpr uint32_t I2S_TX_FIFO_ALMOST_FULL = 0x04;
+constexpr uint32_t I2S_TX_FIFO_ALMOST_EMPTY = 0x08;
+constexpr uint32_t I2S_TX_FIFO_PAUSE_LATCH = 0x0C;
+
+constexpr uint32_t I2S_TX_FIFO_START_VALUE = 0x0000'0004;
+constexpr uint32_t I2S_TX_FIFO_PAUSE_VALUE = 0x0000'0003;
+constexpr uint32_t I2S_TX_FIFO_PAUSE_LATCH_VALUE = 0x0000'0001;
+
+// Default TX FIFO thresholds
+constexpr uint32_t I2S_TX_FIFO_DEFAULT_ALMOST_FULL = 0x0000'0800;
+constexpr uint32_t I2S_TX_FIFO_DEFAULT_ALMOST_EMPTY = 0x0000'0400;
+
+// Board-side DMIC GPIO pins. The FPGA exposes two GPIO lines wired to the
+// onboard DMIC; both must be switched to input during I2S RX bring-up so the
+// DMIC drives them
+constexpr uint32_t I2S_DMIC_GPIO_PIN_0 = 8;
+constexpr uint32_t I2S_DMIC_GPIO_PIN_1 = 11;
 
 namespace {
 
@@ -843,11 +945,10 @@ std::vector<uint8_t> Hololink::receive_control(const std::shared_ptr<Timeout>& t
         // the select() call to the remaining time
         timeval* select_timeout;
         if (timeout) {
-            if (timeout->expired()) {
+            double trigger_s = 0.0f;
+            if (timeout->expired(trigger_s)) {
                 return {};
             }
-            // convert floating point time to integer seconds and microseconds
-            const double trigger_s = timeout->trigger_s();
             double integral = 0.f;
             double fractional = std::modf(trigger_s, &integral);
             timeout_value.tv_sec = (__time_t)(integral);
@@ -1923,6 +2024,318 @@ std::shared_ptr<Hololink::Uart> Hololink::get_uart(uint32_t port_number, uint32_
     return std::make_shared<hololink::Uart>(this[0], port_number, baud_rate, data_bits, parity, stop_bits, flow_control);
 }
 
+class I2s
+    : public Hololink::I2s {
+public:
+    I2s(Hololink& hololink,
+        Metadata& enumeration_metadata,
+        uint32_t mclk_div,
+        uint32_t bclk_div_sel,
+        BitDepth bit_depth,
+        DataFormat format,
+        ChannelMode channel_mode,
+        bool lrclk_polarity,
+        bool enable_tx,
+        bool enable_rx,
+        bool enable_loopback,
+        uint32_t tx_almost_full,
+        uint32_t tx_almost_empty,
+        bool pause_after,
+        uint32_t slot_mode)
+        : hololink_(hololink)
+        , mclk_div_(mclk_div)
+        , bclk_div_sel_(bclk_div_sel)
+        , bit_depth_(bit_depth)
+        , data_format_(format)
+        , channel_mode_(channel_mode)
+        , lrclk_polarity_(lrclk_polarity)
+        , tx_enabled_(enable_tx)
+        , rx_enabled_(enable_rx)
+        , loopback_enabled_(enable_loopback)
+        , slot_mode_(slot_mode)
+    {
+        i2s_configure(enumeration_metadata, mclk_div, bclk_div_sel, bit_depth,
+            format, channel_mode, lrclk_polarity, enable_tx, enable_rx,
+            enable_loopback, tx_almost_full, tx_almost_empty, pause_after, slot_mode);
+    }
+
+    void i2s_configure(
+        Metadata& enumeration_metadata,
+        uint32_t mclk_div,
+        uint32_t bclk_div_sel,
+        BitDepth bit_depth,
+        DataFormat format,
+        ChannelMode channel_mode,
+        bool lrclk_polarity,
+        bool enable_tx,
+        bool enable_rx,
+        bool enable_loopback,
+        uint32_t tx_almost_full,
+        uint32_t tx_almost_empty,
+        bool pause_after,
+        uint32_t slot_mode) override
+    {
+        // FPGA has a single I2S controller; serialize register access across
+        // threads and processes.
+        std::lock_guard lock(hololink_.i2s_lock());
+        HSB_LOG_INFO("I2S configure called, mclk_div={} bclk_div_sel={} "
+                     "bit_depth={} format={} channel={} lrclk_pol={} "
+                     "tx={} rx={} enable_loopback={} af={:#x} ae={:#x} pause={} slot_mode={:#x}",
+            mclk_div, bclk_div_sel,
+            uint32_t(bit_depth), uint32_t(format), uint32_t(channel_mode),
+            lrclk_polarity, enable_tx, enable_rx, enable_loopback,
+            tx_almost_full, tx_almost_empty, pause_after, slot_mode);
+
+        if (mclk_div == 0) {
+            // MCLK = REF_CLK / mclk_div; zero would be a divide-by-zero in
+            // the FPGA. The FPGA spec does not document an upper bound for
+            // this field, so we only reject the one provably-bad value.
+            throw std::out_of_range("I2S mclk_div=0 is not a valid divider");
+        }
+        if (bclk_div_sel > 8) {
+            throw std::out_of_range(
+                fmt::format("I2S bclk_div_sel={} out of range 0..8", bclk_div_sel));
+        }
+        // The enum types are 2-bit fields in CTRL3/CTRL4; reject cast-injected
+        // out-of-range values rather than silently masking them.
+        switch (bit_depth) {
+        case BitDepth::BD_8:
+        case BitDepth::BD_16:
+        case BitDepth::BD_24:
+        case BitDepth::BD_32:
+            break;
+        default:
+            throw std::out_of_range(
+                fmt::format("I2S bit_depth={} is not a valid BitDepth", uint32_t(bit_depth)));
+        }
+        switch (format) {
+        case DataFormat::I2S:
+        case DataFormat::LJ:
+        case DataFormat::RJ:
+            break;
+        default:
+            throw std::out_of_range(
+                fmt::format("I2S format={} is not a valid DataFormat", uint32_t(format)));
+        }
+        switch (channel_mode) {
+        case ChannelMode::Stereo:
+        case ChannelMode::Mono:
+            break;
+        default:
+            throw std::out_of_range(
+                fmt::format("I2S channel_mode={} is not a valid ChannelMode", uint32_t(channel_mode)));
+        }
+        if (tx_almost_empty > tx_almost_full) {
+            throw std::out_of_range(
+                fmt::format("I2S tx_almost_empty={:#x} must be <= tx_almost_full={:#x}",
+                    tx_almost_empty, tx_almost_full));
+        }
+
+        // Bind GPIO from metadata before any hardware write so bad metadata
+        // fails cleanly.
+        std::shared_ptr<Hololink::GPIO> gpio;
+        if (enable_rx) {
+            gpio = hololink_.get_gpio(enumeration_metadata);
+        }
+
+        // enable SoC clock gate (RMW: register shared with VSYNC_GPIO / GPIO_MUX_EN)
+        uint32_t clock_ctrl = hololink_.read_uint32(I2S_CLOCK_CTRL);
+        clock_ctrl |= I2S_CLOCK_ENABLE_VALUE;
+        hololink_.write_uint32(I2S_CLOCK_CTRL, clock_ctrl);
+
+        // program I2S APB CTRL0..CTRL8 per FPGA spec
+        apb_configure(mclk_div, bclk_div_sel, bit_depth, format,
+            channel_mode, lrclk_polarity,
+            enable_tx, enable_rx, enable_loopback, slot_mode);
+
+        // CTRL5 = 0x40 preserved from captured bring-up (spec marks CTRL5 unused)
+        hololink_.write_uint32(I2S_APB + I2S_CTRL5, I2S_CTRL5_LEGACY_VALUE);
+
+        // host AXI-stream TX FIFO thresholds + start
+        host_fifo_configure(tx_almost_full, tx_almost_empty);
+
+        // pause host TX FIFO: I2S bit clock keeps running for DMIC RX; pausing
+        // silences SDO so leftover host TX bytes do not crosstalk into early
+        // RX samples (audible as a startup-noise burst)
+        if (pause_after) {
+            host_fifo_pause();
+        } else {
+            HSB_LOG_INFO("I2S TX FIFO pause skipped (TX bytes will stream)");
+        }
+
+        // flip DMIC GPIO pins to IN when RX is in use (pins are board-fixed)
+        if (enable_rx) {
+            gpio->set_direction(I2S_DMIC_GPIO_PIN_0, Hololink::GPIO::IN);
+            gpio->set_direction(I2S_DMIC_GPIO_PIN_1, Hololink::GPIO::IN);
+            HSB_LOG_INFO("I2S DMIC GPIO pins {} and {} set to IN",
+                I2S_DMIC_GPIO_PIN_0, I2S_DMIC_GPIO_PIN_1);
+        }
+
+        // cache shadow params for accessors
+        mclk_div_ = mclk_div;
+        bclk_div_sel_ = bclk_div_sel;
+        bit_depth_ = bit_depth;
+        data_format_ = format;
+        channel_mode_ = channel_mode;
+        lrclk_polarity_ = lrclk_polarity;
+        tx_enabled_ = enable_tx;
+        rx_enabled_ = enable_rx;
+        loopback_enabled_ = enable_loopback;
+        slot_mode_ = slot_mode;
+    }
+
+    // accessors for the configured parameters - read back from shadow params not register values to save Ethernet traffic
+    uint32_t mclk_div() const override { return mclk_div_; }
+    uint32_t bclk_div_sel() const override { return bclk_div_sel_; }
+    BitDepth bit_depth() const override { return bit_depth_; }
+    DataFormat data_format() const override { return data_format_; }
+    ChannelMode channel_mode() const override { return channel_mode_; }
+    bool lrclk_polarity() const override { return lrclk_polarity_; }
+    bool tx_enabled() const override { return tx_enabled_; }
+    bool rx_enabled() const override { return rx_enabled_; }
+    bool loopback_enabled() const override { return loopback_enabled_; }
+    uint32_t slot_mode() const override { return slot_mode_; }
+
+    // STAT0.CLK_LOCKED is hardcoded to 1 in the FPGA today; STAT1/STAT3 read 0; only STAT2 is meaningful.
+    bool clock_locked() override
+    {
+        // Single register read; read_uint32 already serializes transactions via
+        // execute_mutex_, so the coarse i2s_lock is not needed here.
+        return (hololink_.read_uint32(I2S_APB + I2S_STAT0)
+                   & I2S_STAT0_CLK_LOCKED)
+            != 0;
+    }
+
+    bool tx_underrun() override
+    {
+        return (hololink_.read_uint32(I2S_APB + I2S_STAT2)
+                   & I2S_STAT2_TX_UNDERRUN)
+            != 0;
+    }
+
+    bool rx_overrun() override
+    {
+        return (hololink_.read_uint32(I2S_APB + I2S_STAT2)
+                   & I2S_STAT2_RX_OVERRUN)
+            != 0;
+    }
+
+private:
+    // Program the I2S APB peripheral: disable both directions, write the
+    // clock / format / channel registers, then re-enable per the flags.
+    void apb_configure(uint32_t mclk_div,
+        uint32_t bclk_div_sel,
+        BitDepth bit_depth,
+        DataFormat format,
+        ChannelMode channel_mode,
+        bool lrclk_polarity,
+        bool enable_tx,
+        bool enable_rx,
+        bool enable_loopback,
+        uint32_t slot_mode)
+    {
+        // Disable both directions before reprogramming so transient
+        // intermediate states are never clocked out on SDO.
+        hololink_.write_uint32(I2S_APB + I2S_CTRL0, 0);
+
+        // Clock dividers.
+        hololink_.write_uint32(I2S_APB + I2S_CTRL1, mclk_div);
+        hololink_.write_uint32(I2S_APB + I2S_CTRL2, bclk_div_sel);
+
+        // Bit depth | (data format << 2).
+        const uint32_t ctrl3
+            = ((uint32_t(bit_depth) & I2S_CTRL3_BIT_DEPTH_MASK)
+                  << I2S_CTRL3_BIT_DEPTH_SHIFT)
+            | ((uint32_t(format) & I2S_CTRL3_DATA_FORMAT_MASK)
+                << I2S_CTRL3_DATA_FORMAT_SHIFT);
+        hololink_.write_uint32(I2S_APB + I2S_CTRL3, ctrl3);
+
+        // Channel mode and loopback. CLOCK_SOURCE is forced to internal: the
+        // external clock pins exist on i2s_clk_gen but are not connected at
+        // integration (per the FPGA spec), so external clock mode is
+        // non-functional.
+        uint32_t ctrl4 = 0;
+        if (channel_mode == ChannelMode::Mono) {
+            ctrl4 |= I2S_CTRL4_CHANNEL_MODE;
+        }
+        if (enable_loopback) {
+            ctrl4 |= I2S_CTRL4_LOOPBACK;
+        }
+        hololink_.write_uint32(I2S_APB + I2S_CTRL4, ctrl4);
+
+        // LRCLK polarity.
+        hololink_.write_uint32(I2S_APB + I2S_CTRL7,
+            lrclk_polarity ? I2S_CTRL7_LRCLK_POL : 0u);
+
+        // Slot mode.
+        hololink_.write_uint32(I2S_APB + I2S_CTRL8, slot_mode);
+
+        // Enable TX/RX last, after every other CTRL register is in place.
+        uint32_t ctrl0 = 0;
+        if (enable_tx) {
+            ctrl0 |= I2S_CTRL0_TX_ENABLE;
+        }
+        if (enable_rx) {
+            ctrl0 |= I2S_CTRL0_RX_ENABLE;
+        }
+        hololink_.write_uint32(I2S_APB + I2S_CTRL0, ctrl0);
+        HSB_LOG_DEBUG("I2S APB peripheral programmed");
+    }
+
+    void host_fifo_configure(uint32_t almost_full, uint32_t almost_empty)
+    {
+        HSB_LOG_DEBUG("I2S host TX FIFO: almost_full={:#x} almost_empty={:#x}",
+            almost_full, almost_empty);
+        hololink_.write_uint32(I2S_TX_FIFO + I2S_TX_FIFO_ALMOST_FULL, almost_full);
+        hololink_.write_uint32(I2S_TX_FIFO + I2S_TX_FIFO_ALMOST_EMPTY, almost_empty);
+        hololink_.write_uint32(I2S_TX_FIFO + I2S_TX_FIFO_CTRL, I2S_TX_FIFO_START_VALUE);
+    }
+
+    void host_fifo_pause()
+    {
+        HSB_LOG_DEBUG("I2S host TX FIFO: pause + latch");
+        hololink_.write_uint32(I2S_TX_FIFO + I2S_TX_FIFO_CTRL, I2S_TX_FIFO_PAUSE_VALUE);
+        hololink_.write_uint32(I2S_TX_FIFO + I2S_TX_FIFO_PAUSE_LATCH,
+            I2S_TX_FIFO_PAUSE_LATCH_VALUE);
+    }
+
+    Hololink& hololink_;
+
+    // shadow params from the most recent i2s_configure()
+    uint32_t mclk_div_ = 0;
+    uint32_t bclk_div_sel_ = 0;
+    BitDepth bit_depth_ = BitDepth::BD_8;
+    DataFormat data_format_ = DataFormat::I2S;
+    ChannelMode channel_mode_ = ChannelMode::Stereo;
+    bool lrclk_polarity_ = false;
+    bool tx_enabled_ = false;
+    bool rx_enabled_ = false;
+    bool loopback_enabled_ = false;
+    uint32_t slot_mode_ = I2S_CTRL8_SLOT_MODE_DEFAULT;
+};
+
+std::shared_ptr<Hololink::I2s> Hololink::get_i2s(
+    Metadata& enumeration_metadata,
+    uint32_t mclk_div,
+    uint32_t bclk_div_sel,
+    I2s::BitDepth bit_depth,
+    I2s::DataFormat format,
+    I2s::ChannelMode channel_mode,
+    bool lrclk_polarity,
+    bool enable_tx,
+    bool enable_rx,
+    bool enable_loopback,
+    uint32_t tx_almost_full,
+    uint32_t tx_almost_empty,
+    bool pause_after,
+    uint32_t slot_mode)
+{
+    return std::make_shared<hololink::I2s>(*this, enumeration_metadata,
+        mclk_div, bclk_div_sel, bit_depth, format, channel_mode, lrclk_polarity,
+        enable_tx, enable_rx, enable_loopback, tx_almost_full, tx_almost_empty,
+        pause_after, slot_mode);
+}
+
 /**
  * Software-triggered sequencer (SW_EVENT).
  */
@@ -2104,13 +2517,17 @@ public:
         write_data.queue_write_uint32(CTRL_EVT_SW_EVENT, 0);
         uint32_t status_cache = sequencer->location() + status_index * 4;
         std::shared_ptr<Timeout> timeout = Timeout::i2c_timeout(in_timeout);
-        if (timeout->trigger_s() > APB_TIMEOUT_MAX) {
-            write_data.queue_write_uint32(CTRL_EVT_APB_TIMEOUT,
-                static_cast<uint32_t>(APB_TIMEOUT_MAX * APB_TIMEOUT_SCALE));
-        } else {
-            write_data.queue_write_uint32(CTRL_EVT_APB_TIMEOUT,
-                static_cast<uint32_t>(timeout->trigger_s() * APB_TIMEOUT_SCALE));
+        double trigger_s = 0.0f;
+        uint32_t apb_timeout_value = APB_TIMEOUT_MAX_HEX;
+        if (!timeout->expired(trigger_s)) {
+            apb_timeout_value = static_cast<uint32_t>(trigger_s * APB_TIMEOUT_SCALE);
+            if (apb_timeout_value < APB_TIMEOUT_MIN_HEX) {
+                apb_timeout_value = APB_TIMEOUT_MIN_HEX;
+            } else if (apb_timeout_value > APB_TIMEOUT_MAX_HEX) {
+                apb_timeout_value = APB_TIMEOUT_MAX_HEX;
+            }
         }
+        write_data.queue_write_uint32(CTRL_EVT_APB_TIMEOUT, apb_timeout_value);
         write_uint32(write_data);
         // Poll until done.  Future version will have an event packet too.
         uint32_t value;
@@ -2490,6 +2907,13 @@ NamedLock& Hololink::uart_lock()
     return lock;
 }
 
+NamedLock& Hololink::i2s_lock()
+{
+    static std::string lock_name = device_specific_filename("hololink-i2s-lock");
+    static NamedLock lock(lock_name);
+    return lock;
+}
+
 NamedLock& Hololink::lock()
 {
     static std::string lock_name = device_specific_filename("hololink-lock");
@@ -2562,13 +2986,78 @@ bool Hololink::ptp_synchronized()
     return false;
 }
 
+void Hololink::configure_ptp(uint32_t profile, uint32_t domain)
+{
+    write_uint32(FPGA_PTP_CTRL, 0x0);
+    write_uint32(FPGA_PTP_PROFILE, profile);
+    write_uint32(FPGA_PTP_DOMAIN, domain);
+    write_uint32(FPGA_PTP_CTRL, 0x3);
+}
+
+void Hololink::configure_1588(uint32_t domain)
+{
+    configure_ptp(FPGA_PTP_PROFILE_1588_E2E, domain);
+}
+
+void Hololink::configure_gptp(uint32_t domain)
+{
+    configure_ptp(FPGA_PTP_PROFILE_GPTP, domain);
+}
+
 std::shared_ptr<Synchronizer> Hololink::ptp_pps_output(unsigned frequency)
 {
     ptp_pps_output_->set_frequency(frequency);
     return ptp_pps_output_;
 }
 
-void Synchronizer::attach(std::shared_ptr<Synchronizable> peer)
+static uint32_t vlan_register_address(Hololink::VlanTarget target, uint32_t vp_index)
+{
+    if (target == Hololink::VlanTarget::EVT) {
+        return FPGA_EVT_VLAN;
+    }
+    return FPGA_SENSOR_VP_VLAN_BASE + FPGA_SENSOR_VP_STRIDE * vp_index;
+}
+
+void Hololink::configure_vlan(VlanTarget target, uint32_t vp_index,
+    uint16_t vlan_id, uint8_t pcp, uint8_t drop_eligible)
+{
+    // vlan_id=1 is the 802.1Q default VLAN; the FPGA treats it the same as untagged (no VLAN).
+    // vlan_id=0 (null VID) and vlan_id=4095 (reserved) are not valid.
+    if (vlan_id == 0u || vlan_id > 0x0FFEu) {
+        throw std::invalid_argument(fmt::format("vlan_id {} out of range [1, 4094]", vlan_id));
+    }
+    if (pcp > 0x07u) {
+        throw std::invalid_argument(fmt::format("pcp {} out of range [0, 7]", pcp));
+    }
+    if (drop_eligible > 0x01u) {
+        throw std::invalid_argument(fmt::format("drop_eligible {} must be 0 or 1", drop_eligible));
+    }
+    std::lock_guard lock(this->lock());
+    const uint32_t vlan_reg_address = vlan_register_address(target, vp_index);
+    const uint32_t current_reg_value = read_uint32(vlan_reg_address);
+    // Pack IEEE 802.1Q tag control information: PCP[15:13] | DEI[12] | VID[11:0]
+    const uint32_t tag_control_info = ((pcp & 0x7u) << 13) | ((drop_eligible & 0x1u) << 12) | (vlan_id & 0xFFFu);
+    // Preserve VLAN_EN (bit 16); replace tag control info (bits 15:0).
+    write_uint32(vlan_reg_address, (current_reg_value & (1u << 16)) | tag_control_info);
+}
+
+void Hololink::set_vlan_enable(VlanTarget target, uint32_t vp_index, bool enable)
+{
+    const uint32_t vlan_reg_address = vlan_register_address(target, vp_index);
+    if (enable) {
+        or_uint32(vlan_reg_address, 1u << 16);
+    } else {
+        and_uint32(vlan_reg_address, ~(1u << 16));
+    }
+}
+
+bool Hololink::get_vlan_enable(VlanTarget target, uint32_t vp_index)
+{
+    const uint32_t vlan_reg_address = vlan_register_address(target, vp_index);
+    return (read_uint32(vlan_reg_address) >> 16) & 0x1u;
+}
+
+void Synchronizer::attach(std::shared_ptr<Synchronizable> peer, bool defer_start)
 {
     bool was_empty = false;
     { // lock scoping
@@ -2580,9 +3069,15 @@ void Synchronizer::attach(std::shared_ptr<Synchronizable> peer)
         was_empty = peers_.empty();
         peers_.push_back(peer);
     }
-    // Call setup when the first peer is attached
+    // Configure the synchronizer when the first peer is attached.
+    // Pulses begin immediately unless the caller asked us to defer
+    // — in which case they'll fire start() themselves once every
+    // peer is ready.
     if (was_empty) {
         setup();
+        if (!defer_start) {
+            start();
+        }
     }
 }
 
@@ -2610,6 +3105,16 @@ public:
     }
 
     void setup() override
+    {
+        /* ignored */
+    }
+
+    void start() override
+    {
+        /* ignored */
+    }
+
+    void stop() override
     {
         /* ignored */
     }
@@ -3111,7 +3616,8 @@ Hololink::PtpSynchronizer::PtpSynchronizer(Hololink& hololink)
     , frequency_(0)
     , frequency_control_(0)
     , delay_ns_(0)
-    , active_(false)
+    , configured_(false)
+    , pulsing_(false)
 {
 }
 
@@ -3163,8 +3669,9 @@ void Hololink::PtpSynchronizer::set_delay(unsigned delay_ns)
     std::lock_guard<std::mutex> lock(mutex_);
     delay_ns_ = delay_ns;
 
-    if (active_) {
-        // update the delay if the synchronizer is active
+    if (pulsing_) {
+        // Update the delay live by bouncing VSYNC_CONTROL around the
+        // delay write.
         hololink_.write_uint32(VSYNC_CONTROL, 0); // Disable VSYNC
         hololink_.write_uint32(VSYNC_DELAY, delay_ns_); // VSYNC delay (ns)
         hololink_.write_uint32(VSYNC_CONTROL, 1); // Enable VSYNC
@@ -3174,39 +3681,69 @@ void Hololink::PtpSynchronizer::set_delay(unsigned delay_ns)
 void Hololink::PtpSynchronizer::setup()
 {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (active_) {
+    if (configured_) {
         HSB_LOG_ERROR("PtpSynchronizer: Already setup");
         return;
     }
 
-    HSB_LOG_INFO("PtpSynchronizer: Setting up PTP synchronization with frequency {} Hz", frequency_);
+    HSB_LOG_INFO("PtpSynchronizer: Configuring PTP synchronization registers with frequency {} Hz", frequency_);
 
-    // Configure FPGA registers for VSYNC timing
-    hololink_.write_uint32(VSYNC_CONTROL, 0); // Disable VSYNC
+    // Program the VSYNC config registers, but leave VSYNC_CONTROL at 0
+    // (no pulses yet). Pulse activation is the explicit job of start().
+    hololink_.write_uint32(VSYNC_CONTROL, 0); // Ensure disabled
     hololink_.write_uint32(VSYNC_FREQUENCY, frequency_control_); // Set frequency control
     hololink_.write_uint32(VSYNC_START, 0); // VSYNC Start Value (For Active Low, use 0x1)
     hololink_.write_uint32(VSYNC_DELAY, delay_ns_); // VSYNC delay (ns)
     hololink_.write_uint32(VSYNC_EXPOSURE, 0xF4240); // Exposure time (1ms)
-    hololink_.write_uint32(VSYNC_CONTROL, 1); // Enable VSYNC
     hololink_.write_uint32(VSYNC_GPIO, 0xF); // Set GPIO as OUT
 
-    active_ = true;
+    configured_ = true;
+}
+
+void Hololink::PtpSynchronizer::start()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (pulsing_) {
+        return;
+    }
+    if (!configured_) {
+        HSB_LOG_ERROR("PtpSynchronizer: start() called before setup() — registers are not programmed");
+        return;
+    }
+
+    HSB_LOG_INFO("PtpSynchronizer: Starting VSYNC pulses");
+    hololink_.write_uint32(VSYNC_CONTROL, 1);
+    pulsing_ = true;
+}
+
+void Hololink::PtpSynchronizer::stop()
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!pulsing_) {
+        return;
+    }
+
+    HSB_LOG_INFO("PtpSynchronizer: Stopping VSYNC pulses");
+    hololink_.write_uint32(VSYNC_CONTROL, 0);
+    pulsing_ = false;
 }
 
 void Hololink::PtpSynchronizer::shutdown()
 {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (!active_) {
-        HSB_LOG_ERROR("PtpSynchronizer: Already shut down");
-        return;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (!configured_) {
+            HSB_LOG_ERROR("PtpSynchronizer: Already shut down");
+            return;
+        }
     }
 
+    // Stop pulses first (re-acquires the lock internally).
+    stop();
+
+    std::lock_guard<std::mutex> lock(mutex_);
     HSB_LOG_INFO("PtpSynchronizer: Shutting down PTP synchronization");
-
-    // Disable VSYNC
-    hololink_.write_uint32(VSYNC_CONTROL, 0);
-
-    active_ = false;
+    configured_ = false;
 }
 
 bool Hololink::PtpSynchronizer::is_enabled()

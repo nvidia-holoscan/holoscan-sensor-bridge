@@ -1,3 +1,21 @@
-_build
-_doxygen
-generated
+# Fern CLI local state (caches, `fern docs diff` output, etc.)
+fern/.fern/
+
+# SDK local preview output (`fern generate --preview`)
+fern/.preview/
+
+# Docker pipeline HOME mount (see scripts/build_hololink_docs.py)
+.fern-docker-home/
+
+# CI preview URL written by build_hololink_docs.py --publish-preview
+fern/.fern-preview-url
+
+# JS tooling / docs dev server artifacts
+node_modules/
+.next/
+out/
+
+*.log
+npm-debug.log*
+yarn-error.log*
+pnpm-debug.log*

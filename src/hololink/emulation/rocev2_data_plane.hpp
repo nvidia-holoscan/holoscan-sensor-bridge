@@ -22,9 +22,6 @@
 
 #include "data_plane.hpp"
 
-#define IB_PSN_MASK 0xFFFFFu
-#define IB_PSN_SHIFT 12u
-
 namespace hololink::emulation {
 
 struct RoCEv2Ctxt;

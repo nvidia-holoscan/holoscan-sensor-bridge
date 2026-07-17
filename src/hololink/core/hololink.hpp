@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -105,6 +105,21 @@ constexpr uint32_t FPGA_PTP_SYNC_TS_0 = 0x180;
 constexpr uint32_t FPGA_PTP_SYNC_STAT = 0x188;
 constexpr uint32_t FPGA_PTP_OFM = 0x18C;
 
+// PTP profile and domain
+constexpr uint32_t FPGA_PTP_PROFILE = 0x108;
+constexpr uint32_t FPGA_PTP_DOMAIN = 0x11C;
+constexpr uint32_t FPGA_PTP_PROFILE_1588_E2E = 0x0;
+constexpr uint32_t FPGA_PTP_PROFILE_GPTP = 0x1;
+constexpr uint32_t FPGA_PTP_PROFILE_1588_P2P = 0x2;
+
+// TSN VLAN registers.
+// One register per sensor virtual port N: FPGA_SENSOR_VP_VLAN_BASE + FPGA_SENSOR_VP_STRIDE * N
+// One global EVT register: FPGA_EVT_VLAN
+// Both use packed format: {VLAN_EN[16], PCP[15:13], DEI[12], VID[11:0]}
+constexpr uint32_t FPGA_SENSOR_VP_VLAN_BASE = 0x1034;
+constexpr uint32_t FPGA_SENSOR_VP_STRIDE = 0x40;
+constexpr uint32_t FPGA_EVT_VLAN = 0x0230;
+
 // VSYNC control
 constexpr uint32_t VSYNC_CONTROL = 0x70000000;
 constexpr uint32_t VSYNC_FREQUENCY = 0x70000004;
@@ -137,11 +152,13 @@ constexpr uint32_t HOLOLINK_100G_BOARD_ID = 3u;
 constexpr uint32_t MICROCHIP_POLARFIRE_BOARD_ID = 4u;
 constexpr uint32_t HOLOLINK_NANO_BOARD_ID = 5u;
 constexpr uint32_t LEOPARD_EAGLE_BOARD_ID = 7u;
+constexpr uint32_t TT_DA326_BOARD_ID = 10u;
 
 // Other constants
 constexpr uint32_t METADATA_SIZE = 128;
 constexpr double APB_TIMEOUT_SCALE = 1.0 / 51.2e-9;
-constexpr double APB_TIMEOUT_MAX = 0xFFFFFF / APB_TIMEOUT_SCALE;
+constexpr uint32_t APB_TIMEOUT_MIN_HEX = 0x1;
+constexpr uint32_t APB_TIMEOUT_MAX_HEX = 0xFFFFFF;
 
 constexpr uint16_t DATA_SOURCE_UDP_PORT = 12288;
 
@@ -197,8 +214,15 @@ public:
     /**
      * Attach a synchronizable peer to this synchronizer.
      * @param peer The peer to attach
+     * @param defer_start When false (default), attaching the first peer
+     *                    runs setup() AND start() so timing pulses begin
+     *                    immediately. When true, only setup() runs — the
+     *                    caller is expected to invoke start() later, once
+     *                    all peers are ready. Lets stereo applications
+     *                    keep both cameras in their pre-trigger waiting
+     *                    state until everything is armed.
      */
-    void attach(std::shared_ptr<Synchronizable> peer);
+    void attach(std::shared_ptr<Synchronizable> peer, bool defer_start = false);
 
     /**
      * Detach a synchronizable peer from this synchronizer.
@@ -207,9 +231,22 @@ public:
     void detach(std::shared_ptr<Synchronizable> peer);
 
     /**
-     * Set up the synchronizer. Called when the first peer is attached.
+     * Program the synchronizer's configuration registers. Called when
+     * the first peer is attached. Does NOT begin emitting timing pulses
+     * — call start() for that.
      */
     virtual void setup() = 0;
+
+    /**
+     * Begin emitting timing pulses. Idempotent; safe to call repeatedly.
+     * setup() must have run first (or the implementation handles it).
+     */
+    virtual void start() = 0;
+
+    /**
+     * Stop emitting timing pulses. Idempotent.
+     */
+    virtual void stop() = 0;
 
     /**
      * Shut down the synchronizer. Called when the last peer is detached.
@@ -637,7 +674,7 @@ public:
         virtual void uart_write(const std::vector<uint8_t>& data) = 0;
         virtual std::vector<uint8_t> uart_read(size_t bytes_num, uint32_t& bytes_read) = 0;
 
-        // UART useroperations - all the private ones can be configured using the uart_reconfigure function
+        // UART user operations - all the private ones can be configured using the uart_reconfigure function
         virtual void uart_configure(uint32_t baud_rate, uint32_t data_bits, uint32_t parity, uint32_t stop_bits,
             uint32_t flow_control = 0, uint32_t tx_almost_empty_threshold = 4, uint32_t tx_almost_full_threshold = 252,
             uint32_t rx_almost_empty_threshold = 4, uint32_t rx_almost_full_threshold = 252)
@@ -680,6 +717,134 @@ public:
      * to the UART controller.
      */
     NamedLock& uart_lock();
+
+    /**
+     * @brief I2S audio interface.
+     */
+    class I2s {
+    public:
+        // All ABCs have virtual destructors
+        virtual ~I2s() {};
+
+        /// Sample bit depth (encodes I2S CTRL3[1:0]).
+        enum class BitDepth : uint32_t {
+            BD_8 = 0b00,
+            BD_16 = 0b01,
+            BD_24 = 0b10, ///< FPGA reset default
+            BD_32 = 0b11,
+        };
+
+        /// I2S data format (encodes I2S CTRL3[3:2]).
+        enum class DataFormat : uint32_t {
+            I2S = 0b00, ///< FPGA reset default
+            LJ = 0b01, ///< Left Justified
+            RJ = 0b10, ///< Right Justified
+        };
+
+        /// I2S channel mode (encodes I2S CTRL4[0]).
+        enum class ChannelMode : uint32_t {
+            Stereo = 0, ///< FPGA reset default
+            Mono = 1,
+        };
+
+        /**
+         * @brief Bring up the I2S audio path: SoC clock gate, APB peripheral
+         * (CTRL0..CTRL7), host TX FIFO, DMIC GPIO direction.
+         *
+         * @param enumeration_metadata Metadata from @ref Enumerator (used for DMIC GPIO direction)
+         * @param mclk_div MCLK divider: MCLK = REF_CLK / mclk_div (any positive integer; throws on 0)
+         * @param bclk_div_sel BCLK divider select (0..8, power-of-2 encoded: 0=/1, 1=/2, 2=/4, 3=/8, ... 8=/256; throws if > 8)
+         * @param bit_depth Sample bit depth: BD_8, BD_16, BD_24, BD_32 (8/16/24/32-bit)
+         * @param format I2S data format: I2S (standard), LJ (Left-Justified), RJ (Right-Justified)
+         * @param channel_mode Channel mode (Stereo, Mono)
+         * @param lrclk_polarity LRCLK polarity (false=left on LRCLK low, true=left on LRCLK high)
+         * @param enable_tx Enable I2S transmitter
+         * @param enable_rx Enable I2S receiver (also gates the DMIC GPIO flip)
+         * @param enable_loopback Internal loopback for testing (default false explicitly clears the FPGA reset value)
+         * @param tx_almost_full Host TX FIFO almost-full threshold
+         * @param tx_almost_empty Host TX FIFO almost-empty threshold
+         * @param pause_after Pause the host TX FIFO after bring-up
+         * @param slot_mode CTRL8 SLOT_MODE register value (default 0x1)
+         *
+         * Defaults (mclk_div=16, bclk_div_sel=3, bit_depth=BD_24) produce 48 kHz LRCLK.
+         * LRCLK is derived as MCLK / (2 * bit_depth_bits * 2^bclk_div_sel).
+         */
+        virtual void i2s_configure(
+            Metadata& enumeration_metadata,
+            uint32_t mclk_div = 16,
+            uint32_t bclk_div_sel = 3,
+            BitDepth bit_depth = BitDepth::BD_24,
+            DataFormat format = DataFormat::I2S,
+            ChannelMode channel_mode = ChannelMode::Stereo,
+            bool lrclk_polarity = false,
+            bool enable_tx = true,
+            bool enable_rx = true,
+            bool enable_loopback = false,
+            uint32_t tx_almost_full = 0x800,
+            uint32_t tx_almost_empty = 0x400,
+            bool pause_after = true,
+            uint32_t slot_mode = 1)
+            = 0;
+
+        /// CTRL1: MCLK divider that was last programmed.
+        virtual uint32_t mclk_div() const = 0;
+        /// CTRL2: BCLK divider select that was last programmed.
+        virtual uint32_t bclk_div_sel() const = 0;
+        /// CTRL3[1:0]: bit depth that was last programmed.
+        virtual BitDepth bit_depth() const = 0;
+        /// CTRL3[3:2]: data format that was last programmed.
+        virtual DataFormat data_format() const = 0;
+        /// CTRL4[0]: channel mode that was last programmed.
+        virtual ChannelMode channel_mode() const = 0;
+        /// CTRL7[0]: LRCLK polarity that was last programmed.
+        virtual bool lrclk_polarity() const = 0;
+        /// CTRL0[0]: whether TX was left enabled by the last configure.
+        virtual bool tx_enabled() const = 0;
+        /// CTRL0[1]: whether RX was left enabled by the last configure.
+        virtual bool rx_enabled() const = 0;
+        /// CTRL4[2]: whether internal loopback was left enabled.
+        virtual bool loopback_enabled() const = 0;
+        /// CTRL8: SLOT_MODE value that was last programmed.
+        virtual uint32_t slot_mode() const = 0;
+
+        /// Hardcoded to 1 in the FPGA today (STAT0[0]); returns true
+        /// regardless of actual PLL state. Provided for forward-compat.
+        virtual bool clock_locked() = 0;
+        /// STAT2[0]: TX FIFO underrun observed by the I2S peripheral.
+        virtual bool tx_underrun() = 0;
+        /// STAT2[1]: RX FIFO overrun observed by the I2S peripheral.
+        virtual bool rx_overrun() = 0;
+    };
+
+    /**
+     * @brief Get an I2S object (constructed with @ref I2s::i2s_configure applied).
+     *
+     * @see I2s::i2s_configure for the parameter details (divider math,
+     *      valid ranges, defaults).
+     *
+     * @return std::shared_ptr<I2s>
+     */
+    std::shared_ptr<I2s> get_i2s(
+        Metadata& enumeration_metadata,
+        uint32_t mclk_div = 16,
+        uint32_t bclk_div_sel = 3,
+        I2s::BitDepth bit_depth = I2s::BitDepth::BD_24,
+        I2s::DataFormat format = I2s::DataFormat::I2S,
+        I2s::ChannelMode channel_mode = I2s::ChannelMode::Stereo,
+        bool lrclk_polarity = false,
+        bool enable_tx = true,
+        bool enable_rx = true,
+        bool enable_loopback = false,
+        uint32_t tx_almost_full = 0x800,
+        uint32_t tx_almost_empty = 0x400,
+        bool pause_after = true,
+        uint32_t slot_mode = 1);
+
+    /**
+     * Return a named semaphore that guarantees singleton access
+     * to the I2S controller.
+     */
+    NamedLock& i2s_lock();
 
     /**
      * @brief GPIO class
@@ -845,6 +1010,63 @@ public:
      */
     std::shared_ptr<Synchronizer> ptp_pps_output(unsigned frequency = 0);
 
+    /**
+     * Identifies the target of a VLAN configuration operation.
+     * SENSOR_VP targets a sensor virtual port's data stream (use with a VP index).
+     * EVT targets the FPGA event notification channel (VP index is ignored).
+     */
+    enum class VlanTarget { SENSOR_VP,
+        EVT };
+
+    /**
+     * Configure 802.1Q VLAN tagging for a sensor virtual port or the EVT channel.
+     * Sets the VLAN ID, PCP, and DEI fields without changing the enable bit.
+     * Call set_vlan_enable() to activate tagging after configuration.
+     * @param target SENSOR_VP or EVT
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
+     * @param vlan_id 12-bit VLAN identifier matching the switch and host subinterface
+     * @param pcp 3-bit IEEE 802.1p priority code point for this traffic class
+     * @param drop_eligible Drop eligible indicator bit (default 0); set to 1 to mark frames as
+     *        eligible for discard under congestion per IEEE 802.1Q
+     */
+    void configure_vlan(VlanTarget target, uint32_t vp_index,
+        uint16_t vlan_id, uint8_t pcp, uint8_t drop_eligible = 0);
+
+    /**
+     * Enable or disable 802.1Q VLAN tagging for a sensor virtual port or the EVT channel.
+     * @param target SENSOR_VP or EVT
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
+     * @param enable true to enable tagging, false to disable
+     */
+    void set_vlan_enable(VlanTarget target, uint32_t vp_index, bool enable);
+
+    /**
+     * Returns true if 802.1Q VLAN tagging is currently enabled for the given target.
+     * @param target SENSOR_VP or EVT
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
+     */
+    bool get_vlan_enable(VlanTarget target, uint32_t vp_index);
+
+    /**
+     * Configure HSB PTP profile and domain.
+     * @param profile PTP profile constant: FPGA_PTP_PROFILE_1588_E2E, FPGA_PTP_PROFILE_GPTP, or FPGA_PTP_PROFILE_1588_P2P
+     * @param domain PTP domain number matching the host PTP daemon configuration (default: 0)
+     */
+    void configure_ptp(uint32_t profile, uint32_t domain = 0);
+
+    /**
+     * Configure HSB PTP to IEEE 1588 E2E profile.
+     * @param domain PTP domain number matching the host ptp4l configuration (default: 0)
+     */
+    void configure_1588(uint32_t domain = 0);
+
+    /**
+     * Configure HSB PTP to gPTP (IEEE 802.1AS) profile.
+     * Stop the host ptp4l service and start gptp4l before calling this.
+     * @param domain PTP domain number matching the gPTP host configuration (default: 0)
+     */
+    void configure_gptp(uint32_t domain = 0);
+
     class PtpSynchronizer : public Synchronizer {
     public:
         PtpSynchronizer(Hololink&);
@@ -852,6 +1074,8 @@ public:
         void set_frequency(unsigned frequency);
         void set_delay(unsigned delay_ns);
         void setup() override;
+        void start() override;
+        void stop() override;
         void shutdown() override;
         bool is_enabled() override;
 
@@ -860,7 +1084,10 @@ public:
         unsigned frequency_;
         unsigned frequency_control_;
         unsigned delay_ns_;
-        bool active_;
+        // configured_: setup() has run (config registers programmed).
+        // pulsing_: start() has run (VSYNC_CONTROL=1; pulses firing).
+        bool configured_;
+        bool pulsing_;
         std::mutex mutex_;
     };
 
@@ -965,6 +1192,7 @@ protected:
      */
     NamedLock& lock();
 
+public:
     /**
      * Clears any bits of the given memory location with
      * the bits not set in mask.
@@ -977,6 +1205,7 @@ protected:
      */
     bool or_uint32(uint32_t address, uint32_t mask);
 
+protected:
     /**
      * Configure the HSB device by setting some addressing
      * etc within the HSB device.  This is used by start()

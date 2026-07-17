@@ -21,6 +21,7 @@
 #include <pybind11/pybind11.h>
 
 #include <memory>
+#include <utility>
 
 #include <hololink/core/logging_internal.hpp>
 #include <holoscan/core/condition.hpp>
@@ -30,6 +31,25 @@
 namespace py = pybind11;
 
 namespace hololink {
+
+/**
+ * Wrap a py::object in a shared_ptr whose custom deleter acquires the GIL before
+ * dropping the Python reference. Capture the returned shared_ptr in any C++ lambda
+ * or std::function that the binding hands off to host code that may copy, move, or
+ * destroy the callable from a non-Python thread (Holoscan argument plumbing,
+ * reactor callback queues, worker threads, etc.). Downstream copies and
+ * destructions only touch the shared_ptr's C++ atomic refcount; only the final
+ * release deletes the py::object, and that deletion always runs under the GIL.
+ */
+inline std::shared_ptr<py::object> make_gil_safe_py_object(py::object obj)
+{
+    return std::shared_ptr<py::object>(
+        new py::object(std::move(obj)),
+        [](py::object* p) {
+            py::gil_scoped_acquire gil;
+            delete p;
+        });
+}
 
 /**
  * Currently there is a limitation in Python operators that wrap an underlying C++ operator that

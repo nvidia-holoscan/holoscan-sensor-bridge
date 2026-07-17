@@ -72,8 +72,8 @@ class LinuxReceiverOperator(hololink_module.operators.BaseReceiverOp):
         self._hololink_channel.configure_socket(self._data_socket.fileno())
         self._receiver = hololink_module.operators.LinuxReceiver(
             self._frame_memory,
-            self._frame_size,
-            self._frame_size,
+            self._allocation_size,
+            self._allocation_size,
             1,
             self._data_socket.fileno(),
             self.received_address_offset(),

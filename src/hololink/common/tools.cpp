@@ -18,6 +18,8 @@
  */
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdlib>
 #ifdef HAS_IBVERBS
 #include <infiniband/verbs.h>
 #endif
@@ -43,6 +45,31 @@ std::vector<std::string> infiniband_devices()
     std::sort(device_names.begin(), device_names.end());
 #endif
     return device_names;
+}
+
+std::string env_hololink_ip(std::size_t index, const std::string& fallback)
+{
+    const char* env = std::getenv("HOLOLINK_IPS");
+    if (env == nullptr || env[0] == '\0') {
+        return fallback;
+    }
+    const std::string ips(env);
+    std::size_t start = 0;
+    for (std::size_t i = 0; i < index; ++i) {
+        const std::size_t comma = ips.find(',', start);
+        if (comma == std::string::npos) {
+            return fallback;
+        }
+        start = comma + 1;
+    }
+    std::size_t end = ips.find(',', start);
+    if (end == std::string::npos) {
+        end = ips.size();
+    }
+    if (end == start) {
+        return fallback;
+    }
+    return ips.substr(start, end - start);
 }
 
 } // namespace hololink

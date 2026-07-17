@@ -29,7 +29,6 @@ SET(DOCA_PATH /opt/mellanox/doca)
 pkg_search_module(DOCA_GPUNETIO REQUIRED doca-gpunetio)
 pkg_search_module(DOCA_VERBS REQUIRED doca-verbs)
 
-enable_language(CUDA)
 # Check if DOCA is available
 message(STATUS "DOCA found at ${DOCA_PATH}")
 
@@ -40,40 +39,28 @@ add_library(gpu_roce_transceiver STATIC
   gpu_roce_transceiver_kernel.cu
 )
 
-set(LOCAL_CUDA_ARCHITECTURES "")
+# doca-gpunetio requires sm_80+. We don't filter CMAKE_CUDA_ARCHITECTURES (explicit user intent
+# is respected and an unbuildable arch should fail early at link time) but we warn so the source
+# of any subsequent doca-gpunetio link error is obvious. "native" is a CMake 3.24+ sentinel
+# resolved at configure time and is skipped by the numeric check.
+set(_grt_low_archs "")
 if (DEFINED CMAKE_CUDA_ARCHITECTURES AND NOT CMAKE_CUDA_ARCHITECTURES STREQUAL "")
-  # Keep only architectures >= 80; compare numeric part only (values may be e.g. 80-virtual, 70-real)
-  # architectures < 70 will fail to build/link with doca-gpunetio. doca gpunetio development suggests minimum 80
   foreach(arch IN LISTS CMAKE_CUDA_ARCHITECTURES)
+    if(arch STREQUAL "native")
+      message(STATUS "gpu_roce_transceiver: skipped \"native\" arch check against the anticipated doca-gpunetio sm_80 minimum.")
+      continue()
+    endif()
     string(REGEX REPLACE "^([0-9]+).*" "\\1" arch_num "${arch}")
-    if(NOT arch_num LESS 80)
-      list(APPEND LOCAL_CUDA_ARCHITECTURES ${arch})
-    else()
-      message(STATUS "gpu_roce_transceiver: ${arch} compute capability not used when building gpu_roce_transceiver. must be at least 80")
+    if(arch_num LESS 80)
+      list(APPEND _grt_low_archs ${arch})
     endif()
   endforeach()
 endif()
-
-# Default to compute_80 if empty for compatibility across target platforms and doca-gpunetio
-if(LOCAL_CUDA_ARCHITECTURES STREQUAL "")
-  list(APPEND LOCAL_CUDA_ARCHITECTURES 80-virtual)
-  message(STATUS "gpu_roce_transceiver: adding 80-virtual to CUDA_ARCHITECTURES for a minimally compatible build")
+if(_grt_low_archs)
+  # Anticipate sm_80 minimum from doca-gpunetio, but do not enforce it here.
+  message(WARNING "gpu_roce_transceiver: Requested CUDA arch(s) ${_grt_low_archs} below the anticipated sm_80 minimum "
+    "required by doca-gpunetio; build may fail at link time.")
 endif()
-
-# If CUDA_NATIVE_ARCH is set, append it to LOCAL_CUDA_ARCHITECTURES; else use -arch=native
-if(NOT "$ENV{CUDA_NATIVE_ARCH}" STREQUAL "")
-  list(APPEND LOCAL_CUDA_ARCHITECTURES "$ENV{CUDA_NATIVE_ARCH}")
-else()
-  # Force native architecture for optimized performance on platform if available
-  # This can actually fail if container nvcc and host driver are different versions
-  # in which case nvcc will default to a significantly older compute capability, which may fail for gpu_roce_transceiver.
-  # if this happens and result is not desired, the build should set CUDA_NATIVE_ARCH in the environment to the desired/native architecture
-  target_compile_options(gpu_roce_transceiver PRIVATE $<$<COMPILE_LANGUAGE:CUDA>:
-    -arch=native
-    >)
-endif()
-message(STATUS "gpu_roce_transceiver: build architectures ${LOCAL_CUDA_ARCHITECTURES} and native")
-set_property(TARGET gpu_roce_transceiver PROPERTY CUDA_ARCHITECTURES ${LOCAL_CUDA_ARCHITECTURES})
 
 # to silence doca api warnings publicly
 target_compile_options(gpu_roce_transceiver PUBLIC -DDOCA_ALLOW_EXPERIMENTAL_API=1)

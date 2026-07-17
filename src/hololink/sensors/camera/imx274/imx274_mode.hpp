@@ -56,7 +56,7 @@ namespace imx274_mode {
     constexpr size_t START_SEQUENCE_SIZE = 6;
     constexpr size_t STOP_SEQUENCE_SIZE = 2;
     constexpr size_t MODE_3840X2160_60FPS_SEQUENCE_SIZE = 83;
-    constexpr size_t MODE_1920X1080_60FPS_SEQUENCE_SIZE = 87;
+    constexpr size_t MODE_1920X1080_60FPS_SEQUENCE_SIZE = 84;
     constexpr size_t MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE = 83;
 
     // clang-format off

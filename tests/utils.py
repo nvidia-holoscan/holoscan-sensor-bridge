@@ -22,6 +22,7 @@ import threading
 import time
 import traceback
 
+import cuda.bindings.driver as cuda
 import cupy as cp
 import numpy as np
 import PIL.Image
@@ -276,6 +277,12 @@ class Watchdog:
         self._last_timeout = None
         self._reactor = hololink_module.Reactor.get_reactor()
         self._running = False
+        # Set when _expired fires. The SIGUSR1 -> "assert False" path can be
+        # swallowed (e.g. when the timeout lands inside a GXF operator's stop(),
+        # GXF catches and logs the AssertionError), which would let a stalled
+        # run be reported as PASSED. __exit__ re-checks this flag in the main
+        # thread after run() returns so a timeout always fails the test.
+        self._timed_out = False
 
     def __enter__(self):
         self.start()
@@ -283,6 +290,13 @@ class Watchdog:
 
     def __exit__(self, *args):
         self.stop()
+        # A watchdog timeout is always a failure. The SIGUSR1 -> assert path can
+        # be swallowed when the timeout lands inside a C++ operator's stop()
+        # (GXF logs and discards the exception), which would let a stalled run be
+        # reported as PASSED. Re-raise here, in the main thread after run() has
+        # returned, unless the block is already unwinding another exception.
+        if self._timed_out and args[0] is None:
+            raise AssertionError(f"{self._str_id} timed out (count={self._count})")
 
     def start(self):
         # In order to get pytest to properly fail, we need to call assert False
@@ -376,6 +390,9 @@ class Watchdog:
             f"{self._str_id} timed out, count={self._count}, time since last tap={dt}."
         )
         logging.error(message)
+        # Record the timeout so __exit__ fails the test even if the SIGUSR1
+        # assert below is swallowed (e.g. inside a GXF operator stop()).
+        self._timed_out = True
         os.kill(self._pid, signal.SIGUSR1)
         time.sleep(2)
         # We only get here if we weren't closed up by _sigusr1.
@@ -464,6 +481,31 @@ class PriorityScheduler:
     def __exit__(self, *args):
         logging.debug("Resetting scheduler.")
         os.sched_setscheduler(0, self._scheduler, self._params)
+
+
+class CudaContext:
+    """Retain the device's CUDA primary context for the duration of the block.
+
+    Yields self exposing ``.context`` (the ``CUcontext``) and
+    ``.device_ordinal``. The primary context is released on ``__exit__`` even
+    when the body raises, so an early error can't leak the retained context.
+    """
+
+    def __init__(self, device_ordinal=0):
+        self.device_ordinal = device_ordinal
+
+    def __enter__(self):
+        (cu_result,) = cuda.cuInit(0)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        cu_result, self._device = cuda.cuDeviceGet(self.device_ordinal)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        cu_result, self.context = cuda.cuDevicePrimaryCtxRetain(self._device)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        return self
+
+    def __exit__(self, *args):
+        (cu_result,) = cuda.cuDevicePrimaryCtxRelease(self._device)
+        assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 def encode_bayer_image(rgb_image, bayer_format):

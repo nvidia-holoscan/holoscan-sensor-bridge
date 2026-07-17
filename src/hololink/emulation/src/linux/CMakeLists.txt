@@ -18,8 +18,8 @@
 add_library(emulation_host STATIC
     data_plane.cpp
     hsb_emulator.cpp
-    register_memory.cpp
-    net.cpp)
+    net.cpp
+    utils.cpp)
 
 target_include_directories(emulation_host
     PUBLIC
@@ -29,64 +29,40 @@ target_include_directories(emulation_host
         $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
 )
 
+# Publish the linux/ source dir so emulation_common can see linux-only headers
+# (e.g. linux/data_plane_ctxt.hpp) if it ever needs to. BUILD_INTERFACE only:
+# these headers aren't installed and consumers of the exported targets must not
+# pick up build-tree paths post-install.
+target_include_directories(hsb_platform INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+)
+
 target_link_libraries(emulation_host
     PUBLIC
         emulation_common
         dlpack::dlpack
+        # DataPlane::send(DLTensor) cudaMemcpy's GPU-resident inputs into a host bounce
+        # buffer (LinuxDataPlaneCtxt::double_buffer) before forwarding to the transmitter.
+        CUDA::cudart
 )
 
 set_property(TARGET emulation_host PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-##### Transport target handling
+##### Transport sources — published to PARENT_SCOPE
+#
+# The actual emulationroce / emulationcoe libraries are assembled in
+# ../CMakeLists.txt from these lists plus the matching common/ sources.
 
-add_library(emulationcoe STATIC
-    coe_data_plane.cpp
-    coe_transmitter.cpp
-)
-target_include_directories(emulationcoe 
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../../>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
-)
-target_link_libraries(emulationcoe 
-    PUBLIC
-        hololink::emulation 
-        CUDA::cudart 
-)
-set_property(TARGET emulationcoe PROPERTY POSITION_INDEPENDENT_CODE ON)
-add_library(hololink::emulation::coe ALIAS emulationcoe)
+set(EMULATIONROCE_PLATFORM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/rocev2_data_plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/rocev2_transmitter.cpp
+    PARENT_SCOPE)
 
-install(TARGETS emulationcoe
+set(EMULATIONCOE_PLATFORM_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/coe_data_plane.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/coe_transmitter.cpp
+    PARENT_SCOPE)
+
+install(TARGETS emulation_host
     EXPORT HololinkTargets
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    COMPONENT hololink-emulation
-)
-
-add_library(emulationroce STATIC
-    rocev2_data_plane.cpp
-    rocev2_transmitter.cpp
-)
-
-target_include_directories(emulationroce 
-    PUBLIC
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../>
-        $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../../>
-        $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}/hololink/emulation>
-)
-target_link_libraries(emulationroce 
-    PUBLIC 
-        hololink::emulation 
-        ${ZLIB_LIBRARIES} 
-        CUDA::cudart 
-)
-set_property(TARGET emulationroce PROPERTY POSITION_INDEPENDENT_CODE ON)
-
-add_library(hololink::emulation::roce ALIAS emulationroce)
-
-install(TARGETS emulationroce
-    EXPORT HololinkTargets
-    DESTINATION ${CMAKE_INSTALL_LIBDIR}
     COMPONENT hololink-emulation)

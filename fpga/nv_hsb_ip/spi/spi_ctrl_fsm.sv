@@ -80,7 +80,6 @@ spi_states state,state_nxt;
 
 logic [15:0]   num_wr_bytes   ;
 logic [15:0]   num_rd_bytes   ;
-logic [15:0]   clk_cnt        ;
 logic          fsm_start      ;
 logic          cmd_valid      ;
 logic          spi_done       ;
@@ -148,7 +147,6 @@ logic        ack_rise ;
 logic        cmd_ack_prev;
 logic        busy;
 logic        spi_busy;
-logic        fsm_done;
 logic        cmd_ack;
 logic        read;
 logic        db_pready;

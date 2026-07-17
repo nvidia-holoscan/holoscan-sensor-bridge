@@ -54,21 +54,11 @@ static_assert(sizeof(FrameMetadata) == 128, "FrameMetadata size is not 128 bytes
 
 extern struct FrameMetadata* DEFAULT_FRAME_METADATA;
 
-/**
- * This is metadata that is associated with all Transmitters that implement the abstract BaseTransmitter class.
- *
- * payload_size: Size of the payload in bytes. Semantics may be up to the type of transmitter.
- * e.g., pre-HSB_PAGE_SIZE calculation for LinuxTransmitter
- */
-struct TransmissionMetadata {
-    uint32_t dest_mac_low;
-    uint32_t dest_mac_high;
-    uint32_t dest_ip_address;
-    uint32_t frame_size;
-    uint32_t payload_size;
-    uint16_t dest_port;
-    uint16_t src_port;
-};
+// Forward declaration. The transmitter receives a pointer to the common DataPlaneCtxt
+// (held by DataPlane::data_plane_ctxt_); each concrete transmitter downcasts to its
+// transport-specific layout (COECtxt / RoCEv2Ctxt / UDPCtxt) since those structs
+// embed the platform DataPlaneCtxt extension as their first member.
+struct DataPlaneCtxt;
 
 // returns 0 on failure or the number of bytes written on success.
 // Note that on failure, serializer and buffer contents are in indeterminate state.
@@ -77,7 +67,10 @@ size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMet
 /**
  * @brief Abstract base class for all transmitters
  *
- * This class is used to send DLPack tensors to the destination to interfacing with a variety of array memory models.
+ * Concrete transmitters (COETransmitter, RoCEv2Transmitter, UDPTransmitter) receive a
+ * `DataPlaneCtxt*` and downcast to their transport-specific ctxt (COECtxt, RoCEv2Ctxt,
+ * UDPCtxt) — those structs embed the platform DataPlaneCtxt extension as their first
+ * member, so the pointer cast is sound.
  */
 class BaseTransmitter {
 public:
@@ -91,17 +84,14 @@ public:
     virtual ~BaseTransmitter() { }
 
     /**
-     * @brief Send a tensor to the destination
-     *
-     * @param metadata The metadata for the transmission. This is always aliased from the appropriate type of metadata for the Transmitter instance.
-     * @param tensor The tensor to send. See dlpack.h for its contents and semantics.
-     * @return The number of bytes sent or < 0 on error
-     *
-     * @note The tensor is not owned by the transmitter and must not be
-     * propagated to other objects to satisfy the DLPack Python API specification.
+     * @brief Send a host buffer to the destination.
+     * @param ctxt DataPlaneCtxt for the owning DataPlane. Concrete transmitter downcasts.
+     * @param buffer Host-memory buffer.
+     * @param buffer_size Bytes to send.
+     * @param frame_metadata Optional frame-flush trigger; see DataPlane::send for semantics.
+     * @return Bytes sent, or < 0 on error.
      */
-    virtual int64_t send(TransmissionMetadata* metadata, const DLTensor& tensor, FrameMetadata* frame_metadata = nullptr) = 0;
-    virtual int64_t send(TransmissionMetadata* metadata, const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata = nullptr) = 0;
+    virtual int64_t send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size_t buffer_size, FrameMetadata* frame_metadata = nullptr) = 0;
 };
 
 } // namespace hololink::emulation

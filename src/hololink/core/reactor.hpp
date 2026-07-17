@@ -24,6 +24,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <poll.h>
 #include <string>
 #include <thread>
 #include <vector>

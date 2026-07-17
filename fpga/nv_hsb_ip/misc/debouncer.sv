@@ -23,7 +23,7 @@ module debouncer  #(
     output  logic                 debounce_out
 );
 
-localparam COUNT_MSB = $clog2(DEBOUNCE_CNT);
+localparam COUNT_MSB = $clog2(DEBOUNCE_CNT+1);
 
 logic [1:0]           debounce_reg;
 logic                 start_count;

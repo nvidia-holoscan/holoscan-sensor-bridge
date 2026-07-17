@@ -62,7 +62,6 @@ localparam W_CNT = $clog2(N_REG+1);
 
 logic [W_DATA-1:0] reg_rdbk [N_REG];
 logic [W_ADDR-1:0] reg_addr [N_REG];
-logic [ N_REG-1:0] reg_err;
 logic [ W_CNT-1:0] reg_seq;
 logic [       7:0] cntr;
 logic              done;

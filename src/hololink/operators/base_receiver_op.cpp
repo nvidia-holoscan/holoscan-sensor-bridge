@@ -200,11 +200,18 @@ void BaseReceiverOp::compute(holoscan::InputContext& input, holoscan::OutputCont
     const nvidia::gxf::Shape shape { tensor_size };
     const nvidia::gxf::PrimitiveType element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
     const uint64_t element_size = nvidia::gxf::PrimitiveTypeSize(element_type);
+    // Keep the receiver's frame buffer alive for as long as this wrapped tensor is
+    // referenced anywhere downstream. Otherwise stopping the receiver frees the buffer
+    // while in-flight frames still point into it, and the GPU pipeline reads freed
+    // memory (CUDA_ERROR_ILLEGAL_ADDRESS). frame_memory_owner() returns an owning
+    // handle (or nullptr for receivers that don't need this), captured by the release
+    // callback below so the buffer is freed only after the last tensor is released.
+    auto buffer_owner = frame_memory_owner();
     if (!gxf_tensor.value()->wrapMemory(shape, element_type, element_size,
             nvidia::gxf::ComputeTrivialStrides(shape, element_size),
             nvidia::gxf::MemoryStorageType::kDevice, reinterpret_cast<void*>(frame_memory),
-            [](void*) {
-                // release function, nothing to do
+            [buffer_owner](void*) {
+                // Holds the owning reference until the tensor's memory is released.
                 return nvidia::gxf::Success;
             })) {
         throw std::runtime_error("Failed to add wrap memory");

@@ -1,5 +1,44 @@
 # Release Notes
 
+## 2.7-GA, July 2026
+
+### Dependencies
+
+- IGX Orin:
+  [IGX-SW 1.1.3 Production Release](https://developer.nvidia.com/igx-downloads)
+- IGX Thor: [IGX-SW 2.0 Production Release](https://developer.nvidia.com/igx-downloads)
+- AGX Orin: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up
+  JetPack 7.2.
+- AGX Thor: Use [SDK Manager](https://developer.nvidia.com/sdk-manager) to set up
+  JetPack 7.2.
+- Holoscan Sensor Bridge, 10G; FPGA v2606.
+
+Be sure and follow the installation instructions included with the release, including
+PTP configuration and HSB device firmware updates. To generate documentation, in the
+host system, run `sh docs/make_docs.sh --preview`, then use your browser to look at
+`http://localhost:3000`.
+
+### Updates from 2.6-GA
+
+- **hololink_module** Support for applications to dynamically adapt to different HSB
+  devices and HSB-IP versions, without recompiling.  Support for this uses new APIs for
+  applications and for `hololink_module` device drivers.  See the user guide pages
+  "Hololink Module Applications" and "Hololink Module Devices" for details.  Examples
+  using this new approach are available in the examples directory: look for those with
+  the word "module" in the filename.
+- **Emulator** Unified Linux/MCU emulators under single emulator HAL for application
+  development and include templated targets for extending to other MCU hardware.
+  Vb1940Emulator now supports calibration data storage via simulated I2C EEPROM.
+- **MIPI CPNX Reference Design** using the Tauro Technologies DA326 Holoscan GMSL
+  adapter and the Leopard Hawk camera.
+- **FusaCoeCapture** can now be used with non image-formatted data.
+- **I2S audio** for audio recording and playback; see `examples/audio_recorder.py` and
+  `examples/audio_player.py`
+- **AI Skills** for assisting in device and host setup; see the `skills` directory.
+- **User guide** is updated for consistency with HSDK.
+
+And many minor updates.
+
 ## 2.6-GA, June 2026
 
 ### Dependencies

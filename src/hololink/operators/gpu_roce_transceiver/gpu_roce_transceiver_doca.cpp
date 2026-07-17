@@ -225,7 +225,7 @@ exit:
     return result;
 }
 
-doca_error_t DocaQp::create(struct doca_verbs_context* verbs_ctx, const size_t frame_size)
+doca_error_t DocaQp::create(struct doca_verbs_context* verbs_ctx, const size_t frame_size, enum doca_gpu_dev_verbs_nic_handler nic_handler)
 {
     size_t dbr_umem_align_sz;
     struct doca_verbs_qp_init_attr* qp_init_attr = nullptr;
@@ -431,29 +431,14 @@ doca_error_t DocaQp::create(struct doca_verbs_context* verbs_ctx, const size_t f
         goto exit;
     }
 
-    if (umem_cpu) {
-        result = doca_gpu_verbs_export_qp(gdev,
-            ndev,
-            qp,
-            DOCA_GPUNETIO_VERBS_NIC_HANDLER_CPU_PROXY,
-            umem_dbr_dev_ptr,
-            cq_sq,
-            cq_rq,
-            &gpu_qp);
-    } else {
-        result = doca_gpu_verbs_export_qp(gdev,
-            ndev,
-            qp,
-#if DOCA_SEND_BLUE_FLAME == 1
-            DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF,
-#else
-            DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_DB,
-#endif
-            umem_dbr_dev_ptr,
-            cq_sq,
-            cq_rq,
-            &gpu_qp);
-    }
+    result = doca_gpu_verbs_export_qp(gdev,
+        ndev,
+        qp,
+        nic_handler,
+        umem_dbr_dev_ptr,
+        cq_sq,
+        cq_rq,
+        &gpu_qp);
 
     if (result != DOCA_SUCCESS) {
         HSB_LOG_ERROR("Failed to create GPU verbs QP");
@@ -476,6 +461,7 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
 {
     doca_error_t result;
     cudaError_t result_cuda;
+    int mr_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING;
 
     gpu_rx_ring.stride_sz = stride_sz;
     gpu_rx_ring.stride_num = stride_num;
@@ -521,16 +507,36 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
                 gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num,
                 0, // (uint64_t)(void*)cu_buffer_,
                 gpu_rx_ring.dmabuf_fd,
-                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE /* | IBV_ACCESS_RELAXED_ORDERING */);
+                mr_access_flags);
+
+            if (gpu_rx_ring.addr_mr == nullptr) {
+                // Re-try without RO flag
+                mr_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+                gpu_rx_ring.addr_mr = ibv_reg_dmabuf_mr(ibv_pd,
+                    0,
+                    gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num,
+                    0, // (uint64_t)(void*)cu_buffer_,
+                    gpu_rx_ring.dmabuf_fd,
+                    mr_access_flags);
+            }
         }
     }
 
-    if (gpu_rx_ring.addr_mr == nullptr)
-        gpu_rx_ring.addr_mr = ibv_reg_mr_iova(ibv_pd, (void*)gpu_rx_ring.addr, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, 0, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE /* | IBV_ACCESS_RELAXED_ORDERING */);
     if (gpu_rx_ring.addr_mr == nullptr) {
-        HSB_LOG_ERROR("Cannot register gpu_rx_ring memory region p={} size={}, errno={}.",
-            (uint64_t)gpu_rx_ring.addr, (int)gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, errno);
-        return DOCA_ERROR_NOT_SUPPORTED;
+        mr_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE | IBV_ACCESS_RELAXED_ORDERING;
+        gpu_rx_ring.addr_mr = ibv_reg_mr_iova(ibv_pd, (void*)gpu_rx_ring.addr, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, 0, mr_access_flags);
+    }
+
+    if (gpu_rx_ring.addr_mr == nullptr) {
+        // Re-try without RO flag
+        mr_access_flags = IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE;
+        gpu_rx_ring.addr_mr = ibv_reg_mr_iova(ibv_pd, (void*)gpu_rx_ring.addr, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, 0, mr_access_flags);
+
+        if (gpu_rx_ring.addr_mr == nullptr) {
+            HSB_LOG_ERROR("Cannot register gpu_rx_ring memory region p={} size={}, errno={}.",
+                (uint64_t)gpu_rx_ring.addr, (int)gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, errno);
+            return DOCA_ERROR_NOT_SUPPORTED;
+        }
     }
 
     if (umem_cpu) {
@@ -608,12 +614,12 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
                 gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num,
                 0,
                 gpu_tx_ring.dmabuf_fd,
-                IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE /* | IBV_ACCESS_RELAXED_ORDERING */);
+                mr_access_flags);
         }
     }
 
     if (gpu_tx_ring.addr_mr == nullptr)
-        gpu_tx_ring.addr_mr = ibv_reg_mr_iova(ibv_pd, (void*)gpu_tx_ring.addr, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num, 0, IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE /* | IBV_ACCESS_RELAXED_ORDERING */);
+        gpu_tx_ring.addr_mr = ibv_reg_mr_iova(ibv_pd, (void*)gpu_tx_ring.addr, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num, 0, mr_access_flags);
     if (gpu_tx_ring.addr_mr == nullptr) {
         HSB_LOG_ERROR("Cannot register gpu_tx_ring memory region p={} size={}, errno={}.",
             (uint64_t)gpu_tx_ring.addr, (int)gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num, errno);

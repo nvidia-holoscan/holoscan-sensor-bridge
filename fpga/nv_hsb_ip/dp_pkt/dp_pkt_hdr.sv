@@ -16,6 +16,7 @@
 module dp_pkt_hdr #(
     parameter W_DATA         = 64,
     parameter W_KEEP         = W_DATA/8,
+    parameter W_USER         = 17,
     parameter ROCE_HDR_WIDTH = 128,
     parameter COE_HDR_WIDTH  = 128,
     parameter WR_IMM_SIZE    = 128,
@@ -32,13 +33,14 @@ module dp_pkt_hdr #(
   // Control
   input  [2:0]                    i_header_type,
   input                           i_trigger,
+  input  [W_USER-1:0]             i_tuser,
   output                          o_busy,
   // AXIS output
   output                          o_axis_tvalid,
   output                          o_axis_tlast,
   output [W_DATA-1:0]             o_axis_tdata,
   output [W_KEEP-1:0]             o_axis_tkeep,
-  output                          o_axis_tuser,
+  output [W_USER-1:0]             o_axis_tuser,
   input                           i_axis_tready
 );
 
@@ -48,6 +50,7 @@ logic [W_DATA-1:0] r_axis_tdata;
 logic              r_axis_tlast;
 logic              r_axis_tready;
 logic [W_KEEP-1:0] r_axis_tkeep;
+logic [W_USER-1:0] r_axis_tuser;
 logic              r_axis_tvalid;
 
 
@@ -125,7 +128,9 @@ logic                               r_busy;
 logic                               is_last;
 logic [W_KEEP-1:0]                  tkeep;
 logic                               data_is_zero;
-
+logic                               is_valid;
+logic [W_USER-1:0]                  tuser;
+logic                               is_last_r;
 
 always_ff @(posedge i_clk) begin
   if (i_rst) begin
@@ -143,6 +148,9 @@ always_ff @(posedge i_clk) begin
     r_trigger               <= '0;
     r_busy                  <= '0;
     data_is_zero            <= '1;
+    is_valid                <= '0;
+    tuser                   <= '0;
+    is_last_r               <= '0;
   end
   else begin
     r_trigger <= i_trigger;
@@ -150,22 +158,32 @@ always_ff @(posedge i_clk) begin
       AXI_IDLE: begin
         if ({r_trigger,i_trigger} == 2'b01) begin
           vec_state           <=  is_last ? AXI_LAST : AXI_SEND;
+          is_last_r           <= is_last;
           r_busy              <= '1;
           data_is_zero        <= '0;
+          is_valid            <= '1;
+          tuser               <= i_tuser;
         end
       end
       AXI_SEND: begin
         if (r_axis_tready) begin
           vec_state               <= is_last     ? AXI_LAST : vec_state;
+          is_last_r               <= is_last;
         end
       end
       AXI_LAST: begin
         vec_state               <= r_axis_tready ? AXI_IDLE : vec_state;
         r_busy                  <= !r_axis_tready;
         data_is_zero            <= r_axis_tready;
+        is_valid                <= !r_axis_tready;
+        is_last_r               <= !r_axis_tready;
+        tuser                   <= r_axis_tready ? '0 : tuser;
       end
       default: begin
         vec_state               <= AXI_IDLE;
+        is_valid                <= '0;
+        is_last_r               <= '0;
+        tuser                   <= '0;
       end
     endcase
   end
@@ -207,33 +225,28 @@ always_comb begin
   endcase
 end
 
-always_comb begin
-  r_axis_tdata = '0;
-  if (!data_is_zero) begin
-    r_axis_tdata = hdr[W_DATA*cnt+:W_DATA];
-  end
-end
+assign r_axis_tdata = hdr[W_DATA*cnt+:W_DATA];
 
-assign r_axis_tlast  = (vec_state == AXI_LAST);
-assign r_axis_tvalid = (vec_state != AXI_IDLE);
+assign r_axis_tlast  = is_last_r;
+assign r_axis_tvalid = is_valid;
 assign r_axis_tkeep  = r_axis_tlast ? tkeep : '1;
+assign r_axis_tuser  = tuser;
 
 
 axis_reg # (
-  .DWIDTH             ( W_DATA + W_KEEP + 1                       ),
-  .SKID               ( 1'b0                                      )
+  .DWIDTH             ( W_DATA + W_KEEP + W_USER + 1              ),
+  .SKID               ( 1'b1                                      )
 ) u_axis_reg (
   .clk                ( i_clk                                     ),
   .rst                ( i_rst                                     ),
   .i_axis_rx_tvalid   ( r_axis_tvalid                             ),
-  .i_axis_rx_tdata    ( {r_axis_tdata,r_axis_tlast,r_axis_tkeep}  ),
+  .i_axis_rx_tdata    ( {r_axis_tdata,r_axis_tlast,r_axis_tkeep,r_axis_tuser}  ),
   .o_axis_rx_tready   ( r_axis_tready                             ),
   .o_axis_tx_tvalid   ( o_axis_tvalid                             ),
-  .o_axis_tx_tdata    ( {o_axis_tdata,o_axis_tlast,o_axis_tkeep}  ),
+  .o_axis_tx_tdata    ( {o_axis_tdata,o_axis_tlast,o_axis_tkeep,o_axis_tuser}  ),
   .i_axis_tx_tready   ( i_axis_tready                             )
 );
 
-assign o_axis_tuser  = 1'b0;
 assign o_busy       = r_busy || o_axis_tvalid;
 
 endmodule

@@ -21,74 +21,64 @@
 
 #include "coe_data_plane.hpp"
 #include "coe_transmitter.hpp"
-
+#include "data_plane.hpp"
+#include "net.hpp"
 namespace hololink::emulation {
 
-COEDataPlane::COEDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id)
-    : DataPlane(hsb_emulator, source_ip, data_plane_id, sensor_id)
+COETransmitter COE_TRANSMITTER;
+
+// Allocate the COECtxt on the heap and hand its DataPlaneCtxt-aliased base back to
+// the protected DataPlane constructor inside a unique_ptr whose deleter knows to
+// downcast and delete the COECtxt. Standard-layout first-member chain
+// (COECtxt -> LinuxDataPlaneCtxt -> DataPlaneCtxt) guarantees the pointer is the same
+// address as the COECtxt itself.
+static std::unique_ptr<DataPlaneCtxt, std::function<void(DataPlaneCtxt*)>>
+make_coe_ctxt()
 {
-    // allocate transmitter and its metadata
-    // initialize the COE transmitter with the interface name of the ip_address configuration
-    transmitter_ = new COETransmitter(ip_address_.if_name);
-    COETransmissionMetadata* coe_metadata = (COETransmissionMetadata*)calloc(1, sizeof(COETransmissionMetadata));
-    if (!coe_metadata) {
-        throw std::runtime_error("Failed to allocate COE metadata");
+    COECtxt* coe_ctxt = new COECtxt(); // value-init: trivial fields zero; std::mutex default-constructed
+    return {
+        &coe_ctxt->base.base,
+        [](DataPlaneCtxt* p) { delete reinterpret_cast<COECtxt*>(p); }
+    };
+}
+
+COEDataPlane::COEDataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id)
+    : DataPlane(hsb_emulator, source_ip, data_plane_id, sensor_id, make_coe_ctxt())
+{
+    // data_plane_ctxt_ now points at &coe_ctxt->base.base — same memory as the COECtxt.
+    COECtxt* coe_ctxt = reinterpret_cast<COECtxt*>(data_plane_ctxt_.get());
+
+    transmitter_ = &COE_TRANSMITTER;
+    ((COETransmitter*)transmitter_)->init_metadata(coe_ctxt, source_ip, sensor_id);
+
+    int data_socket_fd = socket(AF_PACKET, SOCK_RAW, htons(ETHERTYPE_AVTP));
+    if (data_socket_fd < 0) {
+        fprintf(stderr, "Failed to create socket: %d - %s\n", errno, strerror(errno));
+        throw std::runtime_error("Failed to create socket");
     }
-    coe_metadata->sensor_info = sensor_id;
-    metadata_ = (TransmissionMetadata*)coe_metadata;
+
+    // minimal sockaddr_ll initialization for binding to receive on interface
+    // TODO: check if the bind is even necessary
+    struct sockaddr_ll sockaddr;
+    sockaddr.sll_family = AF_PACKET;
+    sockaddr.sll_protocol = htons(ETHERTYPE_AVTP);
+    sockaddr.sll_ifindex = if_nametoindex(ip_address_.if_name);
+
+    if (bind(data_socket_fd, (struct sockaddr*)&sockaddr, sizeof(sockaddr)) == -1) {
+        throw std::runtime_error("Failed to bind socket to interface " + std::string(source_ip.if_name));
+    }
+    coe_ctxt->data_socket_fd = data_socket_fd;
+    coe_ctxt->dest_addr.sll_family = sockaddr.sll_family;
+    coe_ctxt->dest_addr.sll_ifindex = sockaddr.sll_ifindex;
+    coe_ctxt->dest_addr.sll_protocol = sockaddr.sll_protocol;
+    coe_ctxt->dest_addr.sll_halen = 6;
 }
 
 COEDataPlane::~COEDataPlane()
 {
-    delete transmitter_;
-    free(metadata_);
-}
-
-void COEDataPlane::update_metadata()
-{
-    struct AddressValuePair address_value_pairs[] = {
-        /* TransmissionMetadata */
-        { vp_address_ + DP_HOST_MAC_LOW, 0 },
-        { vp_address_ + DP_HOST_MAC_HIGH, 0 },
-        { vp_address_ + DP_HOST_IP, 0 },
-        { vp_address_ + DP_BUFFER_LENGTH, 0 },
-        { hif_address_ + DP_PACKET_SIZE, 0 },
-        { vp_address_ + DP_HOST_UDP_PORT, 0 },
-        { hif_address_ + DP_PACKET_UDP_PORT, 0 },
-        /* COE specific registers*/
-        { vp_address_ + DP_QP, 0 },
-    };
-    registers_->read_many(address_value_pairs, sizeof(address_value_pairs) / sizeof(address_value_pairs[0]));
-
-    // read many will lock the registers for reading while update_metadata will lock the TransmissionMetadata for writing
-    // assign common TransmissionMetadata fields
-    metadata_->dest_mac_low = address_value_pairs[0].value;
-    metadata_->dest_mac_high = address_value_pairs[1].value;
-    metadata_->dest_ip_address = address_value_pairs[2].value;
-    metadata_->frame_size = address_value_pairs[3].value;
-    if (address_value_pairs[4].value > UINT16_MAX / HSB_PAGE_SIZE) {
-        throw std::runtime_error("payload_size * HSB_PAGE_SIZE must fit in uint16_t");
-    }
-    metadata_->payload_size = address_value_pairs[4].value * HSB_PAGE_SIZE;
-    if (address_value_pairs[5].value > UINT16_MAX) {
-        throw std::runtime_error("dest_port must be 16-bit unsigned integer");
-    }
-    metadata_->dest_port = (uint16_t)address_value_pairs[5].value;
-    if (address_value_pairs[6].value > UINT16_MAX) {
-        throw std::runtime_error("src_port must be 16-bit unsigned integer");
-    }
-    metadata_->src_port = (uint16_t)address_value_pairs[6].value;
-    COETransmissionMetadata* coe_metadata = (COETransmissionMetadata*)metadata_;
-    // NOTE: cannot check for overflow on casts because the register is packed this way
-    coe_metadata->line_threshold_log2_enable_1722b = static_cast<uint8_t>(address_value_pairs[7].value >> 25);
-    coe_metadata->enable_1722b = static_cast<bool>((address_value_pairs[7].value >> 24) & 0x1);
-    coe_metadata->channel = static_cast<uint8_t>(address_value_pairs[7].value & 0x3F);
-    coe_metadata->mac_dest[5] = static_cast<uint8_t>((metadata_->dest_mac_low >> 0) & 0xFF);
-    coe_metadata->mac_dest[4] = static_cast<uint8_t>((metadata_->dest_mac_low >> 8) & 0xFF);
-    coe_metadata->mac_dest[3] = static_cast<uint8_t>((metadata_->dest_mac_low >> 16) & 0xFF);
-    coe_metadata->mac_dest[2] = static_cast<uint8_t>((metadata_->dest_mac_low >> 24) & 0xFF);
-    coe_metadata->mac_dest[1] = static_cast<uint8_t>((metadata_->dest_mac_high >> 0) & 0xFF);
-    coe_metadata->mac_dest[0] = static_cast<uint8_t>((metadata_->dest_mac_high >> 8) & 0xFF);
+    // The COECtxt itself (with its embedded ~LinuxDataPlaneCtxt that frees double_buffer)
+    // is destroyed by data_plane_ctxt_'s deleter. Just close the socket here.
+    close(reinterpret_cast<COECtxt*>(data_plane_ctxt_.get())->data_socket_fd);
 }
 
 } // namespace hololink::emulation

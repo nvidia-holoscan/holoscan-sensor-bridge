@@ -46,6 +46,7 @@ public:
     std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms, CUstream cuda_stream) override;
     std::tuple<std::string, uint32_t> local_ip_and_port() override;
     bool frames_ready() override;
+    std::shared_ptr<void> frame_memory_owner() override;
 
     // Setter for rename_metadata function
     void set_rename_metadata(std::function<std::string(const std::string&)> rename_fn);
@@ -78,7 +79,9 @@ private:
 
     std::shared_ptr<RoceReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;
-    std::unique_ptr<hololink::ReceiverMemoryDescriptor> frame_memory_;
+    // shared_ptr (not unique_ptr) so the frame buffer's lifetime can be extended
+    // past stop_receiver() by in-flight tensors that wrap it (see frame_memory_owner).
+    std::shared_ptr<hololink::ReceiverMemoryDescriptor> frame_memory_;
 
     void run();
 };

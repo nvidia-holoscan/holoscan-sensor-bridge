@@ -65,14 +65,14 @@ typedef enum logic [3:0] {
 append_states append_state, append_state_nxt;
 
 logic [9:0]             idx;
-logic [W_KEEP-1:0]      tkeep;
 logic [9:0]             r_idx;
 logic [DWIDTH-1:0]      ftr;
-logic                   tlast;
 logic                   ftr_en_seen;
 logic                   incr_state;
 logic                   is_done;
 logic [7:0]             cnt;
+logic                   data_not_zero;
+logic                   data_not_zero_cmb;
 
 integer i;
 
@@ -84,25 +84,37 @@ always_comb begin
 end
 
 always_comb begin
-  append_state_nxt = append_state;
+  append_state_nxt  = append_state;
+  data_not_zero_cmb = data_not_zero;
   case (append_state)
     APPEND_IDLE: begin
       if (i_axis_rx_tlast && i_axis_rx_tvalid && i_ftr_en) begin
         append_state_nxt = (!i_ftr_val && !ftr_en_seen)  ? APPEND_WAIT  :
                             (is_done)                     ? APPEND_IDLE  :   // Sent in same cycle
                                                             APPEND_FTR   ;   // Needs extra cycles
+        data_not_zero_cmb = (!i_ftr_val && !ftr_en_seen)  ? '1  :
+                            (is_done)                     ? '1  :   // Sent in same cycle
+                                                            '0  ;   // Needs extra cycles
+      end
+      else begin
+        data_not_zero_cmb = '1;
       end
     end
     APPEND_WAIT: begin
       append_state_nxt = (i_ftr_val || ftr_en_seen) ? (is_done) ? APPEND_IDLE :
                                                                   APPEND_FTR  :
                                                                   APPEND_WAIT ;
+      data_not_zero_cmb = (i_ftr_val || ftr_en_seen) ? (is_done) ? '1 :
+                                                                   '0 :
+                                                                   '1 ;
     end
     APPEND_FTR: begin
-      append_state_nxt = (r_tkeep[W_KEEP+:W_KEEP] == '0) ? APPEND_IDLE : APPEND_FTR;
+      append_state_nxt  = (r_tkeep[W_KEEP+:W_KEEP] == '0) ? APPEND_IDLE : APPEND_FTR;
+      data_not_zero_cmb = (r_tkeep[W_KEEP+:W_KEEP] == '0) ? '1 : '0;
     end
     default: begin
-      append_state_nxt = APPEND_IDLE;
+      append_state_nxt  = APPEND_IDLE;
+      data_not_zero_cmb = '1;
     end
   endcase
 end
@@ -120,13 +132,15 @@ end
 
 always_ff @(posedge clk) begin
   if (rst) begin
-    append_state <= APPEND_IDLE;
-    r_idx        <= '0;
-    r_tkeep      <= '0;
-    ftr_en_seen  <= '0;
-    cnt          <= '0;
+    append_state  <= APPEND_IDLE;
+    r_idx         <= '0;
+    r_tkeep       <= '0;
+    ftr_en_seen   <= '0;
+    cnt           <= '0;
+    data_not_zero <= '1;
   end
   else begin
+
     if (o_axis_tx_tlast && i_axis_tx_tready) begin
       ftr_en_seen <= 1'b0;
     end
@@ -136,6 +150,7 @@ always_ff @(posedge clk) begin
 
     if (incr_state) begin
       append_state <= append_state_nxt;
+      data_not_zero <= data_not_zero_cmb;
     end
     if (append_state == APPEND_FTR) begin
       if (i_axis_tx_tready) begin
@@ -158,7 +173,7 @@ assign o_axis_rx_tready = (append_state == APPEND_WAIT) ? (incr_state && (append
                                                           (i_axis_tx_tready && (append_state_nxt == APPEND_IDLE))                 ;
 assign o_axis_tx_tuser  = i_axis_rx_tuser;
 assign o_axis_tx_tlast  = (append_state_nxt == APPEND_IDLE) && ((i_axis_rx_tlast && i_axis_rx_tvalid) || (append_state != APPEND_IDLE));
-assign o_axis_tx_tdata  = (((append_state != APPEND_FTR) ? i_axis_rx_tdata : '0) | ftr);
+assign o_axis_tx_tdata  = ((data_not_zero ? i_axis_rx_tdata : '0) | ftr);
 assign o_axis_tx_tkeep  = (append_state == APPEND_FTR)                      ? r_tkeep[0+:W_KEEP] :
                           (i_axis_rx_tlast && i_axis_rx_tvalid && i_ftr_en) ? tkeep_final[0+:W_KEEP]:
                                                                               i_axis_rx_tkeep;

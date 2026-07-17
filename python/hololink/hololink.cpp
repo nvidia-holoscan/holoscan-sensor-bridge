@@ -220,8 +220,12 @@ PYBIND11_MODULE(_hololink, m)
         .def_static("spi_timeout", &Timeout::spi_timeout, "timeout"_a = std::shared_ptr<Timeout>())
         .def_static("now_s", &Timeout::now_s)
         .def_static("now_ns", &Timeout::now_ns)
-        .def("expired", &Timeout::expired)
-        .def("trigger_s", &Timeout::trigger_s)
+        .def("expired", py::overload_cast<>(&Timeout::expired, py::const_))
+        .def("expired_and_remaining", [](const Timeout& self) {
+            double remaining_s = 0.0;
+            bool exp = self.expired(remaining_s);
+            return std::make_tuple(exp, remaining_s);
+        })
         .def("retry", &Timeout::retry);
 
     // Present Metadata as an unmutable dictionary to Python
@@ -331,7 +335,7 @@ PYBIND11_MODULE(_hololink, m)
                 // check if the default timeout should be used and then create a new timeout
                 // starting now
                 return Enumerator::find_channel(channel_ip,
-                    timeout == default_timeout ? std::make_shared<Timeout>(20.f) : timeout);
+                    timeout == default_timeout ? std::make_shared<Timeout>(10.f) : timeout);
             },
             "channel_ip"_a, "timeout"_a = default_timeout)
         .def(
@@ -364,11 +368,25 @@ PYBIND11_MODULE(_hololink, m)
         .def_static("handle_bootp_fd", &Enumerator::handle_bootp_fd, "fd"_a)
         .def_static(
             "register_ip", [](const std::string& ip, py::function call_back) {
-                py::object callback_obj = std::move(call_back); // keep ref alive
-                // Create a C++ callback that manages the Python callback safely
-                auto cpp_callback = [callback_obj](Metadata& metadata) -> void {
+                // The std::function the reactor stores can be copied
+                // and destroyed off-GIL: ReactorEnumerator::fd_callback
+                // snapshots ip_callback_map_ into a local vector before
+                // dispatching, so a CallbackHandle whose last live
+                // reference sits in that vector gets destroyed on the
+                // reactor thread. Wrap the py::object in a shared_ptr
+                // whose custom deleter re-acquires the GIL, so lambda
+                // copies/destructions only touch the C++ atomic
+                // refcount; only the final release Py_DECREFs, and
+                // that runs under the GIL.
+                std::shared_ptr<py::object> callback_holder(
+                    new py::object(std::move(call_back)),
+                    [](py::object* p) {
+                        py::gil_scoped_acquire gil;
+                        delete p;
+                    });
+                auto cpp_callback = [callback_holder](Metadata& metadata) -> void {
                     py::gil_scoped_acquire acquire_guard;
-                    callback_obj(metadata);
+                    (*callback_holder)(metadata);
                 };
 
                 // Register callback and return the handle
@@ -500,6 +518,7 @@ PYBIND11_MODULE(_hololink, m)
         .def_static("use_sensor", &DataChannel::use_sensor, "metadata"_a, "sensor_number"_a)
         .def("frame_end_sequencer", &DataChannel::frame_end_sequencer)
         .def_static("use_data_plane_configuration", &DataChannel::use_data_plane_configuration, "metadata"_a, "data_plane"_a)
+        .def_static("use_vlan", &DataChannel::use_vlan, "metadata"_a, "vlan_id"_a, "sensor_pcp"_a, "evt_pcp"_a)
         .def("enumeration_metadata", &DataChannel::enumeration_metadata)
         .def("set_packetizer_program", &DataChannel::set_packetizer_program);
 
@@ -524,6 +543,8 @@ PYBIND11_MODULE(_hololink, m)
                                .def("get_fpga_date", &Hololink::get_fpga_date, py::call_guard<py::gil_scoped_release>())
                                .def("sif0_frame_start_sequencer", &Hololink::sif0_frame_start_sequencer, "Sequencer for SIF 0 frame start")
                                .def("sif1_frame_start_sequencer", &Hololink::sif1_frame_start_sequencer, "Sequencer for SIF 1 frame start")
+                               .def("sif0_frame_end_sequencer", &Hololink::sif0_frame_end_sequencer, "Sequencer for SIF 0 frame end")
+                               .def("sif1_frame_end_sequencer", &Hololink::sif1_frame_end_sequencer, "Sequencer for SIF 1 frame end")
                                .def("gpio0_sequencer", &Hololink::gpio0_sequencer, "Sequencer for GPIO0")
                                .def("gpio1_sequencer", &Hololink::gpio1_sequencer, "Sequencer for GPIO1")
                                .def(
@@ -642,7 +663,26 @@ PYBIND11_MODULE(_hololink, m)
                                .def(
                                    "ptp_synchronize", [](Hololink& me) { return me.ptp_synchronize(); }, py::call_guard<py::gil_scoped_release>())
                                .def("ptp_synchronized", &Hololink::ptp_synchronized, py::call_guard<py::gil_scoped_release>())
-                               .def("ptp_pps_output", &Hololink::ptp_pps_output, "frequency"_a = 0);
+                               .def("ptp_pps_output", &Hololink::ptp_pps_output, "frequency"_a = 0)
+                               .def("configure_vlan", &Hololink::configure_vlan,
+                                   "target"_a, "vp_index"_a, "vlan_id"_a, "pcp"_a,
+                                   "drop_eligible"_a = (uint8_t)0,
+                                   py::call_guard<py::gil_scoped_release>())
+                               .def("set_vlan_enable", &Hololink::set_vlan_enable,
+                                   "target"_a, "vp_index"_a, "enable"_a,
+                                   py::call_guard<py::gil_scoped_release>())
+                               .def("get_vlan_enable", &Hololink::get_vlan_enable,
+                                   "target"_a, "vp_index"_a,
+                                   py::call_guard<py::gil_scoped_release>())
+                               .def("configure_ptp", &Hololink::configure_ptp,
+                                   "profile"_a, "domain"_a = 0u,
+                                   py::call_guard<py::gil_scoped_release>())
+                               .def("configure_1588", &Hololink::configure_1588,
+                                   "domain"_a = 0u,
+                                   py::call_guard<py::gil_scoped_release>())
+                               .def("configure_gptp", &Hololink::configure_gptp,
+                                   "domain"_a = 0u,
+                                   py::call_guard<py::gil_scoped_release>());
 
     py::class_<Hololink::I2c, std::shared_ptr<Hololink::I2c>>(m, "I2c")
         .def("i2c_transaction",
@@ -700,6 +740,75 @@ PYBIND11_MODULE(_hololink, m)
         .def("rx_almost_empty_threshold", &Hololink::Uart::rx_almost_empty_threshold)
         .def("rx_almost_full_threshold", &Hololink::Uart::rx_almost_full_threshold);
 
+    auto i2s = py::class_<Hololink::I2s, std::shared_ptr<Hololink::I2s>>(m, "I2s");
+
+    py::enum_<Hololink::I2s::BitDepth>(i2s, "BitDepth")
+        .value("BD_8", Hololink::I2s::BitDepth::BD_8)
+        .value("BD_16", Hololink::I2s::BitDepth::BD_16)
+        .value("BD_24", Hololink::I2s::BitDepth::BD_24)
+        .value("BD_32", Hololink::I2s::BitDepth::BD_32);
+
+    py::enum_<Hololink::I2s::DataFormat>(i2s, "DataFormat")
+        .value("I2S", Hololink::I2s::DataFormat::I2S)
+        .value("LJ", Hololink::I2s::DataFormat::LJ)
+        .value("RJ", Hololink::I2s::DataFormat::RJ);
+
+    py::enum_<Hololink::I2s::ChannelMode>(i2s, "ChannelMode")
+        .value("Stereo", Hololink::I2s::ChannelMode::Stereo)
+        .value("Mono", Hololink::I2s::ChannelMode::Mono);
+
+    i2s
+        .def("i2s_configure", &Hololink::I2s::i2s_configure,
+            "enumeration_metadata"_a,
+            "mclk_div"_a = 16,
+            "bclk_div_sel"_a = 3,
+            "bit_depth"_a = Hololink::I2s::BitDepth::BD_24,
+            "format"_a = Hololink::I2s::DataFormat::I2S,
+            "channel_mode"_a = Hololink::I2s::ChannelMode::Stereo,
+            "lrclk_polarity"_a = false,
+            "enable_tx"_a = true,
+            "enable_rx"_a = true,
+            "enable_loopback"_a = false,
+            "tx_almost_full"_a = 0x800,
+            "tx_almost_empty"_a = 0x400,
+            "pause_after"_a = true,
+            "slot_mode"_a = 1,
+            py::call_guard<py::gil_scoped_release>())
+        .def("mclk_div", &Hololink::I2s::mclk_div)
+        .def("bclk_div_sel", &Hololink::I2s::bclk_div_sel)
+        .def("bit_depth", &Hololink::I2s::bit_depth)
+        .def("data_format", &Hololink::I2s::data_format)
+        .def("channel_mode", &Hololink::I2s::channel_mode)
+        .def("lrclk_polarity", &Hololink::I2s::lrclk_polarity)
+        .def("tx_enabled", &Hololink::I2s::tx_enabled)
+        .def("rx_enabled", &Hololink::I2s::rx_enabled)
+        .def("loopback_enabled", &Hololink::I2s::loopback_enabled)
+        .def("slot_mode", &Hololink::I2s::slot_mode)
+        .def("clock_locked", &Hololink::I2s::clock_locked,
+            py::call_guard<py::gil_scoped_release>())
+        .def("tx_underrun", &Hololink::I2s::tx_underrun,
+            py::call_guard<py::gil_scoped_release>())
+        .def("rx_overrun", &Hololink::I2s::rx_overrun,
+            py::call_guard<py::gil_scoped_release>());
+
+    // get_i2s is attached after the I2s enums above so its default-argument
+    // conversion (BitDepth / DataFormat / ChannelMode) sees registered types.
+    hololink_module.def("get_i2s", &Hololink::get_i2s,
+        "enumeration_metadata"_a,
+        "mclk_div"_a = 16,
+        "bclk_div_sel"_a = 3,
+        "bit_depth"_a = Hololink::I2s::BitDepth::BD_24,
+        "format"_a = Hololink::I2s::DataFormat::I2S,
+        "channel_mode"_a = Hololink::I2s::ChannelMode::Stereo,
+        "lrclk_polarity"_a = false,
+        "enable_tx"_a = true,
+        "enable_rx"_a = true,
+        "enable_loopback"_a = false,
+        "tx_almost_full"_a = 0x800,
+        "tx_almost_empty"_a = 0x400,
+        "pause_after"_a = true,
+        "slot_mode"_a = 1);
+
     py::enum_<Hololink::Event>(hololink_module, "Event")
         .value("SW_EVENT", Hololink::Event::SW_EVENT)
         .value("SIF_0_FRAME_END", Hololink::Event::SIF_0_FRAME_END)
@@ -708,6 +817,10 @@ PYBIND11_MODULE(_hololink, m)
         .value("GPIO1", Hololink::Event::GPIO1)
         .value("SIF_0_FRAME_START", Hololink::Event::SIF_0_FRAME_START)
         .value("SIF_1_FRAME_START", Hololink::Event::SIF_1_FRAME_START);
+
+    py::enum_<Hololink::VlanTarget>(hololink_module, "VlanTarget")
+        .value("SENSOR_VP", Hololink::VlanTarget::SENSOR_VP)
+        .value("EVT", Hololink::VlanTarget::EVT);
 
     auto gpio = py::class_<Hololink::GPIO, std::shared_ptr<Hololink::GPIO>>(m, "GPIO")
                     .def("set_direction", &Hololink::GPIO::set_direction, "pin"_a, "direction"_a, py::call_guard<py::gil_scoped_release>())
@@ -777,9 +890,12 @@ PYBIND11_MODULE(_hololink, m)
     // Bind Synchronizer class
     py::class_<Synchronizer, std::shared_ptr<Synchronizer>>(m, "Synchronizer")
         .def_static("null_synchronizer", &Synchronizer::null_synchronizer)
-        .def("attach", &Synchronizer::attach, "peer"_a)
+        .def("attach", &Synchronizer::attach,
+            "peer"_a, "defer_start"_a = false)
         .def("detach", &Synchronizer::detach, "peer"_a)
         .def("setup", &Synchronizer::setup)
+        .def("start", &Synchronizer::start)
+        .def("stop", &Synchronizer::stop)
         .def("shutdown", &Synchronizer::shutdown)
         .def("is_enabled", &Synchronizer::is_enabled);
 

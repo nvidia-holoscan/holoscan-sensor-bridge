@@ -26,6 +26,22 @@ FROM ${CONTAINER_VERSION} AS base
 # build container
 FROM base AS builder
 
+# Compiler caching with sccache (default ON). Disable with docker/build.sh
+# --use-sccache=0, which passes HOLOLINK_USE_SCCACHE=OFF: setup.py and the tools
+# CMake invocation below then skip the compiler launcher and compile directly.
+ARG HOLOLINK_USE_SCCACHE=ON
+ENV HOLOLINK_USE_SCCACHE=${HOLOLINK_USE_SCCACHE}
+# sccache is provided on PATH by the base build-environment image (see Dockerfile).
+# setup.py and the tools CMake invocation below wire it in as the C/C++/CUDA compiler
+# launcher; SCCACHE_DIR is a BuildKit cache mount (see the build RUN steps) so object
+# hits persist across image builds and are shared between the wheel and tools builds.
+ENV SCCACHE_DIR=/sccache
+ENV SCCACHE_CACHE_SIZE=20G
+# Pin the wheel build directory to a stable path (setup.py honors this) so the
+# generated-header include paths baked into compile commands don't change run to
+# run, which would otherwise miss in sccache's path-sensitive cache keys.
+ENV HOLOLINK_BUILD_DIR=/opt/hololink/python/build
+
 # Creates a container copy of the HoloLink source code without sharing a build volume.
 COPY . /opt/hololink
 WORKDIR /opt/hololink
@@ -33,16 +49,36 @@ WORKDIR /opt/hololink
 # RoCE receiver: GPU VRAM frame buffers require working GPUDirect RDMA.
 # Set OFF via docker/build.sh --disable-roce-gpu-vram when the PCIe path does not support it.
 ARG HOLOLINK_ROCE_USE_GPU_VRAM=ON
+# Semicolon-separated list of CUDA architectures to target by default during the wheel build below.
+# https://cmake.org/cmake/help/latest/envvar/CUDAARCHS.html
+# Allowable values:
+#   https://cmake.org/cmake/help/latest/prop_tgt/CUDA_ARCHITECTURES.html
+#   https://developer.nvidia.com/cuda-gpus
+ARG CUDAARCHS=native
 
 # See build.sh for why INSTALL_ENVIRONMENT is here.
 ARG INSTALL_ENVIRONMENT=""
-RUN cd python \
+RUN --mount=type=cache,target=/sccache,sharing=locked \
+    cd python \
     && env HOLOLINK_ROCE_USE_GPU_VRAM=${HOLOLINK_ROCE_USE_GPU_VRAM} \
-        $INSTALL_ENVIRONMENT pip3 wheel -v .
+        $INSTALL_ENVIRONMENT pip3 wheel -v . \
+    && if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then sccache --show-stats; fi
 
-# Build tools with CMake
-RUN cmake -S . -B build -G Ninja -D HOLOLINK_BUILD_ONLY_NATIVE=ON
-RUN cmake --build build -j
+# Build tools with CMake. When sccache is enabled the compiler launchers route
+# C/C++/CUDA through it, reusing the object cache populated by the wheel build above.
+RUN --mount=type=cache,target=/sccache,sharing=locked \
+    if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then \
+        SCCACHE_ARGS="-D CMAKE_C_COMPILER_LAUNCHER=sccache \
+            -D CMAKE_CXX_COMPILER_LAUNCHER=sccache \
+            -D CMAKE_CUDA_COMPILER_LAUNCHER=sccache"; \
+    fi \
+    && cmake -S . -B build -G Ninja \
+        -D HOLOLINK_BUILD_ONLY_NATIVE=ON \
+        -D CMAKE_LINKER_TYPE=LLD \
+        $SCCACHE_ARGS
+RUN --mount=type=cache,target=/sccache,sharing=locked \
+    cmake --build build -j \
+    && if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then sccache --show-stats; fi
 RUN cmake --install build --prefix /opt/hololink/tools
 
 # demo container
@@ -63,12 +99,25 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
         python3-requests \
         python3-yaml \
         libnvinfer-bin="10.*" \
+        python3-alsaaudio \
+        libasound2-plugins \
     && rm -rf /var/lib/apt/lists/*
 
 # Install the HoloLink Python wheel built above
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/
 RUN WHEEL=$(find /tmp/wheel -type f -name "hololink-*.whl") \
     && pip3 install ${WHEEL}
+
+# The wheel ships the C++ example binaries under
+# <site-packages>/bin/<name> (the install(TARGETS …) rule in
+# examples/CMakeLists.txt). Symlink that directory's contents onto
+# PATH so every example is callable by its bare name without per-binary
+# console_scripts plumbing in setup.py — adding a new example just
+# means rebuilding the wheel. sysconfig (stdlib) gives us the
+# install-scheme paths without importing hololink_module (which
+# would pull in libcuda.so.1 — not present at container build time).
+RUN BIN_DIR="$(python3 -c 'import sysconfig, pathlib; print(pathlib.Path(sysconfig.get_paths()["platlib"]) / "bin")')" \
+    && find "$BIN_DIR" -maxdepth 1 -type f -exec ln -sf -t /usr/local/bin/ {} +
 
 # Install the C++ tools built above
 COPY --from=builder /opt/hololink/tools/ /usr/local/

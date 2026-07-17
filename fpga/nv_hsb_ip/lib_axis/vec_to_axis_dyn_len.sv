@@ -17,7 +17,8 @@ module vec_to_axis_dyn_len
 #(
     parameter                               AXI_DWIDTH   = 64,
     parameter                               AXI_TKEEP    = AXI_DWIDTH/8,
-    parameter                               DATA_WIDTH   = 288
+    parameter                               DATA_WIDTH   = 288,
+    parameter                               W_USER       = 1
 )(
     input                                   clk,
     input                                   rst,
@@ -25,12 +26,13 @@ module vec_to_axis_dyn_len
     input                                   trigger,
     input   [DATA_WIDTH-1:0]                data,
     input   [$clog2(DATA_WIDTH/8)-1:0]      byte_len,
+    input   [W_USER-1:0]                    tuser,
     output                                  is_busy,
   //AXIS Interface
     output  logic                           o_axis_tx_tvalid,
     output  logic   [AXI_DWIDTH-1:0]        o_axis_tx_tdata,
     output  logic                           o_axis_tx_tlast,
-    output  logic                           o_axis_tx_tuser,
+    output  logic   [W_USER-1:0]            o_axis_tx_tuser,
     output  logic   [(AXI_DWIDTH/8)-1:0]    o_axis_tx_tkeep,
     input                                   i_axis_tx_tready
 );
@@ -103,7 +105,7 @@ assign o_axis_tx_tlast  = (vec_state == AXI_LAST);
 assign o_axis_tx_tvalid = (vec_state != AXI_IDLE);
 assign o_axis_tx_tkeep  = o_axis_tx_tlast ? (byte_len[AXI_TKEEP_WIDTH-1:0]!='d0) ? r_tkeep_val : '1
                                           : '1;
-assign o_axis_tx_tuser  = 1'b0;
+assign o_axis_tx_tuser  = (vec_state != AXI_IDLE) ? tuser : '0;
 assign is_busy          = r_is_busy;
 
 endmodule

@@ -34,7 +34,7 @@ module vsync_gen
   input             i_pps,
   input      [31:0] i_ptp_nanosec,
   output            o_vsync_strb,
-  output     [ 7:0] o_gpio_mux_en 
+  output     [ 9:0] o_gpio_mux_en 
 );
 
  localparam PERIOD_10HZ  = 30'h5F5_E100;
@@ -49,11 +49,11 @@ module vsync_gen
   logic        cfg_vsync_en_ff;
   logic        cfg_vsync_en_posedge;
   logic [ 3:0] cfg_vsync_mode;
-  logic        cfg_vsync_single_pulse_mode;
+  logic        cfg_vsync_1hz_mode;
   logic [31:0] cfg_vsync_dly;
   logic        cfg_vsync_start_val;
   logic [31:0] cfg_vsync_exp_time;
-  logic [ 7:0] cfg_gpio_mux_en;
+  logic [ 9:0] cfg_gpio_mux_en;
 
   assign cfg_vsync_en_posedge = cfg_vsync_en & ~cfg_vsync_en_ff;
 
@@ -119,7 +119,7 @@ module vsync_gen
   assign cfg_vsync_dly       = ctrl_reg[2][31:0];
   assign cfg_vsync_start_val = ctrl_reg[3][0];
   assign cfg_vsync_exp_time  = ctrl_reg[4][31:0];
-  assign cfg_gpio_mux_en     = ctrl_reg[5][7:0];
+  assign cfg_gpio_mux_en     = ctrl_reg[5][9:0];
 
   always_ff @ (posedge i_clk) begin
     if (i_rst) begin 
@@ -130,7 +130,7 @@ module vsync_gen
       strb_timer   <= 'd0;
       prev_timer   <= 'd0;
       cfg_vsync_en_ff <= 1'b0;
-      cfg_vsync_single_pulse_mode <= 1'b0;
+      cfg_vsync_1hz_mode <= 1'b0;
       state        <= IDLE;
     end else begin
       cfg_vsync_en_ff <= cfg_vsync_en;
@@ -141,7 +141,7 @@ module vsync_gen
           vsync_strb   <= cfg_vsync_start_val;
           strb_cnt     <= 'd0;
           strb_timer   <= cfg_vsync_dly[29:0];
-          cfg_vsync_single_pulse_mode <= cfg_vsync_mode == 4'd5;
+          cfg_vsync_1hz_mode <= cfg_vsync_mode == 4'd5;
           case(cfg_vsync_mode)
             4'd0:    begin strb_period <= PERIOD_10HZ;  max_strb_cnt <= 7'd10;  end
             4'd1:    begin strb_period <= PERIOD_30HZ;  max_strb_cnt <= 7'd30;  end
@@ -151,10 +151,10 @@ module vsync_gen
             default: begin strb_period <= PERIOD_60HZ;  max_strb_cnt <= 7'd60;  end
           endcase
 
-          if (pps & ~cfg_vsync_single_pulse_mode) begin
+          if (pps & ~cfg_vsync_1hz_mode) begin
             state <= WAIT;
           end
-          else if (cfg_vsync_en_posedge & cfg_vsync_single_pulse_mode) begin
+          else if (cfg_vsync_en_posedge & cfg_vsync_1hz_mode) begin
             if (nanosec >= strb_timer) begin
               state <= WAIT_FOR_PPS;
             end else begin
@@ -178,7 +178,7 @@ module vsync_gen
             prev_timer  <= strb_timer;
             state       <= SET_EDGE_TIMER;
           end else begin
-            if (cfg_vsync_single_pulse_mode) begin
+            if (cfg_vsync_1hz_mode) begin
               state <= IDLE;
             end else begin
               state       <= CHK_STRB_CNT;

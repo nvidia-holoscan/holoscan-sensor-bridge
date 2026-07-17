@@ -14,10 +14,6 @@
 # limitations under the License.
 
 import importlib
-
-# NOTE: This file should be kept in sync with src/hololink/emulation/hololink/emulation/__init__.py
-# Both files support different packaging flows (emulator-only vs full SDK)
-# Changes to the public API should be reflected in both locations
 import sys
 
 from ._emulation import (

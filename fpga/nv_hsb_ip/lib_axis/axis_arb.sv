@@ -87,11 +87,6 @@ endgenerate
 // Input Round Robin ARB
 //------------------------------------------------------------------------------------------------//
 
-logic                    arb_axis_tvalid;
-logic                    arb_axis_tlast;
-logic [W_DATA-1:0]       arb_axis_tdata;
-logic [W_KEEP-1:0]       arb_axis_tkeep;
-logic                    arb_axis_tuser;
 logic                    arb_axis_tready;
 
 logic [N_INPT-1:0]       w_axis_tready;
@@ -118,14 +113,15 @@ end
 generate
   if (ARB_TYPE == "ROUND_ROBIN") begin
     rrarb #(
-      .WIDTH ( N_INPT               )
+      .WIDTH ( N_INPT                 )
     ) axis_arb (
-      .clk   ( i_clk                ),
-      .rst_n ( !i_rst               ),
-      .rst   ( 1'b0                 ),
-      .idle  ( !pkt_active          ),
-      .req   ( r_axis_tvalid        ),
-      .gnt   ( w_axis_tready        )
+      .clk     ( i_clk                ),
+      .rst_n   ( !i_rst               ),
+      .rst     ( 1'b0                 ),
+      .idle    ( !pkt_active          ),
+      .req     ( r_axis_tvalid        ),
+      .gnt_idx ( gnt_idx              ),
+      .gnt     ( w_axis_tready        )
     );
   end
   else begin
@@ -139,32 +135,33 @@ generate
       .req   ( r_axis_tvalid        ),
       .gnt   ( w_axis_tready        )
     );
+    integer j;
+    always_comb begin
+      gnt_idx = '0;
+      for (j=0;j<N_INPT;j=j+1) begin
+        if (w_axis_tready[j]) begin
+          gnt_idx = j;
+        end
+      end
+    end
   end
 endgenerate
 
-logic        hp_incr;
-logic        hp_rst;
-logic [15:0] r_hp_pkt_cnt;
 
-integer j;
-always_comb begin
-  gnt_idx = '0;
-  for (j=0;j<N_INPT;j=j+1) begin
-    if (w_axis_tready[j]) begin
-      gnt_idx = j;
-    end
-  end
-end
 
 assign r_axis_tready = (arb_axis_tready) ? w_axis_tready : '0;
 
-assign o_axis_tvalid = r_axis_tvalid[gnt_idx];
-assign o_axis_tdata  = r_axis_tdata[gnt_idx];
-assign o_axis_tlast  = r_axis_tlast[gnt_idx];
-assign o_axis_tuser  = r_axis_tuser[gnt_idx];
-assign o_axis_tkeep  = r_axis_tkeep[gnt_idx];
-assign arb_axis_tready = i_axis_tready;
-assign o_axis_idx = gnt_idx;
-
+axis_reg # (
+  .DWIDTH             ( W_DATA + W_KEEP + 1 + W_USER + W_INDX)
+) u_in_axis_reg (
+  .clk                ( i_clk                                                                                             ),
+  .rst                ( i_rst                                                                                             ),
+  .i_axis_rx_tvalid   ( r_axis_tvalid[gnt_idx]                                                                            ),
+  .i_axis_rx_tdata    ( {r_axis_tdata[gnt_idx],r_axis_tlast[gnt_idx],r_axis_tkeep[gnt_idx],r_axis_tuser[gnt_idx],gnt_idx} ),
+  .o_axis_rx_tready   ( arb_axis_tready                                                                                   ),
+  .o_axis_tx_tvalid   ( o_axis_tvalid                                                                                     ),
+  .o_axis_tx_tdata    ( {o_axis_tdata,o_axis_tlast,o_axis_tkeep,o_axis_tuser,o_axis_idx}                                  ),
+  .i_axis_tx_tready   ( i_axis_tready                                                                                     )
+);
 
 endmodule

@@ -14,7 +14,8 @@
 // limitations under the License.
 
 module ptp_parser #(
-  parameter PTP_INGRESS_WIDTH = 64*8
+  parameter PTP_INGRESS_WIDTH = 64*8,
+  parameter W_USER            = 17
 )(
   input           i_clk,
   input           i_rst,
@@ -22,6 +23,8 @@ module ptp_parser #(
   input           i_is_gPTP,
   input  [ 7:0]   i_ptp_rx_data [PTP_INGRESS_WIDTH/8],
   input           i_ptp_rx_vld,
+  input  [ 7:0]   i_ptp_domain,
+  input  [W_USER-1:0] i_ptp_rx_axis_tuser,
 
   output          o_sync_msg_vld,
   output          o_follow_up_msg_vld,
@@ -63,11 +66,13 @@ logic [ 3:0] rx_majorsdoid;
 logic [ 3:0] rx_msg_type;
 logic [15:0] rx_msg_len;
 logic [3:0]  rx_versionPTP;
+logic [ 7:0] rx_domain;
 
 assign rx_msg_type   = i_ptp_rx_data[0][3:0];
 assign rx_majorsdoid = i_ptp_rx_data[0][7:4]; //MajorSdoId
 assign rx_versionPTP = i_ptp_rx_data[1][3:0];
 assign rx_msg_len    = {i_ptp_rx_data[2] ,i_ptp_rx_data[3]};
+assign rx_domain     = i_ptp_rx_data[4];
 assign o_flag        = {i_ptp_rx_data[6] ,i_ptp_rx_data[7]};
 assign o_cf_ns       = {i_ptp_rx_data[8] ,i_ptp_rx_data[9],i_ptp_rx_data[10],i_ptp_rx_data[11],i_ptp_rx_data[12],i_ptp_rx_data[13]};
 assign o_src_clkid   = {i_ptp_rx_data[20],i_ptp_rx_data[21],i_ptp_rx_data[22],i_ptp_rx_data[23],
@@ -77,6 +82,7 @@ assign o_seq_id      = {i_ptp_rx_data[30],i_ptp_rx_data[31]};
 
 logic is_versionPTP;
 logic is_profile;
+logic is_domain;
 logic is_sync_msg;
 logic is_follow_up_msg;
 logic is_dly_resp_msg;
@@ -84,17 +90,20 @@ logic is_ptp_rx_vld;
 logic is_pdly_req_msg;
 logic is_pdly_resp_msg;
 logic is_pdly_resp_follow_up_msg;
+logic is_no_vlan;
 
 assign is_versionPTP              = (rx_versionPTP == VERSION_PTP)               ? 1'b1 : 1'b0;
 assign is_profile                 = i_is_gPTP ? (rx_majorsdoid == 4'h1)          ? 1'b1 : 1'b0:
                                                 (rx_majorsdoid == 4'h0)          ? 1'b1 : 1'b0;
+assign is_domain                  = (rx_domain     == i_ptp_domain)              ? 1'b1 : 1'b0;
 assign is_sync_msg                = (rx_msg_type   == MSG_SYNC)                  ? 1'b1 : 1'b0;
 assign is_follow_up_msg           = (rx_msg_type   == MSG_FOLLOW_UP)             ? 1'b1 : 1'b0;
 assign is_dly_resp_msg            = (rx_msg_type   == MSG_DELAY_RESP)            ? 1'b1 : 1'b0;
 assign is_pdly_req_msg            = (rx_msg_type   == MSG_PDELAY_REQ)            ? 1'b1 : 1'b0;
 assign is_pdly_resp_msg           = (rx_msg_type   == MSG_PDELAY_RESP)           ? 1'b1 : 1'b0;
 assign is_pdly_resp_follow_up_msg = (rx_msg_type   == MSG_PDELAY_RESP_FOLLOW_UP) ? 1'b1 : 1'b0;
-assign is_ptp_rx_vld              = i_ptp_rx_vld && is_versionPTP && is_profile;
+assign is_no_vlan                 = !i_ptp_rx_axis_tuser[16];
+assign is_ptp_rx_vld              = i_ptp_rx_vld && is_versionPTP && is_profile && is_domain && is_no_vlan;
 
 assign o_sync_msg_vld                = is_ptp_rx_vld && is_sync_msg;
 assign o_follow_up_msg_vld           = is_ptp_rx_vld && is_follow_up_msg;

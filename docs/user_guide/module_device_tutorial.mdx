@@ -1,0 +1,421 @@
+## Introduction
+
+Users building their own HSB-IP based devices can use this tutorial to learn how to
+build an `hololink_module` driver. Applications use these drivers to access the
+functionality on that board, both for generic services and for things that are only
+present on your specific device. A typical device development workflow follows.
+
+Instantiate the HSB-IP block within your device:
+
+- Generate a new UUID for your device (e.g. `uuidgen`).
+- Update configuration parameters, e.g. to indicate how many sensor interfaces and
+  network ports your device has.
+- Add or adjust any peripherals that are specific to your device.
+- Ensure that per-device parameters, like MAC IDs and serial numbers, are appropriately
+  configured.
+
+Once the device is deployed, and the host is properly connected, you should see
+reasonable data using the `hololink-enumerate` command. For example, an HsbLite device
+produces these messages, one for each network port:
+
+```sh
+# hololink-enumerate
+mac_id=3A:31:1D:1E:24:AA hsb_ip_version=0x2606 fpga_crc=0x0 ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10060032828115 interface=enP5p3s0f0np0 board=hololink-lite
+mac_id=3A:31:1D:1E:24:AB hsb_ip_version=0x2606 fpga_crc=0x0 ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10060032828115 interface=enP5p3s0f1np1 board=hololink-lite
+```
+
+To build a driver, the typical workflow includes:
+
+- Identify the variations in your device from the standard HsbLite configuration. You'll
+  leverage the existing HsbLite implementation for everything that doesn't change.
+- Copy from a module template into a new directory for your device,
+  `hololink_module/module/<your-device>`. Use the module we're building in this
+  tutorial, `hololink_module/module/tutorial`, as your template.
+- Update the build instructions with the name and UUID for your device.
+- Update the software with your configuration parameters (e.g. number of sensor
+  interfaces and network ports).
+- Override any `HsbLite` service implementations as necessary.
+- Create services for any new features.
+- Build and install your module.
+- If your device supports a sensor configuration that's already supported by an example
+  application, you probably can use it without modification. You shouldn't even have to
+  recompile that application code.
+- For your new sensors or features, build an example application that demonstrates that
+  feature. Follow the [IMX274 Module Tutorial](module_imx274_tutorial.mdx) for
+  instructions on this.
+- Add testing for your device to the `tests` directory; this way your users can continue
+  to access your validation suite.
+
+Once your device is validated, you can publicly publish your updates for customers to
+use. As new versions of HSB-IP and host software are released, your module driver should
+continue to work as is; guidelines on what needs to be updated and when are under
+[Version management](#version-management), below.
+
+## The Tutorial device
+
+`hololink_module/module/tutorial` is an imaginary implementation used for this tutorial.
+It is the same as `HsbLite`, with these variations:
+
+- UUID `d3061b3b-85b0-4096-ba57-296d2418477f`.
+- Three sensor ports: 0 and 1 are cameras, 2 is an IMU.
+- One network interface.
+- A single register (`TUTORIAL_DEVICE_STATUS`, `0x42348000`) with a bit
+  (`STATUS_LED_BIT`) that turns an LED on or off.
+
+We'll show how you build a module based on `HsbLite`, apply sensor port configurations,
+and provide an API for setting that on-board LED.
+
+## The Tutorial module
+
+This module is an example you can copy to build your own device: **replace the word
+"tutorial" with your device's name throughout.**
+
+The module's source is in `hololink_module/module/tutorial/`. The parent
+`hololink_module/CMakeLists.txt` registers it — keep these `add_subdirectory` calls in
+alphabetical order:
+
+```cmake
+add_subdirectory(module/tutorial)
+```
+
+`hololink_module/module/tutorial/CMakeLists.txt` calls `add_hololink_module`, which
+builds the module into a shared object named `hololink_<uuid>_<compat-id>.so`:
+
+```cmake
+add_hololink_module(
+    NAME tutorial
+    UUID d3061b3b-85b0-4096-ba57-296d2418477f
+    SOURCES
+        module_entry.cpp
+)
+```
+
+By default the compat-id comes from the framework, so you're always building a module
+for that specific version of HSB-IP; see [Version management](#version-management),
+below.
+
+`hololink_module/module/tutorial/module_entry.cpp` holds the implementation — refer to
+the in-tree file for complete details; the key parts follow, top-down.
+
+The module's one exported entry point, `hololink_module_init`, builds the publisher. The
+host calls it to initialize the library when the application loads the module:
+
+```cpp
+extern "C" hololink_module_services_t
+hololink_module_init(const hololink_module_init_t* init)
+{
+    auto publisher = std::make_shared<TutorialDevicePublisher>();
+    g_publisher = publisher;
+    return publisher->setup(init);
+}
+```
+
+`TutorialDevicePublisher` satisfies application `get_service` requests — normally by
+passing them to its `HsbLite` superclass. Your device-specific behavior lives here; for
+the basic module that's just the board's name and its sensor layout:
+
+```cpp
+class TutorialDevicePublisher : public HsbLitePublisher {
+protected:
+    std::string module_name() const override { return "tutorial"; }
+
+    void publish_channel_configuration() override
+    {
+        auto impl = std::make_shared<TutorialDeviceChannelConfigurationV1>();
+        ServicePublisher<HsbLiteChannelConfigurationV1>(shared_from_this())
+            .publish("", impl);
+    }
+};
+```
+
+`module_name()` is documentation and logging only.
+
+`publish_channel_configuration()` publishes `TutorialDeviceChannelConfigurationV1`,
+which redefines `use_sensor` — how we hand the sensor and network-port configuration
+back to the framework. It isn't unique to one device; the same instance serves every
+device found:
+
+```cpp
+class TutorialDeviceChannelConfigurationV1
+    : public HsbLiteChannelConfigurationV1 {
+public:
+    void use_sensor(EnumerationMetadata& metadata, int64_t sensor_number) override
+    {
+        constexpr int64_t TOTAL_SENSORS = 3;
+        if (sensor_number < 0 || sensor_number >= TOTAL_SENSORS) {
+            throw std::runtime_error(
+                "While selecting a Tutorial device sensor: sensor_number "
+                + std::to_string(sensor_number)
+                + " is out of range (Tutorial device supports 0.."
+                + std::to_string(TOTAL_SENSORS - 1) + ")");
+        }
+        // One physical data plane (0) shared by every sensor, one SIF each.
+        hsb_lite_sensor_metadata(metadata, sensor_number,
+            /*data_plane=*/0, /*sifs_per_sensor=*/1);
+    }
+};
+```
+
+That's all the basic module needs — the functionality is all based on HSB-IP, so no
+further driver work is necessary. Build the module with cmake into a build directory
+under `/tmp`; the module `.so` is staged under `$BUILD_DIR/lib/hololink/modules/`, where
+applications find it:
+
+```sh
+BUILD_DIR=/tmp/hololink-build
+cmake -S . -B "$BUILD_DIR" -G Ninja
+cmake --build "$BUILD_DIR" --target tutorial
+```
+
+Applications load hololink module drivers dynamically, so you won't have to recompile
+them to work with your new device — the application observes your new UUID during
+enumeration and uses it to find your module. At this point, running
+`module_imx274_player` or `python3 examples/module_linux_imx274_player.py` should work
+unmodified.
+
+## Board-specific extensions
+
+Now that existing applications run, add functionality that is specific to your device.
+For the Tutorial device that's the status LED, exposed through a bespoke service.
+
+`TutorialDeviceInterfaceV1` declares the APIs that applications can call. Put it in the
+module's public header
+`hololink_module/module/tutorial/include/hololink/module/tutorial/tutorial_device.hpp`
+so applications can include it:
+
+```cpp
+class TutorialDeviceInterfaceV1
+    : public ConfigurableService<TutorialDeviceInterfaceV1> {
+public:
+    static constexpr const char* type_id = "tutorial_device.v1";
+
+    static std::string locator_id(const EnumerationMetadata& metadata)
+    {
+        return "serial=" + metadata.get<std::string>("serial_number");
+    }
+
+    virtual ~TutorialDeviceInterfaceV1() = default;
+
+    /* Turn the board's status LED on (true) or off (false). */
+    virtual hololink_module_status_t set_status_led(bool on) = 0;
+};
+```
+
+`type_id` is the identity `get_service` uses to hand back the right type; it must be
+unique to a class. `locator_id` builds the key used to find a cached instance for a
+device — a `;`-separated `name=value` string (here just `serial=<serial_number>`).
+
+Having declared the public interface `TutorialDeviceInterfaceV1` — visible to any
+application that includes this header — we now move to its implementation
+`TutorialDeviceV1`, which is only visible within the module itself.
+
+`configure()` sets this instance up for a specific device — the framework keeps a
+separate instance per serial number, so different devices each get their own. Once it's
+set up, calls to `set_status_led` control the on-board LED. The LED is wired as a
+pull-down: clearing bit 0 of `TUTORIAL_DEVICE_STATUS` turns it on, setting it turns it
+off.
+
+```cpp
+// device_status block: one status LED on bit 0. The LED is wired as a
+// pull-down, so clearing bit 0 turns it on and setting bit 0 turns it off.
+static constexpr uint32_t TUTORIAL_DEVICE_STATUS = 0x42348000;
+static constexpr uint32_t STATUS_LED_BIT = 1u << 0;
+
+/* Concrete Tutorial device status service. configure() resolves the
+ * board's already-started HololinkInterfaceV1 control plane (the
+ * application fetches and start()s it first); every register access
+ * goes through it. */
+class TutorialDeviceV1
+    : public tutorial::TutorialDeviceInterfaceV1,
+      public Service<TutorialDeviceV1> {
+public:
+    static constexpr const char* type_id = "tutorial_device.impl.v1";
+
+    void configure(const EnumerationMetadata& metadata) override
+    {
+        const std::string hololink_id = HololinkInterfaceV1::locator_id(metadata);
+        hololink_ = HololinkInterfaceV1::get_service(this->module(), hololink_id.c_str());
+    }
+
+    hololink_module_status_t set_status_led(bool on) override
+    {
+        // Pull-down: clear bit 0 to turn the LED on, set it to turn it off.
+        return on ? hololink_->and_uint32(TUTORIAL_DEVICE_STATUS, ~STATUS_LED_BIT)
+                  : hololink_->or_uint32(TUTORIAL_DEVICE_STATUS, STATUS_LED_BIT);
+    }
+
+private:
+    std::shared_ptr<HololinkInterfaceV1> hololink_;
+};
+```
+
+`TutorialDevicePublisher::construct_overrides` is the right place to construct instances
+of `TutorialDeviceV1`:
+
+```cpp
+class TutorialDevicePublisher : public HsbLitePublisher {
+protected:
+    // ...
+
+    bool construct_overrides(
+        const std::string& instance_id,
+        const std::string& type_id) override
+    {
+        if (!Publisher::has_type_id<TutorialDeviceV1>(type_id)) {
+            return false;
+        }
+        auto impl = std::make_shared<TutorialDeviceV1>();
+        ServicePublisher<TutorialDeviceV1>(shared_from_this())
+            .publish(instance_id, impl);
+        return true;
+    }
+};
+```
+
+- `Publisher::has_type_id<TutorialDeviceV1>(type_id)` checks whether this is a type we
+  handle.
+- `ServicePublisher<TutorialDeviceV1>(shared_from_this()).publish(instance_id, impl)`
+  registers one instance per distinct `instance_id` (usually the device serial number).
+  The same board can appear on multiple network ports, so this maps those interfaces
+  back to one object.
+- Once an object is published, we won't be asked to build it again unless it's
+  invalidated (e.g. device disconnect); later calls start from the cache `publish`
+  maintains.
+- Returning `true` means the object is built and no further handlers need to be
+  searched.
+
+If your application needs specific functions on your board — like the `set_status_led`
+method above — it must fetch a handle to `TutorialDeviceInterfaceV1`. Your application
+is then tightly coupled to your device: running it against another device would throw
+when it tries to get that unsupported `TutorialDeviceInterfaceV1` implementation.
+
+## Status-LED application
+
+This is a small application with no data plane at all — it just drives the LED via the
+bespoke service and the reactor. The complete program ships as
+`example_module_tutorial.cpp`.
+
+Discover the board, bring up the control plane, and fetch the bespoke service:
+
+```cpp
+    // Find the board via bootp enumeration and get its metadata.
+    auto& adapter = hololink::module::Adapter::get_adapter();
+    hololink::module::EnumerationMetadata metadata
+        = adapter.wait_for_channel(HOLOLINK_IP, DISCOVERY_TIMEOUT);
+
+    // Bring up the control plane; every register access flows through it.
+    auto hololink = hololink::module::HololinkInterfaceV1::get_service(metadata);
+    if (hololink->start() != HOLOLINK_MODULE_OK) {
+        throw std::runtime_error("HololinkInterface::start failed");
+    }
+    if (hololink->reset() != HOLOLINK_MODULE_OK) {
+        throw std::runtime_error("HololinkInterface::reset failed");
+    }
+
+    // Fetch the Tutorial device's bespoke status-LED service.
+    auto device
+        = hololink::module::tutorial::TutorialDeviceInterfaceV1::get_service(metadata);
+```
+
+Reactor alarms are one-shot, so the callback re-arms itself to blink once per second;
+the reactor runs it on its own thread:
+
+```cpp
+    auto reactor = hololink::module::ReactorV1::get_service(
+        adapter.host_publisher()->self_module());
+    auto state = std::make_shared<bool>(false);
+    auto tick = std::make_shared<hololink::module::ReactorV1::Callback>();
+    *tick = [device, state, reactor, tick]() {
+        *state = !*state;
+        device->set_status_led(*state);
+        reactor->add_alarm_s(BLINK_PERIOD_S, tick);
+    };
+    reactor->add_alarm_s(BLINK_PERIOD_S, tick);
+```
+
+The reactor thread drives the blinking, so the main thread just blocks forever:
+
+```cpp
+    // The reactor thread drives the blinking; this program runs forever.
+    for (;;) {
+        sleep(60);
+    }
+```
+
+## Background
+
+- **Module init.** The host calls the module's one exported symbol,
+  `hololink_module_init`, which returns the module's service callbacks so the host can
+  route `get_service` requests to it.
+- **Service cache.** Each module caches the services it has published. Some are
+  singletons (one per module); others are device-specific, keyed by `instance_id` —
+  usually the serial number — so the same board seen on multiple ports resolves to one
+  object.
+- **`HsbLite` is a core implementation.** It implements the host-side behavior for
+  HSB-IP; a device-specific module can override virtually any part of it.
+
+### Functional perspective
+
+When an HSB device is powered on, it periodically publishes an enumeration message.
+These are typically sent at 1 Hz. This enumeration message includes a UUID that
+identifies the device and a `compat-id` field, providing specific information about
+version compatibility.
+
+The application uses `hololink_module::Adapter` to listen to these bootp messages. Each
+enumeration message is deserialized into a structure which is referred to as enumeration
+metadata.
+
+The received UUID and `compat-id` fields are used to locate the hololink module
+associated with this device. This module is a driver (as a shared object) and is
+typically named `hololink_<UUID>_<compat-id>.so`. When found, it's loaded and
+initialized, and the received enumeration metadata is passed to it. At this point, the
+module can adjust or enhance enumeration data as necessary.
+
+The resulting enumeration metadata is passed back to the application. If the host
+doesn't have a compatible module that it can load, the enumeration metadata from the
+deserialized network message is sent (unmodified) to the application.
+
+The application uses this enumeration metadata to fetch specific services. For example,
+to reset the board, the application calls `HololinkInterfaceV1::reset`. To get a pointer
+to the `HololinkInterfaceV1` object, use
+`HololinkInterfaceV1::get_service(enumeration_metadata)`:
+
+```cpp
+    auto hololink = hololink::module::HololinkInterfaceV1::get_service(metadata);
+```
+
+This call to `get_service` fetches the possibly customized implementation from the
+device module — so the call to `reset` does what's necessary for that specific device.
+(Note that not all services are found using enumeration metadata; some services are
+found with other criteria.)
+
+The publisher's `construct_service` chain constructs services lazily on first fetch;
+override any of the methods it calls to substitute your own implementation instead of
+the HsbLite implementation. You can even override `construct_service` itself if
+necessary.
+
+All parts of the application depend on these services. For example, to configure the
+data plane for the device to use RoCE messaging, `RoceReceiverOp` fetches
+`RoceDataChannelInterfaceV1` and calls its configuration methods. An application that
+does not use RoCE signalling wouldn't fetch this object; so not all devices need to
+support it. If an application asks for a service that the module doesn't support, the
+program would terminate with an error message showing that the service isn't supported
+by that device.
+
+Some APIs are device specific, e.g. activating a feature or component that is only
+instantiated on that device. The device module can define a device specific interface
+(e.g. `HsbLiteInterfaceV1`) with APIs that access and control those functions.
+Applications that want to use those features can get this device-specific service and
+call its methods — with the recognition that those calls tightly couple the application
+to that device.
+
+### Version management
+
+A `compat-id` names a specific set of registers, peripherals, and their behaviors; any
+HSB-IP with the same `compat-id` is register compatible. If a breaking change occurs in
+HSB-IP registers, the `compat-id` is updated, which guarantees that existing deployed
+systems will not try to use the incompatible version.
+
+The services a module exports are versioned. This lets you build new modules later on
+(e.g. to support new features); as long as a module still produces services matching the
+interface version that the application requires, the application will continue to work.

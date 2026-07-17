@@ -1,0 +1,144 @@
+Controlplane is the path by which the host programs and queries the Holoscan Sensor
+Bridge (HSB) IP. The host sends control traffic as Ethernet Control Bus (ECB) and the
+HSB IP decodes ECB requests, performs 32-bit-aligned Advanced Peripheral Bus (APB) reads
+and writes, and returns read response or acknowledgement packets on the same control
+path.
+
+For how APB is structured inside the IP, see
+[Register Interface](register_interface.mdx).
+
+## Ethernet Control Bus (ECB)
+
+NVIDIA defines the **Ethernet Control Bus (ECB)** as a User Datagram Protocol (UDP)
+framing for control traffic between the host and the HSB. The HSB decodes ECB requests
+and drives the internal APB as 32-bit reads and writes to the chip’s register map.
+
+The following sections summarize the ECB request and response byte layouts. All
+multi-byte fields are in big-endian order unless noted otherwise. Register addresses and
+data are 32 bits (4 bytes) each and must be 4-byte aligned.
+
+### Host to HSB ECB packet
+
+The host to HSB ECB packet begins with a fixed 14-byte header. Block read and write
+commands append additional 8-byte records: one 32-bit address and one 32-bit value per
+APB sub-transaction, up to the block limit (see
+[ECB block read and write](/holoscan/sensor-bridge/fpga-ip/control-plane#ecb-block-read-and-write)).
+
+Table 1. Host to HSB ECB packet (byte offsets)
+
+| **Byte offset** | **Field**       | **Description**                                                                                   |
+| --------------- | --------------- | ------------------------------------------------------------------------------------------------- |
+| 0               | Command code    | See Table 2.                                                                                      |
+| 1               | Flags           | [7:2] Reserved. [1] Sequence check. [0] Acknowledge request (applies to host write commands only) |
+| 2–3             | Sequence number | Used when the sequence-check flag is set.                                                         |
+| 4–5             | Reserved        | Set to 0.                                                                                         |
+| 6–9             | Address 0       | **DWORD** commands: the only 32-bit APB address. **BLOCK** commands: first address in the block.  |
+| 10–13           | Data 0          | **WRITE** commands: first 32-bit write data. **READ** commands: set to 0 or don’t-care.           |
+| 6+8m – 9+8m     | Address m       | **BLOCK** commands only, for m = 1, 2, … (second pair starts at byte 14, third at 22, and so on). |
+| 10+8m – 13+8m   | Data m          | **WRITE_BLOCK**: write data for address m. **READ_BLOCK**: don’t-care (e.g. 0).                   |
+
+For WRITE_DWORD and READ_DWORD, the packet ends at byte 13 (14 bytes total). For block
+commands, the pattern address (4 bytes) + data (4 bytes) repeats: pair **m** uses byte
+offsets 6+8m through 13+8m for m = 0, 1, … up to the block size minus one.
+
+Table 2. Host ECB command codes
+
+| **Command** | **Code** |
+| ----------- | -------- |
+| WRITE_DWORD | 0x04     |
+| WRITE_BLOCK | 0x09     |
+| READ_DWORD  | 0x14     |
+| READ_BLOCK  | 0x19     |
+
+A single ECB block read or block write may carry up to 511 APB read or write operations
+(see
+[ECB block read and write](/holoscan/sensor-bridge/fpga-ip/control-plane#ecb-block-read-and-write)).
+
+### HSB to Host ECB response packet
+
+The HSB mirrors the host’s command in byte 0 by adding 0x80 to the host’s command code
+(Table 3). Byte 4 is the HSB status for the request (Table 4), not the same field as
+byte 0.
+
+**READ_DWORD** and **WRITE_DWORD** success responses use a **short** fixed layout.
+**READ_BLOCK** and **WRITE_BLOCK** success responses add **8 bytes** per completed
+32-bit access (address and data), then the **latched sequence number**.
+
+Table 3. HSB ECB response command (byte 0)
+
+| **Corresponding host command** | **Code (byte 0)** |
+| ------------------------------ | ----------------- |
+| WRITE_DWORD                    | 0x84              |
+| WRITE_BLOCK                    | 0x89              |
+| READ_DWORD                     | 0x94              |
+| READ_BLOCK                     | 0x99              |
+
+Table 4. HSB status code (byte 4 of the response)
+
+| **Status**                    | **Code** |
+| ----------------------------- | -------- |
+| SUCCESS                       | 0x00     |
+| INVALID ADDRESS / APB TIMEOUT | 0x03     |
+| INVALID COMMAND               | 0x04     |
+| INVALID FLAG                  | 0x06     |
+| SEQUENCE CHECK ERROR          | 0x0B     |
+
+Holoscan host software may map these and additional software-side error codes when
+parsing responses; the table above matches the HSB result codes used for APB and ECB
+errors.
+
+#### READ_DWORD or WRITE_DWORD response (success)
+
+Table 5. Response layout for **READ_DWORD** or **WRITE_DWORD** (typical success)
+
+| **Byte offset** | **Field**               | **Description**                                                                 |
+| --------------- | ----------------------- | ------------------------------------------------------------------------------- |
+| 0               | Response command        | 0x94 (read) or 0x84 (write).                                                    |
+| 1               | Flags                   | [7:2] Reserved. [1] Sequence check. [0] Acknowledge response.                   |
+| 2–3             | Sequence number         | Echoes the host request when applicable.                                        |
+| 4               | HSB status              | Status Code                                                                     |
+| 5               | Reserved                | 0x0                                                                             |
+| 6–9             | Address                 | The 32-bit APB address from the request.                                        |
+| 10–13           | Read data or reserved   | **READ_DWORD**: 32-bit read data. **WRITE_DWORD**: reserved.                    |
+| 14–15           | Latched sequence number | Copy of the host ECB sequence for this transaction when sequence check is used. |
+
+#### READ_BLOCK or WRITE_BLOCK response (success)
+
+Table 6. Response layout for **READ_BLOCK** or **WRITE_BLOCK** (after the same leading
+bytes as Table 5, fields 0–4)
+
+| **Byte offset** | **Field**        | **Description**                                                                                                       |
+| --------------- | ---------------- | --------------------------------------------------------------------------------------------------------------------- |
+| 0               | Response command | 0x99 (read) or 0x89 (write)                                                                                           |
+| 1               | Flags            | [7:2] Reserved. [1] Sequence check. [0] Acknowledge response.                                                         |
+| 2–3             | Sequence number  | Echoes the host request when applicable.                                                                              |
+| 4               | HSB status       | Status Code                                                                                                           |
+| 5               | Reserved         | 0x0                                                                                                                   |
+| 6+8m – 9+8m     | Address m        | m = 0, …, N−1. Same pairing as the host request.                                                                      |
+| 10+8m – 13+8m   | Data m           | **READ_BLOCK**: 32-bit read data for **Address m**. **WRITE_BLOCK**: reserved or as defined by implementation.        |
+| 6+8N – 7+8N     | Latched sequence | For **N** 32-bit operations, the two-byte latched sequence starts at this offset (e.g. 14–15 for N=1, 22–23 for N=2). |
+
+### ECB block read and write
+
+A block ECB command issues multiple consecutive 32-bit APB operations in one UDP
+message. The maximum number of APB read or write transactions in a single ECB block read
+or block write is 511.
+
+Every address must be 4-byte aligned. The Holoscan Sensor Bridge IP and host software
+enforce one outstanding ECB request at a time; a new request should not be sent until
+the response for the previous command has been received (or the transaction timed out in
+software).
+
+### Sequence number check
+
+Sequence number check improves robustness if ECB packets are reordered or lost on the
+network. When the sequence-check\*\* bit in the Flags field is asserted, the HSB IP
+checks that the newly received ECB sequence number is exactly one greater (modulo the
+sequence width) than the previously received ECB sequence number for that control path.
+If the new sequence number is not valid, the HSB sends an ECB response with HSB status
+SEQUENCE CHECK ERROR (0x0B). This check helps verify that the HSB has received the
+host’s ECB stream in order.
+
+When sequence check is not enabled, the HSB does not apply this strict incrementing
+rule; hosts should still avoid overlapping control commands if a single HSB execute
+channel is shared.

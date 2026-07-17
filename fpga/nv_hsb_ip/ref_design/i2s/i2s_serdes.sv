@@ -19,11 +19,19 @@
 // This module handles the actual I2S serial protocol for both transmit and
 // receive operations. It supports multiple I2S formats and bit depths.
 //
-// Supported formats:
-// - Standard I2S (MSB justified with 1 BCLK delay)
-// - Left Justified (MSB justified with no delay)
-// - Right Justified (LSB justified)
-// - PCM/DSP Mode (MSB justified with no delay, single clock wide WS)
+// All formats use MSB-first bit ordering. bit_count=0 aligns with the
+// LRCLK transition (raw edges used for TX sync). Format selection
+// determines where the data window sits within each slot:
+//
+//   I2S: [1, active_bits+1)  -- explicit 1-BCLK offset after LRCLK
+//   LJM: [0, active_bits)    -- data starts at LRCLK edge
+//   RJM: [slot_width-active_bits, slot_width)  -- right-aligned in slot
+//
+// When the slot is an exact fit (active_bits >= slot_width) in I2S
+// mode, the LSB overflows into bit_count=0 of the next channel per the
+// Philips I2S spec. TX saves the overflow bit and drives it at count=0;
+// RX captures it from rx_sdata_reg and inserts it at bit[0] of the
+// completed channel word.
 //
 // Features:
 // - Variable bit depths (8, 16, 24, 32 bits)
@@ -44,11 +52,8 @@ module i2s_serdes
   input                    i_bclk,      // I2S bit clock
   input                    i_lrclk,     // I2S left/right clock (word select)
   input                    i_rst,       // Reset (active high)
-  input                    i_mclk_en,
   input                    i_bclk_en,
   input                    i_lrclk_en,
-  input                    i_lrclk_negedge,
-  input                    i_lrclk_posedge,
   
   //----------------------------------------------------------------------------
   // Configuration
@@ -56,6 +61,7 @@ module i2s_serdes
   input  [1:0]             i_bit_depth,     // Bit depth selection
   input  [1:0]             i_data_format,   // Data format selection
   input                    i_channel_mode,  // Channel mode (0=stereo, 1=mono)
+  input                    i_slot_mode,     // 0=fixed 32-BCLK slots, 1=word-size slots
   input                    i_lrclk_polarity,// LRCLK polarity
   input                    i_tx_enable,     // TX enable
   input                    i_rx_enable,     // RX enable
@@ -64,7 +70,8 @@ module i2s_serdes
   // TX Path (parallel to serial)
   //----------------------------------------------------------------------------
   input                    i_tx_valid,      // TX data valid
-  input                    i_tx_ready,      // TX ready
+  input                    i_tx_ready,      // TX ready (buffer has data)
+  input                    i_tx_last,       // Last sample in current transfer (from tlast)
   input  [MAX_BITS-1:0]    i_tx_data_l,     // Left channel TX data
   input  [MAX_BITS-1:0]    i_tx_data_r,     // Right channel TX data
   output                   o_tx_ready,      // TX ready for next data
@@ -83,13 +90,8 @@ module i2s_serdes
 // Configuration Decode
 //------------------------------------------------------------------------------
  
-  logic [5:0]              active_bits;     // Active bit depth
-  logic                    is_i2s_format;   // Standard I2S format
-  logic                    is_lj_format;    // Left justified format
-  logic                    is_rj_format;    // Right justified format
-  logic                    is_pcm_format;   // PCM/DSP format
-  
-  // Decode bit depth
+  logic [5:0]              active_bits;
+
   always_comb begin
     case (i_bit_depth)
       I2S_BD_8B:   active_bits = 6'd8;
@@ -99,12 +101,41 @@ module i2s_serdes
       default:     active_bits = 6'd16;
     endcase
   end
-  
-  // Decode data format
-  assign is_i2s_format = (i_data_format == I2S_FMT_I2S);
-  assign is_lj_format  = (i_data_format == I2S_FMT_LJ);
-  assign is_rj_format  = (i_data_format == I2S_FMT_RJ);
-  assign is_pcm_format = (i_data_format == I2S_FMT_PCM);
+
+  logic [5:0] slot_width;
+  assign slot_width = (i_slot_mode == I2S_SLOT_WORD) ? active_bits : MAX_BITS[5:0];
+
+  logic i2s_exact_fit;
+  assign i2s_exact_fit = (active_bits >= slot_width) &&
+                         (i_data_format == I2S_FMT_I2S);
+
+  logic [5:0] data_start;
+  logic [5:0] data_end;
+
+  // TX_WAIT_LRCLK uses raw (un-pipelined) LRCLK edges so bit_count=0
+  // aligns with the LRCLK transition itself. The I2S 1-BCLK offset is
+  // provided explicitly via data_start=1 in the window logic below.
+
+  always_comb begin
+    case (i_data_format)
+      I2S_FMT_I2S: begin
+        data_start = 6'd1;
+        data_end   = (active_bits < slot_width) ? active_bits + 6'd1 : slot_width;
+      end
+      I2S_FMT_LJ: begin
+        data_start = 6'd0;
+        data_end   = active_bits;
+      end
+      I2S_FMT_RJ: begin
+        data_start = slot_width - active_bits;
+        data_end   = slot_width;
+      end
+      default: begin
+        data_start = 6'd0;
+        data_end   = active_bits;
+      end
+    endcase
+  end
  
 //------------------------------------------------------------------------------
 // Internal Signals
@@ -115,28 +146,28 @@ module i2s_serdes
   logic                    bclk_negedge;
   logic                    lrclk_posedge;
   logic                    lrclk_posedge_r;
-  logic                    lrclk_posedge_r1;
-  logic                    lrclk_posedge_r2;
   logic                    lrclk_negedge;
   logic                    lrclk_negedge_r;
-  logic                    lrclk_negedge_r1;
-  logic                    lrclk_negedge_r2;
   
   // TX signals
-  logic [MAX_BITS-1:0]     tx_shift_reg_l;  // Left channel shift register
-  logic [MAX_BITS-1:0]     tx_shift_reg_r;  // Right channel shift register
-  logic [5:0]              tx_bit_count;    // TX bit counter
-  logic                    tx_left_ch;      // Currently transmitting left channel
-  logic                    tx_data_req;     // Request new TX data
-  logic                    tx_active;       // TX operation active
-  
+  logic [MAX_BITS-1:0]     tx_shift_reg_l;
+  logic [MAX_BITS-1:0]     tx_shift_reg_r;
+  logic [5:0]              tx_bit_count;
+  logic                    tx_left_ch;
+  logic                    tx_overflow_bit;
+  logic                    tx_overflow_valid;
+
   // RX signals
-  logic [MAX_BITS-1:0]     rx_shift_reg_l;  // Left channel shift register
-  logic [MAX_BITS-1:0]     rx_shift_reg_r;  // Right channel shift register
-  logic [5:0]              rx_bit_count;    // RX bit counter
-  logic                    rx_left_ch;      // Currently receiving left channel
-  logic                    rx_data_valid;   // RX data valid
-  logic                    rx_active;       // RX operation active
+  logic [MAX_BITS-1:0]     rx_shift_reg_l;
+  logic [MAX_BITS-1:0]     rx_shift_reg_r;
+  logic [5:0]              rx_bit_count;
+  logic                    rx_left_ch;
+
+  // Data window active flags
+  logic tx_in_window;
+  logic rx_in_window;
+  assign tx_in_window = (tx_bit_count >= data_start) && (tx_bit_count < data_end);
+  assign rx_in_window = (rx_bit_count >= data_start) && (rx_bit_count < data_end);
  
 //------------------------------------------------------------------------------
 // Clock Edge Detection
@@ -146,27 +177,15 @@ module i2s_serdes
     if (i_rst) begin
       lrclk_posedge_r <= 1'b0;
       lrclk_negedge_r <= 1'b0;
-      lrclk_posedge_r1 <= 1'b0;
-      lrclk_negedge_r1 <= 1'b0;
-      lrclk_posedge_r2 <= 1'b0;
-      lrclk_negedge_r2 <= 1'b0;
     end
     else if (bclk_negedge) begin
       lrclk_posedge_r <= lrclk_posedge;
       lrclk_negedge_r <= lrclk_negedge;
     end
-    else if (bclk_posedge) begin
-      lrclk_posedge_r1 <= lrclk_posedge_r;
-      lrclk_negedge_r1 <= lrclk_negedge_r;
-      lrclk_posedge_r2 <= lrclk_posedge_r1;
-      lrclk_negedge_r2 <= lrclk_negedge_r1;
-    end
   end
   
   assign bclk_posedge  = i_bclk_en && !i_bclk;
   assign bclk_negedge  = i_bclk_en && i_bclk;
-  // assign lrclk_posedge = i_lrclk_posedge;
-  // assign lrclk_negedge = i_lrclk_negedge;
   assign lrclk_posedge = i_lrclk_en && !i_lrclk;
   assign lrclk_negedge = i_lrclk_en && i_lrclk;
  
@@ -195,36 +214,23 @@ module i2s_serdes
     end
   end
   
-  logic last_sample;
 
-  always_ff@(posedge i_ref_clk) begin
+  // Latch i_tx_last when a sample is loaded so it's stable during serialization
+  logic tx_last_r;
+  // One-cycle delayed: FSM exit from TX_RIGHT_CH must not see tx_last_r same cycle it is set at preload
+  logic tx_last_r_d;
+
+  always_ff @(posedge i_ref_clk) begin
     if (i_rst || !i_tx_enable) begin
-      last_sample <= 1'b0;
-    end
-    else if (bclk_negedge) begin
-      case (tx_state)
-        TX_IDLE: begin
-    last_sample <= 1'b0;
-  end
-        TX_LOAD_DATA: begin
-    last_sample <= 1'b0;
-  end
-  TX_LEFT_CH: begin
-    last_sample <= last_sample;
-  end
-  TX_RIGHT_CH: begin
-    if (!i_tx_ready && (tx_bit_count == 'b0)) begin
-      last_sample <= ~last_sample;
-    end
-    else begin
-      last_sample <= last_sample;
+      tx_last_r   <= 1'b0;
+      tx_last_r_d <= 1'b0;
+    end else if (bclk_negedge) begin
+      tx_last_r_d <= tx_last_r;
+      if ((tx_state == TX_LOAD_DATA && i_tx_valid) ||
+          (tx_state == TX_RIGHT_CH && tx_bit_count >= (slot_width - 1) && !tx_last_r))
+        tx_last_r <= i_tx_last;
     end
   end
-      endcase
-    end
-  end
-
-
 
   always_comb begin
     tx_state_next = tx_state;
@@ -244,34 +250,28 @@ module i2s_serdes
       
       TX_WAIT_LRCLK: begin
         if (i_lrclk_polarity) begin
-          if (lrclk_posedge_r || (is_pcm_format && lrclk_negedge_r)) begin
+          if (lrclk_posedge) begin
             tx_state_next = TX_LEFT_CH;
           end
         end
         else begin
-          if (lrclk_negedge_r || (is_pcm_format && lrclk_posedge_r)) begin
+          if (lrclk_negedge) begin
             tx_state_next = TX_LEFT_CH;
           end
         end
       end
       
       TX_LEFT_CH: begin
-        if (tx_bit_count >= (active_bits - 1)) begin
-          if (i_channel_mode == I2S_CH_MONO) begin
-            tx_state_next = TX_LOAD_DATA;
-          end else begin
-            tx_state_next = TX_RIGHT_CH;
-          end
-        end
+        if (tx_bit_count >= (slot_width - 1))
+          tx_state_next = TX_RIGHT_CH;
       end
       
       TX_RIGHT_CH: begin
-        if (tx_bit_count >= (active_bits - 1)) begin
-          if (i_tx_ready || last_sample) begin
-            tx_state_next = TX_LEFT_CH;
-          end
-          else begin
+        if (tx_bit_count >= (slot_width - 1)) begin
+          if (tx_last_r_d) begin
             tx_state_next = TX_LOAD_DATA;
+          end else begin
+            tx_state_next = TX_LEFT_CH;
           end
         end
       end
@@ -284,10 +284,12 @@ module i2s_serdes
  
   always_ff @(posedge i_ref_clk) begin
     if (i_rst || !i_tx_enable) begin
-      tx_shift_reg_l <= '0;
-      tx_shift_reg_r <= '0;
-      tx_bit_count   <= '0;
-      tx_left_ch     <= 1'b1;
+      tx_shift_reg_l  <= '0;
+      tx_shift_reg_r  <= '0;
+      tx_bit_count    <= '0;
+      tx_left_ch      <= 1'b1;
+      tx_overflow_bit   <= 1'b0;
+      tx_overflow_valid <= 1'b0;
     end else if (bclk_negedge) begin
       case (tx_state)
         TX_IDLE: begin
@@ -297,63 +299,54 @@ module i2s_serdes
         
         TX_LOAD_DATA: begin
           if (i_tx_valid) begin
-            if (is_rj_format) begin
-              // Right justified - align data to LSB, pad MSB with zeros
-              tx_shift_reg_l <= i_tx_data_l;
-              tx_shift_reg_r <= i_tx_data_r;
-            end else begin
-              // Left justified formats - align data to MSB
-              tx_shift_reg_l <= i_tx_data_l << (MAX_BITS - active_bits);
-              tx_shift_reg_r <= i_tx_data_r << (MAX_BITS - active_bits);
-            end
+            tx_shift_reg_l <= i_tx_data_l << (MAX_BITS - active_bits);
+            tx_shift_reg_r <= i_tx_data_r << (MAX_BITS - active_bits);
           end
         end
         
         TX_WAIT_LRCLK: begin
-          if (lrclk_negedge || (is_pcm_format && lrclk_posedge)) begin
-            tx_bit_count <= '0;
-            tx_left_ch   <= 1'b1;
+          if (i_lrclk_polarity) begin
+            if (lrclk_posedge) begin
+              tx_bit_count <= '0;
+              tx_left_ch   <= 1'b1;
+            end
+          end else begin
+            if (lrclk_negedge) begin
+              tx_bit_count <= '0;
+              tx_left_ch   <= 1'b1;
+            end
           end
         end
         
         TX_LEFT_CH: begin
-          if (tx_bit_count < (active_bits - 1)) begin
-            if (is_rj_format) begin
-              // Right justified - shift right, output LSB first
-              tx_shift_reg_l <= tx_shift_reg_l >> 1;
-            end else begin
-              // Left justified formats - shift left, output MSB first
+          if (tx_bit_count < (slot_width - 1)) begin
+            if (tx_in_window)
               tx_shift_reg_l <= tx_shift_reg_l << 1;
-            end
             tx_bit_count <= tx_bit_count + 1'b1;
           end else begin
+            if (i2s_exact_fit) begin
+              tx_overflow_bit   <= tx_shift_reg_l[MAX_BITS-2];
+              tx_overflow_valid <= 1'b1;
+            end
             tx_bit_count <= '0;
             tx_left_ch   <= 1'b0;
           end
         end
         
         TX_RIGHT_CH: begin
-          if (tx_bit_count < (active_bits - 1)) begin
-            if (is_rj_format) begin
-              // Right justified - shift right, output LSB first
-              tx_shift_reg_r <= tx_shift_reg_r >> 1;
-            end else begin
-              // Left justified formats - shift left, output MSB first
+          if (tx_bit_count < (slot_width - 1)) begin
+            if (tx_in_window)
               tx_shift_reg_r <= tx_shift_reg_r << 1;
-            end
             tx_bit_count <= tx_bit_count + 1'b1;
           end else begin
+            if (i2s_exact_fit) begin
+              tx_overflow_bit   <= tx_shift_reg_r[MAX_BITS-2];
+              tx_overflow_valid <= 1'b1;
+            end
             tx_bit_count <= '0;
             tx_left_ch   <= 1'b1;
-            if (is_rj_format) begin
-              // Right justified - align data to LSB, pad MSB with zeros
-              tx_shift_reg_l <= i_tx_data_l;
-              tx_shift_reg_r <= i_tx_data_r;
-            end else begin
-              // Left justified formats - align data to MSB
-              tx_shift_reg_l <= i_tx_data_l << (MAX_BITS - active_bits);
-              tx_shift_reg_r <= i_tx_data_r << (MAX_BITS - active_bits);
-            end
+            tx_shift_reg_l <= i_tx_data_l << (MAX_BITS - active_bits);
+            tx_shift_reg_r <= i_tx_data_r << (MAX_BITS - active_bits);
           end
         end
       endcase
@@ -367,45 +360,52 @@ module i2s_serdes
   always_comb begin
     if (!i_tx_enable || (tx_state == TX_IDLE) || (tx_state == TX_LOAD_DATA) || (tx_state == TX_WAIT_LRCLK)) begin
       o_sdata_tx = 1'b0;
+    end else if (tx_bit_count == 0 && i2s_exact_fit && tx_overflow_valid) begin
+      o_sdata_tx = tx_overflow_bit;
+    end else if (i_channel_mode == I2S_CH_MONO && !tx_left_ch) begin
+      o_sdata_tx = 1'b0;
+    end else if (!tx_in_window) begin
+      o_sdata_tx = 1'b0;
     end else if (tx_left_ch) begin
-      if (is_rj_format) begin
-        o_sdata_tx = tx_shift_reg_l[0];  // LSB for right justified (shifts right)
-      end else begin
-        o_sdata_tx = tx_shift_reg_l[MAX_BITS-1];  // MSB for left justified (shifts left)
-      end
+      o_sdata_tx = tx_shift_reg_l[MAX_BITS-1];
     end else begin
-      if (is_rj_format) begin
-        o_sdata_tx = tx_shift_reg_r[0];  // LSB for right justified (shifts right)
-      end else begin
-        o_sdata_tx = tx_shift_reg_r[MAX_BITS-1];  // MSB for left justified (shifts left)
-      end
+      o_sdata_tx = tx_shift_reg_r[MAX_BITS-1];
     end
   end
-  
-  // assign o_tx_ready = (tx_state == TX_IDLE) || (tx_state == TX_LOAD_DATA);
-  // assign o_tx_ready = (tx_state == TX_LOAD_DATA && tx_state_prev != TX_IDLE);
-  assign o_tx_ready = (tx_state == TX_LOAD_DATA && tx_state_prev != TX_IDLE) || (tx_state == TX_RIGHT_CH && tx_state_next == TX_LEFT_CH);
+
+  // Pop the TX buffer at LEFT_CH->RIGHT_CH (not RIGHT_CH->LEFT_CH) so the
+  // buffer has the entire RIGHT_CH duration to advance the FIFO and latch the
+  // new sample before the serdes preloads at the RIGHT_CH->LEFT_CH boundary.
+  assign o_tx_ready = (tx_state == TX_LOAD_DATA && tx_state_prev != TX_IDLE) || (tx_state == TX_LEFT_CH && tx_state_next == TX_RIGHT_CH);
  
 //------------------------------------------------------------------------------
 // RX State Machine
 //------------------------------------------------------------------------------
  
-  typedef enum logic [2:0] {
+  typedef enum logic [1:0] {
     RX_IDLE,
     RX_WAIT_LRCLK,
     RX_LEFT_CH,
-    RX_RIGHT_CH,
-    RX_OUTPUT_DATA
+    RX_RIGHT_CH
   } rx_state_t;
   
-  rx_state_t rx_state, rx_state_next;
-  
+  rx_state_t rx_state, rx_state_next, rx_state_d1;
+
   always_ff @(posedge i_ref_clk) begin
     if (i_rst || !i_rx_enable) begin
       rx_state <= RX_IDLE;
-    end 
+    end
     else if (bclk_posedge) begin
       rx_state <= rx_state_next;
+    end
+  end
+
+  // Delayed FSM state: detect first cycle after channel-complete transitions for parallel export
+  always_ff @(posedge i_ref_clk) begin
+    if (i_rst || !i_rx_enable) begin
+      rx_state_d1 <= RX_IDLE;
+    end else if (bclk_posedge) begin
+      rx_state_d1 <= rx_state;
     end
   end
   
@@ -420,36 +420,25 @@ module i2s_serdes
       end
       
       RX_WAIT_LRCLK: begin
-        if (lrclk_negedge_r1 || (is_pcm_format && lrclk_posedge_r1)) begin
-          rx_state_next = RX_LEFT_CH;
+        if (i_lrclk_polarity) begin
+          if (lrclk_posedge_r) begin
+            rx_state_next = RX_LEFT_CH;
+          end
+        end else begin
+          if (lrclk_negedge_r) begin
+            rx_state_next = RX_LEFT_CH;
+          end
         end
       end
       
       RX_LEFT_CH: begin
-        if (rx_bit_count >= (active_bits - 1)) begin
-          if (i_channel_mode == I2S_CH_MONO) begin
-            rx_state_next = RX_OUTPUT_DATA;
-          end else begin
-            rx_state_next = RX_RIGHT_CH;
-          end
-        end
+        if (rx_bit_count >= (slot_width - 1))
+          rx_state_next = RX_RIGHT_CH;
       end
       
       RX_RIGHT_CH: begin
-        if (rx_bit_count >= (active_bits - 1)) begin
-          // rx_state_next = RX_OUTPUT_DATA;
+        if (rx_bit_count >= (slot_width - 1))
           rx_state_next = RX_LEFT_CH;
-        end
-      end
-      
-      RX_OUTPUT_DATA: begin
-        if (i_rx_ready) begin
-          if (lrclk_negedge || (is_pcm_format && lrclk_posedge)) begin
-            rx_state_next = RX_LEFT_CH;
-          end else begin
-            rx_state_next = RX_WAIT_LRCLK;
-          end
-        end
       end
     endcase
   end
@@ -482,47 +471,38 @@ module i2s_serdes
         end
         
         RX_WAIT_LRCLK: begin
-          if (lrclk_negedge_r1 || (is_pcm_format && lrclk_posedge_r1)) begin
-            rx_bit_count <= '0;
-            rx_left_ch   <= 1'b1;
+          if (i_lrclk_polarity) begin
+            if (lrclk_posedge_r) begin
+              rx_bit_count <= '0;
+              rx_left_ch   <= 1'b1;
+            end
+          end else begin
+            if (lrclk_negedge_r) begin
+              rx_bit_count <= '0;
+              rx_left_ch   <= 1'b1;
+            end
           end
         end
         
         RX_LEFT_CH: begin
-          if (rx_bit_count < active_bits ) begin
-            if (is_rj_format) begin
-              rx_shift_reg_l <= {rx_sdata_reg, rx_shift_reg_l[MAX_BITS-1:1]};
-            end else begin
-              rx_shift_reg_l <= {rx_shift_reg_l[MAX_BITS-2:0], rx_sdata_reg};
-            end
-            if (rx_bit_count == active_bits - 1) begin
-              rx_bit_count <= '0;
-            end
-            else begin
-              rx_bit_count <= rx_bit_count + 1'b1;
-            end
-          end else begin
+          if (rx_in_window)
+            rx_shift_reg_l <= {rx_shift_reg_l[MAX_BITS-2:0], rx_sdata_reg};
+          if (rx_bit_count >= (slot_width - 1)) begin
             rx_bit_count <= '0;
             rx_left_ch   <= 1'b0;
+          end else begin
+            rx_bit_count <= rx_bit_count + 1'b1;
           end
         end
         
         RX_RIGHT_CH: begin
-          if (rx_bit_count < active_bits) begin
-            if (is_rj_format) begin
-              rx_shift_reg_r <= {rx_sdata_reg, rx_shift_reg_r[MAX_BITS-1:1]};
-            end else begin
-              rx_shift_reg_r <= {rx_shift_reg_r[MAX_BITS-2:0], rx_sdata_reg};
-            end
-            if (rx_bit_count == active_bits - 1) begin
-              rx_bit_count <= '0;
-            end
-            else begin
-              rx_bit_count <= rx_bit_count + 1'b1;
-            end
-          end else begin
+          if (rx_in_window)
+            rx_shift_reg_r <= {rx_shift_reg_r[MAX_BITS-2:0], rx_sdata_reg};
+          if (rx_bit_count >= (slot_width - 1)) begin
             rx_bit_count <= '0;
             rx_left_ch   <= 1'b1;
+          end else begin
+            rx_bit_count <= rx_bit_count + 1'b1;
           end
         end
       endcase
@@ -543,25 +523,25 @@ module i2s_serdes
   end
   always_ff @(posedge i_ref_clk) begin
     if (i_rst || !i_rx_enable) begin
-      rx_data <= '0;
+      rx_data       <= '0;
       rx_data_valid <= 1'b0;
-    end 
-    else if (bclk_posedge) begin
-      if (lrclk_negedge_r1) begin
-        rx_data_valid <= 1'b1;
-      end
-      else if (lrclk_posedge_r1) begin
-        rx_data_valid <= 1'b1;
-      end
-      else begin
-        rx_data_valid <= 1'b0;
-      end
+    end else if (bclk_posedge) begin
+      rx_data_valid <= 1'b0;
 
-      if (lrclk_negedge_r2) begin
-        rx_data <= rx_shift_reg_r & rx_data_mask;
-      end
-      else if (lrclk_posedge_r2) begin
-        rx_data <= rx_shift_reg_l & rx_data_mask;
+      if (rx_state == RX_RIGHT_CH && rx_state_d1 == RX_LEFT_CH) begin
+        if (i2s_exact_fit)
+          rx_data <= ((rx_shift_reg_l << 1) | {{(MAX_BITS-1){1'b0}}, rx_sdata_reg}) & rx_data_mask;
+        else
+          rx_data <= rx_shift_reg_l & rx_data_mask;
+        rx_data_valid <= 1'b1;
+      end else if (rx_state == RX_LEFT_CH && rx_state_d1 == RX_RIGHT_CH) begin
+        if (i_channel_mode != I2S_CH_MONO) begin
+          if (i2s_exact_fit)
+            rx_data <= ((rx_shift_reg_r << 1) | {{(MAX_BITS-1){1'b0}}, rx_sdata_reg}) & rx_data_mask;
+          else
+            rx_data <= rx_shift_reg_r & rx_data_mask;
+          rx_data_valid <= 1'b1;
+        end
       end
     end
   end

@@ -20,7 +20,8 @@ module ptp_egress
   parameter  W_NUM_HOST       = NUM_HOST>1 ? $clog2(NUM_HOST) : 1,
   parameter  KEEP_WIDTH       = AXI_DWIDTH/8,
   parameter  PTP_EGRESS_WIDTH = 64*8,
-  localparam PTP_WIDTH        = $clog2(PTP_EGRESS_WIDTH/8)
+  localparam PTP_WIDTH        = $clog2(PTP_EGRESS_WIDTH/8),
+  parameter  W_USER           = 17
 )(
   input                          i_pclk,
   input                          i_prst,
@@ -36,7 +37,7 @@ module ptp_egress
   output [AXI_DWIDTH-1:0]        o_axis_tdata,
   output [KEEP_WIDTH-1:0]        o_axis_tkeep,
   output                         o_axis_tvalid,
-  output                         o_axis_tuser,
+  output [ W_USER-1:0]           o_axis_tuser,
   output                         o_axis_tlast,
   input                          i_axis_tready
 );
@@ -44,23 +45,17 @@ module ptp_egress
 localparam BUF_DEPTH = (2**($clog2(PTP_EGRESS_WIDTH/AXI_DWIDTH)+1)) < 8 ? 8 : 2**($clog2(PTP_EGRESS_WIDTH/AXI_DWIDTH)+1);
 
 logic                      axis_is_busy;
-logic [AXI_DWIDTH-1:0]     req_axis_tdata;
-logic [(AXI_DWIDTH/8)-1:0] req_axis_tkeep;
-logic                      req_axis_tvalid;
-logic                      req_axis_tuser;
-logic                      req_axis_tlast;
-logic                      req_axis_tready;
 
 logic [AXI_DWIDTH-1:0]     ptp_tx_axis_tdata;
 logic [(AXI_DWIDTH/8)-1:0] ptp_tx_axis_tkeep;
 logic                      ptp_tx_axis_tvalid;
-logic                      ptp_tx_axis_tuser;
 logic                      ptp_tx_axis_tlast;
 logic                      ptp_tx_axis_tready;
 
 
 vec_to_axis_dyn_len #(
   .AXI_DWIDTH       ( AXI_DWIDTH         ),
+  .W_USER           ( W_USER             ),
   .DATA_WIDTH       ( PTP_EGRESS_WIDTH   )
 ) req_to_axis (
   .clk              ( i_hif_clk          ),
@@ -68,11 +63,12 @@ vec_to_axis_dyn_len #(
   .trigger          ( i_ptp_egress_vld   ),
   .data             ( i_ptp_egress_data  ),
   .byte_len         ( i_ptp_egress_len   ),
+  .tuser            ( 'd0                ),
   .is_busy          ( axis_is_busy       ),
   .o_axis_tx_tvalid ( ptp_tx_axis_tvalid ),
   .o_axis_tx_tdata  ( ptp_tx_axis_tdata  ),
   .o_axis_tx_tlast  ( ptp_tx_axis_tlast  ),
-  .o_axis_tx_tuser  ( ptp_tx_axis_tuser  ),
+  .o_axis_tx_tuser  (                    ),
   .o_axis_tx_tkeep  ( ptp_tx_axis_tkeep  ),
   .i_axis_tx_tready ( ptp_tx_axis_tready )
 );
@@ -80,7 +76,7 @@ vec_to_axis_dyn_len #(
 assign o_axis_tvalid = ptp_tx_axis_tvalid;
 assign o_axis_tdata  = ptp_tx_axis_tdata;
 assign o_axis_tlast  = ptp_tx_axis_tlast;
-assign o_axis_tuser  = ptp_tx_axis_tuser;
+assign o_axis_tuser  = 'd0;
 assign o_axis_tkeep  = ptp_tx_axis_tkeep;
 
 
@@ -94,7 +90,7 @@ assign o_ptp_egress_busy = axis_is_busy;
   .MIN_PKTL_CHK (1),
   .MAX_PKTL_CHK (1),
   .AXI_TDATA   (AXI_DWIDTH),
-  .AXI_TUSER   (1),
+  .AXI_TUSER   (W_USER),
 `ifdef SIMULATION
     .SIMULATION(1),
 `endif

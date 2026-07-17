@@ -20,6 +20,7 @@ import json
 import logging
 import logging.handlers
 import os
+import re
 import socket
 import subprocess
 import threading
@@ -28,7 +29,8 @@ from unittest.mock import patch
 
 import pytest
 
-import hololink as hololink_module
+import hololink as hololink_legacy
+import hololink_module
 
 # If desired, forward python logging to UDP port 514 in not exactly a SYSLOG
 # compatible way but a way that works great with wireshark.  This
@@ -80,7 +82,7 @@ def forward_exception():
 
 
 def _hololink_session_finalizer():
-    hololink_module.Hololink.reset_framework()
+    hololink_legacy.Hololink.reset_framework()
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -89,7 +91,7 @@ def hololink_session(request):
 
 
 def _reactor_session_finalizer():
-    reactor = hololink_module.Reactor.get_reactor()
+    reactor = hololink_legacy.Reactor.get_reactor()
     reactor.reset_framework()
 
 
@@ -162,7 +164,7 @@ def pytest_addoption(parser):
         default=False,
         help="Don't skip dgpu based test.",
     )
-    infiniband_interfaces = hololink_module.infiniband_devices()
+    infiniband_interfaces = hololink_legacy.infiniband_devices()
     parser.addoption(
         "--ibv-name",
         default=infiniband_interfaces[0] if infiniband_interfaces else None,
@@ -179,6 +181,18 @@ def pytest_addoption(parser):
         action="store_true",
         default=False,
         help="Don't run tests requiring accelerated networking",
+    )
+    # The default is computed lazily in the `module_dir` fixture
+    # (anchored on the hololink_module Python package's install
+    # location, which always sits next to the wheel's lib/hololink/
+    # modules directory). Importing hololink_module at option-
+    # registration time would force the C++ extension to load before
+    # any test starts.
+    parser.addoption(
+        "--module-dir",
+        default=None,
+        help="Directory containing the hololink_<UUID>*.so module .so files. "
+        "Default: <hololink_module package dir>/../lib/hololink/modules",
     )
     parser.addoption(
         "--ptp",
@@ -219,8 +233,9 @@ def pytest_addoption(parser):
     parser.addoption(
         "--channel-ips",
         default=["192.168.0.2", "192.168.0.3"],
-        nargs="+",
-        help="Use these data plane addresses.",
+        type=lambda s: s.split(","),
+        help="Use these data plane addresses (comma-separated, "
+        "e.g. --channel-ips=192.168.0.200,192.168.0.201).",
     )
     parser.addoption(
         "--schedulers",
@@ -303,15 +318,58 @@ def pytest_addoption(parser):
         default=infiniband_interfaces[1] if len(infiniband_interfaces) >= 2 else None,
         help="IBV device name used for TX in signal generator tests.",
     )
+    parser.addoption(
+        "--stm32f767zi",
+        default=None,
+        metavar="ID",
+        help=(
+            "Enable HSB Emulator tests on an STM32F767ZI MCU target. The value is the "
+            "ST-Link programmer serial number passed through to scripts/reprogram.sh as "
+            "the deploy target_id."
+        ),
+    )
+
+
+def l4t_major_version():
+    """Return the L4T (Linux for Tegra) major release number for the current
+    platform (e.g. 36 for JetPack 6.x, 38 for JetPack 7.x), or None when this
+    isn't a Jetson/Tegra platform."""
+    try:
+        with open("/etc/nv_tegra_release") as f:
+            # The first line looks like: "# R38 (release), REVISION: 1.0, ..."
+            release = f.readline()
+    except OSError:
+        return None
+    match = re.match(r"#\s*R(\d+)", release)
+    if not match:
+        return None
+    return int(match.group(1))
+
+
+def is_jetpack_7():
+    """True when running on JetPack 7.x or newer (Jetson Linux / L4T R38+, e.g. AGX Thor).
+
+    L4T ships a new major release per JetPack (R38 = JetPack 7.0, R39 = 7.x,
+    ...), so match R38 and up rather than a single release, otherwise a runner
+    upgrade silently re-enables tests that were meant to stay skipped on Thor."""
+    version = l4t_major_version()
+    return version is not None and version >= 38
 
 
 def pytest_collection_modifyitems(config, items):
+    if is_jetpack_7():
+        skip_jetpack_7 = pytest.mark.skip(
+            reason="Test is not supported on JetPack 7.x (Jetson Linux / L4T R38.x, e.g. AGX Thor)."
+        )
+        for item in items:
+            if "skip_on_jetpack_7" in item.keywords:
+                item.add_marker(skip_jetpack_7)
     if not config.getoption("--imx274"):
         skip_imx274 = pytest.mark.skip(reason="Tests only run in --imx274 mode.")
         for item in items:
             if "skip_unless_imx274" in item.keywords:
                 item.add_marker(skip_imx274)
-    infiniband_interfaces = hololink_module.infiniband_devices()
+    infiniband_interfaces = hololink_legacy.infiniband_devices()
     if config.getoption("--unaccelerated-only") or (not infiniband_interfaces):
         skip_accelerated_networking = pytest.mark.skip(
             reason="Don't run network accelerated tests when --unaccelerated-only is specified."
@@ -454,6 +512,29 @@ def ibv_name(request):
     return request.config.getoption("--ibv-name")
 
 
+@pytest.fixture
+def module_dir(request):
+    # CTest sets HOLOLINK_MODULE_TEST_MODULE_DIR per-test
+    # (tests/CMakeLists.txt) — highest precedence so the CTest path
+    # always picks up the build-tree .so directory.
+    env = os.environ.get("HOLOLINK_MODULE_TEST_MODULE_DIR")
+    if env:
+        return env
+    cli = request.config.getoption("--module-dir")
+    if cli:
+        return cli
+    # Fall back to the wheel-install layout: hololink_module sits at
+    # <site-packages>/hololink_module/ and the wheel's install rule
+    # drops modules at <site-packages>/lib/hololink/modules/. Resolves
+    # correctly for any prefix the wheel was installed under.
+    from pathlib import Path
+
+    import hololink_module
+
+    package_dir = Path(hololink_module.__file__).resolve().parent
+    return str(package_dir.parent.joinpath("lib", "hololink", "modules"))
+
+
 # If a test has an "channel_ips" (plural) fixture, then pass
 # the list from the command line.
 @pytest.fixture
@@ -592,6 +673,9 @@ def pytest_generate_tests(metafunc):
 @pytest.fixture(autouse=True)
 def report_test_name(request):
     test_name = request.node.name
+    hololink_legacy.hsb_log_info(f"Starting {test_name}")
+    # Also emit the marker on the hololink_module logging path (additive; the
+    # legacy call above stays authoritative).
     hololink_module.hsb_log_info(f"Starting {test_name}")
 
 

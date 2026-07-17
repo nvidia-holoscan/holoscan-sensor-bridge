@@ -148,7 +148,8 @@ module HOLOLINK_top
 `endif
 );
 
-localparam HOLOLINK_REV = 16'h2603;
+localparam HOLOLINK_REV = 16'h2606;
+localparam HOLOLINK_BACKWARD_COMPAT_REV = 16'h2603;
 
 `ifdef SYNC_CLK_HIF_APB
   localparam SYNC_CLK_HIF_APB = 1;
@@ -201,9 +202,9 @@ localparam HOLOLINK_REV = 16'h2603;
   assign sif_tx_clk   = i_sif_tx_clk;
   assign o_sif_tx_rst = sif_tx_rst;
 `else
-  localparam NUM_SENSOR_TX = 1;
-  logic [NUM_SENSOR_TX-1:0] sif_tx_clk;
-  logic [NUM_SENSOR_TX-1:0] sif_tx_rst;
+  localparam NUM_SENSOR_TX = 0;
+  logic [0:0] sif_tx_clk;
+  logic [0:0] sif_tx_rst;
 
   apb_m2s s_apb_m2s_sen_tx [num_sen_tx_mod];
   apb_s2m s_apb_s2m_sen_tx [num_sen_tx_mod];
@@ -236,21 +237,24 @@ apb_s2m s_apb_s2m_dev  [4];
 apb_m2s s_apb_m2s_host [`HOST_IF_INST * num_host_mod];
 apb_s2m s_apb_s2m_host [`HOST_IF_INST * num_host_mod];
 
-apb_m2s s_apb_m2s_ram  [2];
-apb_s2m s_apb_s2m_ram  [2];
+
+apb_m2s s_apb_m2s_ram  [3];
+apb_s2m s_apb_s2m_ram  [3];
 
 apb_m2s s_apb_m2s_bridge;
 apb_s2m s_apb_s2m_bridge;
+
 //------------------------------------------------------------------------------------------------//
 // RX Parser
 //------------------------------------------------------------------------------------------------//
 
-localparam PORT_NUM       = 5;
+localparam PORT_NUM       = 6;
 localparam NUM_LS_TX_INST = 4;
 localparam NUM_LS_RX_INST = 6;
 localparam AXI_LS_DWIDTH  = 8;
 localparam AXI_LS_KWIDTH  = AXI_LS_DWIDTH/8;
 localparam ENUM_DWIDTH    = 296;
+localparam VLAN_TUSER     = 17;
 
 logic                       init_done_hif_clk;
 logic                       pps;
@@ -268,6 +272,13 @@ logic [`HOST_IF_INST-1  :0] stx_axis_tlast;
 logic [`HOST_IF_INST-1  :0] stx_axis_tuser;
 logic [`HOSTKEEP_WIDTH-1:0] stx_axis_tkeep               [`HOST_IF_INST];
 
+logic [`HOST_IF_INST-1  :0] ack_axis_tvalid;
+logic [`HOST_WIDTH-1    :0] ack_axis_tdata               [`HOST_IF_INST];
+logic [`HOST_IF_INST-1  :0] ack_axis_tlast;
+logic [VLAN_TUSER-1:0]      ack_axis_tuser               [`HOST_IF_INST];
+logic [`HOSTKEEP_WIDTH-1:0] ack_axis_tkeep               [`HOST_IF_INST];
+logic [`HOST_IF_INST-1  :0] ack_axis_tready;
+
 logic [`HOST_IF_INST-1  :0] brx_axis_tvalid;
 logic [`HOST_WIDTH-1    :0] brx_axis_tdata               [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1  :0] brx_axis_tlast;
@@ -278,37 +289,37 @@ logic [`HOST_IF_INST-1  :0] brx_axis_tready;
 logic [`HOST_IF_INST-1  :0] btx_axis_tvalid;
 logic [`HOST_WIDTH-1    :0] btx_axis_tdata               [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1  :0] btx_axis_tlast;
-logic [`HOST_IF_INST-1  :0] btx_axis_tuser;
+logic [VLAN_TUSER-1     :0] btx_axis_tuser               [`HOST_IF_INST-1:0];
 logic [`HOSTKEEP_WIDTH-1:0] btx_axis_tkeep               [`HOST_IF_INST-1:0];
-logic [`HOST_IF_INST-1:0]   btx_axis_tready;
+logic [`HOST_IF_INST  -1:0] btx_axis_tready;
 
 logic [71               :0] dest_info                    [`HOST_IF_INST];
 
 logic [`HOST_IF_INST-1  :0] ptp_rx_axis_tvalid;
 logic [`HOST_WIDTH-1    :0] ptp_rx_axis_tdata            [`HOST_IF_INST];
 logic [`HOST_IF_INST-1  :0] ptp_rx_axis_tlast;
-logic [`HOST_IF_INST-1  :0] ptp_rx_axis_tuser;
+logic [VLAN_TUSER-1:0]      ptp_rx_axis_tuser            [`HOST_IF_INST];
 logic [`HOSTKEEP_WIDTH-1:0] ptp_rx_axis_tkeep            [`HOST_IF_INST];
 logic [`HOST_IF_INST-1  :0] ptp_rx_axis_tready;
 
 logic [`HOST_IF_INST-1  :0] lso_axis_tvalid;
 logic [`HOST_WIDTH-1    :0] lso_axis_tdata;
 logic                       lso_axis_tlast;
-logic                       lso_axis_tuser;
+logic [VLAN_TUSER-1:0]      lso_axis_tuser;
 logic [`HOSTKEEP_WIDTH-1:0] lso_axis_tkeep;
 logic [`HOST_IF_INST-1  :0] lso_axis_tready;
 
 logic [`HOST_IF_INST-1 :0]  lsi_axis_tvalid;
 logic [AXI_LS_DWIDTH-1 :0]  lsi_axis_tdata               [`HOST_IF_INST];
 logic [`HOST_IF_INST-1:0]   lsi_axis_tlast;
-logic [NUM_LS_RX_INST-1:0]  lsi_axis_tuser               [`HOST_IF_INST];
+logic [VLAN_TUSER+NUM_LS_RX_INST-1:0] lsi_axis_tuser     [`HOST_IF_INST];
 logic [AXI_LS_KWIDTH-1:0]   lsi_axis_tkeep               [`HOST_IF_INST];
 logic [`HOST_IF_INST-1:0]   lsi_axis_tready;
 
 logic [`HOST_IF_INST-1  :0] pause_axis_tvalid;
 logic [`HOST_WIDTH-1    :0] pause_axis_tdata             [`HOST_IF_INST];
 logic [`HOST_IF_INST-1  :0] pause_axis_tlast;
-logic [`HOST_IF_INST-1  :0] pause_axis_tuser;
+logic [VLAN_TUSER-1     :0] pause_axis_tuser             [`HOST_IF_INST];
 logic [`HOSTKEEP_WIDTH-1:0] pause_axis_tkeep             [`HOST_IF_INST];
 logic [`HOST_IF_INST-1  :0] pause_axis_tready;
 
@@ -338,6 +349,16 @@ logic [`HOST_IF_INST-1  :0] is_ptp_sync_msg;
 
 apb_m2s m_apb_m2s [4];
 apb_s2m m_apb_s2m [4];
+
+apb_s2m w_apb_qp_ram [`HOST_IF_INST];
+
+`ifdef SENSOR_TX_IF_INST
+  logic [`SENSOR_TX_IF_INST-1:0] stx_is_ready;
+`else
+  logic [0:0] stx_is_ready;
+  assign stx_is_ready = 1'b1;
+`endif
+
 genvar i, j;
 generate
   for (i=0; i<`HOST_IF_INST; i++) begin: gen_rx_parser
@@ -348,7 +369,14 @@ generate
       .AXI_DWIDTH                        ( `HOST_WIDTH                                ),
       .AXI_LS_DWIDTH                     ( 8                                          ),
       .MTU                               ( `HOST_MTU                                  ),
+      .USER_WIDTH                        ( VLAN_TUSER                                 ),
       .NUM_LS_INST                       ( NUM_LS_RX_INST                             ),
+      `ifdef SENSOR_TX_IF_INST
+      .N_QP                              ( `SENSOR_TX_IF_INST                         ),
+      `endif
+      `ifdef SIF_TX_ROCE_RC_ENABLE
+      .ENABLE_ROCE_ACK                   ( 1                                          ),
+      `endif
       .SYNC_CLK                          ( SYNC_CLK_HIF_APB                           )
     ) rx_parser (
       .host_clk                          ( i_hif_clk                                  ),
@@ -358,11 +386,15 @@ generate
       //Configuration
       .i_dev_mac_addr                    ( dev_mac_addr             [i]               ),
       .i_dev_ip_addr                     ( dev_ip_addr              [i]               ),
+      // Host QP RAM APB Interfaces
+      .i_apb_m2s_qp_ram                  ( s_apb_m2s_ram            [2]               ),
+      .o_apb_s2m_qp_ram                  ( w_apb_qp_ram             [i]               ),
       //Register APB Interfaces
       .i_apb_m2s                         ( s_apb_m2s_host [(i*num_host_mod)+inst_dec] ),
       .o_apb_s2m                         ( s_apb_s2m_host [(i*num_host_mod)+inst_dec] ),
       .o_dest_info                       ( dest_info                [i]               ),
       .o_ptp_sync_msg                    ( is_ptp_sync_msg          [i]               ),
+      .i_stx_ready                       ( stx_is_ready                               ),
       //AXI RX Interface inbound from packet buffer (via Ethernet MAC)
       .i_axis_rx_tvalid                  ( i_hif_axis_tvalid [i] && init_done_hif_clk ),
       .i_axis_rx_tdata                   ( i_hif_axis_tdata         [i]               ),
@@ -388,6 +420,13 @@ generate
       .o_btx_axis_tuser                  ( brx_axis_tuser           [i]               ),
       .o_btx_axis_tkeep                  ( brx_axis_tkeep           [i]               ),
       .i_btx_axis_tready                 ( brx_axis_tready          [i]               ),
+      //RoCE ACK AXIS Interface
+      .o_ack_axis_tvalid                 ( ack_axis_tvalid          [i]               ),
+      .o_ack_axis_tdata                  ( ack_axis_tdata           [i]               ),
+      .o_ack_axis_tlast                  ( ack_axis_tlast           [i]               ),
+      .o_ack_axis_tuser                  ( ack_axis_tuser           [i]               ),
+      .o_ack_axis_tkeep                  ( ack_axis_tkeep           [i]               ),
+      .i_ack_axis_tready                 ( ack_axis_tready          [i]               ),
       //Low Speed AXIS Interface to datapath
       .o_ls_axis_tvalid                  ( lsi_axis_tvalid          [i]               ),
       .o_ls_axis_tdata                   ( lsi_axis_tdata           [i]               ),
@@ -404,8 +443,13 @@ generate
   end
 endgenerate
 
+// RoCE QP RAM, only respond from HIF[0]
+// Each HIF gets its own copy of the data to prevent backpressure
+assign s_apb_s2m_ram [2] = w_apb_qp_ram [0]; 
+
 rx_ls_parser #(
   .AXI_DWIDTH                         ( `HOST_WIDTH                               ),
+  .AXI_UWIDTH                         ( VLAN_TUSER                                ),
   .AXI_LS_DWIDTH                      ( 8                                         ),
   .ENUM_DWIDTH                        ( ENUM_DWIDTH                               ),
   .MTU                                ( `HOST_MTU                                 ),
@@ -444,6 +488,7 @@ rx_ls_parser #(
   .i_eeprom_ip_addr                   ( eeprom_base_ip_addr                       ),
   .i_eeprom_ip_addr_vld               ( eeprom_ip_addr_vld_hif_clk                ),
   .i_hsb_stat                         ( hsb_stat                                  ),
+  .i_backward_compat_rev              ( HOLOLINK_BACKWARD_COMPAT_REV              ),
   .o_dev_ip_addr                      ( dev_ip_addr                               ),
   .i_enum_data                        ( enum_data                                 ),
   .i_evt_vec                          ( event_vec                                 ),
@@ -474,19 +519,31 @@ logic         init_done;
 logic         sys_init_done;
 logic         eeprom_dval;
 
-sys_init #(
-  .N_REG      ( `N_INIT_REG    )
-) u_sys_init   (
-  // clock and reset
-  .i_aclk     ( i_apb_clk      ),
-  .i_arst     ( o_apb_rst      ),
-  .o_apb_m2s  ( m_apb_m2s [1]  ),
-  .i_apb_s2m  ( m_apb_s2m [1]  ),
-  // control
-  .i_init     ( 1'b1           ),
-  .i_init_reg ( init_reg       ),
-  .o_done     ( sys_init_done  )
-);
+`ifdef N_INIT_REG
+  sys_init #(
+    .N_REG      ( `N_INIT_REG    )
+  ) u_sys_init   (
+    // clock and reset
+    .i_aclk     ( i_apb_clk      ),
+    .i_arst     ( o_apb_rst      ),
+    .o_apb_m2s  ( m_apb_m2s [1]  ),
+    .i_apb_s2m  ( m_apb_s2m [1]  ),
+    // control
+    .i_init     ( 1'b1           ),
+    .i_init_reg ( init_reg       ),
+    .o_done     ( sys_init_done  )
+  );
+`else
+  assign m_apb_m2s [1] = '{default:0};
+  always_ff @(posedge i_apb_clk) begin
+    if (o_apb_rst) begin
+      sys_init_done <= 1'b0;
+    end
+    else begin
+      sys_init_done <= 1'b1;
+    end
+  end
+`endif
 
 logic eeprom_dval_r;
 always_ff @(posedge i_apb_clk) begin
@@ -524,41 +581,41 @@ apb_intc_top #(
   .N_PER            ( 3                  ),
   .N_MPORT          ( 4                  )
 ) u_apb_intc (
-  .i_aclk           ( i_apb_clk          ),
-  .i_arst           ( o_apb_rst          ),
+  .i_aclk             ( i_apb_clk          ),
+  .i_arst             ( o_apb_rst          ),
   // Connect to Decoder
-  .i_apb_m2s        ( m_apb_m2s          ),
-  .o_apb_s2m        ( m_apb_s2m          ),
+  .i_apb_m2s          ( m_apb_m2s          ),
+  .o_apb_s2m          ( m_apb_s2m          ),
   // Connect to Device Modules
-  .i_apb_s2m_dev    ( s_apb_s2m_dev      ),
-  .o_apb_m2s_dev    ( s_apb_m2s_dev      ),
+  .i_apb_s2m_dev      ( s_apb_s2m_dev      ),
+  .o_apb_m2s_dev      ( s_apb_m2s_dev      ),
   // Connect to Sensor RX Module
-  .i_apb_s2m_sen_rx ( s_apb_s2m_sen_rx   ),
-  .o_apb_m2s_sen_rx ( s_apb_m2s_sen_rx   ),
+  .i_apb_s2m_sen_rx   ( s_apb_s2m_sen_rx   ),
+  .o_apb_m2s_sen_rx   ( s_apb_m2s_sen_rx   ),
   // Connect to Sensor TX Module
-  .i_apb_s2m_sen_tx ( s_apb_s2m_sen_tx   ),
-  .o_apb_m2s_sen_tx ( s_apb_m2s_sen_tx   ),
+  .i_apb_s2m_sen_tx   ( s_apb_s2m_sen_tx   ),
+  .o_apb_m2s_sen_tx   ( s_apb_m2s_sen_tx   ),
   // Connect to Host Module
-  .i_apb_s2m_host   ( s_apb_s2m_host     ),
-  .o_apb_m2s_host   ( s_apb_m2s_host     ),
+  .i_apb_s2m_host     ( s_apb_s2m_host     ),
+  .o_apb_m2s_host     ( s_apb_m2s_host     ),
   // Connect to Host ROCE Module
-  .i_apb_s2m_ram    ( s_apb_s2m_ram      ),
-  .o_apb_m2s_ram    ( s_apb_m2s_ram      ),
+  .i_apb_s2m_ram      ( s_apb_s2m_ram      ),
+  .o_apb_m2s_ram      ( s_apb_m2s_ram      ),
   // Connect to Peripheral Modules
-  .i_apb_s2m_per    ( s_apb_s2m_per      ),
-  .o_apb_m2s_per    ( s_apb_m2s_per      ),
+  .i_apb_s2m_per      ( s_apb_s2m_per      ),
+  .o_apb_m2s_per      ( s_apb_m2s_per      ),
   // Connect to Bridge Module
-  .i_apb_s2m_bridge ( s_apb_s2m_bridge   ),
-  .o_apb_m2s_bridge ( s_apb_m2s_bridge   ),
+  .i_apb_s2m_bridge   ( s_apb_s2m_bridge   ),
+  .o_apb_m2s_bridge   ( s_apb_m2s_bridge   ),
   // Connect to User Modules, not using defined type struct
-  .o_apb_psel       ( o_apb_psel         ),
-  .o_apb_penable    ( o_apb_penable      ),
-  .o_apb_paddr      ( o_apb_paddr        ),
-  .o_apb_pwdata     ( o_apb_pwdata       ),
-  .o_apb_pwrite     ( o_apb_pwrite       ),
-  .i_apb_pready     ( i_apb_pready       ),
-  .i_apb_prdata     ( i_apb_prdata       ),
-  .i_apb_pserr      ( i_apb_pserr        )
+  .o_apb_psel         ( o_apb_psel         ),
+  .o_apb_penable      ( o_apb_penable      ),
+  .o_apb_paddr        ( o_apb_paddr        ),
+  .o_apb_pwdata       ( o_apb_pwdata       ),
+  .o_apb_pwrite       ( o_apb_pwrite       ),
+  .i_apb_pready       ( i_apb_pready       ),
+  .i_apb_prdata       ( i_apb_prdata       ),
+  .i_apb_pserr        ( i_apb_pserr        )
 );
 
 //------------------------------------------------------------------------------------------------//
@@ -569,7 +626,7 @@ logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tvalid;
 logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tvalid_gated;
 logic [`HOST_WIDTH    -1:0] ptp_tx_axis_tdata [`HOST_IF_INST];
 logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tlast;
-logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tuser;
+logic [VLAN_TUSER     -1:0] ptp_tx_axis_tuser [`HOST_IF_INST];
 logic [`HOSTKEEP_WIDTH-1:0] ptp_tx_axis_tkeep [`HOST_IF_INST];
 logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tready;
 
@@ -588,7 +645,8 @@ logic [`HOST_IF_INST  -1:0] ptp_tx_axis_tready;
     .PTP_CLK_FREQ     ( `PTP_CLK_FREQ          ),
     .AXI_DWIDTH       ( `HOST_WIDTH            ),
     .NUM_HOST         ( `HOST_IF_INST          ),
-    .SYNC_CLK         ( SYNC_CLK_HIF_PTP       )
+    .SYNC_CLK         ( SYNC_CLK_HIF_PTP       ),
+    .W_USER           ( VLAN_TUSER             )
   ) u_ptp_top (
     .i_pclk           ( i_ptp_clk              ),
     .i_prst           ( o_ptp_rst              ),
@@ -801,16 +859,15 @@ logic [`HOST_IF_INST-1  :0] dp_axis_tvalid;
 logic [`HOST_IF_INST-1  :0] dp_axis_tlast;
 logic [`HOST_WIDTH-1    :0] dp_axis_tdata    [`HOST_IF_INST];
 logic [`HOSTKEEP_WIDTH-1:0] dp_axis_tkeep    [`HOST_IF_INST];
-logic [`HOST_IF_INST-1  :0] dp_axis_tuser;
+logic [VLAN_TUSER-1     :0] dp_axis_tuser   [`HOST_IF_INST];
 logic [`HOST_IF_INST-1  :0] dp_axis_tready;
-
 
 // AXIS Interface
 logic [PORT_NUM-1       :0] tx_axis_tvalid  [`HOST_IF_INST];
 logic [PORT_NUM-1       :0] tx_axis_tlast   [`HOST_IF_INST];
 logic [`HOST_WIDTH-1    :0] tx_axis_tdata   [`HOST_IF_INST][PORT_NUM];
 logic [`HOSTKEEP_WIDTH-1:0] tx_axis_tkeep   [`HOST_IF_INST][PORT_NUM];
-logic [PORT_NUM-1       :0] tx_axis_tuser   [`HOST_IF_INST];
+logic [VLAN_TUSER-1     :0] tx_axis_tuser   [`HOST_IF_INST][PORT_NUM];
 logic [PORT_NUM-1       :0] tx_axis_tready  [`HOST_IF_INST];
 
 logic [`HOST_IF_INST-1  :0] del_req_val;
@@ -820,42 +877,49 @@ generate
     assign tx_axis_tvalid[i]             = {btx_axis_tvalid                [i],  // bridge
                                             pause_axis_tvalid              [i],  // pause
                                             lso_axis_tvalid                [i],  // arp/icmp/udp_loopback
+                                            ack_axis_tvalid                [i],  // roce ack
                                             ptp_tx_axis_tvalid_gated       [i],  // ptp
                                             dp_axis_tvalid                 [i]}; // sensor data
 
     assign tx_axis_tlast[i]              = {btx_axis_tlast                 [i],
                                             pause_axis_tlast               [i],
                                             lso_axis_tlast                    ,
+                                            ack_axis_tlast                 [i],
                                             ptp_tx_axis_tlast              [i],
                                             dp_axis_tlast                  [i]};
 
     assign tx_axis_tdata[i]              = '{ dp_axis_tdata                  [i],
-                                              ptp_tx_axis_tdata             [i],
+                                              ptp_tx_axis_tdata              [i],
+                                              ack_axis_tdata                 [i],
                                               lso_axis_tdata                   ,
-                                              pause_axis_tdata              [i],
-                                              btx_axis_tdata                [i]};
+                                              pause_axis_tdata               [i],
+                                              btx_axis_tdata                 [i]};
 
-    assign tx_axis_tkeep[i]              = '{ dp_axis_tkeep                  [i],
+    assign tx_axis_tkeep[i]              = '{ dp_axis_tkeep                 [i],
                                               ptp_tx_axis_tkeep             [i],
+                                              ack_axis_tkeep                [i],
                                               lso_axis_tkeep                   ,
                                               pause_axis_tkeep              [i],
                                               btx_axis_tkeep                [i]};
 
-    assign tx_axis_tuser[i]              =  { btx_axis_tuser                 [i],
-                                              pause_axis_tuser              [i],
-                                              lso_axis_tuser                   ,
+    assign tx_axis_tuser[i]              = '{ dp_axis_tuser                 [i],
                                               ptp_tx_axis_tuser             [i],
-                                              dp_axis_tuser                 [i]};
+                                              ack_axis_tuser                [i],
+                                              lso_axis_tuser                   ,
+                                              pause_axis_tuser              [i],
+                                              btx_axis_tuser                [i]};
 
     assign {btx_axis_tready               [i],
             pause_axis_tready             [i],
             lso_axis_tready               [i],
+            ack_axis_tready               [i],
             ptp_tx_axis_tready            [i],
             dp_axis_tready                [i]} = tx_axis_tready[i];
 
     eth_pkt #(
       .N_INPT                   ( PORT_NUM                                  ),
       .W_DATA                   ( `HOST_WIDTH                               ),
+      .W_USER                   ( VLAN_TUSER                                ),
       .SYNC_CLK                 ( SYNC_CLK_HIF_APB                          )
     ) u_eth_pkt  (
       .i_pclk                   ( i_hif_clk                                 ),
@@ -1249,7 +1313,6 @@ streaming_cdc #(
     logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_data_gen_axis_tlast;
     logic [`DATAUSER_WIDTH-1     :0] sen_rx_data_gen_axis_tuser  [`SENSOR_RX_IF_INST];
     logic [`DATAKEEP_WIDTH-1     :0] sen_rx_data_gen_axis_tkeep  [`SENSOR_RX_IF_INST];
-    logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_data_gen_axis_tready;
     logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_data_gen_axis_mux;
 
     logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_mux_axis_tvalid;
@@ -1257,14 +1320,15 @@ streaming_cdc #(
     logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_mux_axis_tlast;
     logic [`DATAUSER_WIDTH-1     :0] sen_rx_mux_axis_tuser  [`SENSOR_RX_IF_INST];
     logic [`DATAKEEP_WIDTH-1     :0] sen_rx_mux_axis_tkeep  [`SENSOR_RX_IF_INST];
-    logic [`SENSOR_RX_IF_INST-1  :0] sen_rx_mux_axis_tready;
 
     `ifdef SIF_RX_DATA_GEN
 //------------------------------------------------------------------------------------------------//
 // Sensor RX Data Generator
 //------------------------------------------------------------------------------------------------//
+
       generate
         for (i=0; i<`SENSOR_RX_IF_INST; i++) begin: gen_data_gen_inst
+
           data_gen # (
             .W_DATA              ( SIF_RX_WIDTH[i]                                          )
           ) u_sen_rx_data_gen (
@@ -1274,6 +1338,7 @@ streaming_cdc #(
             .i_sif_rst           ( o_sif_rx_rst[i]                                          ),
             .i_apb_m2s           ( s_apb_m2s_sen_rx[(i*num_sen_rx_mod)+sen_rx_data_gen]     ),
             .o_apb_s2m           ( s_apb_s2m_sen_rx[(i*num_sen_rx_mod)+sen_rx_data_gen]     ),
+            .i_pps               ( 1'b0                                                     ),
             .o_data_gen_axis_mux ( sen_rx_data_gen_axis_mux      [i]                        ),
             .o_axis_tvalid       ( sen_rx_data_gen_axis_tvalid   [i]                        ),
             .o_axis_tdata        ( sen_rx_data_gen_axis_tdata    [i][SIF_RX_WIDTH[i]-1:0]   ),
@@ -1430,6 +1495,7 @@ streaming_cdc #(
     dp_pkt_top #(
       .N_INPT        ( TOTAL_VP_WIDTH   ),
       .W_DATA        (`HOST_WIDTH       ),
+      .W_USER        ( VLAN_TUSER       ),
       .N_HOST        (`HOST_IF_INST     ),
       .MTU           (`HOST_MTU         ),
       .BUFFER_4K_REG ( 1                ),
@@ -1518,12 +1584,6 @@ streaming_cdc #(
     logic [`SENSOR_TX_IF_INST-1:0] sbuf_axis_tuser;
     logic [`HOSTKEEP_WIDTH-1   :0] sbuf_axis_tkeep         [`SENSOR_TX_IF_INST];
 
-    logic [`SENSOR_TX_IF_INST-1:0] sbuf_axis_tvalid_out;
-    logic [`DATAPATH_WIDTH-1   :0] sbuf_axis_tdata_out     [`SENSOR_TX_IF_INST];
-    logic [`SENSOR_TX_IF_INST-1:0] sbuf_axis_tlast_out;
-    logic [`SENSOR_TX_IF_INST-1:0] sbuf_axis_tuser_out;
-    logic [`DATAKEEP_WIDTH-1   :0] sbuf_axis_tkeep_out     [`SENSOR_TX_IF_INST];
-
     logic [`SENSOR_TX_IF_INST-1:0] tx_axis_tvalid_out;
     logic [`DATAPATH_WIDTH-1   :0] tx_axis_tdata_out       [`SENSOR_TX_IF_INST];
     logic [`SENSOR_TX_IF_INST-1:0] tx_axis_tlast_out;
@@ -1598,7 +1658,8 @@ streaming_cdc #(
           .i_axis_tready          ( tx_strm_buffer_ready                [i]                          ),
           //Pause
           .o_eth_pause            ( tx_pause_req                        [i]                          ),
-          .o_pause_quanta         ( tx_pause_quanta                     [i]                          )
+          .o_pause_quanta         ( tx_pause_quanta                     [i]                          ),
+          .o_stx_is_ready         ( stx_is_ready                        [i]                          )
         );
 
       end

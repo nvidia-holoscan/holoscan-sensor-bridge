@@ -66,13 +66,13 @@ reg_fifo #(
 assign {req,ptp} = fifo_dout;
 
 //------------------------------------------------------------------------------------------------//
-// Serving RRARB
+// Serving Priority Arbiter
 //------------------------------------------------------------------------------------------------//
 
 logic [W_INPT-1:0] ram_wr_addr;
 logic              ram_wr;
 
-logic [N_INPT-1:0] mask;
+logic [N_INPT-1:0] arb_req;
 logic [N_INPT-1:0] gnt;
 logic [N_INPT-1:0] gnt_r;
 logic [W_INPT-1:0] gnt_idx;
@@ -82,47 +82,47 @@ logic              fifo_empty_r;
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
-    mask         <= '0;
+    arb_req      <= '0;
     fifo_rd      <= '0;
     fifo_active  <= '0;
     fifo_empty_r <= '1;
     gnt_r        <= '0;
   end
   else begin
-    gnt_r <= gnt;
+    gnt_r <= fifo_active ? gnt : '0;
     if (!fifo_empty && !fifo_rd) begin
       if (!fifo_active) begin
-        mask        <= '0;
+        arb_req     <= req;
         fifo_rd     <= '0;
         fifo_active <= '1;
       end
-      else if ((req&gnt) == '0) begin
-        mask        <= '0;
+      else if (arb_req == '0) begin
+        arb_req     <= '0;
         fifo_rd     <= '1; // Pop fifo if all requests are served
         fifo_active <= '0;
       end
       else begin
-        mask        <= (mask|gnt); // Mask out all served requests
+        arb_req     <= arb_req & ~gnt; // Clear each served request
         fifo_rd     <= '0;
         fifo_active <= '1;
       end
     end
     else begin
-      mask        <= '0;
+      arb_req     <= '0;
       fifo_rd     <= '0;
       fifo_active <= '0;
     end
   end
 end
 
-rrarb #(
+priority_arb #(
   .WIDTH      ( N_INPT                        )
-) u_rrarb (
+) u_priority_arb (
   .clk        ( i_pclk                        ),
   .rst_n      ( '1                            ),
   .rst        ( i_prst                        ),
   .idle       ( '1                            ),
-  .req        ( fifo_active ? (req^mask) : '0 ),
+  .req        ( arb_req                       ),
   .gnt        ( gnt                           )
 );
 

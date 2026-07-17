@@ -20,7 +20,7 @@
 #ifndef COE_DATA_PLANE_HPP
 #define COE_DATA_PLANE_HPP
 
-#include "hololink/emulation/data_plane.hpp"
+#include "data_plane.hpp"
 
 namespace hololink::emulation {
 

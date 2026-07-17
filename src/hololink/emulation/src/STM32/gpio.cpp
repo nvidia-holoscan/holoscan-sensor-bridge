@@ -18,13 +18,11 @@
  */
 
 #include "STM32/gpio.hpp"
-#include "STM32/hsb_config.hpp"
+#include "../../hsb_config.hpp"
 #include "STM32/stm32_system.h"
+#include "board.h"
 #include <stdint.h>
 
-// WARNING: AHB1PERIPH_BASE and several constants are stm32f767 specific
-#define GPIO_BANK_COUNT 11U
-#define GPIO_PIN_PER_BANK 16U
 // 32-bit register contains 2 banks
 #define GPIO_BANK_PER_REGISTER 2U
 #define GPIO_DIRECTION_MASK 0x03UL
@@ -40,175 +38,15 @@ bool GPIO_initialized = false;
 
 int GPIO_init(__attribute__((unused)) void* ctxt)
 {
-
     if (GPIO_initialized) {
         return 0;
     }
-
-    GPIO_InitTypeDef gpio_cfg = { 0 };
-
-    /* GPIO Ports Clock Enable */
-    __HAL_RCC_GPIOA_CLK_ENABLE();
-    __HAL_RCC_GPIOB_CLK_ENABLE();
-    __HAL_RCC_GPIOC_CLK_ENABLE();
-    __HAL_RCC_GPIOD_CLK_ENABLE();
-    __HAL_RCC_GPIOE_CLK_ENABLE();
-    __HAL_RCC_GPIOF_CLK_ENABLE();
-    __HAL_RCC_GPIOG_CLK_ENABLE();
-    //__HAL_RCC_GPIOH_CLK_ENABLE();
-
-    /* reset LED pins */
-    HAL_GPIO_WritePin(GPIOB, GPIO_PIN_0 | GPIO_PIN_7 | GPIO_PIN_14, GPIO_PIN_RESET);
-
-    /* reset USB power switch on pin */
-    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_6, GPIO_PIN_RESET);
-
-    // Configure GPIO port A
-    // analog input pins
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_3
-        | GPIO_PIN_5 | GPIO_PIN_6
-        | GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOA, &gpio_cfg);
-
-    // Configure GPIO port B
-    // analog input pins
-    gpio_cfg.Pin = GPIO_PIN_1
-        | GPIO_PIN_4 | GPIO_PIN_5
-        | GPIO_PIN_8 | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12 | GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio_cfg);
-    // output (LED) pins
-    gpio_cfg.Pin = GPIO_PIN_0
-        | GPIO_PIN_7
-        | GPIO_PIN_14;
-    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOB, &gpio_cfg);
-
-    // Configure GPIO port C
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_2 | GPIO_PIN_3
-        | GPIO_PIN_6 | GPIO_PIN_7
-        | GPIO_PIN_8 | GPIO_PIN_9
-        | GPIO_PIN_12;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOC, &gpio_cfg);
-    // User Button Pin (EXTI13)
-    gpio_cfg.Pin = GPIO_PIN_13;
-    gpio_cfg.Mode = GPIO_MODE_IT_RISING;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOC, &gpio_cfg);
-
-    HAL_NVIC_SetPriority(EXTI15_10_IRQn, 6, 0);
-    HAL_NVIC_EnableIRQ(EXTI15_10_IRQn);
-
-    // Configure GPIO port D
-    // analog input pins
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
-        | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7
-        | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_14 | GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOD, &gpio_cfg);
-
-    // Configure GPIO port E
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
-        | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7
-        | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12 | GPIO_PIN_13 | GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOE, &gpio_cfg);
-    // generic input, 0 when disconnected
-    gpio_cfg.Pin = GPIO_PIN_14;
-    gpio_cfg.Mode = GPIO_MODE_INPUT;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(GPIOE, &gpio_cfg);
-
-    // Configure GPIO port F
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1 | GPIO_PIN_2 | GPIO_PIN_3
-        | GPIO_PIN_4 | GPIO_PIN_5 | GPIO_PIN_6 | GPIO_PIN_7
-        | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10 | GPIO_PIN_11
-        | GPIO_PIN_12;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOF, &gpio_cfg);
-    // it rising
-    gpio_cfg.Pin = GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_IT_RISING;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(GPIOF, &gpio_cfg);
-    // it falling
-    gpio_cfg.Pin = GPIO_PIN_14;
-    gpio_cfg.Mode = GPIO_MODE_IT_FALLING;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(GPIOF, &gpio_cfg);
-    // it rising & falling
-    gpio_cfg.Pin = GPIO_PIN_12;
-    gpio_cfg.Mode = GPIO_MODE_IT_RISING_FALLING;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    HAL_GPIO_Init(GPIOF, &gpio_cfg);
-    // output medium speed
-    gpio_cfg.Pin = GPIO_PIN_13;
-    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_MEDIUM;
-    HAL_GPIO_Init(GPIOF, &gpio_cfg);
-
-    // configure GPIO bank G
-    gpio_cfg.Pin = GPIO_PIN_0 | GPIO_PIN_1
-        | GPIO_PIN_4 | GPIO_PIN_5
-        | GPIO_PIN_8 | GPIO_PIN_9 | GPIO_PIN_10
-        | GPIO_PIN_12 | GPIO_PIN_14 | GPIO_PIN_15;
-    gpio_cfg.Mode = GPIO_MODE_ANALOG;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOG, &gpio_cfg);
-    // output (USB power switch on pin)
-    gpio_cfg.Pin = GPIO_PIN_6;
-    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_cfg.Pull = GPIO_NOPULL;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_LOW;
-    HAL_GPIO_Init(GPIOG, &gpio_cfg);
-    // output high speed
-    gpio_cfg.Pin = GPIO_PIN_2;
-    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOG, &gpio_cfg);
-    // output very high speed
-    gpio_cfg.Pin = GPIO_PIN_3;
-    gpio_cfg.Mode = GPIO_MODE_OUTPUT_PP;
-    gpio_cfg.Pull = GPIO_PULLDOWN;
-    gpio_cfg.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-    HAL_GPIO_Init(GPIOG, &gpio_cfg);
-
+    stm32_conf_gpio_init_board();
     GPIO_initialized = true;
     return 0;
 }
 
-extern "C" void EXTI15_10_IRQHandler(void)
-{
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_12);
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_13);
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_14);
-    HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_15);
-}
-
-const uint32_t GPIO_SUPPORTED_PIN_NUM = (GPIO_BANK_COUNT * GPIO_PIN_PER_BANK);
+const uint32_t GPIO_SUPPORTED_PIN_NUM = (STM32_CONF_GPIO_BANK_COUNT * STM32_CONF_GPIO_PIN_PER_BANK);
 
 static inline GPIO_TypeDef* get_gpio_address(uint32_t address, uint32_t base_address)
 {
@@ -216,14 +54,13 @@ static inline GPIO_TypeDef* get_gpio_address(uint32_t address, uint32_t base_add
     if (nregister * 32U >= GPIO_SUPPORTED_PIN_NUM) {
         return NULL;
     }
-    // WARNING: AHB1PERIPH_BASE is stm32f767 specific
-    return (GPIO_TypeDef*)(AHB1PERIPH_BASE + 0x0400UL * nregister * 2); // * 2 because each 32-bit register contains 2 banks
+    return (GPIO_TypeDef*)(STM32_CONF_GPIO_BANK_BASE + STM32_CONF_GPIO_BANK_STRIDE * nregister * 2); // * 2 because each 32-bit register contains 2 banks
 }
 
 static inline GPIO_TypeDef* get_next_bank(GPIO_TypeDef* gpio)
 {
-    uint32_t bank = (uint32_t)gpio + 0x400UL;
-    if (bank >= AHB1PERIPH_BASE + 0x400UL * GPIO_BANK_COUNT) {
+    uint32_t bank = (uint32_t)gpio + STM32_CONF_GPIO_BANK_STRIDE;
+    if (bank >= STM32_CONF_GPIO_BANK_BASE + STM32_CONF_GPIO_BANK_STRIDE * STM32_CONF_GPIO_BANK_COUNT) {
         return NULL;
     }
     return (GPIO_TypeDef*)bank;
@@ -284,7 +121,7 @@ int GPIO_set_value(__attribute__((unused)) void* ctxt, AddressValuePair* addr_va
     while (i < max_count && gpio) {
         uint32_t pin_mask = 1U;
         uint32_t pin_values = AVP_GET_VALUE(addr_vals);
-        for (uint16_t pin = 0; pin < GPIO_PIN_PER_BANK; pin++) {
+        for (uint16_t pin = 0; pin < STM32_CONF_GPIO_PIN_PER_BANK; pin++) {
             if (gpio_is_output(gpio, pin)) {
                 HAL_GPIO_WritePin(gpio, pin_mask, (pin_values & pin_mask) ? GPIO_PIN_SET : GPIO_PIN_RESET);
             }
@@ -294,7 +131,7 @@ int GPIO_set_value(__attribute__((unused)) void* ctxt, AddressValuePair* addr_va
         if (gpio) {
             pin_mask = 1U;
             pin_values >>= 16U;
-            for (uint16_t pin = 0; pin < GPIO_PIN_PER_BANK; pin++) {
+            for (uint16_t pin = 0; pin < STM32_CONF_GPIO_PIN_PER_BANK; pin++) {
                 if (gpio_is_output(gpio, pin)) {
                     HAL_GPIO_WritePin(gpio, pin_mask, (pin_values & pin_mask) ? GPIO_PIN_SET : GPIO_PIN_RESET);
                 }
@@ -317,7 +154,7 @@ int GPIO_get_direction(__attribute__((unused)) void* ctxt, AddressValuePair* add
     while (i < max_count && gpio) {
         // treat everything not output as input so it cannot be toggled. TODO: WARNING: This is semantically different from the existing hololink API/IP
         uint32_t pin_mask = 1U;
-        for (uint16_t pin = 0; pin < GPIO_PIN_PER_BANK; pin++) {
+        for (uint16_t pin = 0; pin < STM32_CONF_GPIO_PIN_PER_BANK; pin++) {
             if (!gpio_is_output(gpio, pin)) {
                 AVP_SET_VALUE(addr_vals, (AVP_GET_VALUE(addr_vals) | (pin_mask << pin)));
             }
@@ -325,7 +162,7 @@ int GPIO_get_direction(__attribute__((unused)) void* ctxt, AddressValuePair* add
         gpio = get_next_bank(gpio);
         if (gpio) {
             pin_mask = 1U;
-            for (uint16_t pin = 0; pin < GPIO_PIN_PER_BANK; pin++) {
+            for (uint16_t pin = 0; pin < STM32_CONF_GPIO_PIN_PER_BANK; pin++) {
                 if (!gpio_is_output(gpio, pin)) {
                     AVP_SET_VALUE(addr_vals, (AVP_GET_VALUE(addr_vals) | (pin_mask << (pin + 16U))));
                 }

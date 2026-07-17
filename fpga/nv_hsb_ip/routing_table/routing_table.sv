@@ -45,6 +45,9 @@ module routing_table
 
 );
 
+localparam W_INPT_IDX = (N_INPT <= 1) ? 1 : $clog2(N_INPT);
+localparam W_HOST_IDX = (N_HOST <= 1) ? 1 : $clog2(N_HOST);
+
 //------------------------------------------------------------------------------------------------//
 // Parse incoming data for Source MAC addr
 //------------------------------------------------------------------------------------------------//
@@ -125,43 +128,39 @@ logic [47:0]       rr_cam_key;
 logic [N_HOST-1:0] r_dest_val;
 logic [N_HOST-1:0] rr_dest_val;
 
+logic [W_INPT_IDX-1:0] wr_idx;
+logic [W_HOST_IDX-1:0] rd_idx;
+
 logic              rrarb_idle;
 
 rrarb #(
   .WIDTH(N_HOST)
 ) u_rrarb_host (
-  .clk    (  i_clk       ),    // Clock
-  .rst_n  (  !i_rst      ),    // Asynchronous reset active low
-  .rst    (  1'b0        ),    // Synchronous reset active high
-  .idle   (  rrarb_idle  ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
-  .req    (  i_mac_req   ),    // vector of requests
-  .gnt    (  dest_val    )     // onehot0 vector of grants
+  .clk     (  i_clk       ),    // Clock
+  .rst_n   (  !i_rst      ),    // Asynchronous reset active low
+  .rst     (  1'b0        ),    // Synchronous reset active high
+  .idle    (  rrarb_idle  ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
+  .req     (  i_mac_req   ),    // vector of requests
+  .gnt_idx (              ),
+  .gnt     (  dest_val    )     // onehot0 vector of grants
 );
 
 rrarb #(
   .WIDTH(N_INPT)
 ) u_rrarb_sensor (
-  .clk    (  i_clk       ),    // Clock
-  .rst_n  (  !i_rst      ),    // Asynchronous reset active low
-  .rst    (  1'b0        ),    // Synchronous reset active high
-  .idle   (  rrarb_idle  ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
-  .req    (  mac_valid   ),    // vector of requests
-  .gnt    (  mac_grant   )     // onehot0 vector of grants
+  .clk     (  i_clk       ),    // Clock
+  .rst_n   (  !i_rst      ),    // Asynchronous reset active low
+  .rst     (  1'b0        ),    // Synchronous reset active high
+  .idle    (  rrarb_idle  ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
+  .req     (  mac_valid   ),    // vector of requests
+  .gnt_idx (  wr_idx      ),
+  .gnt     (  mac_grant   )     // onehot0 vector of grants
 );
 
 assign rrarb_idle = '1;
 
-logic [7:0] wr_idx;
-logic [7:0] rd_idx;
 
-always_comb begin
-  wr_idx = '0;
-  for (int i = 0; i < N_INPT; i++) begin
-    if (mac_grant[i]) begin
-      wr_idx = i;
-    end
-  end
-end
+
 
 always_comb begin
   rd_idx = '0;

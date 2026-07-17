@@ -21,6 +21,7 @@ module rx_ls_parser
   import regmap_pkg::*;
 #(
   parameter   AXI_DWIDTH      = 64,
+  parameter   AXI_UWIDTH      = 17,
   parameter   AXI_LS_DWIDTH   = 8,
   localparam  KEEP_WIDTH      = (AXI_DWIDTH / 8),
   localparam  KEEP_LS_WIDTH   = (AXI_LS_DWIDTH / 8),
@@ -50,10 +51,10 @@ module rx_ls_parser
 
   //AXI LS Interface inbound from RX parser
   input   logic   [NUM_HOST-1:0]          i_axis_tvalid,
-  input   logic   [AXI_LS_DWIDTH-1:0]     i_axis_tdata        [NUM_HOST],
+  input   logic   [AXI_LS_DWIDTH-1:0]     i_axis_tdata         [NUM_HOST],
   input   logic   [NUM_HOST-1:0]          i_axis_tlast,
-  input   logic   [NUM_LS_RX_INST-1:0]    i_axis_tuser        [NUM_HOST],
-  input   logic   [KEEP_LS_WIDTH-1:0]     i_axis_tkeep        [NUM_HOST],
+  input   logic   [AXI_UWIDTH+NUM_LS_RX_INST-1:0] i_axis_tuser [NUM_HOST],
+  input   logic   [KEEP_LS_WIDTH-1:0]     i_axis_tkeep         [NUM_HOST],
   output  logic   [NUM_HOST-1:0]          o_axis_tready,
 
   // Input Control Data
@@ -63,9 +64,10 @@ module rx_ls_parser
   input   logic   [79:0]                  i_ptp_hif,
 
   input   logic                           i_init_done,
-  input           [47:0]                  i_dev_mac_addr      [NUM_HOST],
+  input           [47:0]                  i_dev_mac_addr       [NUM_HOST],
   input           [31:0]                  i_eeprom_ip_addr,
   input   logic                           i_eeprom_ip_addr_vld,
+  input   logic   [15:0]                  i_backward_compat_rev,
   input   logic   [7:0]                   i_hsb_stat,
 
   output          [31:0]                  o_dev_ip_addr       [NUM_HOST],
@@ -82,7 +84,7 @@ module rx_ls_parser
   output   logic  [NUM_HOST-1:0]          o_axis_tvalid,
   output   logic  [AXI_DWIDTH-1:0]        o_axis_tdata,
   output   logic                          o_axis_tlast,
-  output   logic                          o_axis_tuser,
+  output   logic  [AXI_UWIDTH-1:0]        o_axis_tuser,
   output   logic  [KEEP_WIDTH-1:0]        o_axis_tkeep,
   input    logic  [NUM_HOST-1:0]          i_axis_tready
 );
@@ -108,12 +110,12 @@ localparam ARP_PING_TX_IDX  = 3;
 
 localparam W_NUM_HOST = (NUM_HOST==1) ? 1 : $clog2(NUM_HOST);
 
-logic [NUM_LS_TX_INST-1:0]    lso_axis_tvalid;
-logic [NUM_LS_TX_INST-1:0]    lso_axis_tlast ;
-logic [AXI_LS_DWIDTH-1:0]     lso_axis_tdata  [NUM_LS_TX_INST];
-logic [KEEP_LS_WIDTH-1:0]     lso_axis_tkeep  [NUM_LS_TX_INST];
-logic [W_NUM_HOST-1   :0]     lso_axis_tuser  [NUM_LS_TX_INST];
-logic [NUM_LS_TX_INST-1:0]    lso_axis_tready;
+logic [NUM_LS_TX_INST-1:0]         lso_axis_tvalid;
+logic [NUM_LS_TX_INST-1:0]         lso_axis_tlast ;
+logic [AXI_LS_DWIDTH-1:0]          lso_axis_tdata  [NUM_LS_TX_INST];
+logic [KEEP_LS_WIDTH-1:0]          lso_axis_tkeep  [NUM_LS_TX_INST];
+logic [AXI_UWIDTH+W_NUM_HOST-1 :0] lso_axis_tuser  [NUM_LS_TX_INST];
+logic [NUM_LS_TX_INST-1:0]         lso_axis_tready;
 
 //Header Data
 logic   [47:0]   host_mac_addr     [NUM_LS_TX_INST];
@@ -131,19 +133,21 @@ logic [NUM_LS_RX_INST-1:0]    lsi_axis_tvalid;
 logic                         lsi_axis_tlast ;
 logic [AXI_LS_DWIDTH-1:0]     lsi_axis_tdata;
 logic [KEEP_LS_WIDTH-1:0]     lsi_axis_tkeep;
-logic [W_NUM_HOST-1   :0]     lsi_axis_tuser;
+logic [W_NUM_HOST-1 :0]       lsi_axis_tuser;
 logic [NUM_LS_RX_INST-1:0]    lsi_axis_tready;
 
-logic                         w_lsi_axis_tready;
-logic [NUM_LS_RX_INST-1:0]    w_lsi_axis_tuser;
-logic                         w_lsi_axis_tvalid;
+logic                                 w_lsi_axis_tready;
+logic [AXI_UWIDTH+NUM_LS_RX_INST-1:0] w_lsi_axis_tuser;
+logic                                 w_lsi_axis_tvalid;
+
+logic [AXI_UWIDTH-1:0]        lsi_axis_vlan;
 
 axis_arb #(
-  .N_INPT           ( NUM_HOST          ),
-  .W_DATA           ( AXI_LS_DWIDTH     ),
-  .W_USER           ( NUM_LS_RX_INST    ),
-  .ARB_TYPE         ( "ROUND_ROBIN"     ),
-  .SKID             ( '1                )
+  .N_INPT           ( NUM_HOST                  ),
+  .W_DATA           ( AXI_LS_DWIDTH             ),
+  .W_USER           ( AXI_UWIDTH+NUM_LS_RX_INST ),
+  .ARB_TYPE         ( "ROUND_ROBIN"             ),
+  .SKID             ( '1                        )
 ) u_inp_axis_arb (
   .i_clk            ( i_pclk             ),
   .i_rst            ( i_prst             ),
@@ -162,8 +166,9 @@ axis_arb #(
   .i_axis_tready    ( w_lsi_axis_tready  )
 );
 
-assign lsi_axis_tvalid = (w_lsi_axis_tvalid) ? w_lsi_axis_tuser : '0;
-assign w_lsi_axis_tready = |(w_lsi_axis_tuser & lsi_axis_tready);
+assign lsi_axis_vlan     = w_lsi_axis_tuser[AXI_UWIDTH+NUM_LS_RX_INST-1:NUM_LS_RX_INST];
+assign lsi_axis_tvalid   = (w_lsi_axis_tvalid) ? w_lsi_axis_tuser[NUM_LS_RX_INST-1:0] : '0;
+assign w_lsi_axis_tready = |(w_lsi_axis_tuser[NUM_LS_RX_INST-1:0] & lsi_axis_tready);
 //------------------------------------------------------------------------------------------------//
 // Ping - RX with TX Response
 //------------------------------------------------------------------------------------------------//
@@ -173,7 +178,7 @@ logic arp_ping_axis_tready;
 arp_ping_pkt_proc
 #(
   .AXI_DWIDTH                   ( AXI_LS_DWIDTH                      ),
-  .W_USER                       ( W_NUM_HOST                         ),
+  .W_USER                       ( W_NUM_HOST+AXI_UWIDTH              ),
   .NUM_HOST                     ( NUM_HOST                           )
 ) u_arp_ping_pkt_proc (
   .i_pclk                       ( i_pclk                             ),
@@ -183,7 +188,7 @@ arp_ping_pkt_proc
   .i_lpb_axis_tvalid            ( lsi_axis_tvalid [LOOPBACK_RX_IDX]  ),
   .i_axis_tdata                 ( lsi_axis_tdata                     ),
   .i_axis_tlast                 ( lsi_axis_tlast                     ),
-  .i_axis_tuser                 ( lsi_axis_tuser                     ),
+  .i_axis_tuser                 ( {lsi_axis_vlan,lsi_axis_tuser}     ),
   .i_axis_tkeep                 ( lsi_axis_tkeep                     ),
   .o_axis_tready                ( arp_ping_axis_tready               ),
   .i_dev_mac_addr               ( i_dev_mac_addr                     ),
@@ -213,7 +218,7 @@ logic                     ecb_is_roce;
 
 ecb_rdwr_ctrl #(
   .AXI_DWIDTH         ( AXI_LS_DWIDTH                                                    ),
-  .W_USER             ( W_NUM_HOST                                                       ),
+  .W_USER             ( AXI_UWIDTH+W_NUM_HOST                                            ),
   .MTU                ( MTU                                                              ),
   .SYNC_CLK           ( SYNC_CLK                                                         )
 ) ecb_rdwr_ctrl_inst (
@@ -228,7 +233,7 @@ ecb_rdwr_ctrl #(
   .i_axis_tvalid      ( {lsi_axis_tvalid [ROCE_ECB_RX_IDX],lsi_axis_tvalid [ECB_RX_IDX]} ),
   .i_axis_tdata       ( lsi_axis_tdata                                                   ),
   .i_axis_tlast       ( lsi_axis_tlast                                                   ),
-  .i_axis_tuser       ( lsi_axis_tuser                                                   ),
+  .i_axis_tuser       ( {lsi_axis_vlan,lsi_axis_tuser}                                   ),
   .i_axis_tkeep       ( lsi_axis_tkeep                                                   ),
   .o_axis_tready      ( {lsi_axis_tready [ROCE_ECB_RX_IDX],lsi_axis_tready [ECB_RX_IDX]} ),
   // HDR info
@@ -275,6 +280,7 @@ bootp #(
   .i_dev_mac_addr       ( i_dev_mac_addr                       ),
   .i_eeprom_ip_addr     ( i_eeprom_ip_addr                     ),
   .i_eeprom_ip_addr_vld ( i_eeprom_ip_addr_vld                 ),
+  .i_backward_compat_rev( i_backward_compat_rev                ),
   .o_dev_ip_addr        ( o_dev_ip_addr                        ),
   .o_host_mac_addr      ( host_mac_addr         [BOOTP_TX_IDX] ),
   .o_host_ip_addr       ( host_ip_addr          [BOOTP_TX_IDX] ),
@@ -285,7 +291,7 @@ bootp #(
   .i_axis_tdata         ( lsi_axis_tdata                       ),
   .i_axis_tlast         ( lsi_axis_tlast                       ),
   .i_axis_tkeep         ( lsi_axis_tkeep                       ),
-  .i_axis_tuser         ( lsi_axis_tuser                       ),
+  .i_axis_tuser         ( {lsi_axis_vlan,lsi_axis_tuser}       ),
   .o_axis_tready        ( lsi_axis_tready       [BOOTP_RX_IDX] ),
   .o_axis_tvalid        ( lso_axis_tvalid       [BOOTP_TX_IDX] ),
   .o_axis_tdata         ( lso_axis_tdata        [BOOTP_TX_IDX] ),
@@ -336,23 +342,24 @@ ctrl_bus_evt_int #(
 // Output Round Robin ARB
 //------------------------------------------------------------------------------------------------//
 
-logic                      out_axis_tvalid;
-logic                      out_axis_tlast;
-logic [AXI_LS_DWIDTH-1:0]  out_axis_tdata;
-logic [KEEP_LS_WIDTH-1:0]  out_axis_tkeep;
-logic [1:0]                out_axis_tuser;
-logic [W_NUM_HOST-1:0]     out_axis_thost_idx;
-logic                      out_axis_tready;
-logic                      w_out_axis_tready;
-logic                      hdr_crc;
-logic                      hdr_out_crc;
+logic                              out_axis_tvalid;
+logic                              out_axis_tlast;
+logic [AXI_LS_DWIDTH-1:0]          out_axis_tdata;
+logic [KEEP_LS_WIDTH-1:0]          out_axis_tkeep;
+logic [1:0]                        out_axis_idx;
+logic [AXI_UWIDTH+W_NUM_HOST-1:0]  out_axis_tuser;
+logic [W_NUM_HOST-1:0]             out_axis_thost_idx;
+logic                              out_axis_tready;
+logic                              w_out_axis_tready;
+logic                              hdr_crc;
+logic                              hdr_out_crc;
 
 axis_arb #(
-  .N_INPT           ( NUM_LS_TX_INST    ),
-  .W_DATA           ( AXI_LS_DWIDTH     ),
-  .W_USER           ( W_NUM_HOST        ),
-  .ARB_TYPE         ( "ROUND_ROBIN"     ),
-  .SKID             ( '1                )
+  .N_INPT           ( NUM_LS_TX_INST        ),
+  .W_DATA           ( AXI_LS_DWIDTH         ),
+  .W_USER           ( W_NUM_HOST+AXI_UWIDTH ),
+  .ARB_TYPE         ( "ROUND_ROBIN"         ),
+  .SKID             ( '1                    )
 ) u_out_axis_arb (
   .i_clk            ( i_pclk             ),
   .i_rst            ( i_prst             ),
@@ -362,16 +369,17 @@ axis_arb #(
   .i_axis_tkeep     ( lso_axis_tkeep     ),
   .i_axis_tuser     ( lso_axis_tuser     ),
   .o_axis_tready    ( lso_axis_tready    ),
-  .o_axis_idx       ( out_axis_tuser     ), // Send IDX over user
+  .o_axis_idx       ( out_axis_idx       ), // Send IDX over user
   .o_axis_tvalid    ( out_axis_tvalid    ),
   .o_axis_tlast     ( out_axis_tlast     ),
   .o_axis_tdata     ( out_axis_tdata     ),
   .o_axis_tkeep     ( out_axis_tkeep     ),
-  .o_axis_tuser     ( out_axis_thost_idx ),
+  .o_axis_tuser     ( out_axis_tuser     ),
   .i_axis_tready    ( w_out_axis_tready  )
 );
 
-assign hdr_crc = (out_axis_tuser == ECB_TX_IDX) ? ecb_is_roce : '0;
+assign out_axis_thost_idx = out_axis_tuser[W_NUM_HOST-1:0];
+assign hdr_crc = (out_axis_idx == ECB_TX_IDX) ? ecb_is_roce : '0;
 
 //------------------------------------------------------------------------------------------------//
 // Eth Header added when Needed
@@ -386,13 +394,13 @@ logic [15:0] hdr_dev_udp_port;
 logic [15:0] hdr_pld_len;
 
 
-assign hif_mac_addr      = host_mac_addr [out_axis_tuser];
-assign hif_ip_addr       = host_ip_addr  [out_axis_tuser];
-assign hif_udp_port      = host_udp_port [out_axis_tuser];
-assign hdr_pld_len       = pld_len [out_axis_tuser];
+assign hif_mac_addr      = host_mac_addr [out_axis_idx];
+assign hif_ip_addr       = host_ip_addr  [out_axis_idx];
+assign hif_udp_port      = host_udp_port [out_axis_idx];
+assign hdr_pld_len       = pld_len [out_axis_idx];
 assign hdr_dev_mac_addr = i_dev_mac_addr[out_axis_thost_idx];
 assign hdr_dev_ip_addr  = o_dev_ip_addr[out_axis_thost_idx];
-assign hdr_dev_udp_port = dev_udp_port [out_axis_tuser];
+assign hdr_dev_udp_port = dev_udp_port [out_axis_idx];
 
 
 //------------------------------------------------------------------------------------------------//
@@ -421,7 +429,6 @@ logic [ 7:0] ipv4_protocol;
 logic [15:0] ipv4_chksum;
 logic [31:0] ipv4_src_addr;
 logic [31:0] ipv4_dst_addr;
-logic [31:0] w_ipv4_dst_addr;
 
 assign ipv4_version  = 4'h4;
 assign ipv4_ihl      = 4'h5;
@@ -510,18 +517,18 @@ assign ipv4_chksum = ~(ipv4_chksum_calc[5][15:0] + ipv4_chksum_calc[5][16]);
 // AXIS Append
 //------------------------------------------------------------------------------------------------//
 
-logic                     hdr_axis_tvalid;
-logic                     hdr_axis_tlast;
-logic [AXI_LS_DWIDTH-1:0] hdr_axis_tdata;
-logic [KEEP_LS_WIDTH-1:0] hdr_axis_tkeep;
-logic [W_NUM_HOST-1:0]    hdr_axis_tuser;
-logic                     hdr_axis_tready;
-logic                     hdr_en;
+logic                             hdr_axis_tvalid;
+logic                             hdr_axis_tlast;
+logic [AXI_LS_DWIDTH-1:0]         hdr_axis_tdata;
+logic [KEEP_LS_WIDTH-1:0]         hdr_axis_tkeep;
+logic [W_NUM_HOST+AXI_UWIDTH-1:0] hdr_axis_tuser;
+logic                             hdr_axis_tready;
+logic                             hdr_en;
 
 axis_hdr #(
   .HDR_WIDTH         ( 336                              ),
   .DWIDTH            ( AXI_LS_DWIDTH                    ),
-  .W_USER            ( W_NUM_HOST + 1                   )
+  .W_USER            ( W_NUM_HOST + 1 + AXI_UWIDTH      )
 ) u_axis_hdr (
   .clk               ( i_pclk                           ),
   .rst               ( i_prst                           ),
@@ -530,7 +537,7 @@ axis_hdr #(
   .i_axis_rx_tvalid  ( w_out_axis_tvalid                ),
   .i_axis_rx_tdata   ( out_axis_tdata                   ),
   .i_axis_rx_tlast   ( out_axis_tlast                   ),
-  .i_axis_rx_tuser   ( {hdr_crc,out_axis_thost_idx}     ),
+  .i_axis_rx_tuser   ( {hdr_crc,out_axis_tuser}         ),
   .i_axis_rx_tkeep   ( out_axis_tkeep                   ),
   .o_axis_rx_tready  ( out_axis_tready                  ),
   .o_axis_tx_tvalid  ( hdr_axis_tvalid                  ),
@@ -541,7 +548,7 @@ axis_hdr #(
   .i_axis_tx_tready  ( hdr_axis_tready                  )
 );
 
-assign hdr_en = (out_axis_tuser != ARP_PING_TX_IDX);
+assign hdr_en = (out_axis_idx != ARP_PING_TX_IDX);
 
 //------------------------------------------------------------------------------------------------//
 // RoCE CRC
@@ -551,12 +558,12 @@ assign hdr_en = (out_axis_tuser != ARP_PING_TX_IDX);
   logic                     crc_axis_tlast; 
   logic [AXI_LS_DWIDTH-1:0] crc_axis_tdata; 
   logic [KEEP_LS_WIDTH-1:0] crc_axis_tkeep; 
-  logic [W_NUM_HOST-1:0]    crc_axis_tuser; 
+  logic [W_NUM_HOST+AXI_UWIDTH-1:0] crc_axis_tuser; 
   logic                     crc_axis_tready;
   
   roce_icrc #(
     .W_DATA                 ( AXI_LS_DWIDTH        ),
-    .W_USER                 ( W_NUM_HOST           )
+    .W_USER                 ( W_NUM_HOST+AXI_UWIDTH)
   ) u_roce_icrc (
     .pclk                   ( i_pclk                ),
     .prst                   ( i_prst                ),
@@ -581,19 +588,17 @@ assign hdr_en = (out_axis_tuser != ARP_PING_TX_IDX);
 //------------------------------------------------------------------------------------------------//
 
 logic                         wout_axis_tvalid;
-logic                         wout_axis_tlast ;
-logic [AXI_DWIDTH-1:0]        wout_axis_tdata ;
-logic [KEEP_WIDTH-1:0]        wout_axis_tkeep ;
 logic [W_NUM_HOST-1:0]        wout_axis_thost_idx ;
+logic [AXI_UWIDTH-1:0]        wout_axis_tuser;
 logic                         wout_axis_tready;
 
 
 axis_buffer # (
-  .IN_DWIDTH  ( AXI_LS_DWIDTH  ),
-  .OUT_DWIDTH ( AXI_DWIDTH     ),
-  .WAIT2SEND  ( 1              ),
-  .BUF_DEPTH  ( FIFO_DEPTH     ),
-  .W_USER     ( W_NUM_HOST     )
+  .IN_DWIDTH  ( AXI_LS_DWIDTH         ),
+  .OUT_DWIDTH ( AXI_DWIDTH            ),
+  .WAIT2SEND  ( 1                     ),
+  .BUF_DEPTH  ( FIFO_DEPTH            ),
+  .W_USER     ( W_NUM_HOST+AXI_UWIDTH )
 ) u_axis_buffer (
   .in_clk            ( i_pclk                                ),
   .in_rst            ( i_prst                                ),
@@ -612,7 +617,7 @@ axis_buffer # (
   .o_axis_tx_tvalid  ( wout_axis_tvalid                      ),
   .o_axis_tx_tdata   ( o_axis_tdata                          ),
   .o_axis_tx_tlast   ( o_axis_tlast                          ),
-  .o_axis_tx_tuser   ( wout_axis_thost_idx                   ),
+  .o_axis_tx_tuser   ( {wout_axis_tuser, wout_axis_thost_idx}),
   .o_axis_tx_tkeep   ( o_axis_tkeep                          ),
   .i_axis_tx_tready  ( wout_axis_tready                      )
 );
@@ -629,7 +634,7 @@ always_comb begin
   end
 end
 
-assign o_axis_tuser = '0;
+assign o_axis_tuser = wout_axis_tuser;
 
 endmodule
 

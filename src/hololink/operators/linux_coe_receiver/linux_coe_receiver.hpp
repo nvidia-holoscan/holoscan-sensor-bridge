@@ -67,7 +67,7 @@ class LinuxCoeReceiverDescriptor;
 class LinuxCoeReceiver {
 public:
     LinuxCoeReceiver(CUdeviceptr cu_buffer,
-        size_t cu_buffer_size,
+        size_t cu_buffer_size, // buffer_size is currently the size of the page and must be at least "sensor frame/payload size" + "alignment to 128 byte boundary" + "FrameMetadata size"
         int socket,
         uint16_t channel);
 

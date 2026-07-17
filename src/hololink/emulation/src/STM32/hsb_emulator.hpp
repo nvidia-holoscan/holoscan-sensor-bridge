@@ -23,83 +23,39 @@
 #include "../../hsb_emulator.hpp"
 #include <cstdint>
 
-#include "STM32/address_map.hpp"
-#include "STM32/apb_events.hpp"
+#include "../common/apb_events.hpp"
 #include "STM32/i2c.hpp"
 #include "STM32/net.hpp"
 #include "STM32/spi.hpp"
+#include "address_map.hpp"
 
 #define CONTROL_PACKET_SIZE TX_BUFFER_SIZE
 
-#ifndef COUNTOF
-#define COUNTOF(array) (sizeof(array) / sizeof(array[0]))
-#endif
-
-#ifndef CP_WRITE_HANDLERS_MAX_NUM
-#define CP_WRITE_HANDLERS_MAX_NUM 20
-#endif
-#ifndef CP_READ_HANDLERS_MAX_NUM
-#define CP_READ_HANDLERS_MAX_NUM 20
-#endif
-
-#define CHECK_CP_MAP_SET(expr) \
-    do {                       \
-        int status = (expr);   \
-        if (status) {          \
-            Error_Handler();   \
-        }                      \
-    } while (0)
+// STM32 uses fixed-capacity AddressMaps (no heap). The HSB_CP_*_MAP_SIZE macros that
+// drive HSBEmulatorCtxt's cp_*_map types are set as build-wide compile definitions in
+// cmake/targets/STM32F767ZI.cmake so every translation unit sees the same layout.
 
 namespace hololink::emulation {
 
-struct ControlPlaneCallback {
-    ControlPlaneCallback_f callback;
-    void* ctxt;
-};
+void handle_control_packet(HSBEmulatorCtxt* ctxt, ETH_BufferTypeDef* buffer);
 
-struct AsyncEventCtxt {
-    // these are the registers themselves, held in an array for simpler access
-    uint32_t data[(CTRL_EVT_SW_EVENT - CTRL_EVENT) / REGISTER_SIZE];
-    uint32_t status;
-};
+/**
+ * @brief STM32-specific HSBEmulatorCtxt extension. `base` (the common HSBEmulatorCtxt) is
+ * the first member; the rest is STM32-only state (HAL handles, SPI ctxt, BootP scheduling,
+ * and the file-scope data-plane array). No mutex — STM32 is single-threaded.
+ */
+struct STM32HSBEmulatorCtxt {
+    HSBEmulatorCtxt base;
 
-class RegisterMemory : public AddressMemory {
-public:
-    RegisterMemory() = default;
-    ~RegisterMemory() override = default;
-
-    // see address_memory.hpp for documentation
-    int write(AddressValuePair& address_value) override;
-    int read(AddressValuePair& address_value) override;
-    int write_many(AddressValuePair* address_values, int num_addresses) override;
-    int read_many(AddressValuePair* address_values, int num_addresses) override;
-    int write_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) override;
-    int read_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) override;
-
-private:
-    friend class HSBEmulator;
-    void set_ctxt(HSBEmulatorCtxt* ctxt) { ctxt_ = ctxt; }
-    struct HSBEmulatorCtxt* ctxt_ { nullptr };
-};
-
-struct HSBEmulatorCtxt {
-    RegisterMemory register_memory;
     DataPlane* data_plane_list[MAX_DATA_PLANES];
-    HSBEmulator* hsb_emulator;
+    unsigned short data_plane_count;
+
     ETH_HandleTypeDef eth_handle;
     SpiControllerCtxt* spi_ctxt;
-    struct PTPConfig ptp_config;
-    struct AsyncEventCtxt async_event_ctxt;
-
-    AddressMap<ControlPlaneCallback, CP_WRITE_HANDLERS_MAX_NUM> cp_write_map;
-    AddressMap<ControlPlaneCallback, CP_READ_HANDLERS_MAX_NUM> cp_read_map;
-    uint32_t apb_ram_data[APB_RAM_DATA_SIZE / REGISTER_SIZE];
 
     // TODO: generalize to an event loop mechanism
     uint32_t up_time_msec;
     uint32_t next_bootp_time_msec;
-    unsigned short data_plane_count;
-    bool running;
 };
 
 }

@@ -99,7 +99,7 @@ assign roce_dest_qp = ctrl_reg[ecb_dest_qp][23:0];
 // Parse Incoming Data
 //------------------------------------------------------------------------------------------------//
 
-enum logic [2:0] {DCD_IDLE, DCD_HDR,DCD_DATA, DCD_DONE, DCD_FLUSH} decode_state;
+enum logic [3:0] {DCD_IDLE, DCD_HDR,DCD_WAIT,DCD_WAIT_STATUS,DCD_CHK_HDR,DCD_LATCH_WRITE,DCD_DATA, DCD_DONE, DCD_FLUSH} decode_state;
 
 logic [7:0]   ecb_cmd;
 logic [7:0]   ecb_flags;
@@ -122,26 +122,68 @@ logic   [8:0]  total_pairs;
 logic          response_sent;
 logic          drop_packet;
 
-logic decode_hdr;
+logic                                       ecb_wr;
+logic                                       ecb_rd;
+logic                                       ecb_block;
+logic                                       cmd_wren;
+logic                                       cmd_en;
+logic                                       cmd_err;
+
+assign ecb_wr             = ((ecb_cmd == WR_DWORD) || (ecb_cmd == WR_BLOCK));
+assign ecb_rd             = ((ecb_cmd == RD_DWORD) || (ecb_cmd == RD_BLOCK));
+assign ecb_block          = ((ecb_cmd == WR_BLOCK) || (ecb_cmd == RD_BLOCK));
+
+
 logic decode_data;
 logic decode_flush;
 logic decode_done;
 logic decode_start;
 logic decode_last;
 logic decode_tlast_seen;
+logic hdr_tlast;
 
-logic decode_hdr_sync;
-logic decode_data_sync;
-logic decode_flush_sync;
-logic decode_done_sync;
-logic decode_start_sync;
-logic decode_last_sync;
+logic ecb_error;
+logic r_ecb_error;
+logic [15:0] prev_seq_num_latch;
+logic [15:0] seq_num_latch;
+logic apb_cmd_done;
+logic apb_cmd_done_sync;
+logic cmd_err_sync;
+
+logic ecb_seq_chk_error_latched;
+logic ecb_seq_chk_error;
+
+logic apb_send_cmd;
+logic apb_send_cmd_sync;
+
+logic ecb_cmd_error;
+logic ecb_flag_error;
+logic ecb_addr_error;
+logic [7:0] ecb_cmd_code;
+logic resp_vec_is_busy;
+
+logic [31:0] cmd_rddata;
+logic [31:0] cmd_rddata_sync;
+
+logic [7:0] ecb_resp_code;
 
 logic [W_USER-1:0] tuser;
 
 logic ecb_is_roce;
-logic ecb_is_roce_sync;
- 
+logic resp_trigger;
+logic   [2:0]  apb_cnt;
+
+logic [RESP_WIDTH*8-1:0] resp_data;
+
+
+logic          apb_axis_tlast;
+logic   [63:0] apb_axis_tdata;
+logic          apb_axis_tvalid;
+
+assign decode_data = (decode_state == DCD_DATA);
+assign decode_flush = (decode_state == DCD_FLUSH);
+assign hdr_tlast = i_axis_tlast && (i_axis_tvalid[0] || i_axis_tvalid[1]);
+
 // Adaptive ECB addr
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
@@ -224,7 +266,7 @@ always_ff @(posedge i_pclk) begin
         'd07: cmd_dout   [0*8+:8]  <= i_axis_tdata;
       endcase
     end
-    else if (decode_state == DCD_FLUSH) begin
+    else if ((decode_state == DCD_IDLE) || (decode_state == DCD_FLUSH)) begin
       cmd_addr <= '0;
       cmd_dout <= '0;
     end
@@ -245,38 +287,119 @@ always_ff @(posedge i_pclk) begin
     ecb_is_roce                                           <= '0;
     byte_cnt                                              <= '0;
     data_cnt                                              <= '0;
+    r_ecb_error                                           <= '0;
+    ecb_seq_chk_error_latched                             <= '0;
+    apb_send_cmd                                          <= '0;
+    resp_trigger                                          <= '0;
+    apb_axis_tvalid                                       <= '0;
+    apb_axis_tlast                                        <= '0;
+    apb_cnt                                               <= '0;
   end
   else begin
+
+    apb_axis_tlast        <= '0;
     case (decode_state)
       DCD_IDLE        : begin
-        decode_start   <= (i_axis_tvalid[0] || i_axis_tvalid[1]);
-        decode_state   <= (decode_hdr_sync )  ? DCD_HDR   :
-                          (decode_data_sync)  ? DCD_DATA  :
-                          (decode_flush_sync) ? DCD_FLUSH :
-                                                DCD_IDLE  ;
-        tready          <= (decode_hdr_sync || decode_data_sync || (decode_flush_sync && !decode_tlast_seen));
-        byte_cnt        <= '0;
-        data_cnt        <= '0;
-        decode_done     <= '0;
-        response_sent   <= '0;
+        decode_state              <= (i_axis_tvalid[0] || i_axis_tvalid[1])  ? DCD_HDR   : DCD_IDLE;
+        tready                    <= (i_axis_tvalid[0] || i_axis_tvalid[1]);
+        byte_cnt                  <= '0;
+        data_cnt                  <= '0;
+        decode_done               <= '0;
+        response_sent             <= '0;
+        r_ecb_error               <= '0;
+        ecb_seq_chk_error_latched <= '0;
+        resp_trigger              <= '0;
+        apb_cnt                   <= '0;
       end
       DCD_HDR    : begin
-        ecb_is_roce       <= i_axis_tvalid[1];
-        decode_start      <= '0;
-        decode_last       <= '0;
-        decode_tlast_seen <= '0;
-        byte_cnt          <= byte_cnt + 1'b1;
-        decode_state      <= (byte_cnt == (ecb_is_roce ? 'd59 : 'd47)) ? DCD_DONE: DCD_HDR;
-        tready            <= !(byte_cnt == (ecb_is_roce ? 'd59 : 'd47));
-        num_pairs         <= '0;
+        ecb_is_roce           <= i_axis_tvalid[1];
+        decode_start          <= '0;
+        decode_last           <= '0;
+        decode_tlast_seen     <= hdr_tlast;
+        byte_cnt              <= byte_cnt + 1'b1;
+        decode_state          <= hdr_tlast ? DCD_DONE :
+                                 (byte_cnt == (ecb_is_roce ? 'd59 : 'd47)) ? DCD_CHK_HDR : DCD_HDR;
+        num_pairs             <= '0;
+        tready                <= hdr_tlast ? '0 :
+                                 !(byte_cnt == (ecb_is_roce ? 'd59 : 'd47));
+        r_ecb_error           <= '0;
+        resp_trigger          <= '0;
+        apb_axis_tvalid       <= '0;
+      end
+      DCD_CHK_HDR: begin
+        //If there is no sequence check error or other ecb errors, latch the current sequence number.
+        //In case of an error, latched value stays the same.
+        if (!ecb_error) begin
+          seq_num_latch                                   <= ecb_seq;
+          prev_seq_num_latch                              <= seq_num_latch;
+          decode_state    <= DCD_DATA;
+          tready          <= '1;
+          apb_axis_tvalid <= '1;
+        end
+        else begin
+          decode_state    <= DCD_FLUSH;
+          tready          <= '1;
+          resp_trigger    <= '1;
+          apb_axis_tvalid <= '1;
+        end 
+        ecb_seq_chk_error_latched                         <= ecb_seq_chk_error;
+        r_ecb_error                                       <= ecb_error;
       end
       DCD_DATA      : begin
         data_cnt          <= data_cnt + 1;
-        decode_state      <= (data_cnt == 'd7) ? DCD_DONE : (i_axis_tlast) ? DCD_DONE : DCD_DATA;
+        decode_state      <= (data_cnt == 'd7) ? DCD_WAIT : (i_axis_tlast) ? DCD_WAIT : DCD_DATA;
         tready            <= !(data_cnt == 'd7);
         decode_last       <= (i_axis_tlast) || ((num_pairs == total_pairs) && (ecb_is_roce)) ? 1 : decode_last;
         decode_tlast_seen <= (i_axis_tlast) ? 1 : decode_tlast_seen;
         num_pairs         <= (data_cnt == 'd7) ? num_pairs + 1 : num_pairs;
+        apb_cnt           <= apb_cnt + (data_cnt <= 'd3);
+        apb_axis_tvalid   <= (data_cnt <= 'd2);
+      end
+      DCD_WAIT: begin
+        if (apb_cmd_done_sync) begin
+          apb_send_cmd  <= '0;
+          decode_state  <= DCD_WAIT_STATUS;
+        end
+        else begin
+          decode_state <= DCD_WAIT;
+          apb_send_cmd  <= '1;
+        end
+        data_cnt        <= '0;
+      end
+      DCD_WAIT_STATUS: begin
+        if (cmd_err_sync) begin
+          decode_state    <= DCD_FLUSH;
+          tready          <= !decode_tlast_seen;
+          resp_trigger    <= '1;
+          apb_axis_tvalid <= '1;
+        end
+        else if (!decode_last && (ecb_block) && !r_ecb_error) begin
+          decode_state    <= DCD_LATCH_WRITE;
+          tready          <= '0;
+          apb_axis_tvalid <= '1;
+        end
+        else begin
+          decode_state    <= DCD_FLUSH;
+          tready          <= !decode_tlast_seen;
+          resp_trigger    <= '1;
+          apb_axis_tvalid <= '1;
+        end
+        if (cmd_err_sync && !r_ecb_error) begin
+          seq_num_latch                                 <= prev_seq_num_latch;
+        end
+        data_cnt        <= '0;
+      end
+      DCD_LATCH_WRITE: begin
+        if (!apb_cmd_done_sync && (apb_cnt == 'd7)) begin
+          decode_state    <= DCD_DATA;
+          tready          <= '1;
+          apb_axis_tvalid <= '1;
+          apb_cnt         <= '0;
+        end
+        else begin
+          apb_cnt           <= apb_cnt + (apb_cnt < 'd7);
+          apb_axis_tvalid   <= (apb_cnt < 'd7);
+        end
       end
       DCD_FLUSH: begin
         decode_state      <= (response_sent && decode_tlast_seen) ? DCD_DONE : DCD_FLUSH;
@@ -284,9 +407,12 @@ always_ff @(posedge i_pclk) begin
         decode_last       <= (i_axis_tlast) || ((num_pairs == total_pairs) && (ecb_is_roce)) ? 1 : decode_last;
         decode_tlast_seen <= (i_axis_tlast) ? 1 : decode_tlast_seen;
         response_sent     <= (o_axis_tlast && ((i_axis_tready && o_axis_tvalid) || (drop_packet))) ? '1 : response_sent;
+        apb_axis_tvalid   <= (apb_cnt < 'd7);
+        apb_cnt           <= apb_cnt + (apb_cnt < 'd7);
+        apb_axis_tlast    <= (apb_cnt == 'd6) && apb_axis_tvalid;
       end
       DCD_DONE:  begin
-        decode_state <= (!decode_hdr_sync && !decode_data_sync && !decode_flush_sync) ? DCD_IDLE : DCD_DONE;
+        decode_state <= DCD_IDLE;
         decode_done  <= '1;
         tready       <= '0;
       end
@@ -297,159 +423,59 @@ always_ff @(posedge i_pclk) begin
   end
 end
 
-assign o_axis_tready = {tready,tready};
+assign o_axis_tready         = {tready,tready};
+assign resp_data             = resp_end_swap({ecb_cmd_code, ecb_flags, ecb_seq, ecb_resp_code, 8'b0});
+assign apb_axis_tdata[63:32] = ( ecb_wr || r_ecb_error ) ? '0 : {cmd_rddata_sync[7:0],cmd_rddata_sync[15:8],cmd_rddata_sync[23:16],cmd_rddata_sync[31:24]};
+assign apb_axis_tdata[31:0]  = {i_axis_tdata[7:0],i_axis_tdata[7:0],i_axis_tdata[7:0],i_axis_tdata[7:0]};
 
 //------------------------------------------------------------------------------------------------//
 // APB FSM
 //------------------------------------------------------------------------------------------------//
 
-enum logic [3:0] {CMD_IDLE, CMD_DECODE,CMD_GET_DATA, CMD_SEND,CMD_WAIT, CMD_RSP, CMD_RSP_WAIT, CMD_ERR} cmd_state;
+enum logic [1:0] {CMD_IDLE, CMD_SEND,CMD_DONE} cmd_state;
 
-logic                                       ecb_cmd_error;
-logic                                       ecb_flag_error;
-logic                                       ecb_addr_error;
-logic                                       ecb_seq_chk_error;
-logic                                       ecb_seq_chk_error_latched;
-logic                                       ecb_error;
-logic   [7:0]                               ecb_resp_code;
-logic   [7:0]                               ecb_cmd_code;
-logic                                       cmd_wren;
-logic                                       cmd_en;
-logic                                       cmd_err;
-logic   [(RESP_WIDTH*8)-1:0]                resp_data;
-logic                                       resp_trigger;
-logic                                       resp_trigger_sync;
-logic                                       resp_vec_is_busy;
-logic                                       resp_vec_is_busy_sync;
-logic   [15:0]                              seq_num_latch;
-logic   [15:0]                              seq_num_latch_sync;
-logic   [15:0]                              prev_seq_num_latch;
-logic                                       ecb_wr;
-logic                                       ecb_rd;
-logic                                       ecb_block;
-logic                                       r_ecb_error;
-
-assign ecb_wr             = ((ecb_cmd == WR_DWORD) || (ecb_cmd == WR_BLOCK));
-assign ecb_rd             = ((ecb_cmd == RD_DWORD) || (ecb_cmd == RD_BLOCK));
-assign ecb_block          = ((ecb_cmd == WR_BLOCK) || (ecb_cmd == RD_BLOCK));
-
-//Command State Machine
 always_ff @(posedge i_aclk) begin
   if (i_arst) begin
-    cmd_state                                         <= CMD_IDLE;
-    decode_hdr                                        <= '0;
-    decode_flush                                      <= '0;
-    decode_data                                       <= '0;
-    cmd_wren                                          <= '0;
-    cmd_en                                            <= '0;
-    resp_trigger                                      <= '0;
-    seq_num_latch                                     <= '0;
-    o_apb_m2s.penable                                 <= '0;
-    cmd_err                                           <= '0;
-    r_ecb_error                                       <= '0;
-    ecb_seq_chk_error_latched                         <= '0;
-    prev_seq_num_latch                                <= '0;
-    resp_data                                         <= '0;
+    cmd_state            <= CMD_IDLE;
+    apb_cmd_done         <= '0;
+    cmd_err              <= '0;
+    cmd_wren             <= '0;
+    cmd_en               <= '0;
+    cmd_rddata           <= '0;
+    o_apb_m2s.penable    <= '0;
   end
   else begin
     case (cmd_state)
-      CMD_IDLE        : begin
-        cmd_state                                         <= (decode_start_sync) ? CMD_DECODE : CMD_IDLE;
-        decode_hdr                                        <= (decode_start_sync);
-        decode_flush                                      <= '0;
-        decode_data                                       <= '0;
-        cmd_wren                                          <= '0;
-        cmd_en                                            <= '0;
-        resp_trigger                                      <= '0;
-        o_apb_m2s.penable                                 <= '0;
-        r_ecb_error                                       <= '0;
-      end
-
-      //Check for available ECB commands on available interfaces
-      CMD_DECODE    : begin
-        if (decode_hdr) begin
-          if (decode_done_sync) begin
-            decode_hdr <= '0;
-            //If there is no sequence check error or other ecb errors, latch the current sequence number.
-            //In case of an error, latched value stays the same.
-            if (!ecb_error) begin
-              seq_num_latch                                   <= ecb_seq;
-              prev_seq_num_latch                              <= seq_num_latch;
-            end
-            ecb_seq_chk_error_latched                         <= ecb_seq_chk_error;
-            r_ecb_error                                       <= ecb_error;
-          end
+      CMD_IDLE: begin
+        apb_cmd_done <= '0;
+        if (apb_send_cmd_sync) begin
+          cmd_state <= CMD_SEND;
+          cmd_wren  <= ecb_wr;
+          cmd_en    <= '1;
+          cmd_err   <= '0;
         end
         else begin
-          if (!decode_done_sync) begin
-            decode_data <= '1;
-            cmd_state   <= CMD_GET_DATA;
-          end
+          cmd_state <= CMD_IDLE;
         end
       end
-      CMD_GET_DATA      : begin
-        if (decode_done_sync) begin
-          decode_data <= '0;
-          cmd_state   <= CMD_SEND;
-          //Check for errors in latched command. If detected, send error response, else send the read/write command.
-          cmd_wren    <= ecb_wr && !r_ecb_error;
-          cmd_err     <= '0;
-        end
-      end
-      CMD_SEND:  begin
-        if (!decode_done_sync) begin
-          cmd_en    <= !r_ecb_error;
-          cmd_state <= CMD_WAIT;
-        end
-      end
-      //Wait for the APB to signal done for the sent command.
-      CMD_WAIT : begin
-        if (i_apb_s2m.pready || r_ecb_error) begin
-          cmd_wren                                        <= 1'b0;
-          cmd_en                                          <= 1'b0;
-          o_apb_m2s.penable                               <= 1'b0;
-          cmd_err                                         <= i_apb_s2m.pserr;
-          if (i_apb_s2m.pserr) begin
-            cmd_state <= CMD_RSP;
-          end
-          else if (!decode_last_sync && (ecb_block) && !r_ecb_error) begin
-            cmd_state   <= CMD_GET_DATA;
-            decode_data <= '1;
-          end
-          else begin
-            cmd_state <= CMD_RSP;
-          end
-          if (i_apb_s2m.pserr && !r_ecb_error) begin
-            seq_num_latch                                 <= prev_seq_num_latch;
-          end
+      CMD_SEND: begin
+        if (i_apb_s2m.pready) begin
+          cmd_state <= CMD_DONE;
+          o_apb_m2s.penable <= '0;
+          cmd_err            <= i_apb_s2m.pserr;
+          cmd_rddata         <= i_apb_s2m.prdata;
         end
         else begin
-          o_apb_m2s.penable                               <= !r_ecb_error;
+          cmd_state <= CMD_SEND;
+          o_apb_m2s.penable <= '1;
         end
       end
-      //Send a response for the command.
-      CMD_RSP : begin
-        if (!resp_vec_is_busy_sync) begin
-          resp_trigger                                    <= 1'b1;
-          resp_data                                       <= resp_end_swap({ecb_cmd_code, ecb_flags, ecb_seq, ecb_resp_code, 8'b0});
-          cmd_state                                       <= CMD_RSP_WAIT;
-          decode_flush                                    <= '1;
-          cmd_err                                         <= 1'b0;
-        end
-      end
-      //Wait for the response to egress the vec_to_axis module before cycling back to check for new commands.
-      CMD_RSP_WAIT : begin
-        resp_trigger                                      <= 1'b0;
-        if (decode_flush) begin
-          decode_flush <= !decode_done_sync;
-        end
-        else begin
-          cmd_state <= (decode_done_sync) ? CMD_RSP_WAIT : CMD_IDLE;
-          resp_data <= '0;
-        end
-      end
-      default : begin
-        cmd_state                                         <= CMD_IDLE;
+      CMD_DONE: begin
+        cmd_state <= (apb_send_cmd_sync) ? CMD_DONE : CMD_IDLE;
+        o_apb_m2s.penable <= '0;
+        cmd_wren          <= '0;
+        cmd_en            <= '0;
+        apb_cmd_done      <= '1;
       end
     endcase
   end
@@ -459,14 +485,7 @@ end
 // Response <Addr> <Data> Buffer
 //------------------------------------------------------------------------------------------------//
 
-logic   [2:0]  apb_cnt;
-logic          pkt_active;
 logic   [15:0] pld_len;
-
-logic          apb_axis_tlast;
-logic   [63:0] apb_axis_tdata;
-logic          apb_axis_tvalid;
-logic          apb_axis_tready;
 
 logic          rsp_axis_tlast;
 logic   [7:0]  rsp_axis_tdata;
@@ -483,35 +502,6 @@ logic   [7:0]  roce_axis_tdata;
 logic          roce_axis_tvalid;
 logic          roce_axis_tready;
 
-always_ff @(posedge i_aclk) begin
-  if (i_arst) begin
-    apb_axis_tdata  <= '0;
-    apb_axis_tvalid <= '0;
-    apb_cnt         <= '0;
-  end
-  else begin
-    if (i_apb_s2m.pready || ((cmd_state == CMD_WAIT) && r_ecb_error)) begin
-      apb_axis_tdata[63:32] <= ( cmd_wren || r_ecb_error ) ? '0 :
-                                                            {i_apb_s2m.prdata[7:0],i_apb_s2m.prdata[15:8],i_apb_s2m.prdata[23:16],i_apb_s2m.prdata[31:24]};
-      apb_axis_tdata[31:0]  <= {o_apb_m2s.paddr [7:0],o_apb_m2s.paddr [15:8],o_apb_m2s.paddr [23:16],o_apb_m2s.paddr [31:24]};
-      apb_axis_tvalid       <= '1;
-    end
-    else begin
-      if (apb_axis_tvalid) begin
-        if (apb_cnt == '1) begin
-          apb_axis_tvalid <= '0;
-        end
-        apb_cnt <= apb_cnt + 1;
-      end
-      else begin
-        apb_cnt         <= '0;
-        apb_axis_tvalid <= '0;
-      end
-    end
-  end
-end
-
-assign apb_axis_tlast = ((apb_cnt == '1) && (decode_flush));
 
 axis_buffer # (
   .IN_DWIDTH         ( 8              ),
@@ -519,10 +509,10 @@ axis_buffer # (
   .WAIT2SEND         ( 1              ),
   .BUF_DEPTH         ( MTU            ),
   .ALMOST_FULL_DEPTH ( MTU-40         ),
-  .DUAL_CLOCK        ( 1              )
+  .DUAL_CLOCK        ( 0              )
 ) u_axis_buffer (
-  .in_clk            ( i_aclk                       ),
-  .in_rst            ( i_arst                       ),
+  .in_clk            ( i_pclk                       ),
+  .in_rst            ( i_prst                       ),
   .out_clk           ( i_pclk                       ),
   .out_rst           ( i_prst                       ),
   .i_axis_rx_tvalid  ( apb_axis_tvalid              ),
@@ -557,9 +547,9 @@ assign o_apb_m2s.psel           = cmd_en;
 //ECB Error Logic
 assign ecb_cmd_error            = !(ecb_cmd inside {WR_DWORD, RD_DWORD, WR_BLOCK,RD_BLOCK});
 assign ecb_flag_error           = |ecb_flags[7:2];
-assign ecb_addr_error           = cmd_err;
+assign ecb_addr_error           = cmd_err_sync;
 assign ecb_seq_chk_error        = ecb_flags[1] && (ecb_seq != seq_num_latch + 1'b1);
-assign ecb_error                = ecb_cmd_error || ecb_flag_error || ecb_addr_error || ecb_seq_chk_error;
+assign ecb_error                = ecb_cmd_error || ecb_flag_error || ecb_seq_chk_error;
 
 //ECB Response Command Code. If there is a command error, return that command that came in, else encode to match ECB definitions
 assign ecb_cmd_code             = ecb_cmd_error ? ecb_cmd : {3'b100, ecb_rd, ecb_cmd[3:0]};
@@ -592,8 +582,9 @@ vec_to_axis #(
 ) ecb_to_axis_rdresp (
   .clk              ( i_pclk                 ),
   .rst              ( i_prst                 ),
-  .trigger          ( resp_trigger_sync      ),
+  .trigger          ( resp_trigger           ),
   .data             ( resp_data              ),
+  .tuser            ( 1'b0                   ),
   .is_busy          ( resp_vec_is_busy       ),
 //AXIS Interface
   .o_axis_tx_tvalid ( vec_axis_tvalid        ),
@@ -617,7 +608,7 @@ vec_to_axis #(
 ) ecb_to_axis_roce_hdr (
   .clk              ( i_pclk                             ),
   .rst              ( i_prst                             ),
-  .trigger          ( resp_trigger_sync && ecb_is_roce   ),
+  .trigger          ( resp_trigger && ecb_is_roce        ),
   .data             ( roce_hdr_data                      ),
   .is_busy          ( roce_hdr_is_busy                   ),
 //AXIS Interface        
@@ -657,57 +648,49 @@ assign o_axis_tuser = tuser;
 //------------------------------------------------------------------------------------------------//
 
 data_sync #(
-  .DATA_WIDTH     ( 3                                                    ),
-  .RESET_VALUE    ( 1'b0                                                 ),
-  .SYNC_DEPTH     ( 2                                                    )
+  .DATA_WIDTH     ( 2                   ),
+  .RESET_VALUE    ( 1'b0                ),
+  .SYNC_DEPTH     ( 2                   )
 ) u_apb_stat_sync (
-  .clk            ( i_pclk                                               ),
-  .rst_n          ( !i_prst                                              ),
-  .sync_in        ( {decode_hdr,decode_data,decode_flush}                ),
-  .sync_out       ( {decode_hdr_sync,decode_data_sync,decode_flush_sync} )
-);
-
-pulse_sync u_resp_trigger_sync (
-  .src_clk        ( i_aclk                                               ),
-  .src_rst        ( i_arst                                               ),
-  .dst_clk        ( i_pclk                                               ),
-  .dst_rst        ( i_prst                                               ),
-  .i_src_pulse    ( resp_trigger                                         ),
-  .o_dst_pulse    ( resp_trigger_sync                                    )
+  .clk            ( i_pclk              ),
+  .rst_n          ( !i_prst             ),
+  .sync_in        ( {apb_cmd_done, cmd_err}      ),
+  .sync_out       ( {apb_cmd_done_sync, cmd_err_sync} )
 );
 
 data_sync #(
-  .DATA_WIDTH     ( 5                                                                                           ),
-  .RESET_VALUE    ( 1'b0                                                                                        ),
-  .SYNC_DEPTH     ( 2                                                                                           )
+  .DATA_WIDTH     ( 1                   ),
+  .RESET_VALUE    ( 1'b0                ),
+  .SYNC_DEPTH     ( 2                   )
 ) u_apb_ctrl_sync (
-  .clk            ( i_aclk                                                                                      ),
-  .rst_n          ( !i_arst                                                                                     ),
-  .sync_in        ( {resp_vec_is_busy,decode_done,decode_start,decode_last,ecb_is_roce}                         ),
-  .sync_out       ( {resp_vec_is_busy_sync,decode_done_sync,decode_start_sync,decode_last_sync,ecb_is_roce_sync})
+  .clk            ( i_aclk              ),
+  .rst_n          ( !i_arst             ),
+  .sync_in        ( {apb_send_cmd}      ),
+  .sync_out       ( {apb_send_cmd_sync} )
 );
 
 data_sync #(
-  .DATA_WIDTH     ( 32                                                   ),
-  .RESET_VALUE    ( 1'b0                                                 ),
-  .SYNC_DEPTH     ( 2                                                    )
-) u_cmd_addr (
-  .clk            ( i_aclk                                               ),
-  .rst_n          ( !i_arst                                              ),
-  .sync_in        ( cmd_addr                                             ),
-  .sync_out       ( cmd_addr_sync                                        )
+  .DATA_WIDTH     ( 32                  ),
+  .RESET_VALUE    ( 1'b0                ),
+  .SYNC_DEPTH     ( 2                   )
+) u_rddata_sync (
+  .clk            ( i_pclk              ),
+  .rst_n          ( !i_prst             ),
+  .sync_in        ( cmd_rddata          ),
+  .sync_out       ( cmd_rddata_sync     )
 );
 
 data_sync #(
-  .DATA_WIDTH     ( 16                                                   ),
-  .RESET_VALUE    ( 1'b0                                                 ),
-  .SYNC_DEPTH     ( 2                                                    )
-) u_seq_num (
-  .clk            ( i_pclk                                               ),
-  .rst_n          ( !i_prst                                              ),
-  .sync_in        ( seq_num_latch                                        ),
-  .sync_out       ( seq_num_latch_sync                                   )
+  .DATA_WIDTH     ( 32                  ),
+  .RESET_VALUE    ( 1'b0                ),
+  .SYNC_DEPTH     ( 2                   )
+) u_cmd_addr_sync (
+  .clk            ( i_aclk              ),
+  .rst_n          ( !i_arst             ),
+  .sync_in        ( cmd_addr            ),
+  .sync_out       ( cmd_addr_sync       )
 );
+
 
 //------------------------------------------------------------------------------------------------//
 // Combine Response + <addr><data> pairs
@@ -765,8 +748,8 @@ assign o_axis_tvalid  = (resp_state != RESP_IDLE) && !drop_packet;
 assign o_axis_tdata   = (resp_state == RESP_ROCE_HDR) ? roce_axis_tdata  :
                         (resp_state == RESP_HDR ) ? vec_axis_tdata          :
                         (resp_state == RESP_DATA) ? rsp_axis_tdata          :
-                        (resp_state == RESP_SEQ ) ? seq_num_latch_sync[15:8]:
-                        (resp_state == RESP_SEQ2) ? seq_num_latch_sync[7:0] :
+                        (resp_state == RESP_SEQ ) ? seq_num_latch[15:8]     :
+                        (resp_state == RESP_SEQ2) ? seq_num_latch[7:0]      :
                                                    '0                       ;
 assign o_axis_is_roce = ecb_is_roce;
 assign o_axis_tlast   = ((resp_state == RESP_SEQ2) && !is_pad) || (resp_state == RESP_PAD2);

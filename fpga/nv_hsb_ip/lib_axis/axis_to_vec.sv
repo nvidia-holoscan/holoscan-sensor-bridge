@@ -46,6 +46,8 @@ logic                         early_pkt;
 logic                         early_pkt_r;
 logic [ $clog2(W_KEEP)-1:0]   byte_incr;
 logic                         busy_r;
+logic                         clear_nxt;
+logic                         clear_r;
 
 typedef enum logic [3:0] {
   A2V_IDLE = 4'b0001,
@@ -65,16 +67,28 @@ logic [(D_CYCLES*AXI_DWIDTH)-1:0] w_data;
 genvar i;
 generate
 for (i=0;i<D_CYCLES;i=i+1) begin
-  always_ff @(posedge clk) begin
-    if (rst) begin
-      data_buffer[i] <= '0;
-    end
-    else begin
-      if (((a2v_state_nxt == A2V_IDLE) && (a2v_state != A2V_IDLE)) || (early_pkt_r && (i != 0))) begin // Reset pipe
+  if (i == 0) begin
+    always_ff @(posedge clk) begin
+      if (rst) begin
         data_buffer[i] <= '0;
       end
-      else if (pipe_incr) begin
+      else begin
         data_buffer[i] <= (cnt == i) ? i_axis_rx_tdata : data_buffer[i];
+      end
+    end
+  end
+  else begin
+    always_ff @(posedge clk) begin
+      if (rst) begin
+        data_buffer[i] <= '0;
+      end
+      else begin
+        if (clear_r) begin
+          data_buffer[i] <= '0;
+        end
+        else begin
+          data_buffer[i] <= (cnt == i) ? i_axis_rx_tdata : data_buffer[i];
+        end
       end
     end
   end
@@ -99,21 +113,26 @@ always_comb begin
                         (cnt == D_CYCLES-1)            ? A2V_WAIT:
                                                          A2V_IDLE;
       end
+      clear_nxt = (i_axis_rx_tlast && (i_done));
     end
     A2V_DONE: begin
       a2v_state_nxt = (i_axis_rx_tlast && i_axis_rx_tvalid) ? A2V_IDLE : A2V_DONE;
+      clear_nxt     = (i_axis_rx_tlast && i_axis_rx_tvalid);
     end
     A2V_WAIT: begin
       a2v_state_nxt = (i_axis_rx_tlast && i_axis_rx_tvalid && i_done)  ? A2V_IDLE :
                       (i_axis_rx_tlast && i_axis_rx_tvalid && !i_done) ? A2V_HOLD :
                       (i_done)                                         ? A2V_DONE :
                                                                          A2V_WAIT ;
+      clear_nxt = (i_axis_rx_tlast && i_axis_rx_tvalid && i_done);
     end
     A2V_HOLD: begin
       a2v_state_nxt = (i_done) ? A2V_IDLE : A2V_HOLD;
+      clear_nxt     = (i_done);
     end
     default: begin
       a2v_state_nxt = A2V_IDLE;
+      clear_nxt     = '0;
     end
   endcase
 end
@@ -128,6 +147,7 @@ always_ff @(posedge clk) begin
   end
   else begin
     a2v_state   <= a2v_state_nxt;
+    clear_r     <= clear_nxt;
     early_pkt_r <= early_pkt;
     busy_r      <= (a2v_state_nxt != A2V_IDLE);
     if (pipe_incr) begin

@@ -18,6 +18,7 @@ module axis_gearbox # (
   parameter  DIN_WIDTH     = 8,
   parameter  DOUT_WIDTH    = 32,
   parameter  W_USER        = 1,
+  parameter  [W_USER-1:0] USER_LAST_BEAT_MASK = '0,
   localparam EVEN_MULTIPLE = (((DIN_WIDTH%DOUT_WIDTH) == '0) || ((DOUT_WIDTH%DIN_WIDTH) == '0)),
   localparam IN_W_KEEP     = DIN_WIDTH/8,
   localparam OUT_W_KEEP    = DOUT_WIDTH/8,
@@ -100,7 +101,8 @@ generate
 
 
       assign o_axis_rx_tready = i_axis_tx_tready;
-      assign o_axis_tx_tuser  = i_axis_rx_tuser;
+      assign o_axis_tx_tuser  = (i_axis_rx_tuser & ~USER_LAST_BEAT_MASK) |
+                                ({OUT_W_USER{o_axis_tx_tlast}} & i_axis_rx_tuser & USER_LAST_BEAT_MASK);
       assign o_axis_tx_tdata  = tdata;
       assign o_axis_tx_tkeep  = tkeep;
       assign o_axis_tx_tlast  = i_axis_rx_tlast;
@@ -212,6 +214,7 @@ generate
 
       logic [CNT_WIDTH-1:0] cnt;
       logic [IN_W_KEEP:0]   w_tkeep;
+      logic                 last_output_beat;
 
       always_ff @(posedge clk) begin
         if (rst) begin
@@ -229,13 +232,15 @@ generate
         end
       end
 
-      assign o_axis_tx_tuser  = i_axis_rx_tuser;
+      assign o_axis_tx_tuser  = (i_axis_rx_tuser & ~USER_LAST_BEAT_MASK) |
+                                ({OUT_W_USER{last_output_beat}} & i_axis_rx_tuser & USER_LAST_BEAT_MASK);
       assign o_axis_tx_tdata  = i_axis_rx_tdata[cnt*DOUT_WIDTH+:DOUT_WIDTH];
       assign o_axis_tx_tkeep  = i_axis_rx_tkeep[cnt*OUT_W_KEEP+:OUT_W_KEEP];
-      assign o_axis_tx_tlast  = i_axis_rx_tlast && ((w_tkeep[cnt*OUT_W_KEEP+:OUT_W_KEEP+1]) != '1);
-      assign o_axis_rx_tready = ((w_tkeep[cnt*OUT_W_KEEP+:OUT_W_KEEP+1]) != '1) && i_axis_tx_tready;
+      assign o_axis_tx_tlast  = i_axis_rx_tlast && last_output_beat;
+      assign o_axis_rx_tready = last_output_beat && i_axis_tx_tready;
       assign o_axis_tx_tvalid = i_axis_rx_tvalid;
       assign w_tkeep          = {1'b0,i_axis_rx_tkeep};
+      assign last_output_beat = ((w_tkeep[cnt*OUT_W_KEEP+:OUT_W_KEEP+1]) != '1);
     end
 //------------------------------------------------------------------------------------------------//
 // DOUT < DIN : Unven Multiple
