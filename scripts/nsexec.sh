@@ -16,7 +16,7 @@
 # limitations under the License.
 
 # This is a convenience script used by tests/test_emulator.py to execute a command in the network namespace ns_<if_name>
-# For use cases, see https://docs.nvidia/com/holoscan/sensor-bridge/latest/emulation.html#testing
+# For use cases, see https://docs.nvidia.com/holoscan/sensor-bridge/emulation/hsb-emulator#testing
 
 if [ $# -lt 2 ] ; then
 	echo "Usage: $0 <if_name> <command> [args...]"

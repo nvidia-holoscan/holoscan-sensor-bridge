@@ -66,14 +66,14 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 - **LeopardImaging Eagle Camera** Support for 8-bit, 60 fps mode on AGX Thor
 - **Lattice IMX274** Support for 12-bit, 30 fps mode
 - **Firmware Setup** `hsb_flasher` as primary
-  [firmware setup](https://docs.nvidia.com/holoscan/sensor-bridge/latest/sensor_bridge_firmware_setup.html)
+  [firmware setup](https://docs.nvidia.com/holoscan/sensor-bridge/firmware/firmware-setup#hsb-flasher)
   tool.
 - **CoE Offload Features** SIPLCaptureService for HSBs running sensors at heterogeneous
   frame rates. More generic sensor frame/non-image layout support in FusaCoeCapture
   operator
 - **SubFrameVisualizerOp** to improve support for sub-frame processing
 - **x86 Linux** added
-  [RoCE setup support](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html#sd-tab-item-4)
+  [RoCE setup support](https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/host-setup#igx)
 - **Agentic AI** Added
   [skills](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/main/skills)
   directory for workflows or setup involving HSB
@@ -189,7 +189,7 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 - **Thor support with Leopard Eagle VB1940 cameras.** Documentation and device
   programming support is included to support JP7.0 based Thor configurations with the
   Leopard Eagle VB1940 camera. See
-  [Thor JP7 setup instructions here](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.md).
+  [Thor JP7 setup instructions here](https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/host-setup).
 
 ## 2.2-GA, August 2025
 
@@ -270,7 +270,7 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
 
 - PTP configuration following boot-up is very touchy and error-prone. If you have
   trouble with received PTP timestamps, make sure you follow the user guide
-  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html)
+  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/host-setup)
   carefully.
 
 - Running tools like "nomachine" on non-RDMA capable systems--where CPU is used to
@@ -280,7 +280,7 @@ host system, run `sh docs/make_docs.sh`, then use your browser to look at
   is delivered to the holoscan pipeline, we clear the receiver buffer to all 0xFF. If a
   UDP packet with video data is dropped, then that 0xFF wouldn't be replaced with actual
   video data-- and that's where the white streaks come from. Adjusting `rmem_max` (per
-  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/latest/setup.html))
+  [host setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/host-setup))
   and adjusting core affinity for your application may help mitigate packet loss.
 
 ### Known Anomalies
@@ -331,7 +331,7 @@ look at `docs/user_guide/_build/html/index.html`.
   host systems, which support hardware PTP synchronization, these timestamps are within
   a microsecond of the host time, and can be used to accurately measure latency through
   the pipeline. These metadata values are available to pipeline operators via the
-  [HSDK application metadata API](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_create_app.html#dynamic-application-metadata).
+  [HSDK application metadata API](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute).
   See the user guide for more details. Sequence number checking is enabled for control
   plane transactions, and can provide protection against interaction from several hosts
   to the same HSB unit. The overall CRC of the received data frame is also included, in
@@ -380,7 +380,7 @@ look at `docs/user_guide/_build/html/index.html`.
   the 2412 configuration; the newer tree must be used to write the older firmware.
 
 - HSB network receiver operators use
-  [APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_create_app.html#dynamic-application-metadata)
+  [APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute)
   to share timestamps with later operators in the pipeline. Be sure and call the
   application (C++) `is_metadata_enabled(true)` method or (python)
   `is_metadata_enabled = True` at initialization time; otherwise each operator will only
