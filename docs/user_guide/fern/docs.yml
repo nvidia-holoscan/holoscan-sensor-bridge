@@ -18,7 +18,7 @@ products:
     slug: /
     path: index.yml
     versions:
-      - display-name: 2.6 (Latest)
+      - display-name: 2.7 (Latest)
         path: ./index.yml
         availability: ga
       - display-name: Archives
