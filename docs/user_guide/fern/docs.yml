@@ -74,6 +74,10 @@ css:
   - dist/output.css
 
 redirects:
+  - source: "/holoscan/sensor-bridge/latest/index.html"
+    destination: "/holoscan/sensor-bridge"
+  - source: "/holoscan/sensor-bridge/latest"
+    destination: "/holoscan/sensor-bridge"
   - source: "/holoscan/sensor-bridge/index.html"
     destination: "/holoscan/sensor-bridge/getting-started/introduction"
   - source: "/holoscan/sensor-bridge/introduction"
