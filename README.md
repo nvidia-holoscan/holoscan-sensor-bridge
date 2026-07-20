@@ -15,7 +15,7 @@ or an IMX477 camera with
 ## Setup
 
 Holoscan sensor bridge software comes with an
-[extensive user guide](https://docs.nvidia.com/holoscan/sensor-bridge/latest/),
+[extensive user guide](https://docs.nvidia.com/holoscan/sensor-bridge/index.html),
 including instructions for setup on
 [NVIDIA IGX](https://www.nvidia.com/en-us/edge-computing/products/igx/) and
 [NVIDIA AGX](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html)
@@ -31,7 +31,7 @@ link:
 ## Troubleshooting
 
 Be sure and check the
-[release notes](https://docs.nvidia.com/holoscan/sensor-bridge/latest/release_notes.html)
+[release notes](https://docs.nvidia.com/holoscan/sensor-bridge/support/release-notes)
 for frequently asked questions and troubleshooting tips.
 
 ## Submitting changes

@@ -58,7 +58,7 @@ Running imx477 application - Tao People net
 	a. xhost +
 	b. sh docker/demo.sh <enter>
 		b.1: It runs holoscan-sensor-bridge docker container
-	c. https://docs.nvidia.com/holoscan/sensor-bridge/latest/examples.html#running-the-tao-peoplenet-example
+	c. https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/examples#running-the-tao-peoplenet-example
 3. Connect Ethernet cable from AGX to J6 connector on MPF200-ETH-SENSOR-BRIDGE. Connect the camera to J14 MIPI connector.  Run the below commands to run linux_tao_peoplenet_imx477 for camera 0 
 	a. python examples/linux_tao_peoplenet_imx477.py
 		1.1 The above command runs tao peoplenet model on video from camera 0
@@ -74,7 +74,7 @@ Running imx477 application - body pose estimation
 	a. xhost +
 	b. sh docker/demo.sh <enter>
 		b.1: It runs holoscan-sensor-bridge docker container
-	c. https://docs.nvidia.com/holoscan/sensor-bridge/latest/examples.html#running-the-body-pose-example
+	c. https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/examples#running-the-body-pose-example
 3. Connect Ethernet cable from AGX to J6 connector on MPF200-ETH-SENSOR-BRIDGE. Connect the camera to J14 MIPI connector.  Run the below commands to run linux_body_pose_estimation_imx477 for camera 0 
 	a. python examples/linux_body_pose_estimation_imx477.py
 		1.1 The above command runs body pose estimation model on video from camera 0

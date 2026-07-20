@@ -16,7 +16,7 @@
       "cpp": "hololink",
       "python": "hololink"
     },
-    "homepage": "https://docs.nvidia.com/holoscan/sensor-bridge/latest/",
+    "homepage": "https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/introduction",
     "platforms": ["x86_64", "aarch64"],
     "tags": [
       "sensor-bridge",
