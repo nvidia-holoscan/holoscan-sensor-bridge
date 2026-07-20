@@ -802,3 +802,4 @@ endif() # HOLOLINK_BUILD_PYTHON
 install(FILES ${EXAMPLE_INSTALL_FILES}
         DESTINATION ${CMAKE_INSTALL_BINDIR}
         COMPONENT hololink-examples)
+add_subdirectory(aditof)        
