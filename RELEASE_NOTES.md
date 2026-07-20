@@ -388,7 +388,7 @@ look at `docs/user_guide/_build/html/index.html`.
   additional items to the pipeline metadata, be sure and add that metadata before
   calling `(output).emit`. If you have a pipeline that merges two paths, and experience
   a `runtime_error` exception when it fails to merge the metadata from those paths, see
-  [the page on Metadata update policies](https://docs.nvidia.com/holoscan/sdk-user-guide/holoscan_create_app.html#metadata-update-policies)
+  [the page on Metadata update policies](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#metadata-update-policies)
   for information on how to manage this.
 
 - It is possible to overrun the bandwidth available on the ethernet, particularly when
