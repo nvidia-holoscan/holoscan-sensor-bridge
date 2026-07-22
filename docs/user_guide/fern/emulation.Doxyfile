@@ -1,0 +1,69 @@
+# Doxyfile for Fern's C++ library docs generator (`fern docs md generate`).
+#
+# Fern's C++ parser (`fernenterprise/fern-cpp-library-docs-parser`) uses this
+# file's CONTENTS **verbatim** when `config.doxyfile:` is set in docs.yml -- it
+# writes them to the parser workdir as `Doxyfile`, appends a single
+# `OUTPUT_DIRECTORY = ...` line, and runs `doxygen Doxyfile` with cwd set to
+# the (writable copy of the) mounted repo root. Its own default template
+# (INPUT/RECURSIVE/EXTRACT_ALL/EXCLUDE_PATTERNS/FILE_PATTERNS/etc.) is NOT
+# layered on top. Any Doxygen setting we care about must therefore be listed
+# here explicitly; unset settings fall back to Doxygen's own defaults from
+# `doxygen -g`, NOT to the parser's template.
+#
+# Concretely, the parser used to set (with `packagePath = src/hololink/emulation`):
+#   INPUT      = /repo-copy/src/hololink/emulation
+#   RECURSIVE  = YES
+#   EXTRACT_ALL = YES
+#   FILE_PATTERNS = *.h *.hpp *.hxx ... (broad list)
+# When we supply this Doxyfile, ALL of that is dropped -- so we must re-supply
+# INPUT (Doxygen defaults it to `.`, which under the parser's cwd is the whole
+# repo copy) and FILE_PATTERNS (Doxygen's `-g` defaults omit `.hpp`, silently
+# dropping every emulation header).
+
+# --- Output: Fern reads Doxygen's XML index; HTML/LaTeX are dead weight. ---
+GENERATE_XML   = YES
+GENERATE_HTML  = NO
+GENERATE_LATEX = NO
+
+# --- Scope: emulation public headers only. ---------------------------------
+# INPUT is relative to Doxygen's cwd, which the parser sets to the repo root.
+# Combined with `RECURSIVE = NO`, this restricts extraction to the header
+# files directly under EACH listed directory (Doxygen scans every INPUT entry
+# non-recursively, so listing `sensors/` explicitly picks up the sensor
+# emulator headers without pulling in any deeper subdirectory). The other
+# emulation subdirectories -- cmake/, examples/, python/, src/ -- are
+# implementation / build / binding trees and stay excluded because they are
+# not listed here.
+#
+# FILE_PATTERNS is restricted to header extensions so we document the public
+# interface surface only, not `.cpp` translation units. `*.hpp` is listed
+# explicitly because Doxygen's stock `-g` defaults omit it in some builds
+# (they cover `*.h *.hh *.hxx *.h++` but not `*.hpp`), which would produce an
+# empty XML index and "generated 0 pages" even with `EXTRACT_ALL = YES`.
+INPUT         = src/hololink/emulation \
+                src/hololink/emulation/sensors
+RECURSIVE     = NO
+FILE_PATTERNS = *.h *.hpp *.hxx *.h++ *.cuh
+
+# `test_sensor.hpp` defines the bench-only `TestSensor` peripheral (plus its
+# `TestPatternMode` enum and `TEST_I2C_ADDRESS` constant); it is compiled
+# into `libihsb` tests but is not part of the shipping emulator API surface,
+# so drop it from the extracted set. The pattern is matched by Doxygen
+# against each file's full path, so a bare basename glob is enough.
+EXCLUDE_PATTERNS = */test_sensor.hpp
+
+# --- Extraction: emit compounds even for headers without doxygen comments. -
+# The emulation headers use plain `//` comments and license blocks, no
+# `///` / `/** @brief */` blocks on classes or functions. Doxygen defaults
+# EXTRACT_ALL to NO, which drops undocumented compounds silently, producing
+# an XML index with zero <compound> elements. Fern's parser then reports
+# "generated 0 pages" and the folder Fern was told to write into never
+# gets created, causing a later "Folder not found" from the publish step.
+# EXTRACT_ALL = YES surfaces every public entity regardless of whether it
+# has a doxygen docstring; private/protected members remain hidden because
+# EXTRACT_PRIVATE keeps its default NO. EXTRACT_STATIC = YES matches the
+# parser's own default so file-scope helpers still show up.
+EXTRACT_ALL          = YES
+EXTRACT_STATIC       = YES
+WARN_IF_UNDOCUMENTED = NO
+QUIET                = YES

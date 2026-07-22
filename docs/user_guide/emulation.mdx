@@ -7,6 +7,7 @@
 - [Examples](#examples)
 - [Testing](#testing)
 - [Developing with HSB Emulator](#developing-with-hsb-emulator)
+  - [Making your own HSB MCU](#making-your-own-hsb-mcu)
   - [Primary Classes](#primary-classes)
     - `HSBEmulator`
     - `DataPlane`
@@ -240,6 +241,32 @@ example, using the STM32_Programmer_CLI,
 ```
 
 </Tab>
+<Tab title="Emulator-only for TEMPLATE">
+
+This TEMPLATE target is meant for developing a custom HSB implementation for a real
+hardware target. The provided implementation is intentionally minimal: every required
+symbol is stubbed so the tree compiles with the gcc arm cross compiling toolchain, and a
+target board linker script + peripheral modules (i2c, spi, gpio, etc.) are left for you to
+fill in.
+
+First install the toolchain:
+
+```
+  sudo apt-get install gcc-arm-none-eabi
+```
+
+To build:
+
+```
+  mkdir build
+  cmake -S src/hololink/emulation -B build -DHSB_EMULATOR_TARGET=TEMPLATE -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/arm-none-eabi-gcc.cmake
+  cmake --build build -j
+```
+
+An `.elf` will be produced but it does nothing useful yet. See
+[Making your own HSB MCU](#making-your-own-hsb-mcu) for the per-function quick-start.
+
+</Tab>
 </Tabs>
 
 ### Configuring the Emulator-only build
@@ -421,6 +448,67 @@ SIPL example for vb1940 through the MGBE port with CoE offloading.
 
 ## Developing with HSB Emulator
 
+### Making your own HSB MCU
+
+The `TEMPLATE` target is the starting point for porting HSB to a new MCU. It builds, but
+every function is a stub — your job is to plug in the platform-specific logic.
+
+1. **Source layout** — three files under `src/hololink/emulation/src/Template/` provide
+   everything you need to extend:
+   - `HSBTemplate.cpp` — control-plane handling, BootP broadcasting, basic networking.
+   - `HSBTemplate_rocev2.cpp` — RoCEv2 transmit path (ConnectX-compatible).
+   - `HSBTemplate_coe.cpp` — IEEE 1722B Camera-over-Ethernet transmit path (SIPL / FuSa on
+     AGX Thor and IGX Thor Mini with mGbE).
+
+2. **Find every `TODO`** in the three files above and fill it in. The functions that
+   actually need platform work are grouped by concern:
+
+   *Networking / control plane*
+   - `IPAddress_from_string` — populate the `IPAddress` struct (MAC, `if_name`, subnet
+     mask, broadcast) from dotted-quad text.
+   - `control_plane_reply` — put a pre-built scatter/gather ECB reply on the wire.
+   - `HSBEmulator::handle_msgs` — receive and dispatch ECB packets to
+     `handle_control_packet`; optionally also drive other required networking tasks (ICMP /
+     ARP / BootP) if single-threaded and no networking middleware (see STM32's
+     implementation).
+   - `HSBEmulator::add_data_plane` — track a DataPlane so it gets `start()` / `stop()`
+     lifecycle calls.
+   - `HSBEmulator::HSBEmulator` — register per-control plane register callbacks with
+     `HSBEmulator::register_read_callback` and `HSBEmulator::register_write_callback`
+
+   *Transmit paths*
+   - `send_coe_packet` — emit a 1722B frame from a scatter/gather array.
+   - `send_rocev2_packet` — emit a RoCEv2 frame from a scatter/gather array.
+
+   *DataPlane BootP and task timing*
+   - `clock_gettime` — used to stamp BootP `secs` and frame metadata timestamps.
+   - `DataPlane::broadcast_bootp` — put one BootP packet on the wire. Wrap in a thread /
+     RTOS task if your runtime is multi-threaded.
+   - `DataPlane::DataPlane` — register per-DataPlane/Sensor register callbacks with
+     `HSBEmulator::register_read_callback` and `HSBEmulator::register_write_callback`
+
+   *Main-loop timing helpers (only if you run the bundled `serve_*_msg` examples)*
+   - `msleep(unsigned)` — millisecond sleep used by `serve_coe_msg` / `serve_roce_msg` to
+     throttle to `FRAME_RATE`.
+
+3. **Functions you can usually leave alone.** Anything that exists purely to coordinate
+   concurrency (mutexes, condition variables, atomic flags) can stay as the empty stub when
+   your runtime is single-threaded. Threading hooks are there to *accommodate* a
+   multi-threaded port, not to require one.
+
+4. **Carrying your own state.** Each control-plane / data-plane object holds a `*Ctxt`
+   struct (e.g. `HSBEmulatorCtxt`, `DataPlaneCtxt`, `COECtxt`, `RoCEv2Ctxt`). Extend the
+   appropriate one with whatever per-instance fields your platform needs (DMA descriptors,
+   HAL handles, ring buffers). Lifetime is yours to manage — the framework only holds a
+   `Ctxt*`.
+
+5. **implement your own target** and customize the target build.
+   - Copy your new implementation files out/rename the folder and the corresponding target
+     `.cmake` file in `cmake/targets/`.
+   - Add the new target name to the `HSB_EMULATOR_EMBEDDED_TARGETS` list in the
+     `src/hololink/emulation/CMakeLists.txt` file to enable a new target alongside
+     `STM32F767ZI` and `TEMPLATE`.
+
 ### Primary Classes
 
 For all the classes below, the C++ namespace is assumed `hololink::emulation` and the
@@ -428,6 +516,9 @@ Python module is loaded as `import hololink.emulation as hemu`. Python-equivalen
 examples or definitions are given for clarity for non-trivial signatures. For further
 details including private and protected members of classes for development purposes, see
 the source code in `src/hololink/emulation`.
+
+For detailed API documentation of the HSB Emulator interface, see the
+[Emulation API reference](/holoscan/sensor-bridge/api-reference/emulation-api).
 
 The HSB Emulator class is used for command and control communication between the
 Emulator device and the Host HSB Application

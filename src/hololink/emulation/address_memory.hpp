@@ -77,8 +77,10 @@ public:
     /**
      * @brief Write a range of values to registers. Allow optimizations if it is known that the addresses are contiguous.
      *
-     * @param address_values Pointer to array of pairs of register addresses and values to write (caller must allocate at least num_addresses elements)
-     * @param num_addresses The number of addresses to write
+     * @param start_address The first register address in the range.
+     * @param values Pointer to the array of values to write (caller must allocate at least num_addresses elements).
+     * @param num_addresses The number of addresses to write.
+     * @param stride The address increment between consecutive registers in the range (defaults to 2).
      * @return 0 on success, 1 on failure
      */
     virtual int write_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) = 0;
@@ -86,8 +88,10 @@ public:
     /**
      * @brief Read a range of values from registers. Allow optimizations if it is known that the addresses are contiguous.
      *
-     * @param address_values Pointer to array of pairs of register addresses and values to read (caller must allocate at least num_addresses elements)
-     * @param num_addresses The number of addresses to read
+     * @param start_address The first register address in the range.
+     * @param values Pointer to the array that receives the values read (caller must allocate at least num_addresses elements).
+     * @param num_addresses The number of addresses to read.
+     * @param stride The address increment between consecutive registers in the range (defaults to 2).
      * @return 0 on success, 1 on failure
      */
     virtual int read_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) = 0;

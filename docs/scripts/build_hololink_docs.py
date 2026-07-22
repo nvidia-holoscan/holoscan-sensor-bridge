@@ -18,9 +18,12 @@ Build and validate Holoscan Sensor Bridge Fern documentation.
 
 User guide pages are committed as ``*.mdx`` under ``docs/user_guide/``. Fern config
 (``fern.config.json``, ``docs.yml``, ``index.yml``, ``assets/``, ``dist/``) lives under
-``docs/user_guide/fern/``.
+``docs/user_guide/fern/``. The public C++ API for ``src/hololink/emulation`` is
+generated under ``docs/user_guide/fern/generated/``.
 
-``fern check --local`` (local validation), ``fern docs dev`` (``--preview``),
+With ``--with-library-mdx``, the pipeline runs ``fern docs md generate`` and
+post-processes the generated MDX before ``fern check --local`` (local validation),
+``fern docs dev`` (``--preview``),
 ``fern generate --docs --preview`` (``--publish-preview`` for CI), or
 ``fern generate --docs`` (``--publish`` for production).
 
@@ -29,6 +32,7 @@ Usage (from hololink repo root):
   python3 docs/scripts/build_hololink_docs.py
   python3 docs/scripts/build_hololink_docs.py --preview
   python3 docs/scripts/build_hololink_docs.py --no-docker
+  python3 docs/scripts/build_hololink_docs.py --with-library-mdx
   python3 docs/scripts/build_hololink_docs.py --skip-fern-check
   python3 docs/scripts/build_hololink_docs.py --publish
   python3 docs/scripts/build_hololink_docs.py --publish-preview --preview-id my-branch --force
@@ -53,6 +57,7 @@ DOCS_ROOT = DOCS_DIR / "user_guide"
 REPO = DOCS_DIR.parent
 SOURCE = DOCS_ROOT
 DEFAULT_FERN_DIR = DOCS_ROOT / "fern"
+FIX_LIBRARY_MDX = SCRIPTS / "fix_generated_library_mdx.py"
 DOCKERFILE = DOCS_DIR / "Dockerfile.docs"
 
 ASSET_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp"}
@@ -404,6 +409,71 @@ def _fern_auth_token() -> str | None:
     return None
 
 
+def _has_fern_org_token() -> bool:
+    """Return whether an explicit org token is available for library generation."""
+    return _env_fern_token() is not None
+
+
+def _clean_generated_api_docs(generated_docs: Path) -> None:
+    if generated_docs.is_dir():
+        shutil.rmtree(generated_docs)
+        try:
+            removed = generated_docs.relative_to(REPO)
+        except ValueError:
+            removed = generated_docs
+        print(f"removed: {removed}", flush=True)
+
+
+def _ensure_emulation_api_placeholder(fern_dir: Path) -> None:
+    """Keep unauthenticated local checks usable without generated library MDX.
+
+    Fern's `folder:` entry in ``index.yml`` points inside the ``output.path``
+    tree of the ``hololink-emulation`` library (see
+    ``docs/user_guide/fern/docs.yml``) -- specifically at the deep subtree
+    ``hololink/namespaces/emulation`` where Fern's C++ generator writes the
+    per-compound MDX (see the comment on the ``folder:`` entry in
+    ``docs/user_guide/fern/index.yml`` for why that path). Fern errors with
+    "Folder not found" if that path does not exist on disk, which is exactly
+    what happens on an unauthenticated local preview where
+    ``fern docs md generate`` never ran (no token) and therefore never wrote
+    anything under ``output.path``. This writes one hidden placeholder MDX
+    file at that folder so the folder always resolves.
+    """
+    # Must mirror the `folder:` target in index.yml exactly; otherwise the
+    # placeholder would land at a different folder than the one Fern probes.
+    output = (
+        fern_dir
+        / "generated"
+        / "api-reference"
+        / "cpp"
+        / "emulation"
+        / "hololink"
+        / "namespaces"
+        / "emulation"
+    )
+    if any(output.rglob("*.mdx")) if output.is_dir() else False:
+        return
+    # Filename prefix `_` and `hidden: true` frontmatter both keep this out of
+    # the rendered sidebar; belt-and-suspenders in case either exclusion
+    # mechanism changes in a future Fern release.
+    output.mkdir(parents=True, exist_ok=True)
+    (output / "_placeholder.mdx").write_text(
+        "---\ntitle: Emulation API\nhidden: true\n---\n\n"
+        "This API reference is generated during authenticated Fern builds.\n",
+        encoding="utf-8",
+    )
+
+
+def _has_generated_emulation_api(fern_dir: Path) -> bool:
+    output = fern_dir / "generated" / "api-reference" / "cpp" / "emulation"
+    if not output.is_dir():
+        return False
+    return any(
+        path.is_file() and path.name not in {"overview.mdx", "_placeholder.mdx"}
+        for path in output.rglob("*.mdx")
+    )
+
+
 def _fern_assets_ok(fern_dir: Path) -> bool:
     dist = fern_dir / "dist"
     return (dist / "output.css").is_file() and (dist / "output.js").is_file()
@@ -411,6 +481,7 @@ def _fern_assets_ok(fern_dir: Path) -> bool:
 
 def run_pipeline(args: argparse.Namespace) -> int:
     fern_dir = args.fern_dir.expanduser().resolve()
+    generated_docs = fern_dir / "generated"
 
     if not SOURCE.is_dir():
         print(f"Missing source dir: {SOURCE}", file=sys.stderr)
@@ -430,6 +501,41 @@ def run_pipeline(args: argparse.Namespace) -> int:
     rc = _check_source_assets(allow_lfs_pointers=args.allow_lfs_pointers)
     if rc:
         return rc
+
+    if args.with_library_mdx:
+        fern_exe = _fern_exe()
+        if not fern_exe:
+            print(
+                "The `fern` CLI was not found on PATH; install it or omit --with-library-mdx.",
+                file=sys.stderr,
+            )
+            return 127
+        if not FIX_LIBRARY_MDX.is_file():
+            print(f"Missing post-process script: {FIX_LIBRARY_MDX}", file=sys.stderr)
+            return 2
+        _clean_generated_api_docs(generated_docs)
+        _run([fern_exe, "docs", "md", "generate"], cwd=fern_dir)
+
+    if generated_docs.is_dir():
+        if not FIX_LIBRARY_MDX.is_file():
+            print(f"Missing post-process script: {FIX_LIBRARY_MDX}", file=sys.stderr)
+            return 2
+        _run(
+            [
+                sys.executable,
+                str(FIX_LIBRARY_MDX),
+                "--root",
+                str(generated_docs),
+            ]
+        )
+
+    if args.publish and not _has_generated_emulation_api(fern_dir):
+        print(
+            "error: production publication requires generated Emulation C++ API pages; "
+            "run with --with-library-mdx.",
+            file=sys.stderr,
+        )
+        return 1
 
     needs_remote_publish = args.publish_preview or args.delete_preview_id or args.publish
     if needs_remote_publish:
@@ -492,6 +598,8 @@ def run_pipeline(args: argparse.Namespace) -> int:
     if not fern_exe:
         print("The `fern` CLI was not found on PATH.", file=sys.stderr)
         return 127
+
+    _ensure_emulation_api_placeholder(fern_dir)
 
     if args.preview:
         return _run_preview(fern_exe, fern_dir, port=args.port)
@@ -673,6 +781,10 @@ def _run_in_docker(args: argparse.Namespace) -> int:
     pipeline_args.append("--skip-lfs-pull")
     if args.allow_lfs_pointers:
         pipeline_args.append("--allow-lfs-pointers")
+    if args.with_library_mdx:
+        pipeline_args.append("--with-library-mdx")
+    if args.skip_library_mdx:
+        pipeline_args.append("--skip-library-mdx")
     if args.skip_fern_check:
         pipeline_args.append("--skip-fern-check")
     if args.preview:
@@ -702,10 +814,10 @@ def _run_in_docker(args: argparse.Namespace) -> int:
     if os.environ.get("CI"):
         docker_env.append("-eCI=1")
     # Forward an explicitly-provided FERN_TOKEN (a non-expiring org token from
-    # `fern token`) for org operations (docs publish). The cached `fern login`
-    # credential is shared into the container via the mounted ~/.fern; it is not injected
-    # as FERN_TOKEN because Fern reads FERN_TOKEN first and an OAuth login access token is
-    # not a valid API token, which would break auth.
+    # `fern token`) for org operations (library generation and docs publish). The cached
+    # `fern login` credential is shared into the container via the mounted ~/.fern; it is
+    # not injected as FERN_TOKEN because Fern reads FERN_TOKEN first and an OAuth login
+    # access token is not a valid API token, which would break auth.
     env_token = _env_fern_token()
     if env_token:
         docker_env.append(f"-eFERN_TOKEN={env_token}")
@@ -789,6 +901,16 @@ def main() -> int:
         help="Do not run ``git lfs pull`` before validating image assets.",
     )
     parser.add_argument(
+        "--with-library-mdx",
+        action="store_true",
+        help="Generate the Emulation C++ API MDX (requires Fern auth).",
+    )
+    parser.add_argument(
+        "--skip-library-mdx",
+        action="store_true",
+        help="Skip C++ API generation even when a Fern org token is available.",
+    )
+    parser.add_argument(
         "--skip-fern-check",
         action="store_true",
         help="Run the pipeline only; skip fern check / preview.",
@@ -860,6 +982,20 @@ def main() -> int:
         if args.no_docker:
             return run_fern_login(args)
         return _run_fern_login_in_docker(args)
+
+    if args.skip_library_mdx:
+        args.with_library_mdx = False
+    elif not args.with_library_mdx:
+        # CI preview and production jobs provide an org token. Generate there
+        # automatically while keeping unauthenticated local checks non-interactive.
+        args.with_library_mdx = _has_fern_org_token()
+
+    if args.with_library_mdx and not _fern_auth_token():
+        print(
+            "error: C++ API generation requires Fern auth (run 'fern login' or set FERN_TOKEN).",
+            file=sys.stderr,
+        )
+        return 1
 
     if args.no_docker:
         return run_pipeline(args)

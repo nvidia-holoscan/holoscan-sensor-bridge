@@ -1,3 +1,6 @@
+# C++ API MDX from `fern docs md generate` (see fern/docs.yml)
+fern/generated/
+
 # Fern CLI local state (caches, `fern docs diff` output, etc.)
 fern/.fern/
 

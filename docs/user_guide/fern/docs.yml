@@ -1,5 +1,32 @@
 # yaml-language-server: $schema=https://schema.buildwithfern.dev/docs-yml.json
 
+# Generate only the emulator's public C++ API. Scope is restricted to the
+# top-level headers of `src/hololink/emulation` (the emulator HAL interface) by
+# `emulation.Doxyfile` (INPUT + RECURSIVE = NO), so implementation / build /
+# example / binding subdirectories are not parsed. The build helper post-
+# processes the generated MDX before Fern validates, previews, or publishes it.
+#
+# Library key `hololink-emulation` is deliberately NOT `hololink`: this entry
+# documents the `hololink::emulation` sub-namespace as a standalone API-reference
+# section, not the whole `hololink` library. Future top-level `hololink` C++ API
+# docs will be a separate `libraries:` entry (with its own subpath, once the
+# public headers move out of `src/hololink/emulation`). One consequence: Fern's
+# C++ generator only emits Stage-4 namespace index pages when the library key
+# matches a top-level C++ namespace name -- since ours does not, we get just
+# the per-compound pages (classes / functions / enums / typedefs / variables)
+# and the `Emulation API` folder in `index.yml` takes the place of a landing
+# page for the section.
+libraries:
+  hololink-emulation:
+    input:
+      git: https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
+      subpath: src/hololink/emulation
+    output:
+      path: ./generated/api-reference/cpp/emulation
+    lang: cpp
+    config:
+      doxyfile: ./emulation.Doxyfile
+
 instances:
   - url: nvidia-holoscan.docs.buildwithfern.com/holoscan/sensor-bridge
     custom-domain: docs.nvidia.com/holoscan/sensor-bridge

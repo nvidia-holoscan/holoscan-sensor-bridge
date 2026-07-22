@@ -18,7 +18,7 @@
 # See docs/user_guide/README.md for detailed information.
 #
 # Usage:
-#   docs/make_docs.sh [--preview|--dev] [--no-docker] ...
+#   docs/make_docs.sh [--preview|--dev] [--no-docker] [--with-library-mdx] ...
 #   DOCKER_OPTS='-e MY_VAR=1' docs/make_docs.sh   # extra docker run flags
 #
 # DOCKER_OPTS: optional extra flags passed to `docker run` (unset = none).
@@ -36,6 +36,8 @@ Options:
   --login                Log in to Fern (device-code in Docker; browser on host)
   --no-docker            Run on the host instead of the docs container
   --docker               Use the docs container (default)
+  --with-library-mdx     Generate the Emulation C++ API MDX (requires Fern auth)
+  --skip-library-mdx     Skip C++ API generation
   --skip-fern-check      Pipeline only; skip fern check
   --publish              Publish docs to production (docs.nvidia.com)
   --publish-preview      Publish a remote Fern docs preview (CI)
@@ -49,7 +51,7 @@ Options:
 Environment:
   DOCKER_OPTS            Extra flags for docker run (optional; default: empty).
   FERN_TOKEN             Non-expiring Fern org API token from 'fern token', for
-                         publishing (optional). The 'fern login' credential in
+                         C++ API generation and publishing (optional). The 'fern login' credential in
                          ~/.fern is shared into the container automatically and
                          is NOT used as FERN_TOKEN.
 EOF
@@ -74,6 +76,12 @@ while [ $# -ge 1 ]; do
             ARGS="$ARGS --no-docker"
             ;;
         --docker)
+            ;;
+        --with-library-mdx)
+            ARGS="$ARGS --with-library-mdx"
+            ;;
+        --skip-library-mdx)
+            ARGS="$ARGS --skip-library-mdx"
             ;;
         --skip-fern-check)
             ARGS="$ARGS --skip-fern-check"
