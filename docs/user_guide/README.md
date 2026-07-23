@@ -42,7 +42,8 @@ Pass `--skip-fern-check` to run the pipeline only (no Fern validation).
 
 CI publishes remote Fern previews and surfaces the link on merge requests:
 
-- **GitLab CI** (MR with `scope::docs` label): publishes a Fern preview; the MR shows a **View app** link under **Environments** (no extra token required)
+- **GitLab CI** (open MR with documentation changes): publishes a Fern preview from the
+  branch pipeline; the MR shows a **View app** link under **Environments**
 - **GitLab CI** (optional): posts an MR comment with the same link when `GITLAB_HSB_API_TOKEN` or `GITLAB_API_TOKEN` is set in CI/CD variables (same PAT Jenkins uses)
 - **Jenkins merge pipeline** (MR with `scope::docs` label): same preview flow when the Jenkins x86_64 flow runs
 - **GitLab CI** `hololink-user-guide` job: runs `fern check --local` on every pipeline for validation
@@ -66,6 +67,19 @@ fern docs dev
 ```
 
 Or use the build script from the repo root (Docker or `--no-docker`).
+
+## C++ API reference
+
+Fern generates the C++ API reference only from `src/hololink/emulation/`. Generate it
+explicitly with:
+
+```bash
+docs/make_docs.sh --with-library-mdx
+```
+
+This requires Fern authentication. Builds with an explicit `FERN_TOKEN` generate it
+automatically; unauthenticated local checks use a placeholder page instead. Pass
+`--skip-library-mdx` to suppress automatic generation.
 
 ## Publish preview
 

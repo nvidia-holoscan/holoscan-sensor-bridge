@@ -39,6 +39,24 @@ navigation:
       - page: HSB Emulator
         path: ../emulation.mdx
 
+  - section: API reference
+    contents:
+      # Fern's C++ library generator writes MDX at output.path (see
+      # docs.yml `libraries.hololink-emulation.output.path`). Because the
+      # library key (`hololink-emulation`) does NOT equal the top-level C++
+      # namespace (`hololink`), Fern's generator does NOT strip a leading
+      # namespace segment from filesystem paths, so per-compound pages land
+      # nested under `hololink/namespaces/emulation/{classes,functions,...}`.
+      # Pointing `folder:` at THAT deep subtree (rather than at the shallower
+      # output.path) makes Fern's nav walker skip the redundant
+      # `hololink -> namespaces -> emulation` breadcrumb and surface just the
+      # {classes, functions, enums} groups under `Emulation API`. Fern's
+      # `folder:` walk is recursive and picks up every generated .mdx below.
+      - folder: ./generated/api-reference/cpp/emulation/hololink/namespaces/emulation
+        title: Emulation API
+        slug: emulation-api
+        collapsed: true
+
   - section: FPGA IP
     contents:
       - page: Overview

@@ -152,15 +152,17 @@ In summary, the host network interface associated with `$IN0` (`roceP5p3s0f0`) i
 - IGX OS uses NetworkManager to configure network interfaces. By default, the sensor
   bridge device uses the address 192.168.0.2 for the first port. Set up your first
   ethernet device (`$EN0`) to use the address 192.168.0.101 with a permanent route to
-  192.168.0.2: ([Here](notes.mdx#holoscan-sensor-bridge-ip-address-configuration) is
-  more information about configuring your system if you cannot use the 192.168.0.0/24
+  192.168.0.2 using the
+  [recommended MTU](https://enterprise-support.nvidia.com/s/article/mtu-considerations-for-roce-based-applications)
+  for use with RoCE: ([Here](notes.mdx#holoscan-sensor-bridge-ip-address-configuration)
+  is more information about configuring your system if you cannot use the 192.168.0.0/24
   network in this way.)
 
 ```none
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
   sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
-  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096
+  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4200
   sudo nmcli connection up hololink-$EN0
 ```
 
@@ -210,7 +212,7 @@ with an appropriate address and permanent route:
   sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
   sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
   sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
-  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4096
+  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4200
   sudo nmcli connection up hololink-$EN1
 ```
 
@@ -299,21 +301,22 @@ bridge code.
 - Run the "jetson_clocks" tool on startup, to set the core clocks to their maximum.
 
 ```none
-  JETSON_CLOCKS_SERVICE=/etc/systemd/system/jetson_clocks.service
-  cat <<EOF | sudo tee $JETSON_CLOCKS_SERVICE >/dev/null
-  [Unit]
-  Description=Jetson Clocks Startup
-  After=nvpmodel.service
+JETSON_CLOCKS_SERVICE=/etc/systemd/system/jetson_clocks.service
+cat <<EOF | sudo tee $JETSON_CLOCKS_SERVICE >/dev/null
+[Unit]
+Description=Jetson Clocks Startup
+After=nvpmodel.service
    
-  [Service]
-  Type=oneshot
-  ExecStart=/usr/bin/jetson_clocks
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/jetson_clocks
    
-  [Install]
-  WantedBy=multi-user.target
-  EOF
-  sudo chmod u+x $JETSON_CLOCKS_SERVICE
-  sudo systemctl enable jetson_clocks.service
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo chmod u+x $JETSON_CLOCKS_SERVICE
+sudo systemctl enable jetson_clocks.service
 ```
 
 - Set the AGX Orin power mode to 'MAXN' for optimal performance. The setting can be
@@ -392,15 +395,17 @@ In summary, the host network interface associated with `$IN0` (`roceP2p1s0f0`) i
 - DGX OS uses NetworkManager to configure network interfaces. By default, the sensor
   bridge device uses the address 192.168.0.2 for the first port. Set up your first
   ethernet device (`$EN0`) to use the address 192.168.0.101 with a permanent route to
-  192.168.0.2: ([Here](notes.mdx#holoscan-sensor-bridge-ip-address-configuration) is
-  more information about configuring your system if you cannot use the 192.168.0.0/24
+  192.168.0.2 using the
+  [recommended MTU](https://enterprise-support.nvidia.com/s/article/mtu-considerations-for-roce-based-applications)
+  for use with RoCE: ([Here](notes.mdx#holoscan-sensor-bridge-ip-address-configuration)
+  is more information about configuring your system if you cannot use the 192.168.0.0/24
   network in this way.)
 
 ```none
   sudo nmcli con add con-name hololink-$EN0 ifname $EN0 type ethernet ip4 192.168.0.101/24
   sudo nmcli connection modify hololink-$EN0 +ipv4.routes 192.168.0.2/32
   sudo nmcli connection modify hololink-$EN0 ethtool.ring-rx 4096
-  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096
+  sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4200
   sudo nmcli connection up hololink-$EN0
 ```
 
@@ -448,7 +453,7 @@ with an appropriate address and permanent route:
   sudo nmcli con add con-name hololink-$EN1 ifname $EN1 type ethernet ip4 192.168.0.102/24
   sudo nmcli connection modify hololink-$EN1 +ipv4.routes 192.168.0.3/32
   sudo nmcli connection modify hololink-$EN1 ethtool.ring-rx 4096
-  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4096
+  sudo nmcli connection modify hololink-$EN1 802-3-ethernet.mtu 4200
   sudo nmcli connection up hololink-$EN1
 ```
 
