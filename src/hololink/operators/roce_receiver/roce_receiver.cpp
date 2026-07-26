@@ -423,7 +423,7 @@ bool RoceReceiver::start()
         .qp_state = IBV_QPS_RTR,
         .path_mtu = IBV_MTU_4096,
         .rq_psn = 0,
-        .dest_qp_num = 0,
+        .dest_qp_num = qp_number_, 
         .ah_attr = {
             .grh = {
                 .dgid = remote_gid,
