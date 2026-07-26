@@ -1,0 +1,140 @@
+# Resets
+ldc_set_location -site {H1} [get_ports RESET_N]
+ldc_set_port -iobuf {PULLMODE=UP IO_TYPE=LVCMOS33} [get_ports RESET_N]
+#ethernet 10G
+ldc_set_location -site {D10} [get_ports ETH_REFCLK_P]
+ldc_set_location -site {E10} [get_ports ETH_REFCLK_N]
+# SFP 10Gig
+ldc_set_location -site {C8} [get_ports {ETH_RXD_P}]
+ldc_set_location -site {A9} [get_ports {ETH_TXD_P}]
+ldc_set_location -site {B7} [get_ports {ETH_RXD_N}]
+ldc_set_location -site {A8} [get_ports {ETH_TXD_N}]
+# Fiber Optic Enable
+ldc_set_location -site {F9} [get_ports {SFP_TX_DIS}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {SFP_TX_DIS}]
+# MIPI
+# Camera 0 MIPI CSI-2 - matches TauroTech DA326 reference pinout
+ldc_set_location -site {L12} [get_ports {MIPI_CAM_CLK_P[0]}]
+ldc_set_location -site {K12} [get_ports {MIPI_CAM_CLK_N[0]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_CLK_P[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_CLK_N[0]}]
+
+ldc_set_location -site {K13} [get_ports {MIPI_CAM_DATA_P[0]}]
+ldc_set_location -site {L13} [get_ports {MIPI_CAM_DATA_N[0]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[0]}]
+
+ldc_set_location -site {K11} [get_ports {MIPI_CAM_DATA_P[1]}]
+ldc_set_location -site {L11} [get_ports {MIPI_CAM_DATA_N[1]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[1]}]
+
+ldc_set_location -site {L14} [get_ports {MIPI_CAM_DATA_P[2]}]
+ldc_set_location -site {K14} [get_ports {MIPI_CAM_DATA_N[2]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[2]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[2]}]
+
+ldc_set_location -site {K16} [get_ports {MIPI_CAM_DATA_P[3]}]
+ldc_set_location -site {L16} [get_ports {MIPI_CAM_DATA_N[3]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[3]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[3]}]
+
+# Camera 1 MIPI CSI-2 - matches TauroTech DA326 reference pinout
+ldc_set_location -site {L3} [get_ports {MIPI_CAM_CLK_P[1]}]
+ldc_set_location -site {L2} [get_ports {MIPI_CAM_CLK_N[1]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_CLK_P[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_CLK_N[1]}]
+
+ldc_set_location -site {L4} [get_ports {MIPI_CAM_DATA_P[4]}]
+ldc_set_location -site {M4} [get_ports {MIPI_CAM_DATA_N[4]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[4]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[4]}]
+
+ldc_set_location -site {M2} [get_ports {MIPI_CAM_DATA_P[5]}]
+ldc_set_location -site {M1} [get_ports {MIPI_CAM_DATA_N[5]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[5]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[5]}]
+
+ldc_set_location -site {N2} [get_ports {MIPI_CAM_DATA_P[6]}]
+ldc_set_location -site {P2} [get_ports {MIPI_CAM_DATA_N[6]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[6]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[6]}]
+
+ldc_set_location -site {P1} [get_ports {MIPI_CAM_DATA_P[7]}]
+ldc_set_location -site {N1} [get_ports {MIPI_CAM_DATA_N[7]}]
+ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[7]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[7]}]
+
+# On Board Control Bus
+ldc_set_location -site {H7}  [get_ports CTRL_I2C_SDA]
+ldc_set_location -site {H6}  [get_ports CTRL_I2C_SCL]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports CTRL_I2C_SDA]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports CTRL_I2C_SCL]
+
+# Camera I2C
+ldc_set_location -site {H9}  [get_ports {CAM_I2C_SDA[0]}]
+ldc_set_location -site {H10}  [get_ports {CAM_I2C_SCL[0]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CAM_I2C_SDA[0]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CAM_I2C_SCL[0]}]
+
+# FPGA Flash SPI
+ldc_set_location -site {E5} [get_ports  FLASH_SPI_MCSN]
+ldc_set_location -site {E7} [get_ports  FLASH_SPI_MSCK]
+ldc_set_location -site {D5} [get_ports {FLASH_SPI_SDIO[0]}]
+ldc_set_location -site {C2} [get_ports {FLASH_SPI_SDIO[1]}]
+ldc_set_location -site {C1} [get_ports {FLASH_SPI_SDIO[2]}]
+ldc_set_location -site {D4} [get_ports {FLASH_SPI_SDIO[3]}]
+
+# GPIO
+ldc_set_location -site {J3}  [get_ports {GPIO[10]}]
+ldc_set_location -site {J4}  [get_ports {GPIO[9]}]
+ldc_set_location -site {J9}  [get_ports {GPIO[8]}]
+ldc_set_location -site {E6}  [get_ports {GPIO[7]}]
+ldc_set_location -site {J8}  [get_ports {GPIO[6]}]
+ldc_set_location -site {F7}  [get_ports {GPIO[5]}]
+ldc_set_location -site {G6}  [get_ports {GPIO[4]}]
+ldc_set_location -site {G5}  [get_ports {GPIO[3]}]
+ldc_set_location -site {H2}  [get_ports {GPIO[2]}]
+ldc_set_location -site {F2}  [get_ports {GPIO[1]}]
+ldc_set_location -site {F3}  [get_ports {GPIO[0]}]
+
+
+### --------------------
+### DA326 Board Specific
+### --------------------
+
+# Camera power enable
+ldc_set_location -site {H4}  [get_ports CAM_RST]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports CAM_RST]
+
+ldc_set_location -site {H3}  [get_ports CAM_MCLK]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports CAM_MCLK]
+
+# POC
+ldc_set_location -site {F12}  [get_ports POC_EN]
+ldc_set_location -site {F11}  [get_ports POC_INT_L]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports POC_EN]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports POC_INT_L]
+ldc_set_location -site {E14}  [get_ports I2C_POC_SDA]
+ldc_set_location -site {E15}  [get_ports I2C_POC_SCL]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports I2C_POC_SDA]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports I2C_POC_SCL]
+
+ldc_set_sysconfig {CONFIGIO_VOLTAGE_BANK0=3.3 CONFIGIO_VOLTAGE_BANK1=3.3}
+ldc_set_vcc -bank 0 3.3
+ldc_set_vcc -bank 1 3.3
+ldc_set_vcc -bank 2 3.3
+#ldc_set_vcc -bank 3 1.1
+#ldc_set_vcc -bank 4 1.2
+#ldc_set_vcc -bank 5 1.2
+ldc_set_vcc -bank 6 3.3
+ldc_set_vcc -bank 7 3.3
+
+## ReLingo_waive_start:vendor_lscc:RL01
+
+ldc_set_sysconfig {JTAG_PORT=ENABLE CONFIGIO_VOLTAGE_BANK1=3.3 CONFIGIO_VOLTAGE_BANK0=3.3 PROGRAMN_PORT=ENABLE CONFIG_SECURE=OFF BOOTMODE=DUAL MASTER_SPI_PORT=DISABLE} 
+
+## ReLingo_waive_end:vendor_lscc:RL01
+
+# create_generated_clock -name {ethernet_10gb[1].u_10gbe.u_10gbe_pcs.lscc_ten_gbephy_inst.IbcBadg1u0bsJqr03fFbkFav0GGD6.I1fj63sLdzE38tFHelxsf.IiCjB8Fh2imEwhq4tzvpGis9DxA.PCSX1_inst.u_PCSX1_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcsx4_merge.PCSX4_inst/CH3_PIPE_PCS_TXCLKOUT} -source [get_ports ETH_REFCLK_P] -multiply_by 2 [get_pins {ethernet_10gb[1].u_10gbe.u_10gbe_pcs.lscc_ten_gbephy_inst.IbcBadg1u0bsJqr03fFbkFav0GGD6.I1fj63sLdzE38tFHelxsf.IiCjB8Fh2imEwhq4tzvpGis9DxA.PCSX1_inst.u_PCSX1_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcs_merge_pcsx4_merge.PCSX4_inst/CH3_PIPE_PCS_TXCLKOUT}]
+

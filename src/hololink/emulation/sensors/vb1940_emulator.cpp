@@ -20,6 +20,7 @@
 #include "vb1940_emulator.hpp"
 #include "../hsb_emulator.hpp"
 #include "../i2c_interface.hpp"
+#include <algorithm>
 #include <cassert>
 #include <cstdint>
 #include <cstring>
@@ -179,6 +180,27 @@ I2CStatus Vb1940Emulator::i2c_transaction(uint16_t peripheral_address, const uin
 
     uint16_t reg_addr = write_bytes[1] | (write_bytes[0] << 8);
 
+    if (peripheral_address == EEPROM_I2C_ADDRESS) {
+        // Serve the rig calibration EEPROM region. Wire protocol is 24LCxx-style:
+        // the 2-byte write_bytes prefix is the EEPROM's internal address pointer;
+        // any remaining bytes are written sequentially; reads return bytes starting
+        // at that address with the pointer auto-incrementing.
+        if (write_size > 2) {
+            const uint16_t payload_len = static_cast<uint16_t>(write_size - 2);
+            if (static_cast<size_t>(reg_addr) + payload_len > EEPROM_REGION_BYTES) {
+                return I2CStatus::I2C_STATUS_WRITE_FAILED;
+            }
+            memcpy(&eeprom_memory_[reg_addr], &write_bytes[2], payload_len);
+        }
+        if (read_size > 0) {
+            if (static_cast<size_t>(reg_addr) + read_size > EEPROM_REGION_BYTES) {
+                return I2CStatus::I2C_STATUS_READ_FAILED;
+            }
+            memcpy(read_bytes, &eeprom_memory_[reg_addr], read_size);
+        }
+        return I2CStatus::I2C_STATUS_SUCCESS;
+    }
+
     if (peripheral_address != CAM_I2C_ADDRESS) {
         return I2CStatus::I2C_STATUS_SUCCESS; // do nothing for non-camera addresses
     }
@@ -303,9 +325,9 @@ uint16_t Vb1940Emulator::get_bytes_per_line() const
     return line_width_bytes;
 }
 
-uint16_t Vb1940Emulator::get_image_start_byte() const
+uint32_t Vb1940Emulator::get_image_start_byte() const
 {
-    return get_bytes_per_line();
+    return static_cast<uint32_t>(get_bytes_per_line());
 }
 
 uint32_t Vb1940Emulator::get_csi_length() const
@@ -315,6 +337,20 @@ uint32_t Vb1940Emulator::get_csi_length() const
     uint32_t trailing_bytes = line_width_bytes * 2;
     uint32_t leading_bytes = get_image_start_byte();
     return leading_bytes + get_pixel_height() * line_width_bytes + trailing_bytes;
+}
+
+void Vb1940Emulator::set_eeprom_data(const uint8_t* data, size_t size)
+{
+    // data==nullptr is treated as a 0-byte payload (zero-fill the whole
+    // region) rather than dereferenced -- defensive against caller bugs that
+    // would otherwise crash inside memcpy.
+    const size_t n = (data == nullptr) ? 0 : std::min(size, EEPROM_REGION_BYTES);
+    if (n > 0) {
+        memcpy(eeprom_memory_, data, n);
+    }
+    if (n < EEPROM_REGION_BYTES) {
+        memset(eeprom_memory_ + n, 0, EEPROM_REGION_BYTES - n);
+    }
 }
 
 } // namespace hololink::emulation::sensors

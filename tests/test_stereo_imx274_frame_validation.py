@@ -426,6 +426,12 @@ class StereoFrameValidationApplication(holoscan.core.Application):
         logging.info(f"Frame size: {frame_size} bytes")
 
         frame_context = self._cuda_context
+        # Size the receiver buffer to hold MAX_PAGES frames of data. With the
+        # default pages=2, the FPGA round-robins through two GPU pages and will
+        # overwrite a page within ~16.6ms; under stereo 4K@60FPS load the GPU
+        # CRC kernel can't always read the page before it is overwritten,
+        # producing CRC mismatches on every frame.
+        MAX_PAGES = 5
         receiver_operator_left = hololink_module.operators.RoceReceiverOp(
             self,
             self._condition_left,
@@ -436,6 +442,8 @@ class StereoFrameValidationApplication(holoscan.core.Application):
             ibv_port=self._ibv_port_left,
             hololink_channel=self._hololink_channel_left,
             device=self._camera_left,
+            pages=MAX_PAGES,
+            queue_size=MAX_PAGES,
         )
 
         receiver_operator_right = hololink_module.operators.RoceReceiverOp(
@@ -448,6 +456,8 @@ class StereoFrameValidationApplication(holoscan.core.Application):
             ibv_port=self._ibv_port_right,
             hololink_channel=self._hololink_channel_right,
             device=self._camera_right,
+            pages=MAX_PAGES,
+            queue_size=MAX_PAGES,
         )
 
         # CRC operators
@@ -947,22 +957,18 @@ def run_stereo_frame_validation_test(
         (sys_ibv_name_left, sys_ibv_name_right),
     ],
 )
-@pytest.mark.parametrize(
-    "hololink_left, hololink_right",
-    [
-        ("192.168.0.2", "192.168.0.3"),
-    ],
-)
 def test_stereo_imx274_frame_validation(
     camera_mode,
     frame_limit,
     headless,
-    hololink_left,
-    hololink_right,
+    channel_ips,
     scheduler,
     ibv_name_left,
     ibv_name_right,
 ):
+    if len(channel_ips) < 2:
+        pytest.skip("--channel-ips needs at least two IPs for this test")
+    hololink_left, hololink_right = channel_ips[0], channel_ips[1]
     """
     Test stereo IMX274 frame validation.
 

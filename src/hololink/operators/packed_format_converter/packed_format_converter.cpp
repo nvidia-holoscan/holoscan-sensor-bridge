@@ -48,15 +48,20 @@ __global__ void packed10bitTo16bit(unsigned short* output, const unsigned int* i
     int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
     int idx_y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if ((idx_x >= width / 3) || (idx_y >= height))
+    // 3 pixels per 4-byte group; round up so the final partial group (width
+    // not a multiple of 3) is processed instead of dropped, and guard each
+    // write so a partial group doesn't spill into the next row.
+    if ((idx_x >= (width + 2) / 3) || (idx_y >= height))
         return;
 
     int input_index = (idx_y * bytes_per_line / 4) + idx_x;
     int output_index = (idx_y * width) + (idx_x * 3);
+    int col = idx_x * 3;
 
-    output[output_index]     = (input[input_index] << 6) & 0xFFC0;
-    output[output_index + 1] = (input[input_index] >> 4) & 0xFFC0;
-    output[output_index + 2] = (input[input_index] >> 14) & 0xFFC0;
+    unsigned int packed = input[input_index];
+    if (col + 0 < width) output[output_index]     = (packed << 6) & 0xFFC0;
+    if (col + 1 < width) output[output_index + 1] = (packed >> 4) & 0xFFC0;
+    if (col + 2 < width) output[output_index + 2] = (packed >> 14) & 0xFFC0;
 }
 
 // Converts packed 12-bit data, where 2 pixels are stored in every 3 bytes.
@@ -71,16 +76,20 @@ __global__ void packed12bitTo16bit(unsigned short* output, const unsigned char* 
     int idx_x = blockIdx.x * blockDim.x + threadIdx.x;
     int idx_y = blockIdx.y * blockDim.y + threadIdx.y;
 
-    if ((idx_x >= width / 2) || (idx_y >= height))
+    // 2 pixels per 3-byte group; round up so the final partial group (odd
+    // width) is processed instead of dropped, and guard each write so a
+    // partial group doesn't spill into the next row.
+    if ((idx_x >= (width + 1) / 2) || (idx_y >= height))
         return;
 
     int input_index = (idx_y * bytes_per_line) + (idx_x * 3);
     int output_index = (idx_y * width) + (idx_x * 2);
+    int col = idx_x * 2;
 
-    output[output_index]     = ((input[input_index + 1] & 0x0F) << 12 |
-                                input[input_index]            <<  4) & 0xFFF0;
-    output[output_index + 1] = (input[input_index + 2]        <<  8 |
-                                (input[input_index + 1] & 0xF0)    ) & 0xFFF0;
+    if (col + 0 < width) output[output_index]     = ((input[input_index + 1] & 0x0F) << 12 |
+                                                    input[input_index]            <<  4) & 0xFFF0;
+    if (col + 1 < width) output[output_index + 1] = (input[input_index + 2]        <<  8 |
+                                                    (input[input_index + 1] & 0xF0)    ) & 0xFFF0;
 }
 
 })";
@@ -204,7 +213,7 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
         break;
     case hololink::csi::PixelFormat::RAW_10:
         cuda_function_launcher_->launch("packed10bitTo16bit",
-            { pixel_width_ / 3, // outputs 3 pixels per shader invocation
+            { (pixel_width_ + 2) / 3, // outputs 3 pixels per shader invocation (round up for the tail)
                 pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
             input_tensor->pointer() + start_byte_,
@@ -212,7 +221,7 @@ void PackedFormatConverterOp::compute(holoscan::InputContext& input, holoscan::O
         break;
     case hololink::csi::PixelFormat::RAW_12:
         cuda_function_launcher_->launch("packed12bitTo16bit",
-            { pixel_width_ / 2, // outputs 2 pixels per shader invocation
+            { (pixel_width_ + 1) / 2, // outputs 2 pixels per shader invocation (round up for the tail)
                 pixel_height_, 1 },
             cuda_stream, tensor.value()->pointer(),
             input_tensor->pointer() + start_byte_,

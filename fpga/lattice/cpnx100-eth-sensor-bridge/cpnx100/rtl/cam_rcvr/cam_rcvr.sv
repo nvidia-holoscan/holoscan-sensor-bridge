@@ -192,12 +192,14 @@ assign o_phy_err_det = '0;
   assign lvds_axis_tkeep[1:0] = (lvds_axis_metadata <= 'd6) ? '1 : '0;
 
   axis_buffer # (
-      .IN_DWIDTH     ( 80     ),
-      .OUT_DWIDTH    ( 64     ),
-      .WAIT2SEND     ( 0      ),
-      .DUAL_CLOCK    ( 1      ),
-      .W_USER        ( 5      ),
-      .OUT_W_USER    ( 4      )
+      .IN_DWIDTH       ( 80     ),
+      .OUT_DWIDTH      ( 64     ),
+      .WAIT2SEND       ( 0      ),
+      .DUAL_CLOCK      ( 1      ),
+      .W_USER          ( 5      ),
+      .OUT_W_USER      ( 4      ),
+      .NO_BACKPRESSURE ( 1      ),
+      .BUF_DEPTH       ( 512    )
     ) u_axis_buffer (
       .in_clk            ( rx_dclk               ),
       .in_rst            ( rx_drst               ),
@@ -254,7 +256,7 @@ always_ff @ (posedge i_apb_clk) begin
     end else if (i_apb_sel) begin
       o_apb_ready <= 1'b1;
       case(i_apb_addr[27:2])
-        0:  begin o_apb_rdata <=  '0; end
+        0:  begin o_apb_rdata <=  {31'h0, cal_done}; end
         1:  begin o_apb_rdata <=  '0;        end
         2:  begin o_apb_rdata <=  '0;        end
         3:  begin o_apb_rdata <=  '0;        end

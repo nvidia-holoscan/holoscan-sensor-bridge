@@ -58,7 +58,7 @@ class LinuxReceiver {
 public:
     LinuxReceiver(CUdeviceptr cu_buffer,
         size_t cu_buffer_size,
-        size_t cu_page_size,
+        size_t cu_page_size, // page size must be at least "sensor frame/payload size" + "alignment to 128 byte boundary" + "FrameMetadata size"
         unsigned pages,
         int socket,
         uint64_t received_address_offset,
@@ -103,6 +103,11 @@ public:
 protected:
     // Signal that a new frame is available and return the next available descriptor.
     LinuxReceiverDescriptor* signal(LinuxReceiverDescriptor* descriptor);
+
+    // Extract the frame's page index from the RDMA immediate data. The
+    // encoding is FPGA-revision-specific, so revision-specific subclasses
+    // override this (mirrors RoceReceiver::page_from_imm).
+    virtual uint32_t page_from_imm(uint32_t imm_data);
 
 protected:
     const CUdeviceptr cu_buffer_;

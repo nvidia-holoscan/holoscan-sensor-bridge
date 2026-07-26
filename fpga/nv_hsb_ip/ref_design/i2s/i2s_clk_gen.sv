@@ -39,15 +39,9 @@ module i2s_clk_gen
   //----------------------------------------------------------------------------
   input  [31:0]            i_mclk_div,      // MCLK divider
   input  [31:0]            i_bclk_div,      // BCLK divider
-  input  [1:0]             i_bit_depth_sel,    // Bit depth selection
-  input                    i_clock_source_sel, // Clock source (0=internal, 1=external)
-  input                    i_enable,            // Clock generation enable
-  
-  //----------------------------------------------------------------------------
-  // External Clock Inputs 
-  //----------------------------------------------------------------------------
-  input                    i_ext_mclk,      // External mclk
-  input                    i_ext_bclk,      // External bit clock
+  input  [1:0]             i_bit_depth_sel, // Bit depth selection
+  input                    i_slot_mode,     // 0=fixed 32-BCLK slots, 1=word-size slots
+  input                    i_enable,        // Clock generation enable
   
   //----------------------------------------------------------------------------
   // Generated Clock Outputs
@@ -57,32 +51,42 @@ module i2s_clk_gen
   output                   o_lrclk,         // Left/Right clock output
   output                   o_locked,        // CLK locked indicator
 
-  output                   o_mclk_en,       // MCLK enable
   output                   o_bclk_en,       // BCLK enable
   output                   o_bclk_posedge,  // BCLK positive edge
   output                   o_bclk_negedge,  // BCLK negative edge
-  output                   o_lrclk_en,      // LRCLK enable
-  output                   o_lrclk_negedge, // LRCLK negative edge
-  output                   o_lrclk_posedge  // LRCLK positive edge
+  output                   o_lrclk_en       // LRCLK enable
 );
 
 //------------------------------------------------------------------------------
 // Clock Generation Parameters
 //------------------------------------------------------------------------------
 
-  // Calculate required frequencies based on configuration
-  logic [5:0]              target_bit_depth;
-  
+  localparam [5:0] SLOT_FIXED = 6'd32;
+
+  logic [5:0] target_bit_depth;
+  logic [5:0] slot_width;
+
+  always_comb begin
+    case (i_bit_depth_sel)
+      I2S_BD_8B:   target_bit_depth = 6'd8;
+      I2S_BD_16B:  target_bit_depth = 6'd16;
+      I2S_BD_24B:  target_bit_depth = 6'd24;
+      I2S_BD_32B:  target_bit_depth = 6'd32;
+      default:     target_bit_depth = 6'd16;
+    endcase
+  end
+
+  assign slot_width = (i_slot_mode == I2S_SLOT_WORD) ? target_bit_depth : SLOT_FIXED;
+
   // Clock dividers for internal generation
   logic [15:0]             mclk_div;
   logic [7:0]              bclk_div;
-  logic [7:0]              lrclk_div;
+  logic [15:0]             lrclk_div;
   
   // Internal clock signals
   logic                    int_mclk;
   logic                    int_bclk;
   logic                    int_lrclk;
-  logic                    clk_locked;
   logic                    mclk_en;
   logic                    bclk_en;
   logic                    lrclk_en;
@@ -90,24 +94,6 @@ module i2s_clk_gen
   // Clock selection outputs
   logic                    sel_mclk;
   logic                    sel_bclk;
-  logic                    sel_lrclk;
-
-//------------------------------------------------------------------------------
-// Configuration Decode
-//------------------------------------------------------------------------------
-
-
-  // Decode bit depth from selection
-  always_comb begin
-    case (i_bit_depth_sel)
-      I2S_BD_8B:   target_bit_depth = 6'd8;
-      I2S_BD_16B:  target_bit_depth = 6'd16;
-      I2S_BD_24B:  target_bit_depth = 6'd24;
-      I2S_BD_32B:  target_bit_depth = 6'd32;
-      default:     target_bit_depth = 6'd16;        // Default to 16-bit
-    endcase
-  end
-
 
 //------------------------------------------------------------------------------
 // Clock Divider Calculation
@@ -126,15 +112,15 @@ module i2s_clk_gen
       default: bclk_div = 8'd1;
     endcase
     case (i_bclk_div)
-      8'd1: lrclk_div = target_bit_depth << 1;
-      8'd2: lrclk_div = target_bit_depth << 2;
-      8'd3: lrclk_div = target_bit_depth << 3;
-      8'd4: lrclk_div = target_bit_depth << 4;
-      8'd5: lrclk_div = target_bit_depth << 5;
-      8'd6: lrclk_div = target_bit_depth << 6;
-      8'd7: lrclk_div = target_bit_depth << 7;
-      8'd8: lrclk_div = target_bit_depth << 8;
-      default: lrclk_div = target_bit_depth;
+      8'd1: lrclk_div = 16'(slot_width) << 1;
+      8'd2: lrclk_div = 16'(slot_width) << 2;
+      8'd3: lrclk_div = 16'(slot_width) << 3;
+      8'd4: lrclk_div = 16'(slot_width) << 4;
+      8'd5: lrclk_div = 16'(slot_width) << 5;
+      8'd6: lrclk_div = 16'(slot_width) << 6;
+      8'd7: lrclk_div = 16'(slot_width) << 7;
+      8'd8: lrclk_div = 16'(slot_width) << 8;
+      default: lrclk_div = 16'(slot_width);
     endcase
   end
 
@@ -172,11 +158,10 @@ module i2s_clk_gen
   // BCLK Generation (divide from MCLK)
   logic [7:0]              bclk_counter;
   logic                    bclk_int;
-  logic clk_locked_r;
 
   always_ff @(posedge i_ref_clk) begin
 
-    if (i_rst) begin
+    if (i_rst || !i_enable) begin
       bclk_counter <= 8'b0;
       bclk_int     <= 1'b0;
       bclk_en      <= 1'b0;
@@ -204,18 +189,17 @@ module i2s_clk_gen
 
 
   // LRCLK Generation (divide from BCLK)
-  logic [7:0]              lrclk_counter;
+  logic [15:0]             lrclk_counter;
   logic                    lrclk_int;
-  logic                    lrclk_ext;
 
   always_ff @(posedge i_ref_clk) begin
-    if (i_rst) begin
-      lrclk_counter <= 8'b0;
+    if (i_rst || !i_enable) begin
+      lrclk_counter <= '0;
       lrclk_int     <= 1'b0;
       lrclk_en      <= 1'b0;
     end else if (mclk_en) begin
       if (lrclk_counter >= ((lrclk_div - 1))) begin
-        lrclk_counter <= 8'b0;
+        lrclk_counter <= '0;
         lrclk_int     <= ~lrclk_int;
         if (lrclk_counter == (lrclk_div - 1) && !lrclk_en) begin
           lrclk_en <= 1'b1;
@@ -232,11 +216,7 @@ module i2s_clk_gen
     end 
   end
 
-  assign o_lrclk_negedge = lrclk_int && bclk_en && !lrclk_en && (lrclk_counter == (lrclk_div - 1));
-  assign o_lrclk_posedge = !lrclk_int && bclk_en && !lrclk_en && (lrclk_counter == (lrclk_div - 1));
-
-
-  assign int_lrclk = (lrclk_div == 8'd1) ? int_bclk : lrclk_int;
+  assign int_lrclk = (lrclk_div == 16'd1) ? int_bclk : lrclk_int;
 
 //------------------------------------------------------------------------------
 // Clock Buffering for Better Distribution
@@ -265,20 +245,8 @@ module i2s_clk_gen
 // Clock Source Selection
 //------------------------------------------------------------------------------
 
-  // Select between internal and external clocks
-  always_comb begin
-    if (i_clock_source_sel == I2S_CLK_EXT) begin
-      // External clock mode 
-      sel_mclk = i_ext_mclk;
-      sel_bclk = i_ext_bclk;
-      // sel_lrclk = i_ext_lrclk;
-    end else begin
-      // Internal clock mode 
-      // sel_mclk  = clk_locked ? int_mclk_buffered : 1'b0;
-      sel_mclk = int_mclk_buffered;
-      sel_bclk = int_bclk_buffered;
-    end
-  end
+  assign sel_mclk = int_mclk_buffered;
+  assign sel_bclk = int_bclk_buffered;
 
 //------------------------------------------------------------------------------
 // Output Assignments
@@ -289,24 +257,13 @@ module i2s_clk_gen
   assign o_lrclk  = int_lrclk_buffered & i_enable;
   assign o_bclk_posedge = !bclk_int && bclk_en ;
   assign o_bclk_negedge =  bclk_int && bclk_en;
-  // assign o_locked = clk_locked;
   assign o_locked = 1'b1;
-  assign o_mclk_en = mclk_en;
   assign o_bclk_en = bclk_en;
   assign o_lrclk_en = lrclk_en;
 
 //------------------------------------------------------------------------------
-// Synthesis Directives and Assertions
+// Synthesis Directives
 //------------------------------------------------------------------------------
-
-  // Ensure clock dividers are reasonable
- //  `ifdef ASSERT_ON
- //    always_comb begin
- //      assert (!i_enable || mclk_div > 0) else $error("MCLK divider cannot be zero");
- //      assert (!i_enable || bclk_div > 0) else $error("BCLK divider cannot be zero");
- //      assert (!i_enable || lrclk_div > 0) else $error("LRCLK divider cannot be zero");
- //    end
- //  `endif
 
   // Keep critical clocks from being optimized away
   (* keep = "true" *) logic keep_mclk = int_mclk;

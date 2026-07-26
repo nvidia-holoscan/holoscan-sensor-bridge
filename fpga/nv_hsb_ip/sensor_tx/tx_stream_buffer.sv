@@ -52,7 +52,8 @@ module tx_stream_buffer
   input   logic                         i_axis_tready,
   //Pause
   output  logic [NUM_HOSTS-1:0]         o_eth_pause,
-  output  logic [15:0]                  o_pause_quanta
+  output  logic [15:0]                  o_pause_quanta,
+  output  logic                         o_stx_is_ready
 );
 
 
@@ -63,14 +64,9 @@ localparam FIFO_DEPTH_W = $clog2(FIFO_DEPTH)+1;
 
 logic [31:0]                    ctrl_reg [N_CTRL_REG];
 logic [31:0]                    stat_reg [N_STAT_REG];
-logic                           buffer_empty;
 logic                           buffer_aempty;
-logic                           buffer_full;
 logic                           buffer_afull;
 logic [FIFO_DEPTH_W-1:0]        buffer_count;
-logic                           buffer_underflow;
-logic                           buffer_underflow_hif_sync;
-logic                           buffer_overflow;
 logic                           aempty_seen;
 logic                           afull_seen;
 logic                           afull_seen_sync;
@@ -280,6 +276,7 @@ always_ff @(posedge i_hif_clk) begin
 end
 
 assign o_eth_pause = {NUM_HOSTS{pause}} & host_pause_mapping;
+assign o_stx_is_ready = !pause;
 
 
 //High and low watermark logic

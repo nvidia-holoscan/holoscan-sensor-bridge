@@ -162,12 +162,14 @@ def dropped_frame_test(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     frame_limit,
     network_receiver_factory,
 ):
     # Get a handle to data sources
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=hololink)
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_address
+    )
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
@@ -248,16 +250,16 @@ sys_ibv_name = (hololink_module.infiniband_devices() + [None, None])[:2]
     ],
 )
 @pytest.mark.parametrize(
-    "hololink, ibv_name",
+    "ibv_name",
     [
-        ("192.168.0.2", sys_ibv_name[0]),
+        sys_ibv_name[0],
     ],
 )
 def test_roce_imx274_dropped_frame(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     ibv_name,
     frame_limit,
 ):
@@ -288,7 +290,7 @@ def test_roce_imx274_dropped_frame(
         camera_mode,
         pattern,
         headless,
-        hololink,
+        hololink_address,
         frame_limit,
         network_receiver_factory,
     )

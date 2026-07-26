@@ -94,6 +94,8 @@ logic [NUM_RAM*RAM_D_WIDTH-1:0]                 w_ram_dout;
 logic [NUM_RAM-1:0]                             ram_we;
 logic [RAM_SELECT_WIDTH+RAM_ADDR_WIDTH-1:0]     ram_addr_mux  [2:0];
 logic [RAM_SELECT_WIDTH+RAM_ADDR_WIDTH-1:0]     ram_addr_pipe [PACK_PIPE_COUNT:0];
+logic [PACK_PIPE_COUNT:0]                       ram_wr_pipe;
+logic [2:0]                                     ram_wr_mux;
 logic [PACK_PIPE_COUNT:0]                       din_valid_pipe;
 logic [PACK_PIPE_COUNT:0]                       din_tlast_pipe;
 
@@ -117,17 +119,19 @@ for (k=0;k<NUM_RAM;k=k+1) begin: PACK_CONFIG
       w_ram_dout[k*RAM_D_WIDTH+:RAM_D_WIDTH] <= cfg_mem[ram_addr_mux[m][0+:RAM_ADDR_WIDTH]];
     end
   end
-  assign ram_we[k] = (ram_addr[RAM_ADDR_WIDTH+:RAM_SELECT_WIDTH] == k) && ram_wr;
+  assign ram_we[k] = (ram_addr_mux[m][RAM_ADDR_WIDTH+:RAM_SELECT_WIDTH] == k) && ram_wr_mux[m];
 end
 always @ (posedge i_sclk) begin
   ram_dout <= w_ram_dout;
 end
 
-assign ram_addr_mux[0] = (ram_wr) ? ram_addr : ram_addr_pipe[PACK_PIPE_COUNT-1];    // Clear
-assign ram_addr_mux[1] = (ram_wr) ? ram_addr : ram_addr;    // Sort
-assign ram_addr_mux[2] = (ram_wr) ? ram_addr : ram_addr_pipe[PACK_PIPE_COUNT-1];    // VP, delayed address
+assign ram_addr_mux[0] = ram_addr_pipe[PACK_PIPE_COUNT-1];    // Clear
+assign ram_addr_mux[1] = ram_addr;    // Sort
+assign ram_addr_mux[2] = ram_addr_pipe[PACK_PIPE_COUNT-1];    // VP, delayed address
 
-
+assign ram_wr_mux[0] = ram_wr_pipe[PACK_PIPE_COUNT-1];
+assign ram_wr_mux[1] = ram_wr;
+assign ram_wr_mux[2] = ram_wr_pipe[PACK_PIPE_COUNT-1];
 
 //------------------------------------------------------------------------------------------------//
 // Pipeline Address X number of Cycles
@@ -146,6 +150,7 @@ always @(posedge i_sclk) begin
       din_valid_pipe [p] <= '0;
       din_tlast_pipe[p]  <= '0;
       tuser_pipe[p]      <= '0;
+      ram_wr_pipe[p]     <= '0;
     end
     for (q=0;q<NUM_CYCLES;q=q+1) begin
       din_pipe[q] <= '0;
@@ -156,11 +161,13 @@ always @(posedge i_sclk) begin
     din_valid_pipe [0] <= din_valid && !din_wait;
     tuser_pipe[0]      <= din_tuser;
     din_tlast_pipe[0]  <= din_tlast;
+    ram_wr_pipe[0]     <= ram_wr;
     for (p=1;p<=PACK_PIPE_COUNT;p=p+1) begin
       ram_addr_pipe[p]   <= ram_addr_pipe[p-1];
       din_valid_pipe [p] <= din_valid_pipe [p-1];
       tuser_pipe[p]      <= tuser_pipe[p-1];
       din_tlast_pipe[p]  <= din_tlast_pipe[p-1];
+      ram_wr_pipe[p]     <= ram_wr_pipe[p-1];
     end
     for (q=1;q<NUM_CYCLES;q=q+1) begin
       din_pipe[q] <= adv_pipe ? din_pipe[q-1] : din_pipe[q];

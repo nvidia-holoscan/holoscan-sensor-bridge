@@ -47,8 +47,8 @@ module apb_intc_top
   input  apb_s2m         i_apb_s2m_host   [N_HOST * N_HOST_MOD],
   output apb_m2s         o_apb_m2s_host   [N_HOST * N_HOST_MOD],
   //Host RAMs
-  input  apb_s2m         i_apb_s2m_ram    [2],
-  output apb_m2s         o_apb_m2s_ram    [2],
+  input  apb_s2m         i_apb_s2m_ram    [3],
+  output apb_m2s         o_apb_m2s_ram    [3],
   // Connect to HOLOLINK Peripheral Modules
   input  apb_s2m         i_apb_s2m_per    [N_PER],
   output apb_m2s         o_apb_m2s_per    [N_PER],
@@ -217,12 +217,12 @@ assign s_apb_s2m_int[6]           = i_apb_s2m_bridge;
 //------------------------------------------------------------------------------------------------//
 // ROCE
 //------------------------------------------------------------------------------------------------//
-apb_m2s s_apb_m2s_roce [3];
-apb_s2m s_apb_s2m_roce [3];
+apb_m2s s_apb_m2s_roce [4];
+apb_s2m s_apb_s2m_roce [4];
 
 apb_switch #(
   .N_MPORT         ( 1                             ),
-  .N_SPORT         ( 3                             ), //0=Global 1=ROCE
+  .N_SPORT         ( 4                             ), //0=Global 1=ROCE
   .W_OFSET         ( ADDR_SW_ROCE                  ),
   .W_SW            ( ADDR_SW_HOLOLINK-ADDR_SW_ROCE )
 ) u_apb_switch_roce (
@@ -240,6 +240,9 @@ assign o_apb_m2s_ram[0]    = s_apb_m2s_roce[1];
 
 assign s_apb_s2m_roce[2] = i_apb_s2m_ram[1];
 assign o_apb_m2s_ram[1]     = s_apb_m2s_roce[2];
+
+assign s_apb_s2m_roce[3] = i_apb_s2m_ram[2];
+assign o_apb_m2s_ram[2]    = s_apb_m2s_roce[3];
 
 //------------------------------------------------------------------------------------------------//
 // Global/PTP
@@ -420,6 +423,7 @@ apb_switch #(
 
 generate
   for(m=0; m<N_HOST; m++) begin
+
     // Host Register Interconnect
     apb_switch #(
       .N_MPORT         ( 1                   ),
@@ -453,10 +457,6 @@ assign apb_m2s_ext            = s_apb_m2s[1:N_EXT_APB];
 assign s_apb_s2m[1:N_EXT_APB] = apb_s2m_ext;
 
 logic [N_EXT_APB-1:0] apb_psel;
-logic [N_EXT_APB-1:0] apb_penable;
-logic [31         :0] apb_paddr;
-logic [31         :0] apb_pwdata;
-logic [N_EXT_APB-1:0] apb_pwrite;
 
 always_comb begin
   for (int i=0; i<N_EXT_APB; i++) begin

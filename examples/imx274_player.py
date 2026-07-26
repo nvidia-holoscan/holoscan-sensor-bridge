@@ -193,6 +193,8 @@ def main():
         help="Logging level to display",
     )
     infiniband_devices = hololink_module.infiniband_devices()
+    if not infiniband_devices:
+        raise RuntimeError("No Infiniband devices found.")
     parser.add_argument(
         "--ibv-name",
         default=infiniband_devices[0],
@@ -239,8 +241,12 @@ def main():
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
     assert cu_result == cuda.CUresult.CUDA_SUCCESS
     # Get a handle to the data source
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"{channel_metadata=}")
+    logging.info(f"Searching for channel {args.hololink}...")
+    CHANNEL_SEARCH_TIMEOUT_SEC = hololink_module.Timeout(3)
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=args.hololink, timeout=CHANNEL_SEARCH_TIMEOUT_SEC
+    )
+    logging.info(f"Found channel: {channel_metadata=}")
     hololink_channel = hololink_module.DataChannel(channel_metadata)
     # Get a handle to the camera
     camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(

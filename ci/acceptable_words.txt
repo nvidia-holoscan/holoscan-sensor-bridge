@@ -1,8 +1,11 @@
-OEN
-inout
-ser
-Inouts
-NotIn
-som
 dout
 HSI
+inout
+Inouts
+NotIn
+OEN
+re-uses
+ser
+som
+statics
+synopsys

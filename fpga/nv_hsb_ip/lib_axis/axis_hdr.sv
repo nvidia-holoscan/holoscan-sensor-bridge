@@ -63,7 +63,6 @@ logic                  hdr_axis_tready;
 // Register Buffer
 //------------------------------------------------------------------------------------------------//
 
-logic                  append_tready;
 logic                  tlast_flag;
 logic                  hdr_bypass;
 

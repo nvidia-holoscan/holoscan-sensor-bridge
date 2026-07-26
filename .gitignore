@@ -3,6 +3,8 @@ __pycache__
 *.swp
 ci/coverage.xml
 dist
+!docs/user_guide/fern/dist/
+!docs/user_guide/fern/dist/**
 tags
 cscope.*
 .vscode/
@@ -28,3 +30,5 @@ configurator/poky
 spi-vm.log
 spi-vm.pid
 *.so
+!fpga/**/build
+docs/.fern-docker-home/

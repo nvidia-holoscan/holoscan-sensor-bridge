@@ -4,6 +4,7 @@ module dp_pkt_top
   import regmap_pkg::*;
 #(
   parameter   W_DATA        = 64,
+  parameter   W_USER        = 17,
   localparam  W_KEEP        = W_DATA/8,
   parameter   N_INPT        = 2,
   parameter   N_HOST        = 2,
@@ -39,7 +40,7 @@ module dp_pkt_top
   output [N_HOST-1:0]             o_axis_tlast,
   output [W_DATA-1:0]             o_axis_tdata    [N_HOST],
   output [W_KEEP-1:0]             o_axis_tkeep    [N_HOST],
-  output [N_HOST-1:0]             o_axis_tuser,
+  output [W_USER-1:0]             o_axis_tuser    [N_HOST],
   input  [N_HOST-1:0]             i_axis_tready
 );
 
@@ -59,8 +60,9 @@ localparam CYCLES_TO_BYTES    = ($clog2(W_KEEP));
 localparam BYTES_TO_CYCLES    = ($clog2(W_KEEP));
 localparam W_CNT              = $clog2(MTU)+1;
 localparam W_INPT             = $clog2(N_INPT)+1;
-localparam W_HOST             = $clog2(N_HOST)+1;
-
+localparam W_INPT_IDX         = (N_INPT <= 1) ? 1 : $clog2(N_INPT);
+localparam W_HOST             = (N_HOST <= 1) ? 1 : $clog2(N_HOST);
+localparam DUMP_CLK_CYCLES    = (BUFFER_4K_REG) ? 'd7 : 'd5;
 
 //------------------------------------------------------------------------------------------------//
 // DP Mux Signals
@@ -71,7 +73,7 @@ logic [N_HOST-1:0] dp_axis_tvalid;
 logic [N_HOST-1:0] dp_axis_tlast;
 logic [W_DATA-1:0] dp_axis_tdata    [N_HOST];
 logic [W_KEEP-1:0] dp_axis_tkeep    [N_HOST];
-logic [N_HOST-1:0] dp_axis_tuser;
+
 logic [N_HOST-1:0] dp_axis_tready;
 
 logic [15:0]       w_dev_udp_port [N_HOST];
@@ -92,12 +94,13 @@ logic [W_CNT-1:0]   cur_pkt_len;
 logic [W_CNT-1:0]   cur_pkt_len_pages;
 logic [W_CNT-1:0]   unsync_cnt [N_HOST];
 logic [W_CNT-1:0]   unsync_cnt_r;
-logic [N_HOST-1:0]  dp_tlast;
 logic [W_INPT-1:0]  sif_gnt_idx_r;
 logic [W_INPT-1:0]  sif_gnt_idx_rq;
+
 logic               is_last;
 logic [N_INPT-1:0]  sif_tlast [N_HOST];
 logic [N_HOST-1:0]  unsync;
+logic [N_HOST-1:0]  hif_not_busy_soon;
 // CRC
 logic [31:0]       crc_in;
 logic [31:0]       crc_out [N_HOST];
@@ -179,22 +182,12 @@ generate
       .o_axis_tlast   ( dp_axis_tlast                  [i] ),
       .o_axis_tdata   ( dp_axis_tdata                  [i] ),
       .o_axis_tkeep   ( dp_axis_tkeep                  [i] ),
-      .o_axis_tuser   ( dp_axis_tuser                  [i] ),
-      .i_axis_tready  ( dp_axis_tready                 [i] )
+      .i_axis_tready  ( dp_axis_tready                 [i] ),
+      .o_hif_not_busy_soon ( hif_not_busy_soon         [i] )
     );
 
   end
 endgenerate
-
-integer m;
-always_comb begin
-  axis_tready = '0;
-  for (m=0;m<N_HOST;m=m+1) begin
-    axis_tready |= w_axis_tready[m];
-  end
-end
-
-assign o_axis_tready = axis_tready;
 
 //------------------------------------------------------------------------------------------------//
 // SOF Timestamp
@@ -237,7 +230,7 @@ dp_pkt_ts # (
   // [A] : host_ip_addr       [31:0]
   // [B] : md_disable, host_udp_port [15:0]
   // [C] : roce_buf_fixed_msb [31:0]
-  // [D] : RSVD               [31:0]
+  // [D] : vlan_en,pcp,vlan_id [31:0]
   // [E] : RSVD               [31:0]
   // [F] : PSN                [23:0]
 
@@ -284,6 +277,7 @@ generate
                                  (cfg_ram_addr[3:0] == 4'h8) ? 4'hB               :
                                  (cfg_ram_addr[3:0] == 4'h9) ? 4'h8               :
                                  (cfg_ram_addr[3:0] == 4'hA) ? 4'h9               :
+                                 (cfg_ram_addr[3:0] == 4'hB) ? 4'hD               :
                                                               cfg_ram_addr[3:0];
   end 
   else begin
@@ -297,6 +291,7 @@ generate
                                 (cfg_ram_addr[3:0] == 4'h7) ? 4'h9               :
                                 (cfg_ram_addr[3:0] == 4'h8) ? 4'hA               :
                                 (cfg_ram_addr[3:0] == 4'h9) ? 4'hB               :
+                                (cfg_ram_addr[3:0] == 4'hA) ? 4'hD               :
                                                               cfg_ram_addr[3:0];
   end
 endgenerate
@@ -354,7 +349,7 @@ always @ (posedge i_pclk) begin
   end
 end
 
-localparam ETH_RAM_SIZE = 48+32+16+16+1;
+localparam ETH_RAM_SIZE = 48+32+16+16+1+W_USER;
 
 logic [ETH_RAM_SIZE-1:0] eth_ram_data;
 logic [W_INPT-1:0]       eth_ram_addr;
@@ -400,7 +395,6 @@ logic [N_HOST-1:0]    hif_is_data_wr_imm;
 logic                 is_data_wr_imm;
 logic                 nxt_pkt_le;
 logic                 threshold_val;
-logic                 threshold_val_last;
 logic                 single_pkt;
 logic                 md_disable;
 logic                 is_first_run;
@@ -455,9 +449,10 @@ logic [3:0]        roce_buf_mask;
 logic [6:0]        threshold_idx;
 logic [6:0]        r_threshold_idx;
 
-logic [47:0] sif_mac_addr;
-logic [31:0] sif_ip_addr ;
-logic [15:0] sif_udp_port;
+logic [47:0]       sif_mac_addr;
+logic [31:0]       sif_ip_addr ;
+logic [15:0]       sif_udp_port;
+logic [W_USER-1:0] sif_tuser;
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
@@ -493,6 +488,7 @@ generate
       sif_udp_port        <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'h9)) ? cfg_ram_data[15:0] : sif_udp_port;
       sif_mac_addr[31:0]  <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'hA)) ? cfg_ram_data[31:0] : sif_mac_addr[31:0];
       sif_mac_addr[47:32] <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'hB)) ? cfg_ram_data[31:0] : sif_mac_addr[47:32];
+      sif_tuser           <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'hC)) ? cfg_ram_data[W_USER-1:0] : sif_tuser;
     end
   end
   else begin
@@ -508,48 +504,64 @@ generate
       sif_mac_addr[47:32] <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'h8)) ? cfg_ram_data[31:0] : sif_mac_addr[47:32];
       sif_ip_addr         <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'h9)) ? cfg_ram_data[31:0] : sif_ip_addr;
       sif_udp_port        <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'hA)) ? cfg_ram_data[15:0] : sif_udp_port;
+      sif_tuser           <= (cfg_ram_rd_valid && (cfg_ram_addr[3:0] == 4'hB)) ? {cfg_ram_data[3], cfg_ram_data[2:0], 1'b0, cfg_ram_data[15:4]} : sif_tuser;
     end
   end
 endgenerate
 
 
 assign ram_rd = (roce_state == ROCE_IDLE) && tlast_aligned;
-assign cfg_ram_rd_en = (roce_state != ROCE_IDLE);
+
 
 //------------------------------------------------------------------------------------------------//
 // Eth RAM
 //------------------------------------------------------------------------------------------------//
 
-logic  [47:0] hif_mac_addr;
-logic  [31:0] hif_ip_addr ;
-logic  [15:0] hif_udp_port;
-logic  [15:0] hif_ipv4_chksum ;
-logic  [15:0] sif_ipv4_chksum ;
+logic  [47:0]       hif_mac_addr;
+logic  [31:0]       hif_ip_addr ;
+logic  [15:0]       hif_udp_port;
+logic  [15:0]       hif_ipv4_chksum ;
+logic  [15:0]       sif_ipv4_chksum ;
+logic  [W_USER-1:0] hif_tuser;
 
 assign hif_mac_addr    = eth_ram_data[0+:48];
 assign hif_ip_addr     = eth_ram_data[48+:32];
 assign hif_udp_port    = eth_ram_data[80+:16];
 assign hif_ipv4_chksum = eth_ram_data[96+:16];
+assign hif_tuser       = eth_ram_data[113+:W_USER];
 
-assign eth_ram_wrdata[0+:48]  = sif_mac_addr;
-assign eth_ram_wrdata[48+:32] = sif_ip_addr;
-assign eth_ram_wrdata[80+:16] = sif_udp_port;
-assign eth_ram_wrdata[96+:16] = (pkt_is_imm && md_disable) ? hif_ipv4_chksum : sif_ipv4_chksum; // Used for single packet mode, no Metadata packet. Prevents recalculation of IPv4 checksum.
+assign eth_ram_wrdata[0+:48]     = sif_mac_addr;
+assign eth_ram_wrdata[48+:32]    = sif_ip_addr;
+assign eth_ram_wrdata[80+:16]    = sif_udp_port;
+assign eth_ram_wrdata[96+:16]    = (pkt_is_imm && md_disable) ? hif_ipv4_chksum : sif_ipv4_chksum; // Used for single packet mode, no Metadata packet. Prevents recalculation of IPv4 checksum.
+assign eth_ram_wrdata[113+:W_USER] = sif_tuser;
 
 //------------------------------------------------------------------------------------------------//
 // Sensor ARB
 //------------------------------------------------------------------------------------------------//
 
-logic [N_INPT-1:0] sif_req;
-logic [N_INPT-1:0] sif_gnt;
-logic [W_INPT-1:0] sif_gnt_idx;
-logic [N_INPT-1:0] sif_eof;
-logic [N_INPT-1:0] sif_wtlast;
+logic [N_INPT-1:0]     sif_req;
+logic [N_INPT-1:0]     sif_gnt;
+logic [N_INPT-1:0]     sif_gnt_r;
+logic [W_INPT_IDX-1:0] sif_gnt_idx_arb;
+logic [W_INPT-1:0]     sif_gnt_idx;
+logic [N_INPT-1:0]     sif_eof;
+logic [N_INPT-1:0]     sif_wtlast;
+logic [N_INPT-1:0]     sif_tlast_aligned_r;
+
 
 logic [N_HOST-1:0] hif_busy;
+logic [N_HOST-1:0] hif_preempt;
+logic [N_HOST-1:0] hif_reserved;
 logic [N_INPT-1:0] hif_mask;
+logic [N_INPT-1:0] hif_sif_mask [N_HOST];
+logic [N_INPT-1:0] hif_sif_unserved [N_HOST];
+logic [N_INPT-1:0] hif_sif_unserved_nxt [N_HOST];
+logic [N_HOST-1:0] hif_sif_served;
+logic [N_HOST-1:0] hif_sif_served_nxt;
 logic [N_HOST-1:0] hif_data_en;
 logic [N_HOST-1:0] hif_gnt;
+logic [N_HOST-1:0] hif_gnt_r;
 logic [W_HOST-1:0] hif_gnt_idx;
 logic [W_HOST-1:0] hif_gnt_idx_r;
 logic              hdr_is_busy;
@@ -558,64 +570,154 @@ logic              imm_is_done;
 logic [W_DATA-1:0] dout_axis_tdata [N_HOST];
 logic [W_KEEP-1:0] dout_axis_tkeep [N_HOST];
 logic [N_HOST-1:0] dout_axis_tlast;
-logic [N_HOST-1:0] dout_axis_tuser;
+logic [W_USER-1:0] dout_axis_tuser [N_HOST];
 logic [N_HOST-1:0] dout_axis_tvalid;
 logic [N_HOST-1:0] dout_axis_tready;
+logic [N_HOST-1:0] crc_en;
 
 logic              arb_idle;
+logic              pkt_len_en_stall;
+logic              at_calc_commit;
+logic              commit_arm_comb;
+logic              at_commit_point;
+logic              commit_pending_r;
+logic              sif_valid_commit_r;
+logic              sif_valid_d_r;
+logic              commit_wait;
+logic              fsm_cnt_hold;
+logic              calc_hold;
+logic              pkt_no_data_abort;
+logic [N_INPT-1:0] sif_data_pending_r;
+logic              fsm_preempt;
+logic              pkt_commit;
+logic              fsm_grant;
+logic              overlap_fsm_active;
+logic              host_sif_abort_pending;
 
+assign overlap_fsm_active = (roce_state == ROCE_LOAD_STS) ||
+                            (roce_state == ROCE_GRANT) ||
+                            (roce_state == ROCE_CALC);
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
-    sif_req     <= '0;
-    hif_busy    <= '0;
-    hif_data_en <= '0;
+    sif_data_pending_r <= '0;
+  end
+  else if (fsm_preempt || pkt_commit) begin
+    sif_data_pending_r[sif_gnt_idx_r] <= 1'b0;
+  end
+  else if (fsm_grant) begin
+    sif_data_pending_r[sif_gnt_idx] <= sif_req[sif_gnt_idx];
+  end
+  else if (overlap_fsm_active && !i_axis_tvalid[sif_gnt_idx_r]) begin
+    sif_data_pending_r[sif_gnt_idx_r] <= 1'b0;
+  end
+  else if (overlap_fsm_active && sif_req[sif_gnt_idx_r]) begin
+    sif_data_pending_r[sif_gnt_idx_r] <= 1'b1;
+  end
+end
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    commit_pending_r   <= 1'b0;
+    sif_valid_commit_r <= 1'b0;
+    sif_valid_d_r      <= 1'b0;
+  end
+  else if (fsm_preempt) begin
+    commit_pending_r   <= 1'b0;
+    sif_valid_commit_r <= 1'b0;
   end
   else begin
-    for (int s=0;s<N_INPT;s=s+1) begin
-      sif_req[s] <= !hif_mask[s] ? '0         : // No SIFs can transmit if host is busy
-                    (|sif_eof  ) ? sif_eof[s] : // Prioritize EOF packets
-                    (i_axis_tvalid[s]); // Otherwise, prioritize valid packets
+    sif_valid_d_r <= i_axis_tvalid[sif_gnt_idx_r];
+    if (pkt_commit) begin
+      commit_pending_r <= 1'b0;
     end
-    for (int h=0;h<N_HOST;h=h+1) begin
-      hif_busy[h]    <= (hif_busy[h]) ? !((dout_axis_tvalid[h] && dout_axis_tlast[h] && dout_axis_tready[h]) || (imm_is_done && (h == hif_gnt_idx_r))) : hif_gnt[h];
-      hif_data_en[h] <= (hif_data_en[h]) ? hif_busy[h] : (h==hif_gnt_idx_r) && hdr_is_busy && !pkt_is_imm;
+    else if (commit_arm_comb) begin
+      commit_pending_r     <= 1'b1;
+      sif_valid_commit_r   <= sif_valid_d_r;
     end
   end
 end
 
 assign imm_is_done = (md_disable && (roce_state == ROCE_HDR_WAIT) && pkt_is_imm); // Metadata is skipped and Done
 
-always_comb begin
-  hif_mask = '0;
-  sif_wtlast = '0;
-  for (int i=0;i<N_HOST;i=i+1) begin
-    hif_mask |= hif_busy[i] ? '0 : (vp_mask[i]);
-    sif_wtlast |= sif_tlast[i];
+assign fsm_grant = (roce_state == ROCE_IDLE) && (|sif_req);
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    sif_req     <= '0;
+    hif_busy    <= '0;
+    hif_preempt <= '0;
+    hif_data_en <= '0;
+    hif_sif_mask <= '{default:'0};
+    hif_sif_unserved <= '{default:'0};
+    hif_sif_served <= '0;
   end
-end
+  else begin
+    hif_sif_unserved <= hif_sif_unserved_nxt;
+    hif_sif_served   <= hif_sif_served_nxt;
+    for (int s=0;s<N_INPT;s=s+1) begin
+      sif_req[s] <= !hif_mask[s] ? '0         : // No SIFs can transmit if host is busy
+                    (|sif_eof) ? sif_eof[s]  : // Prioritize EOF packets
+                    (i_axis_tvalid[s]); // Otherwise, prioritize valid packets
+    end
+    for (int h=0;h<N_HOST;h=h+1) begin
+      hif_sif_mask[h] <= hif_sif_served[h] ? '0 : (hif_sif_mask[h] | sif_gnt_r);
+      if (fsm_preempt && (h == hif_gnt_idx_r))
+        hif_preempt[h] <= 1'b0;
+      else if (pkt_commit && (h == hif_gnt_idx_r))
+        hif_preempt[h] <= 1'b0;
+      else if (fsm_grant && (h == hif_gnt_idx) && hif_busy[h])
+        hif_preempt[h] <= 1'b1;
 
-rrarb #(
-  .WIDTH ( N_INPT                      )
-) axis_sif_arb (
-  .clk   ( i_pclk                      ),
-  .rst_n ( !i_prst                     ),
-  .rst   ( 1'b0                        ),
-  .idle  ( arb_idle                    ),
-  .req   ( sif_req                     ),
-  .gnt   ( sif_gnt                     )
-);
-
-integer j;
-always_comb begin
-  sif_gnt_idx = '0;
-  for (j=0;j<N_INPT;j=j+1) begin
-    if (sif_gnt[j]) begin
-      sif_gnt_idx = j;
+      hif_busy[h]    <= (pkt_commit && (h == hif_gnt_idx_r)) ? 1'b1 :
+                        (hif_busy[h]) ? !((dout_axis_tvalid[h] && dout_axis_tlast[h] && dout_axis_tready[h]) ||
+                                         (imm_is_done && (h == hif_gnt_idx_r))) : 1'b0;
+      hif_data_en[h] <= (hif_data_en[h]) ? hif_busy[h] :
+                        (h==hif_gnt_idx_r) && hdr_is_busy && !pkt_is_imm;
     end
   end
 end
 
+always_comb begin
+  for (int h=0;h<N_HOST;h=h+1) begin
+    hif_sif_unserved_nxt[h] = (vp_mask[h][N_INPT-1:0] & i_axis_tvalid) & ~hif_sif_mask[h];
+    hif_sif_served_nxt[h]   = ~|hif_sif_unserved[h];
+    hif_reserved[h] = hif_preempt[h] | (hif_busy[h] && !hif_not_busy_soon[h]);
+  end
+end
+
+always_comb begin
+  hif_mask     = '0;
+  sif_wtlast   = '0;
+  for (int i=0;i<N_HOST;i=i+1) begin
+    hif_mask |= hif_reserved[i] ? '0 :(vp_mask[i][N_INPT-1:0] & ~(hif_sif_mask[i] & ~sif_eof));
+    sif_wtlast |= sif_tlast[i];
+  end
+end
+
+always_comb begin
+  axis_tready = '0;
+  for (int m=0;m<N_HOST;m=m+1) begin
+    axis_tready |= w_axis_tready[m];
+  end
+end
+
+assign o_axis_tready = axis_tready;
+
+rrarb #(
+  .WIDTH   ( N_INPT                      )
+) axis_sif_arb (
+  .clk     ( i_pclk                      ),
+  .rst_n   ( !i_prst                     ),
+  .rst     ( 1'b0                        ),
+  .idle    ( arb_idle                    ),
+  .req     ( sif_req                     ),
+  .gnt_idx ( sif_gnt_idx_arb             ),
+  .gnt     ( sif_gnt                     )
+);
+
+assign sif_gnt_idx = W_INPT'(sif_gnt_idx_arb);
+  
 always_comb begin
   for (int i=0;i<N_HOST;i=i+1) begin
     hif_gnt[i] = |(sif_gnt & vp_mask[i]);
@@ -639,7 +741,7 @@ assign arb_idle = (roce_state == ROCE_IDLE);
 
 logic [4:0]           fsm_cnt;
 logic [4:0]           fsm_cnt_max;
-logic [4:0]           fsm_cnt_comb;
+logic [4:0]           fsm_cnt_target;
 logic [79:0]          cur_ptp_sync;
 logic [79:0]          cur_ptp;
 logic [31:0]          frame_crc;
@@ -650,35 +752,40 @@ logic [25:0]          roce_len_left;
 logic [25:0]          roce_rel_addr_cycles;
 logic [25:0]          roce_imm_vaddr;
 logic                 le_last;
-logic [25:0]          roce_nxt_len;
 logic                 threshold_is_lt;
 logic                 round_up;
 logic [ADDR_BITS-1:0] roce_vaddr;
-logic [1:0]           hdr_type;
+logic [1:0]           hdr_type /* synthesis syn_keep=1 nomerge=""*/;
+logic [1:0]           hdr_type_d /* synthesis syn_keep=1 nomerge=""*/;
+logic [1:0]           hdr_type_r /* synthesis syn_keep=1 nomerge=""*/;
 logic                 hdr_trigger;
 logic [15:0]          dma_len;
 logic                 unsync_flag;
 logic                 bpw_only_flag;
 logic [63:0]          roce_val_addr;
-logic                 ptp_ts_en;
 logic                 round_cur_pkt_len;
 logic                 cycle_32byte;
 logic                 sif_gnt_unchanged;
+logic                 imm_tlast_aligned;
 
 assign cur_ptp_sync = i_cur_ptp;
-
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
     roce_state         <= ROCE_IDLE;
     fsm_cnt            <= '0;
     fsm_cnt_max        <= '0;
+    fsm_cnt_target     <= '0;
     pkt_len_en         <= '0;
     pkt_len            <= '0;
     sif_eof            <= '0;
     pkt_is_imm         <= '0;
     hdr_type           <= '0;
+    hdr_type_d         <= '0;
+    hdr_type_r         <= '0;
     hdr_trigger        <= '0;
+    sif_gnt_r          <= '0;
+    hif_gnt_r          <= '0;
     sif_gnt_idx_r      <= '0;
     sif_gnt_idx_rq     <= '0;
     hif_gnt_idx_r      <= '0;
@@ -689,15 +796,36 @@ always_ff @(posedge i_pclk) begin
     sts_ram_wren       <= '0;
     sif_gnt_unchanged  <= '0;
     sif_tlast_done     <= '0;
+    is_data_wr_imm     <= '0;
+    sts_ram_rden       <= '0;
+    sts_ram_addr       <= '0;
+    crc_ram_wren       <= '0;
+  end
+  else if (fsm_preempt) begin
+    roce_state          <= ROCE_IDLE;
+    fsm_cnt             <= '0;
+    fsm_cnt_max         <= '0;
+    pkt_len_en          <= '0;
+    hdr_trigger         <= '0;
+    sts_ram_rden        <= '0;
+    sts_ram_wren        <= '0;
+    sif_tlast_done      <= '0;
+    crc_ram_wren        <= crc_valid[hif_gnt_idx_r];
   end
   else begin
+    is_data_wr_imm <= md_disable ? (is_last || single_pkt) : '0;
+    crc_ram_wren   <= 1'b0;
     case (roce_state)
       ROCE_IDLE: begin
-        if (|sif_gnt) begin
-          roce_state         <= ROCE_LOAD_STS;
+        if (|sif_req) begin
+          roce_state          <= ROCE_LOAD_STS;
           hif_gnt_idx_r      <= hif_gnt_idx;
+          hif_gnt_r          <= hif_gnt;
+          sif_gnt_r          <= sif_gnt;
           sif_gnt_idx_r      <= sif_gnt_idx;
           sif_gnt_idx_rq     <= sif_gnt_idx_r;
+          sts_ram_rden       <= '1;
+          sts_ram_addr       <= sif_gnt_idx;
         end
         fsm_cnt        <= '0;
         fsm_cnt_max    <= '0;
@@ -708,9 +836,12 @@ always_ff @(posedge i_pclk) begin
         sts_ram_wren   <= '0;
       end
       ROCE_LOAD_STS: begin
+        if (crc_valid[hif_gnt_idx_r] && !hif_busy[hif_gnt_idx_r])
+          crc_ram_wren <= 1'b1;
         sif_gnt_unchanged <= (sif_gnt_idx_r == sif_gnt_idx_rq);
         if (cfg_ram_rd_valid) begin
           fsm_cnt                      <= fsm_cnt + 1;
+          sts_ram_rden                 <= !cfg_ram_rd_valid;
           roce_state                   <= (cfg_ram_rd_valid) ? ROCE_GRANT : ROCE_LOAD_STS;
           pkt_is_imm                   <= sif_eof[sif_gnt_idx_r];
           pkt_len                      <= (eth_pkt_len[hif_gnt_idx_r]<<PAGES_TO_CYCLES);
@@ -719,31 +850,44 @@ always_ff @(posedge i_pclk) begin
       ROCE_GRANT: begin
         if (cfg_ram_rd_valid) begin
           fsm_cnt                           <= fsm_cnt + 1;
-          sif_tlast_done[hif_gnt_idx_r]     <= '1;
-          tlast_aligned                     <= sif_wtlast[sif_gnt_idx_r] && pkt_is_imm;
           roce_state                        <= ROCE_CALC;
           hdr_type                          <= {pkt_is_imm, pkt_is_1722b};
-          hif_is_1722b[hif_gnt_idx_r]       <= pkt_is_1722b;
-          hif_is_data_wr_imm[hif_gnt_idx_r] <= is_data_wr_imm;
+          hdr_type_d                        <= {pkt_is_imm, pkt_is_1722b};
+          hdr_type_r                        <= {pkt_is_imm, pkt_is_1722b};
           // Either Read all of Config RAM, or just enough to read + calculate the next packet
           fsm_cnt_max                       <= (is_new || is_last || pkt_is_imm) ? 5'd18 : 5'd7;
+          fsm_cnt_target                    <= (is_first_run)                    ? 5'd18                                       : 
+                                               (single_pkt && md_disable)        ? (sif_gnt_unchanged ? 'd2 : DUMP_CLK_CYCLES) :
+                                               (is_new || is_last || pkt_is_imm) ? 5'd18                                       : 
+                                                                                   DUMP_CLK_CYCLES                             ;
           dma_len                           <= (pkt_is_imm) ? 'd128: (cycle_32byte) ? 'd32 : cur_pkt_len << CYCLES_TO_BYTES;
         end
       end
       ROCE_CALC: begin
         sif_tlast_done              <= '0;
-        fsm_cnt                     <= fsm_cnt + cfg_ram_rd_valid;
+        fsm_cnt                     <= fsm_cnt + (((cfg_ram_rd_valid && !fsm_cnt_hold && !fsm_preempt) ||
+                                                  (pkt_commit && (fsm_cnt != fsm_cnt_max))));
         hdr_trigger                 <= '0;
         pkt_len_en                  <= '0;
-        dma_len                     <= (pkt_is_imm) ? 'd128 : (cycle_32byte) ? 'd32 : cur_pkt_len << CYCLES_TO_BYTES;
-        if ((fsm_cnt == fsm_cnt_comb) && cfg_ram_rd_valid) begin
+        dma_len                     <= (cfg_ram_rd_valid && !fsm_preempt) ?
+                                      ((pkt_is_imm) ? 'd128 : (cycle_32byte) ? 'd32 : cur_pkt_len << CYCLES_TO_BYTES) :
+                                      dma_len;
+        if (pkt_commit) begin
           pkt_len_en[hif_gnt_idx_r]         <= !pkt_is_imm;
           hdr_trigger                       <= md_disable ? !pkt_is_imm : '1;
+          sif_tlast_done[hif_gnt_idx_r]     <= '1;
           hdr_type                          <= {pkt_is_imm, pkt_is_1722b};
+          hdr_type_d                        <= {pkt_is_imm, pkt_is_1722b};
+          hdr_type_r                        <= {pkt_is_imm, pkt_is_1722b};
           hif_is_1722b[hif_gnt_idx_r]       <= pkt_is_1722b;
           hif_is_data_wr_imm[hif_gnt_idx_r] <= is_data_wr_imm;
+          if (pkt_is_imm)
+            tlast_aligned <= imm_tlast_aligned;
+          if (crc_valid[hif_gnt_idx_r])
+            crc_ram_wren <= 1'b1;
         end
-        if (fsm_cnt == fsm_cnt_max && cfg_ram_rd_valid) begin
+        if (fsm_cnt == fsm_cnt_max &&
+            (pkt_commit || (cfg_ram_rd_valid && (fsm_cnt_target != fsm_cnt_max)))) begin
           roce_state <= ROCE_STORE;
         end
         sif_eof                  <= sif_eof | sif_wtlast; // Early tlast from Sensor
@@ -751,6 +895,7 @@ always_ff @(posedge i_pclk) begin
       ROCE_STORE: begin
         hdr_trigger              <= '0;
         pkt_len_en               <= '0;
+        sif_tlast_done           <= '0;
         if (fsm_cnt >= 'd9) begin
           roce_state               <= ROCE_HDR_WAIT;
           sif_eof[sif_gnt_idx_r]   <= (pkt_is_imm) ? '0 : (single_pkt || is_last);
@@ -768,10 +913,7 @@ always_ff @(posedge i_pclk) begin
   end
 end
 
-assign sts_ram_addr   = sif_gnt_idx_r;
 assign cfg_ram_addr   = {sif_gnt_idx_r, fsm_cnt[3:0]};
-assign sts_ram_rden   = (roce_state == ROCE_LOAD_STS);
-assign crc_ram_wren   = (roce_state == ROCE_LOAD_STS) && crc_valid[hif_gnt_idx_r]; // Saves CRC data from previous packet
 assign crc_ram_wrdata = crc_out[hif_gnt_idx_r];
 assign eth_ram_wren   = (roce_state == ROCE_CALC) && (fsm_cnt == 5'd17);
 assign eth_ram_addr   = sif_gnt_idx_r;
@@ -779,13 +921,39 @@ assign cfg_ram_wrdata = {8'h0,psn};
 assign cfg_ram_wr_en  = ((fsm_cnt == 'd15) && (roce_state == ROCE_CALC));
 assign crc_ram_rden  = (roce_state != ROCE_IDLE);
 assign eth_ram_rden  = (roce_state != ROCE_IDLE);
+assign cfg_ram_rd_en = (roce_state != ROCE_IDLE) &&
+                       !((roce_state == ROCE_CALC) && fsm_cnt_hold);
 
-localparam DUMP_CLK_CYCLES = (BUFFER_4K_REG) ? 'd7 : 'd5;
 
-assign fsm_cnt_comb = (is_first_run)                    ? fsm_cnt_max     : 
-                      (single_pkt && md_disable)        ? (sif_gnt_unchanged ? 'd2 : DUMP_CLK_CYCLES) :
-                      (is_new || is_last || pkt_is_imm) ? fsm_cnt_max     : 
-                                                          DUMP_CLK_CYCLES ;
+assign at_commit_point = (roce_state == ROCE_CALC) && (fsm_cnt == fsm_cnt_target);
+
+assign at_calc_commit = at_commit_point && cfg_ram_rd_valid;
+
+assign pkt_len_en_stall = at_commit_point && hif_busy[hif_gnt_idx_r];
+
+assign commit_arm_comb = at_commit_point && !pkt_len_en_stall && !commit_pending_r && !fsm_preempt &&
+                         (pkt_is_imm || sif_valid_d_r);
+
+assign commit_wait = at_commit_point && !pkt_len_en_stall && !commit_pending_r && !fsm_preempt &&
+                     !pkt_is_imm && !sif_valid_d_r;
+
+assign fsm_cnt_hold = pkt_len_en_stall || commit_arm_comb || commit_wait ||
+                      (commit_pending_r && !pkt_commit);
+
+assign pkt_no_data_abort = at_commit_point && !pkt_len_en_stall && !commit_pending_r &&
+                           !pkt_is_imm && !sif_data_pending_r[sif_gnt_idx_r] && !sif_valid_d_r;
+
+assign host_sif_abort_pending = |(vp_mask[hif_gnt_idx_r][N_INPT-1:0] & (sif_eof | sif_wtlast));
+
+assign fsm_preempt = (roce_state == ROCE_LOAD_STS || roce_state == ROCE_GRANT ||
+                      roce_state == ROCE_CALC) &&
+                     hif_preempt[hif_gnt_idx_r] && !pkt_is_imm &&
+                     (host_sif_abort_pending || pkt_no_data_abort);
+
+assign pkt_commit = commit_pending_r && !hif_busy[hif_gnt_idx_r] && !fsm_preempt &&
+                    (pkt_is_imm || sif_valid_commit_r);
+
+assign calc_hold = commit_pending_r && !pkt_commit;
 
 //------------------------------------------------------------------------------------------------//
 // RoCE Calculations
@@ -806,7 +974,6 @@ generate
     assign cycle_32byte = '0;
   end
 endgenerate
-
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
@@ -834,7 +1001,7 @@ always_ff @(posedge i_pclk) begin
     roce_nxt_vaddr2           <= '0;
     md_disable                <= '0;
   end
-  else begin
+  else if (!calc_hold) begin
     roce_buf_offset           <= (BUFFER_4K_REG) ? (roce_buf_inc * buf_ptr) : '0;
     roce_buf_addr             <= roce_buf_start + roce_buf_offset;
     roce_vaddr                <= (is_new) ? roce_buf_addr : roce_vaddr_sts;
@@ -928,8 +1095,11 @@ logic [15:0] pld_len;
 logic [15:0] udp_len;
 logic [15:0] udp_chksum;
 
+assign roce_addr[32:0]  = ((hdr_type[1]) ? roce_imm_vaddr : roce_vaddr) << (PAGES_TO_CYCLES + CYCLES_TO_BYTES);
+assign roce_addr[63:33] = roce_buf_fixed_msb[31:1];
+
 assign pld_len    = dma_len + (((hdr_type == 2'b10 || (is_data_wr_imm)) ? 'd36 : 'd32)); // Account for RoCE WR Imm;
-assign udp_len    = pld_len + 'd8;
+assign udp_len    = dma_len + (((hdr_type == 2'b10 || (is_data_wr_imm)) ? 'd44 : 'd40));
 assign udp_chksum = 16'h0; // set to 0 if unused
 
 // IPV4 Header
@@ -945,7 +1115,6 @@ logic [ 7:0] ipv4_ttl;
 logic [ 7:0] ipv4_protocol;
 logic [31:0] ipv4_src_addr;
 logic [31:0] ipv4_dst_addr;
-logic [31:0] w_ipv4_dst_addr;
 logic [15:0] dev_udp_port;
 logic [47:0] src_mac_addr;
 logic [18:0] ipv4_chksum_calc [7];
@@ -954,7 +1123,7 @@ assign ipv4_version  = 4'h4;
 assign ipv4_ihl      = 4'h5;
 assign ipv4_dscp     = 6'h0;
 assign ipv4_ecn      = 2'h0;
-assign ipv4_len      = udp_len + 20;
+assign ipv4_len      = dma_len + (((hdr_type == 2'b10 || (is_data_wr_imm)) ? 'd64 : 'd60));
 assign ipv4_id       = 16'h0000;
 assign ipv4_flag     = 3'h2;
 assign ipv4_offset   = 13'h0;
@@ -975,7 +1144,6 @@ assign src_mac_addr = i_dev_mac_addr[hif_gnt_idx_r];
 assign se_m_pad_tver       = {1'b0, 1'b0, 2'h0, 4'h0}; //Solicted Event, MigReq, Pad Count, Transport Version
 assign pkey                = 16'hFFFF;
 assign opcode              = (pkt_is_imm || is_data_wr_imm) ? 8'h2B : 8'h2A;
-assign is_data_wr_imm      = md_disable ? (is_last || single_pkt) : '0;
 
 assign hdr_roce = {
   // Ethernet Header 14 Bytes
@@ -993,10 +1161,6 @@ assign hdr_roce = {
   8'h0,psn,roce_addr,rkey,
   16'h0,dma_len
 };
-
-
-assign roce_addr[32:0]  = ((hdr_type[1]) ? roce_imm_vaddr : roce_vaddr) << (PAGES_TO_CYCLES + CYCLES_TO_BYTES);
-assign roce_addr[63:33] = roce_buf_fixed_msb[31:1];
 
 
 always_ff @(posedge i_pclk) begin
@@ -1027,7 +1191,6 @@ logic [7:0]  sequence_number;                 // PSN
 logic [5:0]  channel_number;                  // Buffer index
 logic [7:0]  flags;                           // SOF + EOF
 logic [27:0] byte_offset;                     // vaddr
-logic [27:0] byte_offset_imm;                 // vaddr
 
 logic [COE_HDR_WIDTH-1:0] hdr_coe;
 logic [COE_HDR_WIDTH-1:0] hdr_coe_be;
@@ -1104,25 +1267,51 @@ assign hdr_coe = {
 
 localparam WR_IMM_SIZE = 384;
 
-logic              imm_axis_tvalid;
-logic              imm_axis_tlast;
-logic [W_DATA-1:0] imm_axis_tdata;
-logic [W_KEEP-1:0] imm_axis_tkeep;
-logic              imm_axis_tuser;
-logic              imm_axis_tready;
-
 logic [31:0]                wr_imm;
 logic [31:0]                wr_imm_be;
 logic [WR_IMM_SIZE-1:0]     wr_imm_data;
+logic [WR_IMM_SIZE-80-1:0] wr_imm_meta_r;
+logic [WR_IMM_SIZE-1:0]     wr_imm_data_hdr;
 logic [WR_IMM_SIZE-1:0]     wr_imm_pkt_be;
 
 logic [31:0]                md_flags;
 
-assign bpw_only_flag = !tlast_aligned & !unsync_flag;
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    sif_tlast_aligned_r <= '0;
+  end
+  else if (fsm_grant) begin
+    sif_tlast_aligned_r[sif_gnt_idx] <= 1'b0;
+  end
+  else if (fsm_preempt) begin
+    sif_tlast_aligned_r[sif_gnt_idx_r] <= 1'b0;
+  end
+  else if (pkt_commit && pkt_is_imm) begin
+    sif_tlast_aligned_r[sif_gnt_idx_r] <= 1'b0;
+  end
+  else begin
+    sif_tlast_aligned_r <= sif_tlast_aligned_r | sif_wtlast;
+  end
+end
+
+assign imm_tlast_aligned = sif_wtlast[sif_gnt_idx_r] | sif_tlast_aligned_r[sif_gnt_idx_r];
+
+assign bpw_only_flag = !(pkt_is_imm ? imm_tlast_aligned : tlast_aligned) & !unsync_flag;
 assign md_flags = {30'h0, bpw_only_flag,unsync_flag};
 
 assign wr_imm         = (BUFFER_4K_REG) ? {psn[19:0],buf_ptr[11:0]} : {psn[23:0],6'h0,buf_ptr[1:0]};
 assign wr_imm_data    = {md_flags,8'h0,psn,frame_crc,16'h0,sof_ptp,roce_val_addr,16'h0,frame_num,16'h0,cur_ptp};
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    wr_imm_meta_r <= '0;
+  end
+  else if (pkt_commit) begin
+    wr_imm_meta_r <= wr_imm_data[WR_IMM_SIZE-1:80];
+  end
+end
+
+assign wr_imm_data_hdr = {wr_imm_meta_r, cur_ptp};
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
@@ -1146,7 +1335,7 @@ generate
     assign hdr_coe_be[k*8+:8] = hdr_coe[(COE_HDR_WIDTH/8-1-k)*8+:8];
   end
   for (k=0; k<WR_IMM_SIZE/8; k++) begin : gen_imm_byte_align
-    assign wr_imm_pkt_be[k*8+:8] = wr_imm_data[(WR_IMM_SIZE/8-1-k)*8+:8];
+    assign wr_imm_pkt_be[k*8+:8] = wr_imm_data_hdr[(WR_IMM_SIZE/8-1-k)*8+:8];
   end
   for (k=0; k<4; k++) begin : gen_wr_imm_byte_align
     assign wr_imm_be[k*8+:8] = wr_imm[(4-1-k)*8+:8];
@@ -1155,7 +1344,6 @@ generate
     assign hdr_roce_be[k*8+:8] = hdr_roce[(ROCE_HDR_WIDTH/8-1-k)*8+:8];
   end
 endgenerate
-
 
 //------------------------------------------------------------------------------------------------//
 // HDR Creation
@@ -1187,7 +1375,7 @@ localparam COE_HDR_TKEEP     = (COE_HDR_DATA_BITS == W_DATA) ? '1 : {'0,{(COE_HD
 logic [W_DATA-1:0] hdr_axis_tdata;
 logic [W_KEEP-1:0] hdr_axis_tkeep;
 logic              hdr_axis_tlast;
-logic              hdr_axis_tuser;
+logic [W_USER-1:0] hdr_axis_tuser;
 logic              hdr_axis_tvalid;
 logic              hdr_axis_tready;
 
@@ -1198,13 +1386,16 @@ logic [W_DATA-1:0] dwd_axis_tdata [N_HOST]; // Data and Previous Data Cycle
 logic [W_DATA-1:0] dp_axis_tdata_r [N_HOST];
 logic [N_HOST-1:0] dp_axis_tlast_r;
 logic [W_KEEP-1:0] dp_axis_tkeep_r [N_HOST];
+logic [W_USER-1:0] dp_axis_tuser_r [N_HOST];
 logic [N_HOST-1:0] dp_axis_tvalid_r;
+
 
 logic [2:0]        w_hdr_type;
 
 dp_pkt_hdr #(
   .W_DATA         ( W_DATA         ),
   .W_KEEP         ( W_KEEP         ),
+  .W_USER         ( W_USER         ),
   .ROCE_HDR_WIDTH ( ROCE_HDR_WIDTH ),
   .COE_HDR_WIDTH  ( COE_HDR_WIDTH  ),
   .WR_IMM_SIZE    ( 32             ),
@@ -1219,6 +1410,7 @@ dp_pkt_hdr #(
   .i_metadata    ( wr_imm_pkt_be                             ),
   .i_header_type ( w_hdr_type                                ),
   .i_trigger     ( hdr_trigger                               ),
+  .i_tuser       ( hif_tuser                                 ),
   .o_busy        ( hdr_is_busy                               ),
   .o_axis_tdata  ( hdr_axis_tdata                            ),
   .o_axis_tlast  ( hdr_axis_tlast                            ),
@@ -1230,7 +1422,6 @@ dp_pkt_hdr #(
 
 assign w_hdr_type = (DIS_COE) ? {is_data_wr_imm,hdr_type[1],1'b0} : {is_data_wr_imm,hdr_type };
 
-
 genvar n;
 generate
   for (n=0; n<N_HOST; n++) begin : gen_hdr_mux
@@ -1240,6 +1431,7 @@ generate
         dp_axis_tlast_r[n]  <= '0;
         dp_axis_tvalid_r[n] <= '0;
         dp_axis_tkeep_r[n]  <= '0;
+        dp_axis_tuser_r[n]  <= '0;
       end
       else begin
         if (dp_axis_tready[n]) begin
@@ -1247,10 +1439,11 @@ generate
           dp_axis_tlast_r[n]  <= dp_axis_tlast[n];
           dp_axis_tvalid_r[n] <= dp_axis_tvalid[n];
         end
-        if (n==hif_gnt_idx_r && (hdr_axis_tvalid || (cycle_32byte && hdr_trigger))) begin
-          dp_axis_tkeep_r[n] <= (hdr_type[0] ? COE_HDR_TKEEP : is_data_wr_imm ? 
+        if (hif_gnt_idx_r == W_HOST'(n) && (hdr_axis_tvalid || (cycle_32byte && hdr_trigger))) begin
+          dp_axis_tkeep_r[n] <= (hdr_type[0] ? COE_HDR_TKEEP : is_data_wr_imm ?
                                 (cycle_32byte ? ROCE_IMM_HDR_TKEEP_32B : ROCE_IMM_HDR_TKEEP) :
                                 (cycle_32byte ? ROCE_HDR_TKEEP_32B : ROCE_HDR_TKEEP));
+          dp_axis_tuser_r[n] <= hif_tuser;
         end
       end
     end
@@ -1269,30 +1462,40 @@ generate
     end
 
     always_comb begin
-      if (n==hif_gnt_idx_r && !hdr_type[1] && hdr_axis_tvalid) begin // HDR + Data
+      if (hif_gnt_idx_r == W_HOST'(n) && !hdr_type_d[1] && hdr_axis_tvalid) begin // HDR + Data
         dout_axis_tdata[n] = (hdr_axis_tlast) ? dwh_axis_tdata[n] : hdr_axis_tdata;
         dout_axis_tlast[n] = (cycle_32byte) ? hdr_axis_tlast : dp_axis_tlast_r[n];
         dout_axis_tvalid[n] = (cycle_32byte) ? hdr_axis_tvalid : (dp_axis_tvalid_r[n] | dp_axis_tvalid[n]);
         dout_axis_tkeep[n] = dout_axis_tlast[n] ? dp_axis_tkeep_r[n] : '1;
-        dp_axis_tready[n] = (hdr_axis_tlast && dout_axis_tready[n]);
+        dout_axis_tuser[n] = hif_tuser;
       end
-      else if (n==hif_gnt_idx_r && hdr_type[1] && hdr_axis_tvalid) begin // HDR only
+      else if (hif_gnt_idx_r == W_HOST'(n) && hdr_type_d[1] && hdr_axis_tvalid) begin // HDR only
         dout_axis_tdata[n] = hdr_axis_tdata;
         dout_axis_tlast[n] = hdr_axis_tlast;
         dout_axis_tvalid[n] = '1;
         dout_axis_tkeep[n] = hdr_axis_tkeep;
-        dp_axis_tready[n] = '0;
+        dout_axis_tuser[n] = hif_tuser;
       end
       else begin  // Steady State Data
         dout_axis_tdata[n] = dwd_axis_tdata[n];
         dout_axis_tlast[n] = (cycle_32byte) ? '0 : dp_axis_tlast_r[n];
         dout_axis_tvalid[n] = (cycle_32byte) ? '0 : dp_axis_tvalid_r[n];
         dout_axis_tkeep[n] = dout_axis_tlast[n] ? dp_axis_tkeep_r[n] : '1;
+        dout_axis_tuser[n] = dp_axis_tuser_r[n];
+      end
+    end
+
+    always_comb begin
+      if (hif_gnt_idx_r == W_HOST'(n) && !hdr_type_r[1] && hdr_axis_tvalid) begin // HDR + Data
+        dp_axis_tready[n] = (hdr_axis_tlast && dout_axis_tready[n]);
+      end
+      else if (hif_gnt_idx_r == W_HOST'(n) && hdr_type_r[1] && hdr_axis_tvalid) begin // HDR only
+        dp_axis_tready[n] = '0;
+      end
+      else begin  // Steady State Data
         dp_axis_tready[n] = dout_axis_tready[n] && hif_data_en[n];
       end
-
     end
-    assign dout_axis_tuser[n] = hif_is_1722b[n];
   end
 endgenerate
 
@@ -1305,7 +1508,7 @@ assign hdr_axis_tready = dout_axis_tready[hif_gnt_idx_r];
 logic [W_DATA-1:0] dreg_axis_tdata [N_HOST];
 logic [W_KEEP-1:0] dreg_axis_tkeep [N_HOST];
 logic [N_HOST-1:0] dreg_axis_tlast;
-logic [N_HOST-1:0] dreg_axis_tuser;
+logic [W_USER-1:0] dreg_axis_tuser [N_HOST];
 logic [N_HOST-1:0] dreg_axis_tvalid;
 logic [N_HOST-1:0] dreg_axis_tready;
 
@@ -1314,15 +1517,15 @@ generate
 
     if (N_INPT > 16) begin
       axis_reg # (
-        .DWIDTH              ( W_DATA + W_KEEP + 1 + 1)
+        .DWIDTH              ( W_DATA + W_KEEP + 1 + 1 + W_USER)
       ) u_axis_reg (
         .clk                ( i_pclk                                                                        ),
         .rst                ( i_prst                                                                        ),
         .i_axis_rx_tvalid   ( dout_axis_tvalid[n]                                                           ),
-        .i_axis_rx_tdata    ( {dout_axis_tdata[n],dout_axis_tlast[n],dout_axis_tuser[n],dout_axis_tkeep[n]} ),
+        .i_axis_rx_tdata    ( {dout_axis_tdata[n],dout_axis_tlast[n],dout_axis_tuser[n],!hif_is_1722b[n],dout_axis_tkeep[n]} ),
         .o_axis_rx_tready   ( dout_axis_tready[n]                                                           ),
         .o_axis_tx_tvalid   ( dreg_axis_tvalid[n]                                                           ),
-        .o_axis_tx_tdata    ( {dreg_axis_tdata[n],dreg_axis_tlast[n],dreg_axis_tuser[n],dreg_axis_tkeep[n]} ),
+        .o_axis_tx_tdata    ( {dreg_axis_tdata[n],dreg_axis_tlast[n],dreg_axis_tuser[n],crc_en[n],dreg_axis_tkeep[n]} ),
         .i_axis_tx_tready   ( dreg_axis_tready[n]                                                           )
       );
     end
@@ -1330,29 +1533,31 @@ generate
       assign dreg_axis_tdata[n] = dout_axis_tdata[n];
       assign dreg_axis_tlast[n] = dout_axis_tlast[n];
       assign dreg_axis_tuser[n] = dout_axis_tuser[n];
+      assign crc_en[n] = !hif_is_1722b[n];
       assign dreg_axis_tkeep[n] = dout_axis_tkeep[n];
       assign dreg_axis_tvalid[n] = dout_axis_tvalid[n];
       assign dout_axis_tready[n] = dreg_axis_tready[n];
     end
 
     roce_icrc #(
-      .W_DATA                 ( W_DATA               )
+      .W_DATA                 ( W_DATA                          ),
+      .W_USER                 ( W_USER                          )
     ) u_roce_icrc (
-      .pclk                   ( i_pclk                ),
-      .prst                   ( i_prst                ),
-      .i_crc_en               ( !dreg_axis_tuser[n]   ),
-      .i_axis_rx_tvalid       ( dreg_axis_tvalid[n]   ),
-      .i_axis_rx_tlast        ( dreg_axis_tlast[n]    ),
-      .i_axis_rx_tkeep        ( dreg_axis_tkeep[n]    ),
-      .i_axis_rx_tdata        ( dreg_axis_tdata[n]    ),
-      .i_axis_rx_tuser        ( '0                    ),
-      .o_axis_rx_tready       ( dreg_axis_tready[n]   ),
-      .o_axis_tx_tvalid       ( o_axis_tvalid[n]      ),
-      .o_axis_tx_tlast        ( o_axis_tlast[n]       ),
-      .o_axis_tx_tkeep        ( o_axis_tkeep[n]       ),
-      .o_axis_tx_tdata        ( o_axis_tdata[n]       ),
-      .o_axis_tx_tuser        ( o_axis_tuser[n]       ),
-      .i_axis_tx_tready       ( i_axis_tready[n]      )
+      .pclk                   ( i_pclk                          ),
+      .prst                   ( i_prst                          ),
+      .i_crc_en               ( crc_en[n]                       ),
+      .i_axis_rx_tvalid       ( dreg_axis_tvalid[n]             ),
+      .i_axis_rx_tlast        ( dreg_axis_tlast[n]              ),
+      .i_axis_rx_tkeep        ( dreg_axis_tkeep[n]              ),
+      .i_axis_rx_tdata        ( dreg_axis_tdata[n]              ),
+      .i_axis_rx_tuser        ( dreg_axis_tuser[n]              ),
+      .o_axis_rx_tready       ( dreg_axis_tready[n]             ),
+      .o_axis_tx_tvalid       ( o_axis_tvalid[n]                ),
+      .o_axis_tx_tlast        ( o_axis_tlast[n]                 ),
+      .o_axis_tx_tkeep        ( o_axis_tkeep[n]                 ),
+      .o_axis_tx_tdata        ( o_axis_tdata[n]                 ),
+      .o_axis_tx_tuser        ( o_axis_tuser[n]                 ),
+      .i_axis_tx_tready       ( i_axis_tready[n]                )
     );
   end
 endgenerate
@@ -1450,7 +1655,7 @@ assign gnt_en             = pkt_len_en;
       .MIN_PKTL_CHK (1),
       .MAX_PKTL_CHK (1),
       .AXI_TDATA    (W_DATA),
-      .AXI_TUSER    (1),
+      .AXI_TUSER    (17),
 `ifdef SIMULATION
       .SIMULATION   (1),
 `endif

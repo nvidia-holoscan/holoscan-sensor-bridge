@@ -151,7 +151,77 @@ PYBIND11_MODULE(_emulation, m)
         .def_readwrite("fpga_crc", &HSBConfiguration::fpga_crc)
         .def_readwrite("sensor_count", &HSBConfiguration::sensor_count)
         .def_readwrite("data_plane_count", &HSBConfiguration::data_plane_count)
-        .def_readwrite("sifs_per_sensor", &HSBConfiguration::sifs_per_sensor);
+        .def_readwrite("sifs_per_sensor", &HSBConfiguration::sifs_per_sensor)
+        // Pickle support — enables copy.copy() / copy.deepcopy() and pickle.dumps/loads
+        // on HSBConfiguration. Needed so applications can clone HSB_EMULATOR_CONFIG and
+        // tweak fields without mutating the module-level constant in place.
+        // State is a tuple of all 14 fields; fixed-size byte arrays travel as py::bytes
+        // so binary content (UUID, serial_num, vendor_id) round-trips losslessly.
+        .def(py::pickle(
+            [](const HSBConfiguration& self) {
+                return py::make_tuple(
+                    self.tag,
+                    self.tag_length,
+                    py::bytes(reinterpret_cast<const char*>(self.vendor_id), VENDOR_ID_SIZE),
+                    self.data_plane,
+                    self.enum_version,
+                    self.board_id_lo,
+                    self.board_id_hi,
+                    py::bytes(reinterpret_cast<const char*>(self.uuid), BOARD_VERSION_SIZE),
+                    py::bytes(reinterpret_cast<const char*>(self.serial_num), BOARD_SERIAL_NUM_SIZE),
+                    self.hsb_ip_version,
+                    self.fpga_crc,
+                    self.sensor_count,
+                    self.data_plane_count,
+                    self.sifs_per_sensor);
+            },
+            [](py::tuple t) {
+                if (t.size() != 14) {
+                    throw std::runtime_error(
+                        "Invalid HSBConfiguration pickle state: expected 14 fields, got "
+                        + std::to_string(t.size()));
+                }
+                HSBConfiguration cfg {};
+                cfg.tag = t[0].cast<uint8_t>();
+                cfg.tag_length = t[1].cast<uint8_t>();
+                {
+                    auto v = t[2].cast<std::string>();
+                    if (v.size() != VENDOR_ID_SIZE) {
+                        throw std::runtime_error(
+                            "Invalid vendor_id length in pickle state: expected "
+                            + std::to_string(VENDOR_ID_SIZE) + ", got " + std::to_string(v.size()));
+                    }
+                    std::memcpy(cfg.vendor_id, v.data(), VENDOR_ID_SIZE);
+                }
+                cfg.data_plane = t[3].cast<uint8_t>();
+                cfg.enum_version = t[4].cast<uint8_t>();
+                cfg.board_id_lo = t[5].cast<uint8_t>();
+                cfg.board_id_hi = t[6].cast<uint8_t>();
+                {
+                    auto v = t[7].cast<std::string>();
+                    if (v.size() != BOARD_VERSION_SIZE) {
+                        throw std::runtime_error(
+                            "Invalid uuid length in pickle state: expected "
+                            + std::to_string(BOARD_VERSION_SIZE) + ", got " + std::to_string(v.size()));
+                    }
+                    std::memcpy(cfg.uuid, v.data(), BOARD_VERSION_SIZE);
+                }
+                {
+                    auto v = t[8].cast<std::string>();
+                    if (v.size() != BOARD_SERIAL_NUM_SIZE) {
+                        throw std::runtime_error(
+                            "Invalid serial_num length in pickle state: expected "
+                            + std::to_string(BOARD_SERIAL_NUM_SIZE) + ", got " + std::to_string(v.size()));
+                    }
+                    std::memcpy(cfg.serial_num, v.data(), BOARD_SERIAL_NUM_SIZE);
+                }
+                cfg.hsb_ip_version = t[9].cast<uint16_t>();
+                cfg.fpga_crc = t[10].cast<uint16_t>();
+                cfg.sensor_count = t[11].cast<uint8_t>();
+                cfg.data_plane_count = t[12].cast<uint8_t>();
+                cfg.sifs_per_sensor = t[13].cast<uint8_t>();
+                return cfg;
+            }));
 
     m.attr("HSB_EMULATOR_CONFIG") = HSB_EMULATOR_CONFIG;
     m.attr("HSB_LEOPARD_EAGLE_CONFIG") = HSB_LEOPARD_EAGLE_CONFIG;

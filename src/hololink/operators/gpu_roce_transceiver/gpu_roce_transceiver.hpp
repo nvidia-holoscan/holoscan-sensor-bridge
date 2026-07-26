@@ -138,7 +138,7 @@ public:
 
     ~DocaQp();
 
-    doca_error_t create(struct doca_verbs_context* verbs_ctx, const size_t frame_size);
+    doca_error_t create(struct doca_verbs_context* verbs_ctx, const size_t frame_size, enum doca_gpu_dev_verbs_nic_handler nic_handler);
     doca_error_t create_ring(size_t stride_sz, unsigned stride_num, struct ibv_pd* ibv_pd);
     doca_error_t connect(struct doca_verbs_gid& doca_rgid, uint32_t gid_index, uint32_t dest_qp_num);
 
@@ -299,6 +299,7 @@ private:
 
     CUdevice cuDevice;
     CUcontext cuContext;
+    enum doca_gpu_dev_verbs_nic_handler nic_handler;
 };
 
 extern "C" {

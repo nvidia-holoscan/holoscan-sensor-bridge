@@ -25,20 +25,25 @@
  * handle type satisfies NullablePointer https://en.cppreference.com/w/cpp/named_req/NullablePointer.
  *
  * @tparam T type to hold
+ * @tparam Null sentinel value that represents "no handle". Defaults to 0, which
+ *   is correct for pointer-like handles (e.g. CUdeviceptr). File descriptors must
+ *   use -1 instead: 0 is a *valid* fd (it is stdin), so a Nullable<int, 0> would
+ *   treat a socket that legitimately lands on fd 0 (once stdin has been closed)
+ *   as empty, and callers checking `!handle` would wrongly report failure.
  */
-template <typename T>
+template <typename T, T Null = T {}>
 class Nullable {
 public:
-    Nullable(T value = 0)
+    Nullable(T value = Null)
         : value_(value)
     {
     }
     Nullable(std::nullptr_t)
-        : value_(0)
+        : value_(Null)
     {
     }
     operator T() const { return value_; };
-    explicit operator bool() { return value_ != 0; }
+    explicit operator bool() const { return value_ != Null; }
 
     friend bool operator==(Nullable l, Nullable r) { return l.value_ == r.value_; }
     friend bool operator!=(Nullable l, Nullable r) { return !(l == r); }
@@ -50,7 +55,7 @@ public:
      */
     template <typename RESULT, RESULT func(T)>
     struct Deleter {
-        typedef Nullable<T> pointer;
+        typedef Nullable<T, Null> pointer;
         void operator()(T value) const { func(value); }
     };
 

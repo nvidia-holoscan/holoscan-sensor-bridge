@@ -50,14 +50,14 @@ logic [W_USER-1:0] del_axis_tuser [4:0];
 logic [4       :0] del_axis_tready;
 logic [4       :0] del_crc_en;
 
+logic fifo_tready;
+
+
 //------------------------------------------------------------------------------------------------//
 // CRC Calc
 //------------------------------------------------------------------------------------------------//
 
 logic              drp_valid;
-logic              tlast_prev;
-logic              fcs_tready;
-logic              fcs_tvalid;
 
 logic              drp_axis_tvalid;
 logic              drp_axis_tlast;
@@ -158,20 +158,24 @@ axis_reg # (
 
 
 logic [W_KEEP-1:0] tkeep_reduced;
+
 localparam ROCE_WRD_SIZE     = (((28+42-6) % W_KEEP)==0)    ? W_KEEP : ((28+42-6) % W_KEEP);
 localparam ROCE_WRI_SIZE     = (((32+42-6) % W_KEEP)==0)    ? W_KEEP : ((32+42-6) % W_KEEP);
 localparam ROCE_WRI_32B_SIZE = (((32+42-6+32) % W_KEEP)==0) ? W_KEEP : ((32+42-6+32) % W_KEEP);
-
+localparam ROCE_AETH_SIZE    = (((42+12+4-6) % W_KEEP)==0) ? W_KEEP : ((42+12+4-6) % W_KEEP);
 
 localparam [W_KEEP-1:0] ROCE_WRD_KEEP     = {'0,{(ROCE_WRD_SIZE){1'b1}}};
 localparam [W_KEEP-1:0] ROCE_WRI_KEEP     = {'0,{(ROCE_WRI_SIZE){1'b1}}};
 localparam [W_KEEP-1:0] ROCE_WRI_32B_KEEP = {'0,{(ROCE_WRI_32B_SIZE){1'b1}}};
+localparam [W_KEEP-1:0] ROCE_AETH_KEEP    = {'0,{(ROCE_AETH_SIZE){1'b1}}};
 
 
 assign tkeep_reduced = (mskr_axis_tkeep == ROCE_WRD_KEEP                         ) ? ROCE_WRD_KEEP     :
                        (mskr_axis_tkeep == ROCE_WRI_KEEP                         ) ? ROCE_WRI_KEEP     :
                        ((mskr_axis_tkeep == ROCE_WRI_32B_KEEP) && (W_DATA >= 512)) ? ROCE_WRI_32B_KEEP :
+                       (mskr_axis_tkeep == ROCE_AETH_KEEP)                         ? ROCE_AETH_KEEP :
                                                                                      '1                ;
+
 
 
 logic [31:0] crc_s;
@@ -213,9 +217,9 @@ always @(posedge pclk) begin
     fcs_r  <= '0;
   end
   else begin
-    if (mskr_axis_tvalid) begin
+    if (mskr_axis_tvalid && mskr_axis_tready) begin
       crc_s <= crc_next[W_KEEP-1];
-      if (mskr_axis_tlast & mskr_axis_tvalid & mskr_axis_tready) begin
+      if (mskr_axis_tlast) begin
         fcs_r <= fcs_w;
         crc_s <= '1;
       end
@@ -233,6 +237,13 @@ assign mskr_axis_tready = '1;
 
 logic fifo_rden;
 logic fifo_empty;
+logic axis_rx_fire;
+logic crc_pkt_start;
+logic crc_pkt_done;
+logic rx_in_pkt;
+logic rx_in_pkt_nxt;
+logic [1:0] crc_inflight_cnt;
+logic [1:0] crc_inflight_cnt_nxt;
 
 reg_fifo #(
   .DATA_WIDTH                ( 32                ),
@@ -251,17 +262,48 @@ reg_fifo #(
   .empty                     ( fifo_empty        )
 );
 
+assign axis_rx_fire  = i_axis_rx_tvalid && del_axis_tready [0] && fifo_tready;
+assign crc_pkt_start = axis_rx_fire && !rx_in_pkt && i_crc_en;
+assign crc_pkt_done  = o_axis_tx_tlast && i_axis_tx_tready && o_axis_tx_tvalid && del_crc_en [4];
+
+always_comb begin
+  rx_in_pkt_nxt = rx_in_pkt;
+  if (axis_rx_fire) begin
+    rx_in_pkt_nxt = !i_axis_rx_tlast;
+  end
+
+  case ({crc_pkt_start, crc_pkt_done})
+    2'b10: crc_inflight_cnt_nxt = crc_inflight_cnt + 1'b1;
+    2'b01: crc_inflight_cnt_nxt = crc_inflight_cnt - 1'b1;
+    default: crc_inflight_cnt_nxt = crc_inflight_cnt;
+  endcase
+end
+
+always @(posedge pclk) begin
+  if (prst) begin
+    rx_in_pkt          <= '0;
+    crc_inflight_cnt  <= '0;
+    fifo_tready        <= '1;
+  end
+  else begin
+    rx_in_pkt         <= rx_in_pkt_nxt;
+    crc_inflight_cnt <= crc_inflight_cnt_nxt;
+    fifo_tready       <= rx_in_pkt_nxt || (crc_inflight_cnt_nxt < 2'd2);
+  end
+end
+
 always @(posedge pclk) begin
   if (prst) begin
     fifo_rden <= '0;
   end
   else begin
-    fifo_rden <= o_axis_tx_tlast && i_axis_tx_tready && o_axis_tx_tvalid && !fifo_empty;
+    // Pop the FIFO when the last cycle of the packet is reached and the CRC is enabled
+    fifo_rden <= crc_pkt_done && !fifo_empty;
   end
 end
 
 
-assign fcs_cmb_valid_r = !fifo_empty;
+assign fcs_cmb_valid_r = !fifo_empty && !fifo_rden;
 //------------------------------------------------------------------------------------------------//
 // AXIS Output Path
 //------------------------------------------------------------------------------------------------//
@@ -272,7 +314,7 @@ generate
     // Delay data path to align CRC to same cycle
     axis_reg # (
       .DWIDTH             ( W_DATA + W_KEEP + W_USER + 1 + 1                                                                  ),
-      .SKID               ( (i==0)                                                                                            )
+      .SKID               ( ((i==0) || (i==3))                                                                                )
     ) u_axis_reg_ftr (
       .clk                ( pclk                                                                                              ),
       .rst                ( prst                                                                                              ),
@@ -286,13 +328,13 @@ generate
   end
 endgenerate
 
-assign del_axis_tvalid [0] = i_axis_rx_tvalid ;
+assign del_axis_tvalid [0] = i_axis_rx_tvalid && fifo_tready ;
 assign del_axis_tlast  [0] = i_axis_rx_tlast  ;
 assign del_axis_tkeep  [0] = i_axis_rx_tkeep  ;
 assign del_axis_tdata  [0] = i_axis_rx_tdata  ;
 assign del_axis_tuser  [0] = i_axis_rx_tuser  ;
 assign del_crc_en      [0] = i_crc_en         ;
-assign o_axis_rx_tready    = del_axis_tready [0];
+assign o_axis_rx_tready    = del_axis_tready [0] && fifo_tready;
 
 
 axis_ftr #(

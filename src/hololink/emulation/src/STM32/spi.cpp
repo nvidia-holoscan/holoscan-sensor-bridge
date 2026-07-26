@@ -18,8 +18,10 @@
  */
 
 #include "STM32/spi.hpp"
+#include "../../hsb_config.hpp"
 #include "STM32/hsb_emulator.hpp"
 #include "STM32/stm32_system.h"
+#include "board.h"
 #include <climits>
 #include <cstring>
 #include <limits.h>
@@ -37,7 +39,7 @@
 struct SpiControllerCtxt SPI_CONTROLLER_CTXT = { .control_address = SPI_CTRL };
 // if we need to add more controllers, we can add more instances of SPI_CONTROLLER_CTXT and use a map of their control addresses to differentiate
 
-/* SPI3 init function. this can be called multiple times on the same object
+/* SPI init function. this can be called multiple times on the same object
  to change initialization, but will only initialize the clocks and GPIOs once*/
 int spi_init(SPI_HandleTypeDef* hspi)
 {
@@ -52,49 +54,7 @@ int spi_init(SPI_HandleTypeDef* hspi)
     return 0;
 }
 
-void HAL_SPI_MspInit(SPI_HandleTypeDef* hspi)
-{
-    GPIO_InitTypeDef GPIO_InitStruct = { 0 };
-    if (hspi->Instance == SPI3) {
-        __HAL_RCC_SPI3_CLK_ENABLE();
-        /**SPI3 GPIO Configuration
-        PB2     ------> SPI3_MOSI
-        PC10     ------> SPI3_SCK
-        PC11     ------> SPI3_MISO
-        */
-        GPIO_InitStruct.Pin = GPIO_PIN_2;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-        GPIO_InitStruct.Alternate = GPIO_AF7_SPI3;
-        HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-        GPIO_InitStruct.Pin = GPIO_PIN_10 | GPIO_PIN_11;
-        GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-        GPIO_InitStruct.Pull = GPIO_NOPULL;
-        GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-        GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
-        HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-    }
-    // deferred to spi_init function
-}
-
-void HAL_SPI_MspDeInit(SPI_HandleTypeDef* spiHandle)
-{
-
-    if (spiHandle->Instance == SPI3) {
-        __HAL_RCC_SPI3_CLK_DISABLE();
-
-        /**SPI3 GPIO Configuration
-        PB2     ------> SPI3_MOSI
-        PC10     ------> SPI3_SCK
-        PC11     ------> SPI3_MISO
-        */
-        HAL_GPIO_DeInit(GPIOB, GPIO_PIN_2);
-
-        HAL_GPIO_DeInit(GPIOC, GPIO_PIN_10 | GPIO_PIN_11);
-    }
-}
+// HAL_SPI_MspInit / HAL_SPI_MspDeInit live in the board-specific source (board.c).
 
 namespace hololink::emulation {
 int spi_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
@@ -186,7 +146,7 @@ int spi_set_mode(SpiControllerCtxt* spi_ctxt, uint32_t spi_mode)
     }
     hspi->Init.CLKPolarity = (spi_mode & SPI_CFG_CPOL) ? SPI_POLARITY_HIGH : SPI_POLARITY_LOW;
     hspi->Init.CLKPhase = (spi_mode & SPI_CFG_CPHA) ? SPI_PHASE_2EDGE : SPI_PHASE_1EDGE;
-    hspi->Init.BaudRatePrescaler = (spi_mode & SPI_PRESCALER_MASK) << (SPI_CR1_BR_Pos - 1); //  see stm32f767xx.h which only has 3 bits and shifts 3 left
+    hspi->Init.BaudRatePrescaler = (spi_mode & SPI_PRESCALER_MASK) << (SPI_CR1_BR_Pos - 1);
     return 0;
 }
 
@@ -211,10 +171,10 @@ int reconfigure_spi(SpiControllerCtxt* spi_ctxt, uint32_t spi_mode)
 void spi_constructor(SpiControllerCtxt* spi_ctxt, uint32_t controller_address)
 {
     SPI_HandleTypeDef* hspi = &spi_ctxt->hspi;
-    hspi->Instance = SPI3;
+    hspi->Instance = STM32_CONF_SPI_INSTANCE;
     hspi->Init.Mode = SPI_MODE_MASTER;
     hspi->Init.Direction = SPI_DIRECTION_2LINES;
-    hspi->Init.NSS = SPI_NSS_SOFT;
+    hspi->Init.NSS = SPI_NSS_HARD_OUTPUT;
     hspi->Init.FirstBit = SPI_FIRSTBIT_MSB;
     hspi->Init.TIMode = SPI_TIMODE_DISABLE;
     hspi->Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -223,7 +183,7 @@ void spi_constructor(SpiControllerCtxt* spi_ctxt, uint32_t controller_address)
     hspi->Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
     // spi_ctxt->control_address should already be set in the static instance
     if (spi_ctxt->control_address != controller_address) {
-        Error_Handler();
+        Error_Handler(NULL);
     }
     spi_ctxt->data_address = spi_ctxt->control_address + SPI_REG_DATA_BUFFER;
     spi_ctxt->status = SPI_IDLE;

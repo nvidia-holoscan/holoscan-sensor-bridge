@@ -139,7 +139,6 @@ i2c_states state,state_nxt, state_prev;
 // Data Buffer
 //------------------------------------------------------------------------------------------------//
 logic        db_wr_en;
-logic        wr_en;
 logic [31:0] db_wr_data;
 logic [6:0]  db_addr;
 logic [31:0] db_rd_data;
@@ -148,13 +147,11 @@ logic [7:0]  i2c_db_addr        ;
 logic [8:0]  transaction_cnt    ;
 logic [8:0]  wr_ptr             ;
 logic [8:0]  rd_ptr             ;
-logic [7:0]  i2c_db_data        ;
 logic [7:0]  rd_data            ;
 logic        ack_rise ;
 logic        cmd_ack_prev;
 logic        i2c_busy;
 logic        idle;
-logic        fsm_done;
 logic        i2c_al;
 logic        cmd_ack;
 logic        read;

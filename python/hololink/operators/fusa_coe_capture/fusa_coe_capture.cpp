@@ -47,6 +47,7 @@ public:
         py::object hololink_channel,
         py::object device,
         const std::string& out_tensor_name = "",
+        bool cpu_output = false,
         const std::string& name = "fusa_coe_capture")
         : device_(device)
         , FusaCoeCaptureOp(holoscan::ArgList {
@@ -55,6 +56,7 @@ public:
               holoscan::Arg { "timeout", timeout },
               holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
               holoscan::Arg { "out_tensor_name", out_tensor_name },
+              holoscan::Arg { "cpu_output", cpu_output },
               holoscan::Arg { "device_start", std::function<void()>([this]() {
                                  py::gil_scoped_acquire guard;
                                  device_.attr("start")();
@@ -93,6 +95,7 @@ PYBIND11_MODULE(_fusa_coe_capture, m)
                            py::object,
                            py::object,
                            const std::string&,
+                           bool,
                            const std::string&>(),
                       "fragment"_a,
                       "interface"_a,
@@ -101,6 +104,7 @@ PYBIND11_MODULE(_fusa_coe_capture, m)
                       "hololink_channel"_a,
                       "device"_a,
                       "out_tensor_name"_a = ""s,
+                      "cpu_output"_a = false,
                       "name"_a = "fusa_coe_capture"s)
                   .def("setup", &FusaCoeCaptureOp::setup, "spec"_a)
                   .def("start", &FusaCoeCaptureOp::start)

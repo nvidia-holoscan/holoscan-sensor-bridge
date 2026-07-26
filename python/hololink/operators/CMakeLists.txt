@@ -19,12 +19,9 @@ copy_hololink_python_files(
     FILES
         __init__.py
         base_receiver_op.py
-        hsb_controller_op.py
         image_shift_to_uint8_operator.py
         linux_coe_receiver_operator.py
-        linux_controller_receiver.py
         linux_receiver_operator.py
-        roce_controller_receiver.py
 )
 
 # include the operators

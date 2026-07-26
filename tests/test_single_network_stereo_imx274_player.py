@@ -29,7 +29,7 @@ from examples import (
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 def test_single_network_stereo_imx274_player(
-    headless, frame_limit, ibv_name, ibv_port, capsys
+    headless, frame_limit, hololink_address, ibv_name, ibv_port, capsys
 ):
     arguments = [
         sys.argv[0],
@@ -39,6 +39,8 @@ def test_single_network_stereo_imx274_player(
         ibv_name,
         "--ibv-port",
         str(ibv_port),
+        "--hololink",
+        hololink_address,
     ]
     if headless:
         arguments.extend(["--headless"])
@@ -52,11 +54,15 @@ def test_single_network_stereo_imx274_player(
 
 
 @pytest.mark.skip_unless_imx274
-def test_single_network_linux_stereo_imx274_player(headless, frame_limit, capsys):
+def test_single_network_linux_stereo_imx274_player(
+    headless, frame_limit, hololink_address, capsys
+):
     arguments = [
         sys.argv[0],
         "--frame-limit",
         str(frame_limit),
+        "--hololink",
+        hololink_address,
     ]
     if headless:
         arguments.extend(["--headless"])

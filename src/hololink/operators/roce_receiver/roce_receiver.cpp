@@ -600,6 +600,16 @@ void RoceReceiver::blocking_monitor()
                     break;
                 }
 
+                if (ib_wc.status != IBV_WC_SUCCESS) {
+                    HSB_LOG_ERROR(
+                        "CQ error: qp_num={} wr_id={:#x} status={} ({}) vendor_err={:#x} opcode={} byte_cnt={} wc_flags={:#x}",
+                        ib_wc.qp_num, ib_wc.wr_id,
+                        static_cast<int>(ib_wc.status), ibv_wc_status_str(ib_wc.status),
+                        ib_wc.vendor_err, static_cast<int>(ib_wc.opcode),
+                        ib_wc.byte_len, ib_wc.wc_flags);
+                    continue;
+                }
+
                 frame_count++;
                 core::NvtxTrace::event_u64("frame_count", frame_count);
 
@@ -610,7 +620,7 @@ void RoceReceiver::blocking_monitor()
                 ssize_t buffer_size = read(rx_write_requests_fd_, buffer, sizeof(buffer));
 
                 const uint32_t imm_data = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
-                const uint32_t page = imm_data & 0xFFF;
+                const uint32_t page = page_from_imm(imm_data);
                 if (page >= pages_) {
                     throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
                 }
@@ -658,7 +668,7 @@ void RoceReceiver::blocking_monitor()
                 descriptor->received_.tv_sec = event_time.tv_sec;
                 descriptor->received_.tv_nsec = event_time.tv_nsec;
                 descriptor->dropped_ = dropped_;
-                descriptor->received_psn_ = (imm_data >> 12) & 0xFFFFF;
+                descriptor->received_psn_ = psn_from_imm(imm_data);
 
                 // Send it
                 ready_.push(descriptor);
@@ -732,9 +742,20 @@ void RoceReceiver::free_ib_resources()
         // we destroy the QP and deregister the MR.
         if (ib_cq_ != NULL) {
             struct ibv_wc wc;
+            unsigned drained = 0;
+            unsigned non_flush_errors = 0;
             while (ibv_poll_cq(ib_cq_, 1, &wc) > 0) {
-                // discard -- these are all error completions
+                drained++;
+                if (wc.status != IBV_WC_SUCCESS && wc.status != IBV_WC_WR_FLUSH_ERR) {
+                    non_flush_errors++;
+                    HSB_LOG_ERROR(
+                        "Teardown CQ drain: qp_num={} wr_id={:#x} status={} ({}) vendor_err={:#x} byte_cnt={}",
+                        wc.qp_num, wc.wr_id, static_cast<int>(wc.status),
+                        ibv_wc_status_str(wc.status), wc.vendor_err, wc.byte_len);
+                }
             }
+            HSB_LOG_DEBUG("Teardown drained {} CQ entries ({} non-flush errors).",
+                drained, non_flush_errors);
         }
 
         if (ibv_destroy_qp(ib_qp_)) {
@@ -821,7 +842,7 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
         ready_.pop();
 
         Hololink::FrameMetadata frame_metadata = get_frame_metadata(ready_descriptor->metadata_buffer_.get(), ready_descriptor->metadata_event_.get());
-        if ((frame_metadata.psn & 0xFFFFF) != ready_descriptor->received_psn_) {
+        if (!same_psn(frame_metadata.psn, ready_descriptor->received_psn_)) {
             // This indicates that the distal end rewrote the receiver buffer.
             HSB_LOG_ERROR("Metadata psn={} but received_psn={}.", frame_metadata.psn, ready_descriptor->received_psn_);
         }
@@ -917,6 +938,21 @@ uint64_t RoceReceiver::external_frame_memory()
 void RoceReceiver::set_frame_ready(std::function<void(const RoceReceiver&)> frame_ready)
 {
     frame_ready_ = frame_ready;
+}
+
+uint32_t RoceReceiver::page_from_imm(uint32_t imm_data)
+{
+    return imm_data & 0xFFF;
+}
+
+uint32_t RoceReceiver::psn_from_imm(uint32_t imm_data)
+{
+    return (imm_data >> 12) & 0xFFFFF;
+}
+
+bool RoceReceiver::same_psn(uint32_t frame_metadata_psn, uint32_t received_psn)
+{
+    return ((frame_metadata_psn & 0xFFFFF) == received_psn);
 }
 
 } // namespace hololink::operators

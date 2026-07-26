@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -165,12 +165,14 @@ namespace {
             metadata["fpga_uuid"] = MICROCHIP_POLARFIRE_UUID;
         } else if (board_id == LEOPARD_EAGLE_BOARD_ID) {
             metadata["fpga_uuid"] = LEOPARD_EAGLE_UUID;
+        } else if (board_id == TT_DA326_BOARD_ID) {
+            metadata["fpga_uuid"] = TT_DA326_UUID;
         }
     }
 
     static void deserialize_bootp_v2(core::Deserializer& deserializer, Metadata& metadata)
     {
-        uint16_t reserved_1 = 0;
+        uint16_t compat_id = 0;
         std::string fpga_uuid;
         std::string serial_number;
         uint32_t transmitted_packet_count = 0;
@@ -178,7 +180,7 @@ namespace {
         uint16_t fpga_crc = 0;
         uint8_t ignored = 0;
 
-        if (!(deserializer.next_uint16_le(reserved_1)
+        if (!(deserializer.next_uint16_le(compat_id)
                 && next_uuid_as_string(deserializer, fpga_uuid)
                 && deserializer.next_uint24_be(transmitted_packet_count)
                 && deserializer.next_uint8(ignored)
@@ -194,6 +196,7 @@ namespace {
             return;
         }
 
+        metadata["compat_id"] = static_cast<int64_t>(compat_id);
         metadata["fpga_uuid"] = fpga_uuid;
         metadata["transmitted_packet_count"] = transmitted_packet_count;
         metadata["serial_number"] = serial_number;
@@ -382,11 +385,11 @@ void Enumerator::enumeration_packets(
         // the select() call to the remaining time
         timeval* select_timeout = nullptr;
         if (timeout) {
-            if (timeout->expired()) {
+            // convert floating point time to integer seconds and microseconds
+            double trigger_s = 0.0f;
+            if (timeout->expired(trigger_s)) {
                 return;
             }
-            // convert floating point time to integer seconds and microseconds
-            const double trigger_s = timeout->trigger_s();
             double integral = 0.f;
             double fractional = std::modf(trigger_s, &integral);
             timeout_value.tv_sec = (__time_t)(integral);
@@ -676,7 +679,11 @@ void Enumerator::configure_default_enumeration_strategies()
     Metadata hololink_lite_metadata;
     hololink_lite_metadata["board_description"] = "hololink-lite";
     hololink_lite_metadata["gpio_pin_count"] = 16;
-    auto hololink_lite_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(hololink_lite_metadata);
+    auto hololink_lite_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(
+        hololink_lite_metadata,
+        3, // total_sensors (sensor 2 is the I2S audio interface)
+        2, // total_dataplanes
+        2); // sifs_per_sensor
     (*strategies)[HOLOLINK_LITE_UUID] = hololink_lite_enumeration_strategy;
 
     Metadata hololink_nano_metadata;
@@ -703,6 +710,17 @@ void Enumerator::configure_default_enumeration_strategies()
     auto leopard_eagle_enumeration_strategy = std::make_shared<LeopardEagleEnumerationStrategy>();
     (*strategies)[LEOPARD_EAGLE_UUID] = leopard_eagle_enumeration_strategy;
 
+    Metadata tt_da326_metadata;
+    tt_da326_metadata["board_description"] = "TauroTech DA326";
+    tt_da326_metadata["gpio_pin_count"] = 32;
+    unsigned tt_da326_total_sensors = 2;
+    unsigned tt_da326_total_dataplanes = 1;
+    unsigned tt_da326_sifs_per_sensor = 1;
+    auto tt_da326_enumeration_strategy = std::make_shared<BasicEnumerationStrategy>(tt_da326_metadata,
+        tt_da326_total_sensors, tt_da326_total_dataplanes, tt_da326_sifs_per_sensor);
+    tt_da326_enumeration_strategy->block_enable(false);
+    (*strategies)[TT_DA326_UUID] = tt_da326_enumeration_strategy;
+
     done = true;
 }
 
@@ -711,7 +729,11 @@ bool Enumerator::configure_socket(int fd, uint32_t port /*=12267u*/, const std::
     // Allow other programs to receive these broadcast packets.
     const int reuse_port = 1;
     if (setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &reuse_port, sizeof(reuse_port)) < 0) {
-        throw std::runtime_error(fmt::format("setsockopt failed with errno={}: \"{}\"", errno, strerror(errno)));
+        throw std::runtime_error(fmt::format("setsockopt for SO_REUSEPORT failed with errno={}: \"{}\"", errno, strerror(errno)));
+    }
+    const int reuse_addr = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &reuse_addr, sizeof(reuse_addr)) < 0) {
+        throw std::runtime_error(fmt::format("setsockopt for SO_REUSEADDR failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
 
     // Tell us what interface the request came in on, so we reply to the same place
@@ -770,6 +792,7 @@ std::tuple<Metadata, std::vector<uint8_t>> Enumerator::handle_bootp_fd(int fd)
             throw std::runtime_error(fmt::format("recvmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
         }
     } while (received_bytes <= 0);
+    iobuf.resize(static_cast<std::size_t>(received_bytes));
 
     char peer_addr_buf[INET_ADDRSTRLEN];
     const std::string peer_address_string(inet_ntop(AF_INET, &peer_address.sin_addr, peer_addr_buf, sizeof(peer_addr_buf)));
@@ -801,13 +824,18 @@ std::tuple<Metadata, std::vector<uint8_t>> Enumerator::handle_bootp_fd(int fd)
 std::shared_ptr<Enumerator::ReactorEnumerator> Enumerator::ReactorEnumerator::get_reactor_enumerator()
 {
     // Use a leaked static pointer to avoid destruction order issues
-    // This ensures the shared_ptr control block survives until program exit
+    // This ensures the shared_ptr control block survives until program exit.
+    // start() is no longer called here — register_ip() starts the
+    // listener lazily on demand, and unregister_ip() stops it when
+    // the last per-IP callback is removed. That makes
+    // Reactor::reset_framework() see exactly one fd_callback (the
+    // control channel) at idle, instead of the legacy enumerator's
+    // listener being permanently parked on the Reactor.
     static auto* instance_ptr = new std::shared_ptr<ReactorEnumerator>();
     static std::once_flag init_flag;
 
     std::call_once(init_flag, []() {
         *instance_ptr = std::shared_ptr<ReactorEnumerator>(new ReactorEnumerator());
-        (*instance_ptr)->start();
     });
 
     return *instance_ptr;
@@ -830,22 +858,43 @@ Enumerator::ReactorEnumerator::~ReactorEnumerator()
 
 void Enumerator::ReactorEnumerator::start()
 {
-    // Create UDP socket
-    socket_fd_ = socket(AF_INET, SOCK_DGRAM, 0);
-    if (socket_fd_ < 0) {
+    // Create UDP socket. Hold it in a UniqueFileDescriptor so that the fd is
+    // closed if configure_socket() or add_fd_callback() throws below.
+    core::UniqueFileDescriptor socket_fd(socket(AF_INET, SOCK_DGRAM, 0));
+    if (socket_fd.get() < 0) {
         throw std::runtime_error("Failed to create socket for ReactorEnumerator");
     }
 
     // Configure the socket
-    Enumerator::configure_socket(socket_fd_);
+    Enumerator::configure_socket(socket_fd.get());
 
     // Register with reactor
-    reactor_->add_fd_callback(socket_fd_,
+    reactor_->add_fd_callback(socket_fd.get(),
         [this](int fd, short events) { this->fd_callback(fd, events); });
+
+    socket_fd_ = socket_fd.release();
+}
+
+void Enumerator::ReactorEnumerator::stop()
+{
+    if (socket_fd_ >= 0) {
+        reactor_->remove_fd_callback(socket_fd_);
+        close(socket_fd_);
+        socket_fd_ = -1;
+    }
 }
 
 void Enumerator::ReactorEnumerator::fd_callback(int fd, int events)
 {
+    // If poll signaled an error or hangup on the socket (e.g. it was closed
+    // out from under us), calling recvmsg() would throw and kill the reactor
+    // thread. Unregister so we stop being woken up on this fd.
+    if (events & (POLLERR | POLLHUP | POLLNVAL)) {
+        HSB_LOG_ERROR(fmt::format("Error on enumeration socket fd={}, events=0x{:x}; unregistering.", fd, events));
+        stop();
+        return;
+    }
+
     auto [metadata, packet] = Enumerator::handle_bootp_fd(fd);
 
     std::lock_guard<std::recursive_mutex> lock(lock_);
@@ -870,6 +919,13 @@ void Enumerator::ReactorEnumerator::fd_callback(int fd, int events)
 std::shared_ptr<Enumerator::CallbackHandle> Enumerator::ReactorEnumerator::register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback)
 {
     std::lock_guard<std::recursive_mutex> lock(lock_);
+
+    // Lazily start the listener on the first registration after the
+    // map empties (or after construction). Pair with stop() in
+    // unregister_ip below.
+    if (socket_fd_ < 0) {
+        start();
+    }
 
     uint64_t callback_id = next_callback_id_++;
     auto handle = std::make_shared<CallbackHandle>(callback_id, ip, callback);
@@ -901,6 +957,13 @@ void Enumerator::ReactorEnumerator::unregister_ip(const std::shared_ptr<Callback
         if (callbacks.empty()) {
             ip_callback_map_.erase(callbacks_iter);
         }
+    }
+
+    // When no per-IP callbacks remain, tear down the listener fd
+    // so Reactor::reset_framework() sees only the control channel.
+    // A subsequent register_ip() lazily restarts it.
+    if (ip_callback_map_.empty()) {
+        stop();
     }
 }
 

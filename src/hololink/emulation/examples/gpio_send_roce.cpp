@@ -21,6 +21,7 @@ See README.md for detailed information.
 #include "hsb_emulator.hpp"
 #include "net.hpp"
 #include "rocev2_data_plane.hpp"
+#include "utils.hpp"
 
 /*
 @brief Example gpio status send over RoCEv2 from MCU to host that is triggered by an internal timer.
@@ -174,7 +175,7 @@ int update_send_delay(void* ctxt, struct AddressValuePair* addr_vals, int max_co
     }
     if (i) {
         if (timer_update(send_delay_us)) {
-            Error_Handler();
+            Error_Handler("Failed to update timer");
         }
     }
     return i;
@@ -187,7 +188,7 @@ int main(void)
     RoCEv2DataPlane data_plane(hsb, IPAddress_from_string("192.168.0.2"), 0, 0);
 
     if (hsb.register_write_callback(SEND_DELAY_ADDRESS, SEND_DELAY_ADDRESS + REGISTER_SIZE, update_send_delay, nullptr)) {
-        Error_Handler();
+        Error_Handler("Failed to register write callback");
     }
 
     // initialize components and modules of the HSBEmulator

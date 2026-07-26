@@ -28,7 +28,6 @@
 #include <string.h>
 #include <thread>
 #include <time.h>
- 
 #include "emulator_utils.hpp"
  
 using namespace hololink::emulation;
@@ -101,6 +100,42 @@ uint32_t bayer8p_to_T_R12_PK_ISP(uint8_t * dest, uint8_t * src, uint16_t pixel_h
     }
     return 0;
 }
+
+// pack 8-bit bayer pattern into 12-bit-per-pixel slots without rescaling (2 pixels per 3 bytes)
+// every 2 input bytes (px0, px1) -> 3 output bytes {px0, px1, 0x00}
+uint32_t bayer8p_to_12p(uint8_t * dest, uint8_t * src, uint16_t pixel_height, uint16_t pixel_width) {
+    // every 2 pixels gets packed into 3 bytes
+    uint16_t line_bytes = (pixel_width + 1) / 2 * 3;
+    // line_bytes gets padded to 8 byte boundary (matches bayer8p_to_10p)
+    line_bytes = ((line_bytes + 7) >> 3) << 3;
+    if (!dest) {
+        return pixel_height * line_bytes;
+    }
+
+    auto threads_per_block = dim3(32, 32);
+    auto blocks_per_grid = dim3((pixel_width + 2 * threads_per_block.x - 1) / threads_per_block.x / 2, (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
+    bayer8p_to_12p_kernel<<<blocks_per_grid, threads_per_block>>>(dest, line_bytes, src, pixel_height, pixel_width);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("bayer8p_to_12p_kernel failed: " + std::string(cudaGetErrorString(error)));
+    }
+    cudaDeviceSynchronize();
+    return 0;
+}
+
+// generate 8-bit bayer pattern (RGGB)
+void generate_bayerRG8p(uint8_t * data, uint16_t pixel_height, uint16_t pixel_width)
+{
+    auto threads_per_block = dim3(32, 32);
+    auto blocks_per_grid = dim3((pixel_width + threads_per_block.x - 1) / threads_per_block.x, (pixel_height + threads_per_block.y - 1) / threads_per_block.y);
+    generate_bayerRG8p_kernel<<<blocks_per_grid, threads_per_block>>>(data, pixel_height, pixel_width);
+    cudaError_t error = cudaGetLastError();
+    if (error != cudaSuccess) {
+        throw std::runtime_error("generate_bayerRG8p_kernel failed: " + std::string(cudaGetErrorString(error)));
+    }
+    cudaDeviceSynchronize();
+}
+
 
 // generate 8-bit bayer pattern (GBRG)
 void generate_bayerGB8p(uint8_t * data, uint16_t pixel_height, uint16_t pixel_width)
@@ -308,6 +343,7 @@ void generate_vb1940_frame(DLTensor &frame_data, sensors::Vb1940Emulator& vb1940
     uint16_t line_bytes = vb1940.get_bytes_per_line();
     uint32_t image_size = pixel_height * line_bytes;
     if (packetize) { // if packetizing, the frame generator will return the modified image size
+        start_byte = (start_byte + 63) & (~(63)); // round up to next 64-bytes for COE
         image_size = frame_generator(nullptr, nullptr, pixel_height, pixel_width);
         line_bytes = image_size / pixel_height;
     }
@@ -324,6 +360,7 @@ void generate_vb1940_frame(DLTensor &frame_data, sensors::Vb1940Emulator& vb1940
         uint8_t * gbrg = nullptr;
         error = cudaMalloc(&gbrg, pixel_height * pixel_width);
         if (error != cudaSuccess) {
+            cudaFree(frame_data.data);
             frame_data.data = nullptr;
             throw std::runtime_error("CUDA allocation failed for gbrg: " + std::string(cudaGetErrorString(error)));
         }
@@ -340,6 +377,10 @@ void generate_vb1940_frame(DLTensor &frame_data, sensors::Vb1940Emulator& vb1940
         uint8_t * host_data = new uint8_t[image_size];
         error = cudaMemcpy(host_data, frame_data.data, image_size, cudaMemcpyDeviceToHost);
         if (error != cudaSuccess) {
+            delete[] host_data;
+            host_data = nullptr;
+            cudaFree(frame_data.data);
+            frame_data.data = nullptr;
             throw std::runtime_error("CUDA Memcpy failed: " + std::string(cudaGetErrorString(error)));
         }
         cudaFree(frame_data.data);
@@ -370,6 +411,145 @@ void loop_single_vb1940(struct LoopConfig& loop_config, sensors::Vb1940Emulator&
                 frame_count++;
             }
         }
+        sleep_frame_rate(&frame_start_time, loop_config);
+    }
+}
+
+// generate an imx274 csi-2 format frame with optional packetization (query data_plane.packetizer_enabled())
+void generate_imx274_frame(DLTensor &frame_data, sensors::IMX274Emulator& imx274, bool packetize)
+{
+    const bool is_gpu = frame_data.device.device_type == kDLCUDA;
+    // clean up any previous frame data
+    if (frame_data.data) {
+        if (is_gpu) {
+            cudaFree(frame_data.data);
+        } else {
+            delete[] static_cast<uint8_t*>(frame_data.data);
+        }
+        frame_data.data = nullptr;
+    }
+
+    uint32_t (*frame_generator)(uint8_t * frame, uint8_t * gbrg, uint16_t pixel_height, uint16_t pixel_width) = nullptr;
+    if (imx274.get_pixel_bits() == 10) {
+        frame_generator = packetize ? bayer8p_to_T_X2Rc10Rb10Ra10 : bayer8p_to_10p;
+    } else if (imx274.get_pixel_bits() == 12) {
+        frame_generator = packetize ? bayer8p_to_T_R12_PK_ISP : bayer8p_to_12p;
+    }
+
+    uint16_t pixel_height = imx274.get_pixel_height();
+    uint16_t pixel_width = imx274.get_pixel_width();
+    uint32_t start_byte = imx274.get_image_start_byte();
+    uint32_t line_bytes = imx274.get_bytes_per_line();
+    uint32_t image_size = start_byte + pixel_height * line_bytes;
+    if (packetize) { // if packetizing, the frame generator will return the modified image size
+        image_size = frame_generator(nullptr, nullptr, pixel_height, pixel_width);
+        line_bytes = image_size / pixel_height;
+        if (imx274.get_pixel_bits() == 12) {
+            start_byte = 256 + line_bytes * 16;
+        } else {
+            start_byte = 256 + line_bytes * 8;
+        }
+        image_size = start_byte + image_size;
+    }
+
+    cudaError_t error = cudaMalloc(&frame_data.data, image_size);
+    if (error != cudaSuccess) {
+        frame_data.data = nullptr;
+        throw std::runtime_error("CUDA allocation failed for frame data: " + std::string(cudaGetErrorString(error)));
+    }
+    cudaMemset(frame_data.data, 0, image_size);
+
+    if (frame_generator) {
+        uint8_t * gbrg = nullptr;
+        error = cudaMalloc(&gbrg, pixel_height * pixel_width);
+        if (error != cudaSuccess) {
+            cudaFree(frame_data.data);
+            frame_data.data = nullptr;
+            throw std::runtime_error("CUDA allocation failed for gbrg: " + std::string(cudaGetErrorString(error)));
+        }
+        generate_bayerRG8p(gbrg, pixel_height, pixel_width);
+        frame_generator(((uint8_t*)frame_data.data) + start_byte, gbrg, pixel_height, pixel_width);
+        cudaFree(gbrg);
+    } else { // generate_bayerRG8p is enough for raw8
+        generate_bayerRG8p(((uint8_t*)frame_data.data) + start_byte, pixel_height, pixel_width);
+    }
+    frame_data.shape[0] = image_size;
+
+    if (!is_gpu) { // if example wants to exercise sending host memory
+        uint8_t * host_data = new uint8_t[image_size];
+        error = cudaMemcpy(host_data, frame_data.data, image_size, cudaMemcpyDeviceToHost);
+        if (error != cudaSuccess) {
+            delete[] host_data;
+            cudaFree(frame_data.data);
+            frame_data.data = nullptr;
+            throw std::runtime_error("CUDA Memcpy failed: " + std::string(cudaGetErrorString(error)));
+        }
+        cudaFree(frame_data.data);
+        frame_data.data = host_data;
+    }
+}
+
+// the thread loop for serving a frame (configured on host side) in imx274 csi-2 format as if from a single imx274 sensor
+void loop_single_imx274(struct LoopConfig& loop_config, sensors::IMX274Emulator& imx274, DataPlane& data_plane, DLTensor& frame_data)
+{
+    bool streaming = false;
+    unsigned int frame_count = 0;
+    while (!loop_config.num_frames || (frame_count < loop_config.num_frames)) {
+        struct timespec frame_start_time;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start_time);
+        if (!streaming && imx274.is_streaming()) {
+            streaming = true;
+            generate_imx274_frame(frame_data, imx274, data_plane.packetizer_enabled());
+        } else if (!imx274.is_streaming()) {
+            streaming = false;
+        }
+        if (streaming) {
+            int64_t sent_bytes = data_plane.send(frame_data);
+            if (sent_bytes < 0) {
+                throw std::runtime_error("Error sending data: " + std::to_string(errno) + " " + std::string(strerror(errno)));
+            }
+            if (sent_bytes > 0) { // only increment frame_count if data was sent
+                frame_count++;
+            }
+        }
+        sleep_frame_rate(&frame_start_time, loop_config);
+    }
+}
+
+// the thread loop for serving two frames simultaneously (configured on host side) in imx274 csi-2 format as if from stereo imx274 sensors
+void loop_stereo_imx274(struct LoopConfig& loop_config, sensors::IMX274Emulator& imx274_0, DataPlane& data_plane_0, DLTensor& tensor_0, sensors::IMX274Emulator& imx274_1, DataPlane& data_plane_1, DLTensor& tensor_1)
+{
+    bool streaming = false;
+    unsigned int frame_count = 0;
+    while (!loop_config.num_frames || (frame_count < loop_config.num_frames)) {
+        struct timespec frame_start_time;
+        clock_gettime(CLOCK_MONOTONIC, &frame_start_time);
+        if (!streaming && (imx274_0.is_streaming() && imx274_1.is_streaming())) {
+            streaming = true;
+            generate_imx274_frame(tensor_0, imx274_0, data_plane_0.packetizer_enabled());
+            generate_imx274_frame(tensor_1, imx274_1, data_plane_1.packetizer_enabled());
+        } else if (!imx274_0.is_streaming() && !imx274_1.is_streaming()) {
+            streaming = false;
+        }
+        if (streaming) {
+            int64_t sent_bytes_0 = 0, sent_bytes_1 = 0;
+            if (imx274_0.is_streaming()) {
+                sent_bytes_0 = data_plane_0.send(tensor_0);
+                if (sent_bytes_0 < 0) {
+                    throw std::runtime_error("Error sending data on channel 0 {" + std::to_string(sent_bytes_0) + "/" + std::to_string(tensor_0.shape[0]) + "}: " + std::to_string(errno) + " " + std::string(strerror(errno)));
+                }
+            }
+            if (imx274_1.is_streaming()) {
+                sent_bytes_1 = data_plane_1.send(tensor_1);
+                if (sent_bytes_1 < 0) {
+                    throw std::runtime_error("Error sending data on channel 1 {" + std::to_string(sent_bytes_1) + "/" + std::to_string(tensor_1.shape[0]) + "}: " + std::to_string(errno) + " " + std::string(strerror(errno)));
+                }
+            }
+            if (sent_bytes_0 + sent_bytes_1 > 0) {
+                frame_count++;
+            }
+        }
+
         sleep_frame_rate(&frame_start_time, loop_config);
     }
 }

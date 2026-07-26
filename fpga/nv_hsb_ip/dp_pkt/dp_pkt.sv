@@ -52,8 +52,9 @@ module dp_pkt
   output                            o_axis_tlast,
   output    [W_DATA-1:0]            o_axis_tdata,
   output    [W_KEEP-1:0]            o_axis_tkeep,
-  output                            o_axis_tuser,
-  input                             i_axis_tready
+  input                             i_axis_tready,
+  // Early Packet Detection
+  output                            o_hif_not_busy_soon
 );
 
 //------------------------------------------------------------------------------------------------//
@@ -62,19 +63,22 @@ module dp_pkt
 localparam NUM_PAD_BITS    = 7; //128B alignment
 localparam CYCLES_TO_PAGES = NUM_PAD_BITS-($clog2(W_KEEP));
 localparam WIDE_DATA       = (W_DATA > 512) ? 1 : 0;
+localparam CYCLES_AHEAD       = 10; // assert when (pkt_len - pkt_cnt) < CYCLES_AHEAD
+localparam MIN_OVERLAP_CYCLES = 8;  // power of 2; pkt_len >= this <=> |pkt_len[W_CNT-1:MIN_OVERLAP_IDX]
+localparam MIN_OVERLAP_IDX    = $clog2(MIN_OVERLAP_CYCLES);
 
 logic                       arb_axis_tvalid;
 logic                       arb_axis_tlast ;
 logic     [W_DATA-1:0]      arb_axis_tdata ;
 logic     [W_KEEP-1:0]      arb_axis_tkeep ;
-logic                       arb_axis_tuser ;
 
 logic                       pkt_active;
+logic                       pkt_tready;
 logic                       pkt_pad;
 logic                       pkt_last;
-logic                       pkt_idle;
 
 logic [W_INPT-1:0]          gnt_idx;
+logic [N_INPT-1:0]          gnt_onehot;
 logic [W_CNT-1:0]           pkt_len;
 logic [W_CNT-1:0]           pkt_cnt;
 logic [W_CNT-1:0]           pkt_pad_cnt;
@@ -83,20 +87,62 @@ logic                       unsync;
 
 logic [W_CNT-1:0]           unsync_cnt;
 logic [CYCLES_TO_PAGES-1:0] last_cycle_pad;
-
+logic                       hif_not_busy_soon;
+logic                       near_pkt_end;
 
 
 always_ff @(posedge i_pclk) begin
   if (i_prst) begin
-    pkt_active  <= '0;
-    gnt_idx     <= '0;
-    pkt_pad     <= '0;
-    pkt_cnt     <= 'd1;
-    pkt_pad_cnt <= '0;
-    sif_tlast   <= '0;
-    unsync_cnt  <= '0;
-    unsync      <= '0;
-    pkt_len     <= '0;
+    near_pkt_end <= 1'b0;
+  end
+  else if (!pkt_active || pkt_pad) begin
+    near_pkt_end <= 1'b0;
+  end
+  else begin
+    near_pkt_end <= |pkt_len[W_CNT-1:MIN_OVERLAP_IDX] &&
+                    ((pkt_len - pkt_cnt) < W_CNT'(CYCLES_AHEAD));
+  end
+end
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    hif_not_busy_soon <= 1'b0;
+  end
+  else if (!pkt_active || pkt_pad) begin
+    hif_not_busy_soon <= 1'b0;
+  end
+  else begin
+    hif_not_busy_soon <= near_pkt_end;
+  end
+end
+
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    gnt_onehot <= '0;
+  end
+  else begin
+    if (!pkt_active && i_pkt_len_en) begin
+      gnt_onehot <= (1 << i_gnt_idx);
+    end
+    else begin
+      gnt_onehot <= gnt_onehot;
+    end
+  end
+end
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    pkt_active        <= '0;
+    pkt_tready        <= '0;
+    gnt_idx           <= '0;
+    pkt_pad           <= '0;
+    pkt_cnt           <= 'd1;
+    pkt_pad_cnt       <= '0;
+    sif_tlast         <= '0;
+    unsync_cnt        <= '0;
+    unsync            <= '0;
+    pkt_len           <= '0;
   end
   else begin
     unsync_cnt     <= pkt_pad_cnt + last_cycle_pad;
@@ -107,6 +153,7 @@ always_ff @(posedge i_pclk) begin
         end
         if (pkt_cnt == pkt_len) begin
           pkt_active <= '0;
+          pkt_tready <= '0;
           pkt_cnt    <= 'd1;
         end
         else begin
@@ -114,16 +161,18 @@ always_ff @(posedge i_pclk) begin
           unsync  <= (i_axis_tlast [gnt_idx]) ? '1 : unsync;
         end
         pkt_pad     <= (i_axis_tlast [gnt_idx]) ? '1 : pkt_pad;
+        pkt_tready  <= ((pkt_cnt == pkt_len) || (i_axis_tlast [gnt_idx])) ? '0 : pkt_tready;
         pkt_pad_cnt <= (pkt_pad) ? pkt_pad_cnt + 1 : pkt_pad_cnt;
       end
     end
     else begin
-      pkt_cnt <= 'd1;
+      pkt_cnt           <= 'd1;
       if (i_tlast_done) begin
-        sif_tlast  <= '0;
+        sif_tlast <= '0;
       end
       if (i_pkt_len_en) begin
         pkt_active  <= '1;
+        pkt_tready  <= '1;
         pkt_pad_cnt <= 'd0;
         gnt_idx     <= i_gnt_idx;
         pkt_len     <= i_pkt_len;
@@ -142,12 +191,13 @@ generate
   end
 endgenerate
 
+assign o_hif_not_busy_soon = hif_not_busy_soon;
+
 assign pkt_last        = (pkt_cnt == pkt_len) && pkt_active;
 assign arb_axis_tvalid = pkt_active;
 assign arb_axis_tlast  = pkt_last;
 assign arb_axis_tdata  = (pkt_pad || !pkt_active) ? '0 : i_axis_tdata  [gnt_idx];
 assign arb_axis_tkeep  = '1;
-assign arb_axis_tuser  = '0;
 
 assign o_tlast      = sif_tlast;
 assign o_unsync_cnt = unsync_cnt;
@@ -204,19 +254,8 @@ assign o_crc_valid = crc_valid;
 assign o_axis_tvalid   = arb_axis_tvalid;
 assign o_axis_tdata    = arb_axis_tdata;
 assign o_axis_tlast    = arb_axis_tlast;
-assign o_axis_tuser    = arb_axis_tuser;
 assign o_axis_tkeep    = arb_axis_tkeep;
 
-logic [N_INPT-1:0] tready;
-always_comb begin
-  tready = '0;
-  for (int i = 0; i < N_INPT; i++) begin
-    if (i == gnt_idx) begin
-      tready[i] = i_axis_tready & pkt_active & !pkt_pad;
-    end
-  end
-end
-
-assign o_axis_tready = tready;
+assign o_axis_tready = gnt_onehot & {N_INPT{i_axis_tready & pkt_tready}};
 
 endmodule

@@ -78,6 +78,9 @@ class HSBLeopardFlasherBase(ABC):
         """Flash the device. Override in subclass."""
         pass
 
+    def establish_board_state(self):
+        pass
+
 
 # =============================================================================
 # Flasher Implementations
@@ -158,6 +161,7 @@ def do_flash(
     print(f"  CPNX: {cpnx_path}")
 
     try:
+        flasher.establish_board_state()
         success = flasher.flash(clnx_path, cpnx_path)
     except (FileNotFoundError, OSError, ValueError, RuntimeError) as e:
         print(f"[hsb_leopard] ERROR: {e}")

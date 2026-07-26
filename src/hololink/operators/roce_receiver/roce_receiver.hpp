@@ -131,6 +131,10 @@ protected:
 
     bool check_async_events();
 
+    virtual uint32_t page_from_imm(uint32_t imm_data);
+    virtual uint32_t psn_from_imm(uint32_t imm_data);
+    virtual bool same_psn(uint32_t frame_metadata_psn, uint32_t received_psn);
+
 protected:
     char* ibv_name_;
     unsigned ibv_port_;

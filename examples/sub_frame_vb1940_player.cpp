@@ -34,10 +34,6 @@
 #include <holoscan/core/resources/gxf/cuda_stream_pool.hpp>
 #include <holoscan/holoscan.hpp>
 #include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/version_config.hpp>
-
-#define HOLOSCAN_VERSION \
-    (HOLOSCAN_VERSION_MAJOR * 10000 + HOLOSCAN_VERSION_MINOR * 100 + HOLOSCAN_VERSION_PATCH)
 
 namespace {
 
@@ -186,7 +182,7 @@ int main(int argc, char** argv)
         ("frame-limit", value<int64_t>()->default_value(0), "Exit after receiving this many frames")
         ("sub-frame-rows", value<uint32_t>()->default_value(0), "Number of rows per sub-frame (0 = full camera height). Camera height must be evenly divisible by the sub frame rows.")
         ("configuration", value<std::string>()->default_value(""), "Configuration file")
-        ("hololink", value<std::string>()->default_value("192.168.0.2"), "IP address of Hololink board")
+        ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
         ("ibv-name", value<std::string>()->default_value(default_ibv_name), "IBV device to use")
         ("ibv-port", value<uint32_t>()->default_value(1), "Port number of IBV device (default: 1)")
         ("use-sensor", value<uint32_t>()->default_value(0), "Use the specific sensor (0 or 1, default=0)");

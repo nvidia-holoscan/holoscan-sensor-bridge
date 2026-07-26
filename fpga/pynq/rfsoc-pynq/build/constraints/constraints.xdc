@@ -63,7 +63,7 @@ set_property PACKAGE_PIN R38 [get_ports gt_serial_port_0_grx_p[0]]
 
 #only the P side needs a constraint
 create_clock -period 6.400 -name ETH_REFCLK_P [get_ports ETH_REFCLK_P]
-create_clock -period 9.998 -name sysclk_p [get_ports sysclk_p]
+create_clock -period 10.000 -name sysclk_p [get_ports sysclk_p]
 set_clock_groups -asynchronous -group [get_clocks -of_objects [get_pins u_100gbe/design_1_i/clk_wiz_0/inst/mmcme4_adv_inst/CLKOUT0]] -group [get_clocks -of_objects [get_pins {u_100gbe/design_1_i/cmac_usplus_0/inst/design_1_cmac_usplus_0_0_gt_i/inst/gen_gtwizard_gtye4_top.design_1_cmac_usplus_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[1].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK}]]
 set_clock_groups -asynchronous -group [get_clocks -of_objects [get_pins u_100gbe/design_1_i/clk_wiz_0/inst/mmcme4_adv_inst/CLKOUT1]] -group [get_clocks -of_objects [get_pins {u_100gbe/design_1_i/cmac_usplus_0/inst/design_1_cmac_usplus_0_0_gt_i/inst/gen_gtwizard_gtye4_top.design_1_cmac_usplus_0_0_gt_gtwizard_gtye4_inst/gen_gtwizard_gtye4.gen_channel_container[1].gen_enabled_channel.gtye4_channel_wrapper_inst/channel_inst/gtye4_channel_gen.gen_gtye4_channel_inst[0].GTYE4_CHANNEL_PRIM_INST/TXOUTCLK}]]
 set_clock_groups -asynchronous -group [get_clocks -of_objects [get_pins u_100gbe/design_1_i/clk_wiz_0/inst/mmcme4_adv_inst/CLKOUT1]] -group [get_clocks -of_objects [get_pins u_100gbe/design_1_i/clk_wiz_0/inst/mmcme4_adv_inst/CLKOUT0]]

@@ -141,10 +141,21 @@ class WatchdogOp(holoscan.core.Operator):
         self,
         *args,
         watchdog=None,
+        frame_limit=None,
+        stop_conditions=None,
         **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self._watchdog = watchdog
+        # The frame budget lives at this sink, not on the receivers: a
+        # frame-dropping stage (FrameAlignerOp) sits between the receivers
+        # and here, so counting produced frames would starve this sink by
+        # the drop count. Once frame_limit aligned frames have arrived we
+        # disable the source receivers' tick conditions so the application
+        # drains and exits cleanly.
+        self._frame_limit = frame_limit
+        self._stop_conditions = stop_conditions or []
+        self._taps = 0
 
     def setup(self, spec):
         spec.input("input")
@@ -152,6 +163,10 @@ class WatchdogOp(holoscan.core.Operator):
     def compute(self, op_input, op_output, context):
         _ = op_input.receive("input")
         self._watchdog.tap()
+        self._taps += 1
+        if self._frame_limit is not None and self._taps >= self._frame_limit:
+            for condition in self._stop_conditions:
+                condition.disable_tick()
 
 
 class MonitorOperator(holoscan.core.Operator):
@@ -271,6 +286,132 @@ class RecordMetadataOp(PassThroughOperator):
 
     def get_record(self):
         return self._record
+
+
+class FrameAlignerOp(holoscan.core.Operator):
+    def __init__(
+        self,
+        *args,
+        name=None,
+        allowable_dt=None,
+        input_tensors=None,  # this is a list e.g. ["left", "right"]
+        rename_metadata=None,  # this is a list: [lambda name: f"left_{name}", ...]
+        outputs=None,  # this is a list, e.g. ["left", "right"]
+        **kwargs,
+    ):
+        self._outputs = outputs
+        super().__init__(*args, name=name, **kwargs)
+        self._name = name
+        self._allowable_dt = allowable_dt
+        self._input_tensors = input_tensors
+        self._count = len(input_tensors)
+        if len(rename_metadata) != self._count:
+            raise ValueError(
+                f"input_tensors has {self._count} items; rename_metadata ({len(rename_metadata)}) must be the same length."
+            )
+        if len(outputs) != self._count:
+            raise ValueError(
+                f"input_tensors has {self._count} items; outputs ({len(outputs)}) must be the same length."
+            )
+        self._timestamp_s_metadata = [
+            rename("timestamp_s") for rename in rename_metadata
+        ]
+        self._timestamp_ns_metadata = [
+            rename("timestamp_ns") for rename in rename_metadata
+        ]
+        self._dropped = 0
+        # Diagnostics: per-leg arrival counts, emitted groups, and dt drops.
+        # These pinpoint whether a stall is starvation (one leg stops
+        # arriving), an alignment drop (dt > allowable_dt), or input-queue
+        # POP loss (arrivals lag the receivers' frame numbers).
+        self._arrivals = [0] * self._count
+        self._emitted = 0
+        self._dt_dropped = 0
+        self._data_cache = [None] * self._count
+        self._metadata_cache = [None] * self._count
+        for i in range(self._count):
+            metadata_cache = holoscan.core.MetadataDictionary()
+            metadata_cache.policy = holoscan.core.MetadataPolicy.UPDATE
+            self._metadata_cache[i] = metadata_cache
+        self._timestamp = [0] * self._count
+        self._cached = 0
+
+    def setup(self, spec):
+        logging.info("setup")
+        spec.input("input", policy=holoscan.core.IOSpec.QueuePolicy.POP)
+        for output in self._outputs:
+            spec.output(output)
+
+    def compute(self, op_input, op_output, context):
+        in_message = op_input.receive("input")
+        metadata = self.metadata
+        # in_message.get(name) is the only way to find
+        # if 'name' is a supplied tensor.
+        for index, name in enumerate(self._input_tensors):
+            m = in_message.get(name)
+            if m is not None:
+                self.cache_message(index, name, m, metadata)
+
+        # Do we have all the channels?
+        if self._cached < self._count:
+            return
+
+        # Is the oldest one outside our allowable dt?
+        dt = max(self._timestamp) - min(self._timestamp)
+        if self._allowable_dt is not None:
+            if dt > self._allowable_dt:
+                # Wait for the next frame; eventually
+                # we should get sync'd up
+                self._dt_dropped += 1
+                logging.debug(
+                    f"{self._name}: dropping group dt={dt:.6f} > "
+                    f"allowable_dt={self._allowable_dt:.6f} "
+                    f"arrivals={self._arrivals} emitted={self._emitted} "
+                    f"dt_dropped={self._dt_dropped}"
+                )
+                return
+
+        # So this group of frames should be forwarded.
+        for index, output_name in enumerate(self._outputs):
+            metadata.swap(self._metadata_cache[index])
+            op_output.emit({"": self._data_cache[index]}, output_name)
+            # reset
+            self._data_cache[index] = None
+            self._metadata_cache[index].clear()
+            self._timestamp[index] = 0  # causes a huge dt
+        self._cached = 0
+        self._emitted += 1
+        if self._emitted % 30 == 0:
+            logging.debug(
+                f"{self._name}: emitted={self._emitted} dt={dt:.6f} "
+                f"arrivals={self._arrivals} dt_dropped={self._dt_dropped}"
+            )
+
+    def cache_message(self, index, name, tensor, metadata):
+        # Default a missing timestamp to 0 so a frame without one (e.g. a
+        # controller's fallback image, served while disconnected) doesn't crash
+        # the aligner; live FPGA timestamps are never 0, so real streams are
+        # unaffected.
+        timestamp_s = metadata.get(self._timestamp_s_metadata[index], 0)
+        timestamp_ns = metadata.get(self._timestamp_ns_metadata[index], 0)
+        timestamp_ns *= SEC_PER_NS
+        timestamp_s += timestamp_ns
+        logging.trace(f"got {index=} {name=} {timestamp_s=}")
+        self._arrivals[index] += 1
+        # Track occupancy by the data slot (reset to None on emit), not the
+        # timestamp: a fallback frame's timestamp is 0, which is also the
+        # post-emit reset value, so counting by timestamp would recount the
+        # same leg and over-report _cached — emitting before every leg arrives.
+        if self._data_cache[index] is None:
+            self._cached += 1
+        #
+        metadata_cache = self._metadata_cache[index]
+        metadata_cache.update(metadata)
+        self._data_cache[index] = tensor
+        self._timestamp[index] = timestamp_s
+
+    def enable(self, allowable_dt):
+        self._allowable_dt = allowable_dt
 
 
 class OnFrameNOperator(holoscan.core.Operator):

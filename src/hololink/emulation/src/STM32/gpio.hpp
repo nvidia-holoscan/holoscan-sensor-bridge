@@ -20,27 +20,10 @@
 #ifndef STM32_GPIO_HPP
 #define STM32_GPIO_HPP
 
-#include "STM32/hsb_config.hpp"
+#include "hsb_config.hpp"
 
-/*
-USEFUL GPIO ADDRESSES for NUCLEO-F767ZI development board:
-
-DESCRIPTION - PIN NUMBER - VALUE_MASK
-LED_RED          0x10         0x00010000
-LED_GREEN        0x17         0x00800000
-LED_BLUE         0x1E         0x40000000
-*/
-#define LED_RED 0x00010000u
-#define LED_GREEN 0x00800000u
-#define LED_BLUE 0x40000000u
-#define LED_RED_PIN GPIO_PIN_0
-#define LED_GREEN_PIN GPIO_PIN_7
-#define LED_BLUE_PIN GPIO_PIN_14
-#define LED_RED_PORT GPIOB
-#define LED_GREEN_PORT GPIOB
-#define LED_BLUE_PORT GPIOB
-#define GPIO_ERROR_PORT LED_RED_PORT
-#define GPIO_ERROR_PIN LED_RED_PIN
+// Board-specific LED pin/port macros (LED_RED, LED_GREEN, LED_BLUE, GPIO_ERROR_PORT, etc.)
+// live in board.h under the per-target subdirectory.
 
 #define GPIO_OUTPUT_BASE_REGISTER 0x0000000Cu
 #define GPIO_DIRECTION_BASE_REGISTER 0x0000002Cu

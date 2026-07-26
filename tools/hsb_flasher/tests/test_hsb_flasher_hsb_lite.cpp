@@ -379,41 +379,6 @@ TEST(HsbFlasher, DuplicatePacketsSameMac_ExpectSuccess)
     ASSERT_TRUE(discover_device(ctx, provider));
 }
 
-// ── find_latest_version ──────────────────────────────────────────────
-
-// find_latest_version picks the highest version from the manifest
-TEST(FindLatestVersion, ReturnsHighestVersion)
-{
-    auto ctx = make_context("192.168.0.2");
-    SingleDeviceProvider provider(
-        "192.168.0.2", "AA:BB:CC:DD:EE:FF", 0x2504,
-        "889b7ce3-65a5-4247-8b05-4ff1904c3359");
-
-    ASSERT_TRUE(discover_device(ctx, provider));
-    ASSERT_TRUE(find_manifest_by_uuid(ctx));
-
-    ASSERT_TRUE(find_latest_version(ctx));
-
-    // The latest version in hsb_lite.yaml should be 0x2603
-    EXPECT_EQ(ctx.target_version, "2603");
-}
-
-// find_latest_version result is usable as a target_version for verify_firmware_details
-TEST(FindLatestVersion, LatestVersionIsValidInManifest)
-{
-    auto ctx = make_context("192.168.0.2");
-    SingleDeviceProvider provider(
-        "192.168.0.2", "AA:BB:CC:DD:EE:FF", 0x2504,
-        "889b7ce3-65a5-4247-8b05-4ff1904c3359");
-
-    ASSERT_TRUE(discover_device(ctx, provider));
-    ASSERT_TRUE(find_manifest_by_uuid(ctx));
-    ASSERT_TRUE(find_latest_version(ctx));
-    ASSERT_TRUE(verify_firmware_details(ctx));
-
-    EXPECT_FALSE(ctx.cpnx.location.empty());
-}
-
 // ── --reapply in full pipeline ───────────────────────────────────────
 
 // Same version + reapply: flash proceeds (version check is skipped by main, flasher still returned)

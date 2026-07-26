@@ -245,6 +245,7 @@ class PatternTestApplication(holoscan.core.Application):
 
 
 @pytest.mark.skip("https://jirasw.nvidia.com/browse/BAJQ0XTT-173")
+@pytest.mark.skip_on_jetpack_7
 @pytest.mark.skip_unless_igpu
 @pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(

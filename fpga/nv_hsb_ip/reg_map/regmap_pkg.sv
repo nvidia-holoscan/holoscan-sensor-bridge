@@ -39,6 +39,7 @@ package regmap_pkg;
   localparam ADDR_SW_HOLOLINK = 24;
   localparam ADDR_SW_IF       = 21;
   localparam ADDR_SW_CH       = 16;
+  localparam ADDR_SW_HOST_RAM = 12;
   localparam ADDR_SW_PERI     = 9 ;
   localparam ADDR_SW_ROCE     = 12;
   // user reg base address offset
@@ -119,7 +120,7 @@ package regmap_pkg;
 // PTP Register
 //------------------------------------------------------------------------------------------------//
 
-  localparam ptp_nctrl = 7;
+  localparam ptp_nctrl = 9;
   localparam ptp_nstat = 9;
   // RW
   localparam ptp_scratch        = 0; // 0x0000_0000
@@ -129,7 +130,8 @@ package regmap_pkg;
   localparam ptp_ctrl_dpll_cfg1 = 4; // 0x0000_0010
   localparam ptp_ctrl_dpll_cfg2 = 5; // 0x0000_0014
   localparam ptp_ctrl_avg_fact  = 6; // 0x0000_0018
-
+  localparam ptp_ctrl_domain    = 7; // 0x0000_001C
+  localparam ptp_ctrl_pcp       = 8; // 0x0000_0020
   // RO
   localparam ptp_sync_ts_0     = 32; // 0x0000_0080
   localparam ptp_sync_cf_0     = 33; // 0x0000_0084
@@ -160,9 +162,9 @@ package regmap_pkg;
   localparam lpbk_udp_port      = 2;  // 0x0000_0008
   localparam roce_ecb_dest_qp   = 3;  // 0x0000_000C
   localparam inst_dec_rsvd_1    = 4;  // 0x0000_0010
-  localparam inst_dec_rsvd_2    = 5;  // 0x0000_0018
-  localparam inst_dec_rsvd_3    = 6;  // 0x0000_0018
-  localparam inst_dec_rsvd_4    = 7;  // 0x0000_0018
+  localparam inst_dec_rsvd_2    = 5;  // 0x0000_0014
+  localparam static_hif_qp      = 6;  // 0x0000_0018
+  localparam inst_dec_ack_ctrl  = 7;  // 0x0000_001C
   localparam ecb_udp_port       = 8;  // 0x0000_0020
   localparam stx_udp_port       = 9;  // 0x0000_0024
   // RO
@@ -177,8 +179,9 @@ package regmap_pkg;
   localparam eth_pkt_nstat = 1;
   // RW
   localparam eth_pkt_scratch = 0;  // 0x0000_0000
-  localparam eth_pkt_ctrl    = 1;  // 0x0000_0008
-  localparam eth_pkt_hp_cnt  = 2;  // 0x0000_0004
+  localparam eth_pkt_ctrl    = 1;  // 0x0000_0004
+  localparam eth_pkt_hp_cnt  = 2;  // 0x0000_0008
+
   // RO
   localparam eth_pkt_stat    = 32; // 0x0000_0080
 
@@ -203,7 +206,7 @@ package regmap_pkg;
 // Control Bus Event
 //------------------------------------------------------------------------------------------------//
 
-  localparam ctrl_evt_nctrl = 12;
+  localparam ctrl_evt_nctrl = 13;
   localparam ctrl_evt_nstat = 2;
   // RW
   localparam ctrl_evt_scratch          = 0;  // 0x0000_0000
@@ -218,6 +221,7 @@ package regmap_pkg;
   localparam ctrl_evt_apb_interrupt_en = 9;  // 0x0000_0024
   localparam ctrl_evt_apb_timeout      = 10; // 0x0000_0028
   localparam ctrl_evt_sw_event         = 11; // 0x0000_002C
+  localparam ctrl_evt_vlan             = 12; // 0x0000_0030
   // RO
   localparam ctrl_evt_stat             = 32; // 0x0000_0080
 
@@ -265,6 +269,7 @@ package regmap_pkg;
   localparam sen_rx_data_gen_mode         = 2;  // 0x0000_0008
   localparam sen_rx_data_gen_size         = 3;  // 0x0000_000C
   localparam sen_rx_data_gen_output_rate  = 4;  // 0x0000_0010
+  localparam sen_rx_data_gen_pps_sync     = 5;  // 0x0000_0014
   localparam sen_rx_prbs_seed             = 9;  // 0x0000_0024
 //------------------------------------------------------------------------------------------------//
 // Peripheral Data Bus

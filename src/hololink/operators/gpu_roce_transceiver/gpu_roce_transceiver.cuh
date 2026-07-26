@@ -60,6 +60,15 @@ __device__ void prepare_receive_send(struct doca_gpu_dev_verbs_qp* qp, const siz
     doca_gpu_dev_verbs_store_wqe_seg((uint64_t*)&(wqe_ptr->dseg0), (uint64_t*)&(cseg));
 }
 
+__device__ void prepare_send_nop(struct doca_gpu_dev_verbs_qp* qp)
+{
+    struct doca_gpu_dev_verbs_wqe* wqe_ptr;
+
+    wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, threadIdx.x);
+
+    doca_gpu_dev_verbs_wqe_prepare_nop(qp, wqe_ptr, threadIdx.x, DOCA_GPUNETIO_MLX5_WQE_CTRL_CQ_ERROR_UPDATE);
+}
+
 __device__ void prepare_send_shared(struct doca_gpu_dev_verbs_qp* qp, struct doca_gpu_dev_verbs_wqe* wqe_sh, const size_t frame_size, const uint32_t mkey)
 {
     struct doca_gpu_dev_verbs_wqe* wqe_ptr;
@@ -84,6 +93,8 @@ __device__ void prepare_send_shared(struct doca_gpu_dev_verbs_qp* qp, struct doc
     }
 
     doca_gpu_dev_verbs_store_wqe_seg((uint64_t*)&(wqe_ptr->dseg0), (uint64_t*)&(cseg));
+
+    prepare_send_nop(qp);
 }
 
 __device__ inline uint32_t receive(struct doca_gpu_dev_verbs_cq* cq_rq, uint8_t* cqe, const uint32_t cqe_mask, const doca_gpu_dev_verbs_ticket_t out_ticket, struct mlx5_cqe64** cqe64)
@@ -180,9 +191,14 @@ __device__ inline void send_bf(struct doca_gpu_dev_verbs_qp* qp, struct doca_gpu
     // Ensure in-order send
     doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, wqe_idx, wqe_idx);
 
-    // Trigger send
+// Trigger send
+#if DOCA_UNRELIABLE_BF == 1
+    doca_gpu_dev_verbs_submit_bf<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU, DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_BF_UNRELIABLE>(qp, wqe_idx + 1, &(wqe_ptr_sh[threadIdx.x]));
+#else
     doca_gpu_dev_verbs_submit_bf<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU>(qp, wqe_idx + 1, &(wqe_ptr_sh[threadIdx.x]));
+#endif
 }
 
 __device__ inline uint64_t repost_receive(struct doca_gpu_dev_verbs_qp* qp, uint64_t rwqe_idx)

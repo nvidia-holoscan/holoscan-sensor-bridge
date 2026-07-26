@@ -19,7 +19,6 @@ copy_hololink_python_files(
     TARGET_NAME copy_hololink_python_files
     FILES
         __init__.py
-        hsb_controller.py
         renesas_bajoran_lite_ts1.py
         renesas_bajoran_lite_ts2.py
 )

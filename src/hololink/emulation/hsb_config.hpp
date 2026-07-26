@@ -147,7 +147,9 @@ typedef enum {
 #define VENDOR_ID_SIZE 4u
 
 // HSBConfiguration constants
+#ifndef MAX_SENSORS
 #define MAX_SENSORS 32u // 5 bits of indices
+#endif
 #ifndef MAX_DATA_PLANES
 #define MAX_DATA_PLANES 256u // 8 bits of indices
 #endif
@@ -212,6 +214,13 @@ struct AddressValuePair {
     uint32_t address;
     uint32_t value;
 };
+
+// control message addr_vals is just the location in memory of the addresses/values, but should never be accessed directly
+// as they are not aligned accesses. Must explicitly set the address or value using the macros below.
+#define AVP_GET_ADDRESS(avp) ((avp)->address)
+#define AVP_SET_ADDRESS(avp, address_) ((avp)->address = address_)
+#define AVP_GET_VALUE(avp) ((avp)->value)
+#define AVP_SET_VALUE(avp, value_) ((avp)->value = value_)
 
 // Declarations must be in hololink::emulation to match the definitions in hsb_config.cpp.
 #ifdef __cplusplus

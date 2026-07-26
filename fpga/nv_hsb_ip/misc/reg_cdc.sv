@@ -52,7 +52,9 @@ always_ff @(posedge i_a_clk) begin
     a_val_q      <= i_a_val;
     a_val_qq     <= (a_val_q | a_val_qq) & ~b2a_ack_sync[1];
     b2a_ack_sync <= {b2a_ack_sync[0], b2a_ack};
-    a_reg_q      <= i_a_reg;
+    if (i_a_val) begin
+      a_reg_q      <= i_a_reg;
+    end
     if (a_val_q && !a_val_qq) begin
       a_reg_qq   <= a_reg_q;
     end

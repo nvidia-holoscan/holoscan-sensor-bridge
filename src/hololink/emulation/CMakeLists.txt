@@ -20,7 +20,7 @@ option(HSB_EMULATOR_BUILD_PYTHON "When building standalone HSB Emulator, includi
 set(HSB_EMULATOR_PYTHON_VENV "env" CACHE STRING "relative path (from build directory) to the standalone HSB Emulator's Python virtual environment")
 set(HSB_EMULATOR_TARGET "linux" CACHE STRING "the target platform for the standalone HSB Emulator")
 
-set(HSB_EMULATOR_EMBEDDED_TARGETS STM32F767ZI)
+set(HSB_EMULATOR_EMBEDDED_TARGETS STM32F767ZI TEMPLATE)
 set(HSB_EMULATOR_TARGETS linux)
 
 # This checks if user is trying to build the emulator only (no HSB components)

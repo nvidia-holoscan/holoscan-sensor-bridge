@@ -43,6 +43,7 @@ module ptp_dly
   input                           i_two_step,
   input  [47:0]                   i_cf_ns,
   input  [79:0]                   i_timestamp,
+  input  [ 7:0]                   i_ptp_domain,
   input  [15:0]                   i_seq_id,
   input  [63:0]                   i_src_clkid,
   input  [15:0]                   i_src_portid,
@@ -60,6 +61,7 @@ module ptp_dly
   output [79:0]                   o_dly_t3_ts,
   output [79:0]                   o_dly_t4_ts,
   output [47:0]                   o_dly_cf_ns,
+  output [47:0]                   o_dly_follow_up_cf_ns,
   output                          o_dly_ld
 );
 
@@ -133,7 +135,7 @@ logic [79:0] req_src_portid_sync;
 
 assign majorSdoId         = i_is_gPTP ? 1'h1 : 1'h0;
 assign versionPTP         = 4'h2;
-assign domainNumber       = 8'h0;
+assign domainNumber       = i_ptp_domain;
 assign minorSdoId         = 8'h0;
 assign flagField          = {6'd0, twoStep_sync, 9'd0};
 assign correctionField    = 64'h0;
@@ -206,6 +208,7 @@ logic [79:0] pdly_t2_ts;
 logic [79:0] pdly_t3_ts;
 logic [79:0] pdly_t4_ts;
 logic [47:0] dly_cf_ns;
+logic [47:0] dly_follow_up_cf_ns;
 logic        pdly_ts_ld;
 logic [79:0] pdly_req_rx_ts;
 logic [15:0] pdly_req_rx_seqId;
@@ -378,6 +381,7 @@ always_ff @(posedge i_pclk) begin
   if (i_prst) begin
     pdly_resp_state   <= WAIT_FOR_PDLY_RESP;
     dly_cf_ns         <= '0;
+    dly_follow_up_cf_ns <= '0;
     pdly_t2_ts        <= '0;
     pdly_t3_ts        <= '0;
     pdly_t4_ts        <= '0;
@@ -400,7 +404,6 @@ always_ff @(posedge i_pclk) begin
             end
             else begin
               pdly_ts_ld        <= 1'b1;
-              dly_cf_ns         <= i_cf_ns;
               pdly_resp_state   <= WAIT_FOR_PDLY_RESP;
             end
           end
@@ -412,6 +415,7 @@ always_ff @(posedge i_pclk) begin
         end
         else if (i_pdly_resp_follow_up_msg_vld) begin
           if (is_src_resp_match) begin
+            dly_follow_up_cf_ns <= i_cf_ns;
             pdly_ts_ld        <= 1'b1;
             pdly_t3_ts        <= i_timestamp;
             pdly_resp_state   <= WAIT_FOR_PDLY_RESP;
@@ -427,6 +431,7 @@ assign o_dly_t2_ts  = pdly_t2_ts;
 assign o_dly_t3_ts  = pdly_t3_ts;
 assign o_dly_t4_ts  = pdly_t4_ts;
 assign o_dly_cf_ns  = dly_cf_ns;
+assign o_dly_follow_up_cf_ns = dly_follow_up_cf_ns;
 assign o_dly_ld     = pdly_ts_ld;
 assign o_ptp_tx_len = ptp_tx_len_sync;
 

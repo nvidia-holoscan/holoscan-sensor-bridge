@@ -19,6 +19,7 @@ module eth_pkt
 #(// port 0 = data; port 1 = cmd, port 2 = error, port 3 = enum_int, port 4 = evt_int, port 5 = bootp, port 6 = rsp
   parameter           N_INPT = 7,
   parameter           W_DATA = 64,
+  parameter           W_USER = 17,
   localparam          W_KEEP = W_DATA/8,
   parameter           SYNC_CLK = 0
 )(
@@ -38,7 +39,7 @@ module eth_pkt
   input  [N_INPT-1:0] i_axis_tlast,
   input  [W_DATA-1:0] i_axis_tdata    [N_INPT],
   input  [W_KEEP-1:0] i_axis_tkeep    [N_INPT],
-  input  [N_INPT-1:0] i_axis_tuser,
+  input  [W_USER-1:0] i_axis_tuser    [N_INPT],
   output [N_INPT-1:0] o_axis_tready,
   // AXIS to MAC
   output              o_axis_tvalid,
@@ -81,28 +82,44 @@ logic              arb_axis_tvalid;
 logic              arb_axis_tlast;
 logic [W_DATA-1:0] arb_axis_tdata;
 logic [W_KEEP-1:0] arb_axis_tkeep;
-logic              arb_axis_tuser;
+logic [W_USER-1:0] arb_axis_tuser;
 logic              arb_axis_tready;
 
 
 logic [2       :0] arb_idx;
 logic [2:0]        arb_pipe [4:0];
 
+logic              data0_tlast_r;
+logic [N_INPT-1:0] i_axis_tvalid_mux;
+logic [N_INPT-1:0] data_cmd_arb_tready;
+
+always_ff @(posedge i_pclk) begin
+  if (i_prst) begin
+    data0_tlast_r <= 1'b0;
+  end
+  else begin
+    data0_tlast_r <= i_axis_tvalid[0] && i_axis_tlast[0] && data_cmd_arb_tready[0] && !data0_tlast_r;
+  end
+end
+
+assign i_axis_tvalid_mux = {i_axis_tvalid[N_INPT-1:1], i_axis_tvalid[0] & ~data0_tlast_r};
+assign o_axis_tready     = {data_cmd_arb_tready[N_INPT-1:1], data_cmd_arb_tready[0] & ~data0_tlast_r};
+
 axis_arb #(
   .N_INPT        ( N_INPT                     ),
   .W_DATA        ( W_DATA                     ),
-  .W_USER        ( 1                          ),
+  .W_USER        ( W_USER                     ),
   .ARB_TYPE      ( "PRIORITY"                 ),
   .SKID          ( 5'b01011                   ) // SKID all high speed paths: data plane, ptp, pause, and bridge
 ) u_data_cmd_arb (
   .i_clk         ( i_pclk                     ),
   .i_rst         ( i_prst                     ),
-  .i_axis_tvalid ( i_axis_tvalid              ),
+  .i_axis_tvalid ( i_axis_tvalid_mux          ),
   .i_axis_tlast  ( i_axis_tlast               ),
   .i_axis_tdata  ( i_axis_tdata               ),
   .i_axis_tkeep  ( i_axis_tkeep               ),
-  .o_axis_tready ( o_axis_tready              ),
-  .i_axis_tuser  ( '{default:0}               ),
+  .o_axis_tready ( data_cmd_arb_tready        ),
+  .i_axis_tuser  ( i_axis_tuser               ),
   .o_axis_idx    ( arb_idx                    ),
   .o_axis_tvalid ( arb_axis_tvalid            ),
   .o_axis_tlast  ( arb_axis_tlast             ),
@@ -188,17 +205,60 @@ always_ff @(posedge i_pclk) begin
   end
 end
 
+logic              ins_axis_tvalid;
+logic              ins_axis_tlast;
+logic [W_DATA-1:0] ins_axis_tdata;
+logic [W_KEEP-1:0] ins_axis_tkeep;
+logic [W_USER-1:0] ins_axis_tuser;
+logic              ins_axis_tready;
+logic       [31:0] vlan_tag;
+logic       [31:0] vlan_tag_be;
+logic              ins_vlan;
+
 axis_reg # (
-  .DWIDTH              ( W_DATA + W_KEEP + 1 + 1 + 3)
+  .DWIDTH              ( W_DATA + W_KEEP + 1 + W_USER + 3)
 ) u_axis_reg (
   .clk                ( i_pclk                                                                    ),
   .rst                ( i_prst                                                                    ),
   .i_axis_rx_tvalid   ( arb_axis_tvalid                                                           ),
   .i_axis_rx_tdata    ( {arb_axis_tdata,arb_axis_tlast,arb_axis_tuser,arb_axis_tkeep,arb_idx}     ),
   .o_axis_rx_tready   ( w_arb_axis_tready                                                         ),
-  .o_axis_tx_tvalid   ( o_axis_tvalid                                                             ),
-  .o_axis_tx_tdata    ( {o_axis_tdata,o_axis_tlast,o_axis_tuser,o_axis_tkeep,arb_pipe[0]  }       ),
-  .i_axis_tx_tready   ( i_axis_tready                                                             )
+  .o_axis_tx_tvalid   ( ins_axis_tvalid                                                           ),
+  .o_axis_tx_tdata    ( {ins_axis_tdata,ins_axis_tlast,ins_axis_tuser,ins_axis_tkeep,arb_pipe[0]} ),
+  .i_axis_tx_tready   ( ins_axis_tready                                                           )
+);
+
+assign vlan_tag[31:16] = 16'h8100;
+assign vlan_tag[15:0]  = ins_axis_tuser[15:0];
+assign ins_vlan        = ins_axis_tuser[16];
+
+generate
+  for (genvar j=0; j<4; j++) begin
+    assign vlan_tag_be[j*8+:8] = vlan_tag[(4-1-j)*8+:8];
+  end
+endgenerate
+
+axis_insert #(
+  .AXI_DWIDTH           ( W_DATA                     ),
+  .INSERT_OFFSET        ( 96                         ),
+  .INSERT_WIDTH         ( 32                         )
+) u_vlan_add (
+    .clk                ( i_pclk                     ),
+    .rst                ( i_prst                     ),
+    .i_insert_data      ( vlan_tag_be                ),
+    .i_enable           ( ins_vlan                   ),
+    .i_axis_rx_tvalid   ( ins_axis_tvalid            ),
+    .i_axis_rx_tdata    ( ins_axis_tdata             ),
+    .i_axis_rx_tlast    ( ins_axis_tlast             ),
+    .i_axis_rx_tuser    ( 1'b0                       ),
+    .i_axis_rx_tkeep    ( ins_axis_tkeep             ),
+    .o_axis_rx_tready   ( ins_axis_tready            ),
+    .o_axis_tx_tvalid   ( o_axis_tvalid              ),
+    .o_axis_tx_tdata    ( o_axis_tdata               ),
+    .o_axis_tx_tlast    ( o_axis_tlast               ),
+    .o_axis_tx_tuser    ( o_axis_tuser               ),
+    .o_axis_tx_tkeep    ( o_axis_tkeep               ),
+    .i_axis_tx_tready   ( i_axis_tready              )
 );
 
 logic is_ptp_del_req;
@@ -218,8 +278,6 @@ generate
 endgenerate
 
 
-
-
 `ifdef ASSERT_ON
   //Input AXIS Assertions
   logic [31:0] fv_axis_inp_byt_cnt       [N_INPT];
@@ -229,10 +287,10 @@ endgenerate
     axis_checker #(
     .STBL_CHECK  (1),
     .NLST_BT_B2B (1),
-    .MIN_PKTL_CHK (0),
+    .MIN_PKTL_CHK (1),
     .MAX_PKTL_CHK (0),
     .AXI_TDATA   (W_DATA),
-    .AXI_TUSER   (1),
+    .AXI_TUSER   (17),
 `ifdef SIMULATION
     .SIMULATION(1),
 `endif
@@ -264,7 +322,7 @@ endgenerate
   axis_checker #(
   .STBL_CHECK  (1),
   .NLST_BT_B2B (1),
-  .MIN_PKTL_CHK (0),
+  .MIN_PKTL_CHK (1),
   .MAX_PKTL_CHK (0),
   .AXI_TDATA   (W_DATA),
   .AXI_TUSER   (1),

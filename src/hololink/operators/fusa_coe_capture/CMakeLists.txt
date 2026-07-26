@@ -15,29 +15,33 @@
 
 include(sipl_api)
 
-add_library(fusa_coe_capture STATIC
-    fusa_coe_capture.cpp
+add_library(fusa_coe_capture_core STATIC
+    fusa_coe_capture_core.cpp
 )
 
-set_property(TARGET fusa_coe_capture PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET fusa_coe_capture_core PROPERTY POSITION_INDEPENDENT_CODE ON)
 
-add_library(hololink::operators::fusa_coe_capture ALIAS fusa_coe_capture)
+add_library(hololink::operators::fusa_coe_capture_core ALIAS fusa_coe_capture_core)
 
-target_link_directories(fusa_coe_capture
+target_link_directories(fusa_coe_capture_core
   PUBLIC
-    /usr/lib/aarch64-linux-gnu/nvidia
+    $<$<STREQUAL:${CMAKE_SYSTEM_PROCESSOR},aarch64>:/usr/lib/aarch64-linux-gnu/nvidia>
 )
 
-target_link_libraries(fusa_coe_capture
+if(NOT CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
+  message(WARNING
+    "fusa_coe_capture_core: FUSA capture is only supported on aarch64 Jetson platforms")
+endif()
+
+target_link_libraries(fusa_coe_capture_core
   PUBLIC
     hololink
-  PRIVATE
     holoscan::core
     nvfusacapext
     nvscibuf
 )
 
-target_include_directories(fusa_coe_capture
+target_include_directories(fusa_coe_capture_core
   PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -46,7 +50,37 @@ target_include_directories(fusa_coe_capture
     /usr/src/jetson_sipl_api/sipl/include/nvsci
 )
 
-# Installation of the fusa_coe_capture operator
+set_target_properties(fusa_coe_capture_core PROPERTIES EXPORT_NAME operators::fusa_coe_capture_core)
+install(TARGETS fusa_coe_capture_core
+        EXPORT HololinkTargets
+        DESTINATION ${CMAKE_INSTALL_LIBDIR}
+        COMPONENT hololink-operators)
+
+install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/fusa_coe_capture_core.hpp
+        DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/fusa_coe_capture
+        COMPONENT hololink-operators)
+
+add_library(fusa_coe_capture STATIC
+    fusa_coe_capture.cpp
+)
+
+set_property(TARGET fusa_coe_capture PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+add_library(hololink::operators::fusa_coe_capture ALIAS fusa_coe_capture)
+
+target_link_libraries(fusa_coe_capture
+  PUBLIC
+    hololink::operators::fusa_coe_capture_core
+  PRIVATE
+    holoscan::core
+)
+
+target_include_directories(fusa_coe_capture
+  PUBLIC
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+)
+
 set_target_properties(fusa_coe_capture PROPERTIES EXPORT_NAME operators::fusa_coe_capture)
 install(TARGETS fusa_coe_capture
         EXPORT HololinkTargets

@@ -25,7 +25,6 @@
 #endif
 
 #define HAL_MODULE_ENABLED
-#define HAL_DAC_MODULE_ENABLED
 #define HAL_ETH_MODULE_ENABLED
 #define HAL_TIM_MODULE_ENABLED
 #define HAL_UART_MODULE_ENABLED
@@ -39,6 +38,10 @@
 #define HAL_I2C_MODULE_ENABLED
 #define HAL_SPI_MODULE_ENABLED
 #define HAL_CORTEX_MODULE_ENABLED
+
+#ifdef CRC_OFFLOAD
+#define HAL_CRC_MODULE_ENABLED
+#endif
 
 /**
   * @brief Adjust the value of External High Speed oscillator (HSE)
@@ -97,6 +100,7 @@
 #define ETH_TX_BUF_SIZE                (ETH_RX_BUF_SIZE - 2) /* ETH_RX_BUF_SIZE less 2 bytes because aligning control plane messages is unneeded */
 #define ETH_RXBUFNB                    ((uint32_t)4U)       /* Rx buffer count */
 #define ETH_TXBUFNB                    ((uint32_t)4U)       /* Tx buffer count */
+#define ETH_TX_DESC_CNT                ((uint32_t)6U)       /* Tx descriptor count. need more than default 4 for RoCEv2 */
 
 /* DP83848_PHY_ADDRESS Address*/
 #define DP83848_PHY_ADDRESS

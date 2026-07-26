@@ -48,7 +48,7 @@ logic                 skid;
 always_ff @(posedge clk) begin
   if (rst) begin
     r_axis_tvalid  <= '0;
-    r_axis_ready   <= '0;
+    r_axis_ready   <= '1;
     sr_axis_tvalid <= '0;
     skid           <= '0;
   end

@@ -38,7 +38,6 @@ typedef enum logic [1:0] {
 } comp_state_t;
 
 comp_state_t cur_state, nxt_state;
-logic [$clog2(N_BYTES)-1:0]  const_1         = 1;
 logic [$clog2(N_BYTES)-1:0]  const_n_minus_1 = N_BYTES-1;
 
 logic rValid, rLess, rEqual, rGreater;

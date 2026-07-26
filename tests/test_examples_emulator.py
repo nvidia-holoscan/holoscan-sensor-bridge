@@ -1,8 +1,12 @@
 import os
 import signal
+import socket
 import subprocess
+import tempfile
+import threading
 import time
 
+import cuda.bindings.driver as cuda
 import pytest
 from camera_example_conf import (
     camera_properties,
@@ -18,7 +22,231 @@ from camera_example_conf import (
     vb1940_loopback_cases_sipl,
 )
 
+import hololink as hololink_module
+
 script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def _make_incrementing_frame_file(frame_size):
+    """256 strides of ``frame_size`` bytes; stride i starts with byte i (rest zero)."""
+    total = frame_size * 256
+    data = bytearray(total)
+    for i in range(256):
+        data[i * frame_size] = i
+    tmp = tempfile.NamedTemporaryFile(delete=False)
+    tmp.write(data)
+    tmp.flush()
+    path = tmp.name
+    tmp.close()
+    return path
+
+
+def _read_first_gpu_byte(cu_context, cu_device_ptr):
+    cuda.cuCtxSetCurrent(cu_context)
+    # ``cuMemcpyDtoH`` host-pointer argument requires a buffer-protocol
+    # object (NOT a ``ctypes.byref(...)`` ``CArgObject``).
+    buf = bytearray(1)
+    (cu_ret,) = cuda.cuMemcpyDtoH(buf, cu_device_ptr, 1)
+    assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+    return buf[0]
+
+
+def _receive_loopback(transport):
+    """Run emulator subprocess then receive ``n_frames`` on the host (main thread polls)."""
+    ip = "127.0.0.1"
+    frame_size = 128
+    n_frames = 10
+    frame_file = _make_incrementing_frame_file(frame_size)
+
+    srv_base = os.path.join(
+        script_dir, "src/hololink/emulation/examples", f"serve_{transport}_file.py"
+    )
+    # Scripts use ``-r`` for frame rate.
+    cmd = [
+        "python3",
+        srv_base,
+        "-r",
+        "10",
+        "-s",
+        str(frame_size),
+        ip,
+        frame_file,
+    ]
+    emu = subprocess.Popen(
+        cmd, cwd=script_dir, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+    )
+    cu_context = None
+    cu_dev = None
+    recv_thread = None
+    rx_sock = None
+    receiver = None
+    holochannel = None
+    holo = None
+
+    try:
+        # Emulator BOOTP broadcasts about once per second; give ``hsb.start()`` time.
+        time.sleep(1.5)
+        if emu.poll() is not None:
+            out, err = emu.communicate()
+            raise AssertionError(
+                f"Emulator exited early ({emu.returncode}): {err.decode()!r} {out.decode()!r}"
+            )
+
+        (cu_ret,) = cuda.cuInit(0)
+        assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+        cu_ret, cu_dev = cuda.cuDeviceGet(0)
+        assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+        cu_ret, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_dev)
+        assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+
+        cuda.cuCtxSetCurrent(cu_context)
+        ch_meta = hololink_module.Enumerator.find_channel(channel_ip=ip)
+        holochannel = hololink_module.DataChannel(ch_meta)
+        holo = holochannel.hololink()
+        holo.start()
+        holo.reset()
+
+        try:
+            aligned = hololink_module.round_up(frame_size, hololink_module.PAGE_SIZE)
+            meta_sz = hololink_module.METADATA_SIZE
+            allocation_size = aligned + meta_sz
+            rm = hololink_module.ReceiverMemoryDescriptor(cu_context, allocation_size)
+            frame_mem = rm.get()
+
+            if transport == "linux":
+                rx_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                holochannel.configure_socket(rx_sock.fileno())
+                receiver = hololink_module.operators.LinuxReceiver(
+                    frame_mem,
+                    allocation_size,
+                    allocation_size,
+                    1,
+                    rx_sock.fileno(),
+                    frame_mem,
+                )
+
+                def _run_rx():
+                    cuda.cuCtxSetCurrent(cu_context)
+                    receiver.run()
+
+                recv_thread = threading.Thread(target=_run_rx, daemon=True)
+                recv_thread.start()
+                holochannel.authenticate(receiver.get_qp_number(), receiver.get_rkey())
+                _, local_port = rx_sock.getsockname()
+                holochannel.configure_roce(
+                    0, frame_size, allocation_size, 1, local_port
+                )
+            elif transport == "coe":
+                ETH_P_AVTP = 0x22F0
+                rx_sock = socket.socket(
+                    socket.AF_PACKET, socket.SOCK_RAW, socket.ntohs(ETH_P_AVTP)
+                )
+                rx_sock.bind(("lo", 0))
+                receiver = hololink_module.operators.LinuxCoeReceiver(
+                    frame_mem,
+                    allocation_size,
+                    rx_sock.fileno(),
+                    0,
+                )
+
+                def _run_rx_coe():
+                    cuda.cuCtxSetCurrent(cu_context)
+                    receiver.run()
+
+                recv_thread = threading.Thread(target=_run_rx_coe, daemon=True)
+                recv_thread.start()
+                coe_pixel_width = 128
+                holochannel.configure_coe(0, frame_size, coe_pixel_width, False)
+            else:
+                raise ValueError(transport)
+
+            # LinuxReceiver does not copy the FrameMetadata to the buffer, so the expected bytes is the aligned size.
+            # LinuxCoeReceiver copies the FrameMetadata to the buffer, so the expected bytes is the allocation size.
+            expected_bytes = aligned if transport == "linux" else allocation_size
+
+            last_mark = None
+            for fi in range(n_frames):
+                ok, md = receiver.get_next_frame(10_000, 0)
+                assert (
+                    ok
+                ), f"get_next_frame failed at frame_index={fi} transport={transport}"
+                assert md.frame_bytes_received == expected_bytes, (
+                    fi,
+                    md.frame_bytes_received,
+                    expected_bytes,
+                    transport,
+                )
+                cuda.cuCtxSynchronize()
+                cuda.cuCtxSetCurrent(cu_context)
+                # Both ``LinuxReceiver`` and ``LinuxCoeReceiver`` write the
+                # frame payload into the buffer we passed at construction time,
+                # so read directly from ``frame_mem``.  Note that
+                # ``LinuxCoeReceiverMetadata`` does not expose ``frame_memory``.
+                marker = _read_first_gpu_byte(cu_context, frame_mem)
+                if last_mark is None:
+                    last_mark = marker
+                    continue
+                assert marker == ((last_mark + 1) & 0xFF), (
+                    fi,
+                    last_mark,
+                    marker,
+                    transport,
+                )
+                last_mark = marker
+        finally:
+            if holochannel is not None:
+                try:
+                    holochannel.unconfigure()
+                except Exception:
+                    pass
+            if receiver is not None:
+                receiver.close()
+            if recv_thread is not None:
+                recv_thread.join(timeout=10.0)
+                assert (
+                    not recv_thread.is_alive()
+                ), f"receiver thread still alive ({transport})"
+            if rx_sock is not None:
+                rx_sock.close()
+            if holo is not None:
+                holo.stop()
+            # Drop refs to CUDA-owning objects before the outer finally
+            # releases the primary context. ``LinuxCoeReceiver`` calls
+            # ``cuEventDestroy`` from its dtor and ``ReceiverMemoryDescriptor``
+            # frees its allocation from its dtor; both segfault against a
+            # torn-down primary context. Python's per-frame locals teardown
+            # order is non-deterministic, so do this explicitly.
+            receiver = None
+            rm = None
+            frame_mem = None
+            holochannel = None
+            holo = None
+    finally:
+        try:
+            os.unlink(frame_file)
+        except OSError:
+            pass
+        # The serve_*_file.py subprocess loops indefinitely once it's done
+        # streaming, so just kill it; we don't expect a clean exit.
+        if emu.poll() is None:
+            emu.kill()
+        try:
+            emu.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            emu.kill()
+            emu.wait(timeout=5)
+        if cu_context is not None and cu_dev is not None:
+            cuda.cuCtxSetCurrent(cu_context)
+            cuda.cuCtxSynchronize()
+            (cu_ret,) = cuda.cuDevicePrimaryCtxRelease(cu_dev)
+            assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+
+
+@pytest.mark.parametrize("transport", ["linux", "coe"])
+@pytest.mark.skip_unless_cuda_subprocesses
+def test_emulator_serve_file_receiver_sequences(transport):
+    """Subprocess emulator + in-process Linux* receiver; enforce frame cadence markers."""
+    _receive_loopback(transport)
 
 
 def get_namespace_pid(namespace, command):

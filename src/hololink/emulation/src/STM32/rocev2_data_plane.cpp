@@ -19,144 +19,44 @@
 
 #include <stdexcept>
 
-#include "STM32/data_plane.hpp"
-#include "STM32/hsb_emulator.hpp"
-#include "STM32/net.hpp"
-#include "STM32/rocev2_transmitter.hpp"
+#include "../common/rocev2_transmitter.hpp"
+#include "data_plane.hpp"
+#include "hsb_emulator.hpp"
+#include "net.hpp"
 #include "rocev2_data_plane.hpp"
 
 namespace hololink::emulation {
 
-uint16_t TRANSMITTER_COUNT = 0;
+uint16_t TRANSMITTER_METADATA_COUNT = 0;
 
-struct RoCEv2TransmissionMetadata ROCEV2_TRANSMISSION_METADATA[MAX_DATA_PLANES];
+struct RoCEv2Ctxt ROCEV2_TRANSMISSION_METADATA[MAX_DATA_PLANES];
 RoCEv2Transmitter ROCEV2_TRANSMITTER;
 
-int vp_data_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
+static std::unique_ptr<DataPlaneCtxt, std::function<void(DataPlaneCtxt*)>>
+make_rocev2_ctxt()
 {
-    RoCEv2TransmissionMetadata* metadata = (RoCEv2TransmissionMetadata*)ctxt;
-
-    int i = 0;
-    while (i < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= metadata->vp_address && address <= metadata->vp_address + DP_HOST_UDP_PORT) {
-            AVP_SET_VALUE(addr_val, metadata->base.vp_data[(address - metadata->vp_address) / REGISTER_SIZE]);
-        } else {
-            return i;
-        }
-        addr_val++;
-        i++;
+    if (TRANSMITTER_METADATA_COUNT >= MAX_DATA_PLANES) {
+        Error_Handler(NULL);
     }
-    return i;
-}
-int vp_data_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
-{
-    RoCEv2TransmissionMetadata* metadata = (RoCEv2TransmissionMetadata*)ctxt;
-
-    int i = 0;
-    while (i < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= metadata->vp_address && address <= metadata->vp_address + DP_HOST_UDP_PORT) {
-            metadata->base.vp_data[(address - metadata->vp_address) / REGISTER_SIZE] = AVP_GET_VALUE(addr_val);
-        } else {
-            return i;
-        }
-        addr_val++;
-        i++;
-    }
-    return i;
-}
-
-int hif_data_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
-{
-    RoCEv2TransmissionMetadata* metadata = (RoCEv2TransmissionMetadata*)ctxt;
-
-    int i = 0;
-    while (i < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= metadata->hif_address && address <= metadata->hif_address + DP_VP_MASK) {
-            AVP_SET_VALUE(addr_val, metadata->hif_data[(address - metadata->hif_address) / REGISTER_SIZE]);
-        } else {
-            return i;
-        }
-        addr_val++;
-        i++;
-    }
-    return i;
-}
-int hif_data_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_count)
-{
-    RoCEv2TransmissionMetadata* metadata = (RoCEv2TransmissionMetadata*)ctxt;
-
-    int i = 0;
-    while (i < max_count) {
-        uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= metadata->hif_address && address <= metadata->hif_address + DP_VP_MASK) {
-            metadata->hif_data[(address - metadata->hif_address) / REGISTER_SIZE] = AVP_GET_VALUE(addr_val);
-        } else {
-            return i;
-        }
-        addr_val++;
-        i++;
-    }
-    return i;
+    RoCEv2Ctxt* rocev2_ctxt = &ROCEV2_TRANSMISSION_METADATA[TRANSMITTER_METADATA_COUNT++];
+    return {
+        &rocev2_ctxt->base.base,
+        [](DataPlaneCtxt*) { /* statically allocated */ }
+    };
 }
 
 RoCEv2DataPlane::RoCEv2DataPlane(HSBEmulator& hsb_emulator, const IPAddress& source_ip, uint8_t data_plane_id, uint8_t sensor_id)
-    : DataPlane(hsb_emulator, source_ip, data_plane_id, sensor_id)
+    : DataPlane(hsb_emulator, source_ip, data_plane_id, sensor_id, make_rocev2_ctxt())
 {
-    // allocate transmitter and its metadata
+    RoCEv2Ctxt* rocev2_ctxt = reinterpret_cast<RoCEv2Ctxt*>(data_plane_ctxt_.get());
+
     transmitter_ = (BaseTransmitter*)&ROCEV2_TRANSMITTER;
-    RoCEv2TransmissionMetadata* rocev2_metadata;
-    if (TRANSMITTER_COUNT < MAX_DATA_PLANES) {
-        rocev2_metadata = (RoCEv2TransmissionMetadata*)&ROCEV2_TRANSMISSION_METADATA[TRANSMITTER_COUNT++];
-    } else {
-        Error_Handler();
-    }
-    ((RoCEv2Transmitter*)transmitter_)->init_metadata(rocev2_metadata, source_ip);
-    metadata_ = (TransmissionMetadata*)rocev2_metadata;
-    rocev2_metadata->eth_handle = data_plane_ctxt_->eth_handle;
-    rocev2_metadata->vp_address = vp_address_;
-    rocev2_metadata->hif_address = hif_address_;
-
-    // register callbacks for data plane vp data
-    CHECK_CP_MAP_SET(hsb_emulator.register_read_callback(vp_address_ + DP_QP, vp_address_ + DP_HOST_UDP_PORT + REGISTER_SIZE, vp_data_readback_cb, rocev2_metadata));
-    CHECK_CP_MAP_SET(hsb_emulator.register_write_callback(vp_address_ + DP_QP, vp_address_ + DP_HOST_UDP_PORT + REGISTER_SIZE, vp_data_configure_cb, rocev2_metadata));
-
-    // register callbacks for data plane hif data
-    CHECK_CP_MAP_SET(hsb_emulator.register_read_callback(hif_address_, hif_address_ + DP_VP_MASK + REGISTER_SIZE, hif_data_readback_cb, rocev2_metadata));
-    CHECK_CP_MAP_SET(hsb_emulator.register_write_callback(hif_address_, hif_address_ + DP_VP_MASK + REGISTER_SIZE, hif_data_configure_cb, rocev2_metadata));
+    ((RoCEv2Transmitter*)transmitter_)->init_metadata(rocev2_ctxt, source_ip);
 }
 
 RoCEv2DataPlane::~RoCEv2DataPlane()
 {
-    // do nothing
-}
-
-void RoCEv2DataPlane::update_metadata()
-{
-
-    RoCEv2TransmissionMetadata* rocev2_metadata = (RoCEv2TransmissionMetadata*)metadata_;
-
-    // update page
-    uint32_t start_page = (rocev2_metadata->base.vp_data[DP_MAX_BUFF / REGISTER_SIZE] >> 16) & 0xFFF;
-    uint32_t end_page = (rocev2_metadata->base.vp_data[DP_MAX_BUFF / REGISTER_SIZE] >> 0) & 0xFFF;
-    if (page_ < start_page) {
-        page_ = start_page;
-    } else {
-        page_++;
-    }
-    if (page_ > end_page) {
-        page_ = start_page;
-    }
-
-    // derived metadata
-    rocev2_metadata->payload_size = rocev2_metadata->hif_data[DP_PACKET_SIZE / REGISTER_SIZE] * HSB_PAGE_SIZE;
-    uint64_t address = rocev2_metadata->base.vp_data[DP_PAGE_LSB / REGISTER_SIZE] + ((uint64_t)rocev2_metadata->base.vp_data[DP_PAGE_MSB / REGISTER_SIZE] << 32);
-    address += ((uint64_t)rocev2_metadata->base.vp_data[DP_PAGE_INC / REGISTER_SIZE]) * HSB_PAGE_SIZE * page_;
-    rocev2_metadata->address = address;
-    rocev2_metadata->page = page_;
-    rocev2_metadata->metadata_offset = (rocev2_metadata->base.vp_data[DP_BUFFER_LENGTH / REGISTER_SIZE] + HSB_PAGE_SIZE - 1) & ~(HSB_PAGE_SIZE - 1);
+    // do nothing — static pool, no resources to free
 }
 
 } // namespace hololink::emulation

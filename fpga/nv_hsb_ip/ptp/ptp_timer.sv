@@ -127,7 +127,6 @@ localparam W_INC_TOT = W_INC+W_DLY_ASYMM_PTP > W_HIF_INC+W_DLY_ASYMM_HIF ? W_INC
 logic [W_INC     + W_DLY_ASYMM_PTP:0] dly_asymm_ptp;
 logic [W_HIF_INC + W_DLY_ASYMM_HIF:0] dly_asymm_hif;
 logic [W_INC_TOT:0]                   dly_asymm_tot;
-logic [W_INC_NS  + W_DLY_ASYMM_PTP:0] dly_asymm_ns;
 
 assign dly_asymm_ptp  = NUM_CLK_DLY_ASYMM_PTP * default_inc[W_INC-1:0];
 assign dly_asymm_hif  = NUM_CLK_DLY_ASYMM_HIF * default_hif_inc[W_HIF_INC-1:0];
@@ -151,9 +150,10 @@ assign nano_sec_2inc[0]        = nano_sec[0];
 logic nano_sec_gt_bil;
 logic nano_sec_gt_bil_msb;
 logic nano_sec_gt_bil_lsb;
+logic sync_ts_vld_ff;
 
 assign nano_sec_gt_bil_lsb = (nano_sec_2inc_r[W_FRAC_NS+W_GT_BIL_COMP-1:W_FRAC_NS+8] >= BILLION[W_GT_BIL_COMP-1:8]) ? 1'b1 : 1'b0;
-assign nano_sec_gt_bil     = nano_sec_gt_bil_msb && nano_sec_gt_bil_lsb;
+assign nano_sec_gt_bil     = nano_sec_gt_bil_msb && nano_sec_gt_bil_lsb && !sync_ts_vld_ff;
 
 logic [29:0] nano_sec_sub_bil;
 assign nano_sec_sub_bil = nano_sec_2inc_r[W_NS-2:W_FRAC_NS] - BILLION[29:0];
@@ -165,6 +165,7 @@ always_ff @(posedge i_pclk) begin
     nano_sec            <= 0;
     nano_sec_2inc_r     <= 0;
     nano_sec_gt_bil_msb <= 1'b0;
+    sync_ts_vld_ff      <= 1'b0;
   end
   else begin
     pps   <= nano_sec_gt_bil ? 1'b1 :
@@ -173,6 +174,8 @@ always_ff @(posedge i_pclk) begin
     sec   <= i_sync_ts_vld   ? i_sync_ts[79:32] :
               nano_sec_gt_bil ? sec_inc          :
                                 sec;
+
+    sync_ts_vld_ff      <= i_sync_ts_vld;
 
     nano_sec_gt_bil_msb <= (nano_sec_2inc_r[W_NS-1:W_FRAC_NS+W_GT_BIL_COMP] >= BILLION[30:W_GT_BIL_COMP]) ? 1'b1 : 1'b0;
 

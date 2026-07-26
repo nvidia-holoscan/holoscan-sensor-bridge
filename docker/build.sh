@@ -26,8 +26,11 @@ dgpu=0
 usage=1
 GPU_CONFIG=
 HOLOLINK_ROCE_USE_GPU_VRAM=ON
+# Empty means "not set on the command line"; the default is resolved later
+# based on the detected platform (disabled by default on AGX Orin).
+HOLOLINK_USE_SCCACHE=
 # HSDK follows Major.Minor.Patch versioning scheme
-HSDK_VERSION="4.2.0"
+HSDK_VERSION="4.4.0"
 
 # detected and populated in script and used in docker build command
 PROTOTYPE_OPTIONS=""
@@ -51,6 +54,21 @@ do
         "--disable-roce-gpu-vram")
             HOLOLINK_ROCE_USE_GPU_VRAM=OFF
             ;;
+        --use-sccache=*)
+            case "${1#--use-sccache=}" in
+                0)
+                    HOLOLINK_USE_SCCACHE=OFF
+                    ;;
+                1)
+                    HOLOLINK_USE_SCCACHE=ON
+                    ;;
+                *)
+                    echo "Invalid value for --use-sccache; must be 0 or 1." >&2
+                    usage=1
+                    break
+                    ;;
+            esac
+            ;;
         --hsdk=*)
             HSDK_VERSION="${1#--hsdk=}"
             ;;
@@ -70,7 +88,7 @@ fi
 
 if [ $usage -ne 0 ]
 then
-echo "Usage: $0 [-f] --igpu|--dgpu [--disable-roce-gpu-vram]" >&2
+echo "Usage: $0 [-f] --igpu|--dgpu [--disable-roce-gpu-vram] [--use-sccache=0|1]" >&2
 exit 1
 fi
 
@@ -88,14 +106,42 @@ then
     echo "Warning: Cannot determine product name from DMI. This system/configuration may not be supported."
 fi
 
-# compiles a minimal binary as CUDA program verbosely to detect the native architecture used for the available GPU(s) and captures it in output
-# this will be passed to docker container environment to be available to cmake both during container build and HSB rebuilds for targets that have architecture dependencies, e.g. gpu_roce_transceiver
-CUDA_NATIVE_ARCH=$(echo -n "int main(void) {return 0; }" | /usr/local/cuda/bin/nvcc -arch=native --verbose -x cu -o /tmp/main - 2>&1 | grep -m 1 -oE "__CUDA_ARCH__=[^-]+" | cut -d= -f2 | tr -d ' ')
-if [ -z "$CUDA_NATIVE_ARCH" ]; then
-    CUDA_NATIVE_ARCH=800
+# Resolve the value for sccache when not explicitly set on the command line.
+# Precedence: --use-sccache command line > HSB_USE_SCCACHE env variable > platform default.
+# sccache is enabled by default everywhere except on the AGX Orin platform.
+if [ -z "$HOLOLINK_USE_SCCACHE" ]
+then
+    if [ -n "$HSB_USE_SCCACHE" ]
+    then
+        case "$HSB_USE_SCCACHE" in
+            0)
+                HOLOLINK_USE_SCCACHE=OFF
+                ;;
+            1)
+                HOLOLINK_USE_SCCACHE=ON
+                ;;
+            *)
+                echo "Invalid value for HSB_USE_SCCACHE; must be 0 or 1." >&2
+                exit 1
+                ;;
+        esac
+    elif echo "$PRODUCT_NAME" | grep -q "AGX Orin"
+    then
+        HOLOLINK_USE_SCCACHE=OFF
+    else
+        HOLOLINK_USE_SCCACHE=ON
+    fi
 fi
-# The result above will be for example 890 for compute 8.9. Remove the trailing digit
-CUDA_NATIVE_ARCH="${CUDA_NATIVE_ARCH%?}"
+
+# compiles a minimal binary as CUDA program verbosely to detect the native architecture used for the available GPU(s) and captures it in output.
+# this is exported to the container as CMAKE_CUDA_ARCHITECTURES so cmake picks it up directly for all CUDA targets (including gpu_roce_transceiver)
+# without ever needing nvcc -arch=native inside the container (which has no GPU access during build).
+HOLOLINK_CUDA_ARCHS=$(echo -n "int main(void) {return 0; }" | /usr/local/cuda/bin/nvcc -arch=native --verbose -x cu -o /tmp/main - 2>&1 | grep -m 1 -oE "__CUDA_ARCH__=[^-]+" | cut -d= -f2 | tr -d ' ')
+if [ -z "$HOLOLINK_CUDA_ARCHS" ]; then
+    HOLOLINK_CUDA_ARCHS=800
+fi
+# The result above will be for example 890 for compute 8.9. Remove the trailing digit to get the CMake form (e.g. 89).
+HOLOLINK_CUDA_ARCHS="${HOLOLINK_CUDA_ARCHS%?}"
 
 # detect infiniband devices. HOLOLINK_BUILD_ROCE is set to 1 if any are found
 IBV_DEVICES=""
@@ -150,8 +196,21 @@ check_l4t() {
         echo "Warning: \"$1\" configuration is not officially supported."
     fi
     L4T_CONFIG=$(cat /etc/nv_tegra_release)
-    # get L4T version from DMI. The dmi bios_version for l4t includes the full l4t release version
-    L4T_VERSION=$(cat /sys/class/dmi/id/bios_version | cut -d- -f1)
+    # Derive the L4T version from the BSP release file, which is authoritative.
+    # The DMI bios_version reports the UEFI/QSPI firmware version; on IGX that is
+    # flashed independently of the rootfs, so it can carry a leading "v"
+    # (e.g. "v36.4.3", which breaks integer parsing) or lag the real BSP
+    # (e.g. "36.1.0" on a fresh IGX OS 1.1.3 flash whose BSP is actually 36.5.x,
+    # which pins a too-old apt repo lacking the CUDA 12.6 dev packages).
+    # "# R36 (release), REVISION: 5.1, ..." -> 36.5.1
+    L4T_RELEASE_LINE=$(head -n1 /etc/nv_tegra_release)
+    L4T_MAJOR=$(echo "$L4T_RELEASE_LINE" | sed -nE 's/^# R([0-9]+).*/\1/p')
+    L4T_REVISION=$(echo "$L4T_RELEASE_LINE" | sed -nE 's/.*REVISION:[[:space:]]*([0-9]+\.[0-9]+).*/\1/p')
+    if [ -z "$L4T_MAJOR" ] || [ -z "$L4T_REVISION" ]; then
+        echo "Error: Unable to parse L4T version from /etc/nv_tegra_release: $L4T_RELEASE_LINE" >&2
+        exit 1
+    fi
+    L4T_VERSION="${L4T_MAJOR}.${L4T_REVISION}"
     L4T_VERSION_MAJOR=${L4T_VERSION%%.*}
     echo "L4T version: $L4T_VERSION"
 
@@ -277,9 +336,10 @@ echo "CONTAINER_TYPE: $CONTAINER_TYPE"
 echo "PROTOTYPE_OPTIONS: $PROTOTYPE_OPTIONS"
 echo "INSTALL_ENVIRONMENT: $INSTALL_ENVIRONMENT"
 echo "L4T_VERSION: $L4T_VERSION"
-echo "CUDA_NATIVE_ARCH: $CUDA_NATIVE_ARCH"
+echo "HOLOLINK_CUDA_ARCHS: $HOLOLINK_CUDA_ARCHS"
 echo "IBV_DEVICES: $IBV_DEVICES"
 echo "HOLOLINK_ROCE_USE_GPU_VRAM: $HOLOLINK_ROCE_USE_GPU_VRAM"
+echo "HOLOLINK_USE_SCCACHE: $HOLOLINK_USE_SCCACHE"
 set -x
 
 # Build the development container.  We specifically rely on buildkit skipping
@@ -290,7 +350,6 @@ DOCKER_BUILDKIT=1 docker build \
     --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     --build-arg "HSDK_VERSION=$HSDK_VERSION" \
     --build-arg "L4T_VERSION=$L4T_VERSION" \
-    --build-arg "CUDA_NATIVE_ARCH=$CUDA_NATIVE_ARCH" \
     --build-arg "IBV_DEVICES=$IBV_DEVICES" \
     -t hololink-prototype:$VERSION \
     -f $HERE/Dockerfile \
@@ -302,7 +361,9 @@ DOCKER_BUILDKIT=1 docker build \
     --network=host \
     --build-arg CONTAINER_VERSION=hololink-prototype:$VERSION \
     --build-arg "INSTALL_ENVIRONMENT=$INSTALL_ENVIRONMENT" \
+    --build-arg "CUDAARCHS=$HOLOLINK_CUDA_ARCHS" \
     --build-arg "HOLOLINK_ROCE_USE_GPU_VRAM=$HOLOLINK_ROCE_USE_GPU_VRAM" \
+    --build-arg "HOLOLINK_USE_SCCACHE=$HOLOLINK_USE_SCCACHE" \
     -t hololink-demo:$VERSION \
     -f $HERE/Dockerfile.demo \
     $ROOT

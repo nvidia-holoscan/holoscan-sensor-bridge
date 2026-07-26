@@ -97,6 +97,8 @@ public:
         const std::function<std::shared_ptr<Hololink>(const Metadata& metadata)>& create_hololink
         = Hololink::from_enumeration_metadata);
 
+    virtual ~DataChannel() = default;
+
     /**
      * @brief
      *
@@ -154,7 +156,7 @@ public:
      * @param frame_size
      * @param local_data_port
      */
-    void configure_roce(uint64_t frame_memory, size_t frame_size, size_t page_size, unsigned pages, uint32_t local_data_port);
+    virtual void configure_roce(uint64_t frame_memory, size_t frame_size, size_t page_size, unsigned pages, uint32_t local_data_port);
 
     /**
      * Configure the data channel for 1722 COE packets.
@@ -164,7 +166,7 @@ public:
     /**
      * Clear the operating state set up by configure().
      */
-    void unconfigure();
+    virtual void unconfigure();
 
     /**
      * Configure the receiver to handle this traffic; this
@@ -191,6 +193,16 @@ public:
      */
     static void use_data_plane_configuration(Metadata& metadata, int64_t data_plane);
 
+    /**
+     * Stamp 802.1Q VLAN parameters into the metadata so they are applied
+     * automatically during configure_roce() / configure_coe().
+     * @param vlan_id    12-bit VLAN ID [1, 4094]
+     * @param sensor_pcp 3-bit PCP for the sensor data virtual port
+     * @param evt_pcp    3-bit PCP for the EVT channel
+     */
+    static void use_vlan(Metadata& metadata, uint16_t vlan_id,
+        uint8_t sensor_pcp, uint8_t evt_pcp);
+
     Metadata& enumeration_metadata() { return enumeration_metadata_; }
 
     /**
@@ -214,7 +226,23 @@ protected:
      */
     void configure_common(uint32_t frame_size, uint32_t header_size, uint32_t local_data_port = 0);
 
-private:
+    /**
+     * The oldest HSB IP version whose RoCE data-plane memory map this
+     * DataChannel programs. configure_roce() rejects an FPGA older than this.
+     * Revision-specific subclasses override it to declare the older layout
+     * they understand.
+     */
+    virtual int64_t minimum_hsb_ip_version() const;
+
+    /**
+     * Throw UnsupportedVersion if the enumerated hsb_ip_version is older than
+     * minimum_hsb_ip_version() (or absent). Called from the data-plane bring-up
+     * path so an incompatible memory map fails loudly before any traffic is
+     * configured.
+     */
+    void verify_hsb_ip_version();
+
+protected:
     std::shared_ptr<Hololink> hololink_;
     Metadata enumeration_metadata_; // we keep a copy of what we were instantiated with
     std::string peer_ip_;

@@ -109,11 +109,16 @@ public:
         spec_ = std::make_shared<holoscan::OperatorSpec>(fragment);
         setup(*spec_.get());
 
-        // Set the rename_metadata function if provided
+        // Set the rename_metadata function if provided. The std::function
+        // we hand to set_rename_metadata may be copied/destroyed by
+        // Holoscan plumbing on threads that do not hold the GIL, so wrap
+        // the py::object in a GIL-safe holder rather than capturing it
+        // by value (which would Py_INCREF/Py_DECREF off-GIL on copy).
         if (!rename_metadata.is_none()) {
-            auto rename_fn = std::function<std::string(const std::string&)>([rename_metadata](const std::string& name) {
+            auto rename_holder = make_gil_safe_py_object(std::move(rename_metadata));
+            auto rename_fn = std::function<std::string(const std::string&)>([rename_holder](const std::string& name) {
                 py::gil_scoped_acquire guard;
-                return rename_metadata(name).cast<std::string>();
+                return (*rename_holder)(name).cast<std::string>();
             });
             set_rename_metadata(rename_fn);
         }

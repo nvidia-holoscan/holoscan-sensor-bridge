@@ -22,6 +22,7 @@
 #include <holoscan/operators/holoviz/holoviz.hpp>
 
 #include <hololink/common/holoargs.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/logging.hpp>
 #include <hololink/core/networking.hpp>
 #include <hololink/operators/fusa_coe_capture/fusa_coe_capture.hpp>
@@ -94,7 +95,7 @@ public:
         bool headless,
         bool fullscreen,
         std::vector<hololink::DataChannel>& hololink_channels,
-        std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>>& cameras,
+        std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>> cameras,
         hololink::sensors::imx274_mode::Mode camera_mode,
         uint32_t timeout,
         int frame_limit,
@@ -102,7 +103,7 @@ public:
         : headless_(headless)
         , fullscreen_(fullscreen)
         , hololink_channels_(hololink_channels)
-        , cameras_(cameras)
+        , cameras_(std::move(cameras))
         , camera_mode_(camera_mode)
         , timeout_(timeout)
         , frame_limit_(frame_limit)
@@ -228,7 +229,7 @@ private:
     bool headless_;
     bool fullscreen_;
     std::vector<hololink::DataChannel>& hololink_channels_;
-    std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>>& cameras_;
+    std::vector<std::shared_ptr<hololink::sensors::NativeImx274Sensor>> cameras_;
     hololink::sensors::imx274_mode::Mode camera_mode_;
     uint32_t timeout_;
     int frame_limit_;
@@ -250,7 +251,7 @@ int main(int argc, char** argv)
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
-        ("hololink", value<std::string>()->default_value("192.168.0.2"), "IP address of Hololink board")
+        ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
         ("sensor", value<int>()->default_value(-1), "Sensor to use (0 or 1, or -1 (default) for stereo mode)")
         ("timeout", value<int>()->default_value(1500), "Capture request timeout, in milliseconds")
         ("metadata", bool_switch()->default_value(false), "Print frame metadata")
@@ -318,7 +319,7 @@ int main(int argc, char** argv)
             variables_map["headless"].as<bool>(),
             variables_map["fullscreen"].as<bool>(),
             hololink_channels,
-            cameras,
+            std::move(cameras),
             camera_mode,
             variables_map["timeout"].as<int>(),
             variables_map["frame-limit"].as<int>(),

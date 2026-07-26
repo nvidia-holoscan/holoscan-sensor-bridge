@@ -113,7 +113,14 @@ LinuxCoeReceiver::~LinuxCoeReceiver()
 {
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
-    cuEventDestroy(event_);
+    if (event_) {
+        // Best-effort: if no context is current the call may fail; ignore.
+        CUcontext cur = nullptr;
+        if (cuCtxGetCurrent(&cur) == CUDA_SUCCESS && cur != nullptr) {
+            cuEventDestroy(event_);
+        }
+        event_ = 0;
+    }
 }
 
 void LinuxCoeReceiver::run()
@@ -274,18 +281,28 @@ void LinuxCoeReceiver::run()
             }
 
             if (flags & FRAME_END) {
+                // The frame metadata occupies the trailing METADATA_SIZE bytes of this
+                // packet's payload. If the FRAME_END packet carries fewer bytes than that,
+                // it is malformed: (payload + payload_bytes - METADATA_SIZE) would point
+                // before the received buffer and deserialize_metadata() would read out of
+                // bounds. Reject it before computing the metadata pointer.
+                if (payload_bytes < hololink::METADATA_SIZE) {
+                    HSB_LOG_ERROR("Ignoring runt FRAME_END packet; payload_bytes={:#x} < METADATA_SIZE={:#x}", payload_bytes, hololink::METADATA_SIZE);
+                    break;
+                }
+
                 frame_count++;
                 core::NvtxTrace::event_u64("FRAME_END", frame_count);
 
                 // Send it
-                // - receiving now has legit data;
+                // - receiving now has legit data and hololink::FrameMetadata must be the last bytes of the payload
                 // - swap it with available_, now
                 //  available_ points to received data
                 //  and we'll continue to receive into what
                 //  was in available_ (but not consumed by
                 //  the application)
                 // - signal the pipeline so it wakes up if necessary.
-                Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(payload, payload_bytes);
+                Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(payload + payload_bytes - hololink::METADATA_SIZE, hololink::METADATA_SIZE);
                 LinuxCoeReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
@@ -307,6 +324,7 @@ void LinuxCoeReceiver::run()
                 frame_packets_received = 0;
                 frame_bytes_received = 0;
             }
+
         } while (false);
     }
 

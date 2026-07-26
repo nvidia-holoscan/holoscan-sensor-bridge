@@ -74,6 +74,13 @@ protected:
         holoscan::ExecutionContext& context);
     virtual bool frames_ready() = 0; // Returns false if get_next_frame might block.
 
+    // Returns an owning handle to the memory backing the frames returned by
+    // get_next_frame(). compute() captures this in the wrapped tensor's release
+    // callback so the frame buffer outlives any in-flight downstream consumer,
+    // preventing a use-after-free when the receiver is stopped (and frees the
+    // buffer) while frames are still being processed. Default: no owner.
+    virtual std::shared_ptr<void> frame_memory_owner() { return nullptr; }
+
     // Subclasses call this in order to queue up a call to compute.
     void frame_ready();
 

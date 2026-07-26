@@ -48,12 +48,12 @@ module ctrl_bus_evt_int
   output [15:0]            o_dev_udp_port,
   output [15:0]            o_pld_len,
   //AXIS Interface
-  output                   o_int_axis_tx_tvalid,
-  output [AXI_DWIDTH-1:0]  o_int_axis_tx_tdata,
-  output                   o_int_axis_tx_tlast,
-  output [W_NUM_HOST-1:0]  o_int_axis_tx_tuser,
-  output [AXI_KWIDTH-1:0]  o_int_axis_tx_tkeep,
-  input                    i_int_axis_tx_tready
+  output                     o_int_axis_tx_tvalid,
+  output [AXI_DWIDTH-1:0]    o_int_axis_tx_tdata,
+  output                     o_int_axis_tx_tlast,
+  output [16+W_NUM_HOST:0]   o_int_axis_tx_tuser,
+  output [AXI_KWIDTH-1:0]    o_int_axis_tx_tkeep,
+  input                      i_int_axis_tx_tready
 );
 
 
@@ -149,6 +149,12 @@ assign timeout = ctrl_reg[ctrl_evt_apb_timeout][23:0];
 
 assign apb_interrupt_en = ctrl_reg[ctrl_evt_apb_interrupt_en];
 assign sw_event = ctrl_reg[ctrl_evt_sw_event][0];
+
+logic        vlan_en;
+logic [15:0] vlan_tag;
+
+assign vlan_en  = ctrl_reg[ctrl_evt_vlan][16];
+assign vlan_tag = ctrl_reg[ctrl_evt_vlan][15:0];
 
 assign stat_reg[0] = int_active[31:0];
 assign stat_reg[1][W_EVENT_IDX-1:0] = evt_vec_timeout_sync;
@@ -295,7 +301,6 @@ logic              evt_fifo_empty;
 logic              evt_fifo_aempty;
 logic              evt_fifo_under;
 
-logic [W_FIFO-1:0]    int_det_fifo_q;
 logic                 trigger;
 logic                 axis_is_busy;
 logic [W_FIFO+16-1:0] axis_data;
@@ -391,6 +396,7 @@ vec_to_axis #(
   .rst              ( rst                  ),
   .trigger          ( trigger              ),
   .data             ( axis_data_be         ),
+  .tuser            ( 1'b0                 ),
   .is_busy          ( axis_is_busy         ),
   .o_axis_tx_tvalid ( o_int_axis_tx_tvalid ),
   .o_axis_tx_tdata  ( o_int_axis_tx_tdata  ),
@@ -402,7 +408,8 @@ vec_to_axis #(
 
 assign trigger = (evt_state == TRIG);
 assign axis_data = {evt_fifo_rddata[W_FIFO-1:64],16'h0,evt_fifo_rddata[63:0]};
-assign o_int_axis_tx_tuser = host_idx;
+assign o_int_axis_tx_tuser[W_NUM_HOST-1:0]               = host_idx;
+assign o_int_axis_tx_tuser[W_NUM_HOST+16:W_NUM_HOST]    = {vlan_en, vlan_tag};
 
 
 endmodule

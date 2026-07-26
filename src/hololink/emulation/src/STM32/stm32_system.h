@@ -20,20 +20,8 @@
 #ifndef STM32_SYSTEM_H
 #define STM32_SYSTEM_H
 
-// pull in the appropriate HAL header based on the STM32 series/family
-#if defined(STM32F2)
-#include "stm32f2xx_hal.h"
-#elif defined(STM32F4)
-#include "stm32f4xx_hal.h"
-#elif defined(STM32F7)
-#include "stm32f7xx_hal.h"
-#elif defined(STM32H5)
-#include "stm32h5xx_hal.h"
-#elif defined(STM32H7)
-#include "stm32h7xx_hal.h"
-#else
-#error "Unsupported STM32 series/family not supported"
-#endif
+// The selected board's board.h pulls in the correct HAL header for its STM32 series.
+#include "board.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -59,9 +47,6 @@ void SysTick_Handler(void);
 void SystemClock_Config(void);
 void MPU_Config(void);
 void HAL_MspInit(void);
-
-// generic error handler for system. usually just an infinite loop.
-void Error_Handler(void);
 
 #ifdef __cplusplus
 }

@@ -37,7 +37,7 @@ struct SpiControllerCtxt {
 };
 extern struct SpiControllerCtxt SPI_CONTROLLER_CTXT;
 
-/* SPI3 init function. this can be called multiple times on the same object
+/* SPI init function. this can be called multiple times on the same object
  to change initialization, but will only initialize the clocks and GPIOs once*/
 int spi_init(SPI_HandleTypeDef* hspi);
 

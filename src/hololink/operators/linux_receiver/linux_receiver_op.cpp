@@ -123,11 +123,12 @@ void LinuxReceiverOp::start_receiver()
     static_assert((hololink::METADATA_SIZE & (hololink::core::PAGE_SIZE - 1)) == 0);
     size_t received_frame_size = metadata_address + hololink::METADATA_SIZE;
     size_t buffer_size = hololink::core::round_up(received_frame_size * pages_.get(), getpagesize());
-    frame_memory_.reset(new hololink::ReceiverMemoryDescriptor(frame_context_, buffer_size));
+    frame_memory_ = std::make_shared<hololink::ReceiverMemoryDescriptor>(frame_context_, buffer_size);
 
     receiver_.reset(new LinuxReceiver(
         frame_memory_->get(),
         buffer_size,
+        // each page needs to include all space in order to capture the FrameMetadata
         received_frame_size,
         pages_.get(),
         data_socket_.get(),
@@ -214,6 +215,14 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> LinuxReceiverOp::ge
 bool LinuxReceiverOp::frames_ready()
 {
     return receiver_->frames_ready();
+}
+
+std::shared_ptr<void> LinuxReceiverOp::frame_memory_owner()
+{
+    // Hand the base class an owning reference to the frame buffer so tensors it
+    // wraps keep the buffer alive until every downstream consumer is done, even
+    // after stop_receiver() drops our reference.
+    return frame_memory_;
 }
 
 uint64_t LinuxReceiverOp::received_address_offset()

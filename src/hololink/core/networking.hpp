@@ -48,8 +48,9 @@ size_t round_up(size_t value, size_t alignment);
 /// MAC (medium access control) address
 using MacAddress = std::array<uint8_t, 6>;
 
-/// A RAII object which automatically closes a file handle when going out of scope (e.g. for sockets)
-using UniqueFileDescriptor = std::unique_ptr<Nullable<int>, Nullable<int>::Deleter<int, &close>>;
+/// A RAII object which automatically closes a file handle when going out of scope (e.g. for sockets).
+/// The null sentinel is -1 (not 0): 0 is a valid file descriptor, so it must not read as "empty".
+using UniqueFileDescriptor = std::unique_ptr<Nullable<int, -1>, Nullable<int, -1>::Deleter<int, &close>>;
 
 /**
  * @brief Works only on Linux.

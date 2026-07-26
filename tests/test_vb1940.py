@@ -17,6 +17,7 @@
 
 import logging
 import sys
+import threading
 from unittest import mock
 
 import applications
@@ -31,6 +32,7 @@ from examples import (
     vb1940_player,
     vb1940_stereo_imu_player,
 )
+from hololink import AsyncEventListener
 
 MS_PER_SEC = 1000.0
 US_PER_SEC = 1000.0 * MS_PER_SEC
@@ -333,3 +335,150 @@ def test_vb1940_stereo_imu(
         # check for errors
         captured = capsys.readouterr()
         assert captured.err == ""
+
+
+class FrameStartEndListener(AsyncEventListener):
+    """Logs frame start and end events."""
+
+    def __init__(self):
+        super().__init__()
+        self._lock = threading.Lock()
+        self._sif0_starts = []
+        self._sif0_ends = []
+        self._sif1_starts = []
+        self._sif1_ends = []
+
+    @staticmethod
+    def get_timestamp(timestamp_s, timestamp_ns):
+        return float(timestamp_s) + float(timestamp_ns) * 1e-9
+
+    def on_sif0_frame_start_event(self, _state, timestamp_s, timestamp_ns):
+        ts = self.get_timestamp(timestamp_s, timestamp_ns)
+        with self._lock:
+            self._sif0_starts.append(ts)
+
+    def on_sif0_frame_end_event(self, _state, timestamp_s, timestamp_ns):
+        ts = self.get_timestamp(timestamp_s, timestamp_ns)
+        with self._lock:
+            self._sif0_ends.append(ts)
+
+    def on_sif1_frame_start_event(self, _state, timestamp_s, timestamp_ns):
+        ts = self.get_timestamp(timestamp_s, timestamp_ns)
+        with self._lock:
+            self._sif1_starts.append(ts)
+
+    def on_sif1_frame_end_event(self, _state, timestamp_s, timestamp_ns):
+        ts = self.get_timestamp(timestamp_s, timestamp_ns)
+        with self._lock:
+            self._sif1_ends.append(ts)
+
+    def deltas_s(self, sensor):
+        with self._lock:
+            if sensor == 0:
+                assert len(self._sif0_starts) == len(
+                    self._sif0_ends
+                ), "expected paired frame start/end events"
+                return [
+                    end - start
+                    for end, start in zip(self._sif0_ends, self._sif0_starts)
+                ]
+            elif sensor == 1:
+                assert len(self._sif1_starts) == len(
+                    self._sif1_ends
+                ), "expected paired frame start/end events"
+                return [
+                    end - start
+                    for end, start in zip(self._sif1_ends, self._sif1_starts)
+                ]
+            else:
+                raise AssertionError("invalid sensor")
+
+
+def _test_vb1940_frame_events(headless, frame_limit, hololink_address, sensor):
+    """Test frame start/end sequencers, ensuring that both events trigger and are reasonably spaced."""
+
+    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS
+    frames_per_second = 30
+
+    # Expect at least 80% of the total frame interval between events.
+    min_frame_s = 0.8 / float(frames_per_second)
+
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_address
+    )
+    hololink_module.DataChannel.use_sensor(channel_metadata, sensor)
+    hololink_channel = hololink_module.DataChannel(channel_metadata)
+    hololink = hololink_channel.hololink()
+    listener = FrameStartEndListener()
+    hololink.on_async_event(listener)
+
+    camera = hololink_module.sensors.vb1940.Vb1940Cam(hololink_channel)
+
+    with applications.CudaContext() as (cu_context, cu_device_ordinal):
+        application = linux_vb1940_player.HoloscanApplication(
+            headless,
+            False,
+            cu_context,
+            cu_device_ordinal,
+            hololink_channel,
+            camera,
+            camera_mode,
+            frame_limit,
+        )
+
+        hololink.start()
+        try:
+            hololink.reset()
+            # reset() restarts the HSB's clock at boot-relative time; wait for
+            # PTP to re-lock before capturing
+            if not hololink.ptp_synchronize():
+                raise ValueError("Failed to synchronize PTP.")
+            camera.setup_clock()
+            camera.configure(camera_mode)
+
+            # Enable the sequencers
+            if sensor == 0:
+                fs_seq = hololink.sif0_frame_start_sequencer()
+                fs_seq.write_uint32(0x0000020C, 0xFFFFFFFF)
+                fs_seq.write_uint32(0x0000020C, 0x0)
+                fs_seq.enable()
+
+                fe_seq = hololink.sif0_frame_end_sequencer()
+                fe_seq.write_uint32(0x0000020C, 0xFFFFFFFF)
+                fe_seq.write_uint32(0x0000020C, 0x0)
+                fe_seq.enable()
+            else:
+                fs_seq = hololink.sif1_frame_start_sequencer()
+                fs_seq.write_uint32(0x0000020C, 0xFFFFFFFF)
+                fs_seq.write_uint32(0x0000020C, 0x0)
+                fs_seq.enable()
+
+                fe_seq = hololink.sif1_frame_end_sequencer()
+                fe_seq.write_uint32(0x0000020C, 0xFFFFFFFF)
+                fe_seq.write_uint32(0x0000020C, 0x0)
+                fe_seq.enable()
+
+            application.run()
+        finally:
+            hololink.stop()
+
+    deltas = listener.deltas_s(sensor)
+    assert len(deltas) > 0, "no events received"
+    min_s = min(deltas)
+    max_s = max(deltas)
+    logging.info("Frame start->end deltas (s): min=%s max=%s", min_s, max_s)
+    # All deltas should be nearly equal to each other (allow 5% difference)
+    assert max_s <= min_s * 1.05, f"inconsistent deltas: min={min_s} max={max_s}"
+    # All deltas must be greater than the expected threshold.
+    for i, dt in enumerate(deltas):
+        assert dt >= min_frame_s, f"pair {i}: delta {dt}s < {min_frame_s}s"
+
+
+@pytest.mark.skip_unless_vb1940
+def test_vb1940_sif0_frame_events(headless, frame_limit, hololink_address):
+    _test_vb1940_frame_events(headless, frame_limit, hololink_address, 0)
+
+
+@pytest.mark.skip_unless_vb1940
+def test_vb1940_sif1_frame_events(headless, frame_limit, hololink_address):
+    _test_vb1940_frame_events(headless, frame_limit, hololink_address, 1)

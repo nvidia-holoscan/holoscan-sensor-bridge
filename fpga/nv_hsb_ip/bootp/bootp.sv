@@ -36,6 +36,7 @@ module bootp
   input  [NUM_HOST-1:0]    i_pkt_inc,
   input  [ENUM_DWIDTH-1:0] i_enum_data,
   input  [7:0]             i_hsb_stat,
+  input  [15:0]            i_backward_compat_rev,
 
   output [47:0]            o_host_mac_addr,
   output [31:0]            o_host_ip_addr,
@@ -79,7 +80,6 @@ logic [15:0] pld /* synthesis syn_keep=1 */;
 
 enum logic [1:0] {IDLE, BOOTP_REQ, BOOTP_RPT,BOOTP_WAIT} state;
 // BOOTP request packet
-logic         dev_ip_valid;
 logic [63:0]  bootp_req [5];
 logic [31:0]  ciaddr [NUM_HOST];
 logic [271:0] axis_data;
@@ -144,11 +144,6 @@ endgenerate
 //------------------------------------------------------------------------------------------------//
 // PTP CDC
 //------------------------------------------------------------------------------------------------//
-logic        ptp_fifo_rden;
-logic [15:0] ptp_fifo_rddata;
-logic [15:0] ptp_fifo_q;
-logic        ptp_fifo_rdval;
-logic        ptp_fifo_empty;
 
 reg_cdc # (
   .NBITS         ( 80     ),
@@ -329,6 +324,7 @@ vec_to_axis #(
   .rst              ( i_rst            ),
   .trigger          ( trigger          ),
   .data             ( axis_data        ),
+  .tuser            ( 1'b0             ),
   .is_busy          ( axis_is_busy     ),
   .o_axis_tx_tvalid ( axis_tvalid      ),
   .o_axis_tx_tdata  ( axis_tdata       ),
@@ -380,7 +376,7 @@ data_sync #(
 );
   
 assign bootp_vend_data = {
-  i_hsb_stat_sync, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, 16'd0, bootp_vend_prefix
+  i_hsb_stat_sync, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, i_backward_compat_rev, bootp_vend_prefix
 };
 
 vec_to_axis #(
@@ -392,6 +388,7 @@ vec_to_axis #(
   .rst              ( i_rst                       ),
   .trigger          ( axis_tlast && i_axis_tready ),
   .data             ( bootp_vend_data             ),
+  .tuser            ( 1'b0                        ),
   .is_busy          ( axis_vend_is_busy           ),
   .o_axis_tx_tvalid ( axis_vend_tvalid            ),
   .o_axis_tx_tdata  ( axis_vend_tdata             ),
@@ -425,7 +422,6 @@ logic                bootp_valid;
 logic [31:0]         bootp_ciaddr;
 logic [495:0]        bootp_hdr;
 logic                bootp_hdr_valid;
-logic [MAX_BEAT-1:0] beat_cnt;
 
 assign o_axis_tready = 1'b1;
 

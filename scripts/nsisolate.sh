@@ -16,7 +16,7 @@
 # limitations under the License.
 
 # This is a convenience script used by pytest hw_loopback session fixture in tests/conftest.py to isolate an interface into a network namespace with the provided IPV4 address
-# For use cases, see https://docs.nvidia/com/holoscan/sensor-bridge/latest/emulation.html#testing
+# For use cases, see https://docs.nvidia.com/holoscan/sensor-bridge/emulation/hsb-emulator#testing
 
 if [ $# -lt 1 ] ; then
 	echo "Usage: $0 <if_name> [<ipv4>]"

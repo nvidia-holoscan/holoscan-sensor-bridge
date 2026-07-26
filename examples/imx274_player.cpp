@@ -137,7 +137,7 @@ private:
 
 int main(int argc, char** argv)
 {
-    const std::string default_hololink_ip("192.168.0.2");
+    const std::string default_hololink_ip = hololink::env_hololink_ip(0, "192.168.0.2");
     auto camera_mode = hololink::sensors::imx274_mode::IMX274_MODE_1920X1080_60FPS;
     bool headless = false;
     bool fullscreen = false;
@@ -152,7 +152,13 @@ int main(int argc, char** argv)
 
     std::string ibv_name("roceP5p3s0f0");
     try {
-        ibv_name = hololink::infiniband_devices()[0];
+        auto ibv_devices = hololink::infiniband_devices();
+        if (ibv_devices.empty()) {
+            throw std::runtime_error("No Infiniband devices found.");
+        } else {
+            ibv_name = ibv_devices[0];
+        }
+
     } catch (const std::exception& e) {
         std::cerr << "Error getting IBV name: " << e.what() << std::endl;
         return EXIT_FAILURE;

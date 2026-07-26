@@ -17,6 +17,7 @@ module vec_to_axis
 #(
     parameter                               AXI_DWIDTH   = 64,
     parameter                               DATA_WIDTH   = 288,
+    parameter                               W_USER       = 1,
     parameter                               PADDED_WIDTH = DATA_WIDTH,
     parameter                               REG_DATA     = 1
 )(
@@ -25,12 +26,13 @@ module vec_to_axis
 
     input                                   trigger,
     input   [DATA_WIDTH-1:0]                data,
+    input   [W_USER-1:0]                    tuser,
     output                                  is_busy,
   //AXIS Interface
     output  logic                           o_axis_tx_tvalid,
     output  logic   [AXI_DWIDTH-1:0]        o_axis_tx_tdata,
     output  logic                           o_axis_tx_tlast,
-    output  logic                           o_axis_tx_tuser,
+    output  logic   [W_USER-1:0]            o_axis_tx_tuser,
     output  logic   [(AXI_DWIDTH/8)-1:0]    o_axis_tx_tkeep,
     input                                   i_axis_tx_tready
 );
@@ -72,6 +74,8 @@ generate
   end
 endgenerate
 
+logic is_last;
+
 always_ff @(posedge clk) begin
   if (rst) begin
     vec_state               <= AXI_IDLE;
@@ -79,6 +83,7 @@ always_ff @(posedge clk) begin
     r_trigger               <= '0;
     r_busy                  <= '0;
     r_is_busy               <= '0;
+    is_last                 <= '0;
   end
   else begin
     r_trigger <= trigger;
@@ -87,8 +92,12 @@ always_ff @(posedge clk) begin
       AXI_IDLE:   begin
         cnt                     <= '0;
         if ({r_trigger,trigger} == 2'b01) begin
+          is_last             <= ((D_CYCLES == 1) && (P_CYCLES == 1));
           vec_state           <=  ((D_CYCLES == 1) && (P_CYCLES == 1)) ? AXI_LAST : AXI_SEND;
           r_busy              <= '1;
+        end
+        else begin
+          is_last                 <= '0;
         end
       end
       AXI_SEND: begin
@@ -96,8 +105,10 @@ always_ff @(posedge clk) begin
           cnt                     <= cnt + 1'b1;
           if (P_CYCLES == D_CYCLES) begin
             vec_state               <= (cnt == D_CYCLES-2) ? AXI_LAST : vec_state ;
+            is_last                 <= (cnt == D_CYCLES-2);
           end
           else if (P_CYCLES == (D_CYCLES+1)) begin
+            is_last                 <= (cnt == D_CYCLES-1);
             vec_state               <= (cnt == D_CYCLES-1) ? AXI_PAD_LAST : vec_state ;
           end
           else begin
@@ -108,16 +119,19 @@ always_ff @(posedge clk) begin
       AXI_PAD: begin
         if (i_axis_tx_tready) begin
           cnt                     <= cnt + 1'b1;
+          is_last                 <= (cnt == P_CYCLES-2);
           vec_state               <= (cnt == P_CYCLES-2) ? AXI_PAD_LAST : vec_state ;
         end
       end
       AXI_PAD_LAST: begin
         vec_state               <= i_axis_tx_tready ? AXI_IDLE : vec_state;
         r_busy                  <= !i_axis_tx_tready;
+        is_last                 <= i_axis_tx_tready ? '0 : '1;
       end
       AXI_LAST: begin
         vec_state               <= i_axis_tx_tready ? AXI_IDLE : vec_state;
         r_busy                  <= !i_axis_tx_tready;
+        is_last                 <= i_axis_tx_tready ? '0 : '1;
       end
       default: begin
         vec_state               <= AXI_IDLE;
@@ -128,10 +142,10 @@ end
 
 assign o_axis_tx_tdata  = (vec_state == AXI_PAD || vec_state == AXI_PAD_LAST ||  vec_state == AXI_IDLE) ? '0 :
                             r_data[AXI_DWIDTH*cnt+:AXI_DWIDTH];
-assign o_axis_tx_tlast  = (vec_state == AXI_LAST) || (vec_state == AXI_PAD_LAST);
+assign o_axis_tx_tlast  = is_last;
 assign o_axis_tx_tvalid = (vec_state != AXI_IDLE);
 assign o_axis_tx_tkeep  = o_axis_tx_tlast ? TKEEP_VAL : '1;
-assign o_axis_tx_tuser  = 1'b0;
+assign o_axis_tx_tuser  = (vec_state != AXI_IDLE) ? tuser : '0;
 assign is_busy          = r_is_busy;
 
 endmodule

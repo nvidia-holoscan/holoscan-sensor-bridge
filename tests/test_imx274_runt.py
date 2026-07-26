@@ -247,13 +247,15 @@ def runt_test(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     frame_limit,
     trim,
     network_receiver_factory,
 ):
     # Get a handle to data sources
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=hololink)
+    channel_metadata = hololink_module.Enumerator.find_channel(
+        channel_ip=hololink_address
+    )
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
@@ -358,12 +360,6 @@ def runt_test(
     ],
 )
 @pytest.mark.parametrize(
-    "hololink",
-    [
-        "192.168.0.2",
-    ],
-)
-@pytest.mark.parametrize(
     "trim",
     [
         True,
@@ -374,7 +370,7 @@ def test_linux_imx274_runt(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     frame_limit,
     trim,
 ):
@@ -405,7 +401,7 @@ def test_linux_imx274_runt(
         camera_mode,
         pattern,
         headless,
-        hololink,
+        hololink_address,
         frame_limit,
         trim,
         network_receiver_factory,
@@ -432,9 +428,9 @@ sys_ibv_name = (hololink_module.infiniband_devices() + [None, None])[:2]
     ],
 )
 @pytest.mark.parametrize(
-    "hololink, ibv_name",
+    "ibv_name",
     [
-        ("192.168.0.2", sys_ibv_name[0]),
+        sys_ibv_name[0],
     ],
 )
 @pytest.mark.parametrize(
@@ -448,7 +444,7 @@ def test_roce_imx274_runt(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     ibv_name,
     frame_limit,
     trim,
@@ -486,7 +482,7 @@ def test_roce_imx274_runt(
         camera_mode,
         pattern,
         headless,
-        hololink,
+        hololink_address,
         frame_limit,
         trim,
         network_receiver_factory,
@@ -505,12 +501,6 @@ def test_roce_imx274_runt(
     ],
 )
 @pytest.mark.parametrize(
-    "hololink",
-    [
-        "192.168.0.2",
-    ],
-)
-@pytest.mark.parametrize(
     "trim",
     [
         False,
@@ -521,7 +511,7 @@ def test_coe_imx274_runt(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    hololink_address,
     frame_limit,
     trim,
     coe_interfaces,
@@ -557,7 +547,7 @@ def test_coe_imx274_runt(
         camera_mode,
         pattern,
         headless,
-        hololink,
+        hololink_address,
         frame_limit,
         trim,
         network_receiver_factory,

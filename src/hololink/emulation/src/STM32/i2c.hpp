@@ -23,8 +23,6 @@
 #include "../../hsb_emulator.hpp"
 #include "STM32/stm32_system.h"
 
-#define I2C_DATA_BUFFER_SIZE 0x100u
-
 /**
  * @brief Initialize I2C.
  *
@@ -35,6 +33,18 @@
 int i2c_init(I2C_HandleTypeDef* hi2c);
 
 namespace hololink::emulation {
+
+void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value);
+
+/**
+ * @brief STM32-specific I2CControllerCtxt extension. `base` (the common I2CControllerCtxt)
+ * is the first member; STM32-only state is the HAL handle.
+ */
+struct STM32I2CControllerCtxt {
+    I2CControllerCtxt base;
+    I2C_HandleTypeDef hi2c;
+};
+// if we need to add more controllers, we can add more instances of I2C_CONTROLLER_CTXT and use a map of their control addresses to differentiate
 
 /**
  * @brief Callback function for I2C readback.

@@ -68,6 +68,22 @@ function(copy_hololink_python_files)
             DEPENDS "${_source_path}"
             COMMENT "Copying ${_filename} to ${_output_file}"
         )
+
+        # Also stage at configure time so the file exists before any
+        # build step runs. Without this, pybind11_add_hololink_module's
+        # `configure_file` template (also called at configure time) wins
+        # the race for `__init__.py` because the build-time custom_command
+        # above only re-runs when its OUTPUT is older than DEPENDS — and
+        # the freshly-templated OUTPUT is already newer than the source.
+        configure_file("${_source_path}" "${_output_file}" COPYONLY)
+
+        # Mark `__init__.py` destinations so pybind11_add_hololink_module
+        # knows another caller has claimed staging for this directory and
+        # skips its fallback template generation.
+        if(_filename STREQUAL "__init__.py")
+            set_property(GLOBAL PROPERTY
+                "HOLOLINK_INIT_PY_STAGED_AT::${_dest_dir}" 1)
+        endif()
     endforeach()
 
     add_custom_target(${COPY_TARGET_NAME} ALL
@@ -155,18 +171,32 @@ function(pybind11_add_hololink_module)
     set(module_out_dir ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/${module_relative_path})
     file(MAKE_DIRECTORY ${module_out_dir})
 
-    # if there is no __init__.py, generate one
-    if(NOT EXISTS "${CMAKE_CURRENT_LIST_DIR}/__init__.py")
+    # Decide who owns this module's __init__.py at the staging dir.
+    # Priority order:
+    #   1. A `copy_hololink_python_files(... FILES __init__.py ...)` call
+    #      against the same destination — the property below is set when
+    #      that happens. We skip our own write and let the copy stage
+    #      the caller's file.
+    #   2. A local `__init__.py` next to this CMakeLists — configure_file
+    #      it directly.
+    #   3. Neither — fall back to the templated stub that just imports
+    #      the module's CLASS_NAME from the .so.
+    get_property(_init_already_staged GLOBAL PROPERTY
+        "HOLOLINK_INIT_PY_STAGED_AT::${module_out_dir}")
+    if(_init_already_staged)
+        # No-op: copy_hololink_python_files is staging __init__.py for
+        # this destination.
+    elseif(EXISTS "${CMAKE_CURRENT_LIST_DIR}/__init__.py")
+        configure_file(
+            "${CMAKE_CURRENT_LIST_DIR}/__init__.py"
+            ${module_out_dir}/__init__.py
+        )
+    else()
         # custom target to ensure the module's __init__.py file is copied
         configure_file(
             ${CMAKE_CURRENT_FUNCTION_LIST_DIR}/pybind11/__init__.py
             ${module_out_dir}/__init__.py
         )
-    else()
-       configure_file(
-        "${CMAKE_CURRENT_LIST_DIR}/__init__.py"
-        ${module_out_dir}/__init__.py
-       )
     endif()
 
     # Note: OUTPUT_NAME filename (_${MODULE_NAME}) must match the module name in the PYBIND11_MODULE macro

@@ -31,7 +31,8 @@ module clk_n_rst (
   output o_i2s_clk_int,  //I2S Clock for Internal I2S IP
   output o_i2s_clk_ext,  //I2S Clock for External device
   output o_i2s_mclk_ext, //I2S MCLK for External device
-  output o_i2s_ref_clk, //I2S Reference Clock
+  output o_i2s_ref_clk,  //I2S Reference Clock
+  output o_i2s_ref_rst,  //I2S Reference Clock domain reset (active high)
   //
   input  i_pb_rst_n,  // asynchronous active low pushbutton reset
   input  i_sw_rst,    // software controlled system active high reset
@@ -48,8 +49,6 @@ module clk_n_rst (
 
   logic locked;
 
-`ifndef SIMULATION
-
   // Primary clock pll (NONE FRAC DIV)
   eclk_pll u_clk_pll (
     .clki_i   ( i_refclk  ),
@@ -61,34 +60,6 @@ module clk_n_rst (
     .clkos4_o ( o_ptp_clk ), // 100.446545 MHz
     .lock_o   ( locked    )
   );
-
-`else
-  // Primary clock pll (FRAC DIV, SIM ONLY)
-  eclk_pll_sim u_clk_pll (
-    .clki_i   ( i_refclk  ),
-    .rstn_i   ( i_locked  ),
-    .clkop_o  ( o_hif_clk ),
-    .clkos_o  ( o_apb_clk ),
-    .lock_o   ( locked    )
-  );
-
-  // Primary clock pll (INT DIV, SIM ONLY)
-  eclk_ptp_pll_sim u_ptp_clk_pll (
-    .clki_i   ( i_refclk     ),
-    .rstn_i   ( i_locked     ),
-    .clkop_o  (              ),
-    .clkos_o  ( o_ptp_clk    ), //100.446545 MHz
-    .lock_o   (              )
-  );
-
-  logic adc_clk;
-  initial begin
-    adc_clk = 0;
-  end
-  always #100000 adc_clk <= ~adc_clk;
-  assign o_adc_clk = adc_clk;
-
-`endif
 
   logic ptp_sensor_pll_locked;
   //PTP generated 24MHz clock
@@ -146,21 +117,37 @@ module clk_n_rst (
   assign o_i2s_mclk_ext = div2_q;
   assign o_i2s_clk_ext  = div_cnt[3];
 
+//----------------------------------------------------------------------------
+// I2S Reference Clock Reset
+//----------------------------------------------------------------------------
+
+  reset_sync u_i2s_ref_rst (
+    .i_clk    ( i2s_pll_clk                  ),
+    .i_arst_n ( i_pb_rst_n & i2s_pll_locked  ),
+    .i_srst   ( 1'b0                         ),
+    .i_locked ( 1'b1                         ),
+
+    .o_arst   ( o_i2s_ref_rst                ),
+    .o_arst_n (                              ),
+    .o_srst   (                              ),
+    .o_srst_n (                              )
+  );
 
 //----------------------------------------------------------------------------
 // System Reset
 //----------------------------------------------------------------------------
 
-  reset_sync u_sys_rst (
-    .i_clk    ( o_apb_clk   ),
-    .i_arst_n ( i_pb_rst_n  ),
-    .i_srst   ( 1'b0        ),
-    .i_locked ( locked      ),
 
-    .o_arst   ( o_sys_rst   ),
-    .o_arst_n (             ),
-    .o_srst   (             ),
-    .o_srst_n (             )
+  reset_sync u_sys_rst (
+    .i_clk    ( o_apb_clk           ),
+    .i_arst_n ( i_pb_rst_n & locked ),
+    .i_srst   ( 1'b0                ),
+    .i_locked ( 1'b1                ),
+
+    .o_arst   ( o_sys_rst           ),
+    .o_arst_n (                     ),
+    .o_srst   (                     ),
+    .o_srst_n (                     )
   );
 
 //----------------------------------------------------------------------------

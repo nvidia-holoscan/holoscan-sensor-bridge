@@ -13,27 +13,70 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Compile-time configuration for the cross-target hsb_control / serve_coe_msg / serve_roce_msg
+# trio. Each variable maps to a #define of the same name inside the .cpp. Strings need to be
+# quoted into a C string literal here so the resulting -D... reaches the compiler with the
+# embedded quotes intact (cmake strips one level).
+set(IPV4_ADDRESS "192.168.0.2" CACHE STRING "IPv4 address baked into hsb_control / serve_*_msg")
+set(DATA_PLANE_ID 0 CACHE STRING "data_plane_id baked into hsb_control / serve_*_msg")
+set(SENSOR_ID 0 CACHE STRING "sensor_id baked into hsb_control / serve_*_msg")
+set(TRANSPORT_MSG "test msg 0123456789abcdefg" CACHE STRING "message payload baked into serve_*_msg")
+set(FRAME_RATE 30 CACHE STRING "send rate in frames-per-second for serve_*_msg (loop sleeps 1000/FRAME_RATE ms)")
+
+set(_emu_msg_defs
+    IPV4_ADDRESS="${IPV4_ADDRESS}"
+    DATA_PLANE_ID=${DATA_PLANE_ID}
+    SENSOR_ID=${SENSOR_ID}
+)
+set(_emu_msg_msg_defs
+    ${_emu_msg_defs}
+    TRANSPORT_MSG="${TRANSPORT_MSG}"
+    FRAME_RATE=${FRAME_RATE}
+)
+
+# Cross-target examples include platform-specific headers (e.g. net.hpp)
+# via bare `#include "net.hpp"`. Put src/${HSB_EMULATOR_PLATFORM}/ first so the
+# target's net.hpp wins over emulation/net.hpp from transitive include paths.
+set(_hsb_cross_target_platform_include
+    ${CMAKE_CURRENT_SOURCE_DIR}/../src/${HSB_EMULATOR_PLATFORM})
+
 # build for all targets
 add_executable(hsb_control
     hsb_control.cpp
 )
 
-target_include_directories(hsb_control PRIVATE 
-    ${CMAKE_CURRENT_SOURCE_DIR}/..
-)
-
+target_compile_definitions(hsb_control PRIVATE ${_emu_msg_defs})
 target_link_libraries(hsb_control PRIVATE
     hololink::emulation
 )
 
+add_executable(serve_coe_msg
+    serve_coe_msg.cpp
+)
+target_compile_definitions(serve_coe_msg PRIVATE ${_emu_msg_msg_defs})
+target_link_libraries(serve_coe_msg PRIVATE
+    hololink::emulation
+    hololink::emulation::coe
+)
+
+add_executable(serve_roce_msg
+    serve_roce_msg.cpp
+)
+target_compile_definitions(serve_roce_msg PRIVATE ${_emu_msg_msg_defs})
+target_link_libraries(serve_roce_msg PRIVATE
+    hololink::emulation
+    hololink::emulation::roce
+)
+
+foreach(_target IN ITEMS hsb_control serve_coe_msg serve_roce_msg)
+    target_include_directories(${_target} BEFORE PRIVATE
+        ${_hsb_cross_target_platform_include})
+endforeach()
+
+# MCU-only examples that exercise STM32-specific peripherals (timers, GPIO, TIM IRQs).
 if (${HSB_EMULATOR_TARGET} STREQUAL "STM32F767ZI")
     add_executable(gpio_send_roce
         gpio_send_roce.cpp
-    )
- 
-    target_include_directories(gpio_send_roce PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
     )
     target_link_libraries(gpio_send_roce PRIVATE
         hololink::emulation
@@ -42,11 +85,6 @@ if (${HSB_EMULATOR_TARGET} STREQUAL "STM32F767ZI")
 
     add_executable(gpio_trigger_send_roce
         gpio_trigger_send_roce.cpp
-    )
- 
-    target_include_directories(gpio_trigger_send_roce PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
     )
     target_link_libraries(gpio_trigger_send_roce PRIVATE
         hololink::emulation
@@ -61,12 +99,15 @@ add_library(emulator_utils STATIC
     emulator_utils.cu
 )
 
+# Own dir is exposed PUBLIC so consumers can include "emulator_utils.hpp" by
+# bare name. CUDA includes are PUBLIC because emulator_utils.hpp pulls in
+# <cuda_runtime.h>, which the C++ consumers (serve_*) won't auto-resolve
+# without this (only the .cu sources get CUDA includes from nvcc itself).
+# Everything else (dlpack, sensors dir, src/) arrives transitively via
+# hololink::emulation and hololink::emulation::sensors below.
 target_include_directories(emulator_utils PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-    ${CMAKE_CURRENT_SOURCE_DIR}/../sensors
     ${CUDAToolkit_INCLUDE_DIRS}
-    ${DLPACK_PATH}
 )
 target_link_libraries(emulator_utils PUBLIC
     hololink::emulation
@@ -81,12 +122,7 @@ if (CUDAToolkit_FOUND)
         serve_coe_file.cpp
     )
     set_target_properties(serve_coe_file PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-    
-    target_include_directories(serve_coe_file PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-        ${CUDAToolkit_INCLUDE_DIRS}
-    )
-    
+
     target_link_libraries(serve_coe_file PRIVATE
         hololink::emulation
         hololink::emulation::coe
@@ -98,12 +134,7 @@ if (CUDAToolkit_FOUND)
         serve_coe_vb1940_file.cpp
     )
     set_target_properties(serve_coe_vb1940_file PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-    
-    target_include_directories(serve_coe_vb1940_file PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-        ${CUDAToolkit_INCLUDE_DIRS}
-    )
-    
+
     target_link_libraries(serve_coe_vb1940_file PRIVATE
         hololink::emulation
         hololink::emulation::coe
@@ -118,13 +149,7 @@ if (CUDAToolkit_FOUND)
             serve_linux_file.cpp
         )
         set_target_properties(serve_linux_file PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-        
-        target_include_directories(serve_linux_file PRIVATE 
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-            ${ZLIB_INCLUDE_DIRS}
-            ${CUDAToolkit_INCLUDE_DIRS}
-        )
-        
+
         target_link_libraries(serve_linux_file PRIVATE
             hololink::emulation
             hololink::emulation::roce
@@ -142,12 +167,7 @@ if (CUDAToolkit_FOUND)
         serve_coe_single_vb1940_frames.cpp
     )
     set_target_properties(serve_coe_single_vb1940_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-    
-    target_include_directories(serve_coe_single_vb1940_frames PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-        ${CUDAToolkit_INCLUDE_DIRS}
-    )
-    
+
     target_link_libraries(serve_coe_single_vb1940_frames PRIVATE
         hololink::emulation
         hololink::emulation::coe
@@ -178,12 +198,7 @@ if (CUDAToolkit_FOUND)
         serve_coe_stereo_vb1940_frames.cpp
     )
     set_target_properties(serve_coe_stereo_vb1940_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-    
-    target_include_directories(serve_coe_stereo_vb1940_frames PRIVATE 
-        ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-        ${CUDAToolkit_INCLUDE_DIRS}
-    )
-    
+
     target_link_libraries(serve_coe_stereo_vb1940_frames PRIVATE
         hololink::emulation
         hololink::emulation::coe
@@ -198,13 +213,7 @@ if (CUDAToolkit_FOUND)
             serve_linux_single_vb1940_frames.cpp
         )
         set_target_properties(serve_linux_single_vb1940_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-        
-        target_include_directories(serve_linux_single_vb1940_frames PRIVATE 
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-            ${ZLIB_INCLUDE_DIRS}
-            ${CUDAToolkit_INCLUDE_DIRS}
-        )
-        
+
         target_link_libraries(serve_linux_single_vb1940_frames PRIVATE
             hololink::emulation
             hololink::emulation::roce
@@ -218,14 +227,36 @@ if (CUDAToolkit_FOUND)
             serve_linux_stereo_vb1940_frames.cpp
         )
         set_target_properties(serve_linux_stereo_vb1940_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
-        
-        target_include_directories(serve_linux_stereo_vb1940_frames PRIVATE 
-            ${CMAKE_CURRENT_SOURCE_DIR}/../../..
-            ${ZLIB_INCLUDE_DIRS}
-            ${CUDAToolkit_INCLUDE_DIRS}
-        )
-        
+
         target_link_libraries(serve_linux_stereo_vb1940_frames PRIVATE
+            hololink::emulation
+            hololink::emulation::roce
+            hololink::emulation::sensors
+            emulator_utils
+            ${ZLIB_LIBRARIES}
+            CUDA::cudart
+        )
+
+        add_executable(serve_linux_single_imx274_frames
+            serve_linux_single_imx274_frames.cpp
+        )
+        set_target_properties(serve_linux_single_imx274_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
+
+        target_link_libraries(serve_linux_single_imx274_frames PRIVATE
+            hololink::emulation
+            hololink::emulation::roce
+            hololink::emulation::sensors
+            emulator_utils
+            ${ZLIB_LIBRARIES}
+            CUDA::cudart
+        )
+
+        add_executable(serve_linux_stereo_imx274_frames
+            serve_linux_stereo_imx274_frames.cpp
+        )
+        set_target_properties(serve_linux_stereo_imx274_frames PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/examples")
+
+        target_link_libraries(serve_linux_stereo_imx274_frames PRIVATE
             hololink::emulation
             hololink::emulation::roce
             hololink::emulation::sensors

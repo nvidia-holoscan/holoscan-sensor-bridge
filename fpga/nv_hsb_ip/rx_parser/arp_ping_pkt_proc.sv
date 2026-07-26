@@ -21,8 +21,9 @@ module arp_ping_pkt_proc
 #(
   parameter   AXI_DWIDTH      = 8,
   parameter   KEEP_WIDTH      = (AXI_DWIDTH / 8),
-  parameter   W_USER          = 1,
-  parameter   NUM_HOST        = 1
+  parameter   W_USER          = 17,
+  parameter   NUM_HOST        = 1,
+  localparam  W_NUM_HOST      = (NUM_HOST==1) ? 1 :$clog2(NUM_HOST)
 )(
   input   logic                           i_pclk,
   input   logic                           i_prst,
@@ -51,6 +52,7 @@ logic                    in_axis_tvalid;
 logic  [AXI_DWIDTH-1:0]  in_axis_tdata;
 logic                    in_axis_tlast;
 logic  [W_USER-1:0]      in_axis_tuser;
+logic  [W_NUM_HOST-1:0]  host_idx;
 logic  [KEEP_WIDTH-1:0]  in_axis_tkeep;
 logic                    in_axis_tready;
 
@@ -89,6 +91,7 @@ always_ff @(posedge i_pclk) begin
 end
 
 assign inp_tvalid = i_ping_axis_tvalid || i_arp_axis_tvalid || i_lpb_axis_tvalid;
+assign host_idx = i_axis_tuser[W_NUM_HOST-1:0];
 
 //------------------------------------------------------------------------------------------------//
 // Flatten Header
@@ -139,7 +142,8 @@ endgenerate
 //------------------------------------------------------------------------------------------------//
 
 logic [(HDR_BYTES*8)-1:0] hdr_out_array;
-logic [16:0]              ping_chksum;
+logic [15:0]              ping_chksum;
+logic [16:0]              ping_chksum_q;
 
 //Map all the header bytes to the header byte array, swapping fields as applicable.
 
@@ -149,12 +153,12 @@ assign hdr_out_array[02*8+:8]  = hdr_array[08];
 assign hdr_out_array[03*8+:8]  = hdr_array[09];
 assign hdr_out_array[04*8+:8]  = hdr_array[10];
 assign hdr_out_array[05*8+:8]  = hdr_array[11];
-assign hdr_out_array[06*8+:8]  = dev_mac_addr[in_axis_tuser][47:40];
-assign hdr_out_array[07*8+:8]  = dev_mac_addr[in_axis_tuser][39:32];
-assign hdr_out_array[08*8+:8]  = dev_mac_addr[in_axis_tuser][31:24];
-assign hdr_out_array[09*8+:8]  = dev_mac_addr[in_axis_tuser][23:16];
-assign hdr_out_array[10*8+:8]  = dev_mac_addr[in_axis_tuser][15:08];
-assign hdr_out_array[11*8+:8]  = dev_mac_addr[in_axis_tuser][07:00];
+assign hdr_out_array[06*8+:8]  = dev_mac_addr[host_idx][47:40];
+assign hdr_out_array[07*8+:8]  = dev_mac_addr[host_idx][39:32];
+assign hdr_out_array[08*8+:8]  = dev_mac_addr[host_idx][31:24];
+assign hdr_out_array[09*8+:8]  = dev_mac_addr[host_idx][23:16];
+assign hdr_out_array[10*8+:8]  = dev_mac_addr[host_idx][15:08];
+assign hdr_out_array[11*8+:8]  = dev_mac_addr[host_idx][07:00];
 assign hdr_out_array[12*8+:8]  = hdr_array[12];
 assign hdr_out_array[13*8+:8]  = hdr_array[13];
 assign hdr_out_array[14*8+:8]  = hdr_array[14];
@@ -165,12 +169,12 @@ assign hdr_out_array[18*8+:8]  = hdr_array[18];
 assign hdr_out_array[19*8+:8]  = hdr_array[19];
 assign hdr_out_array[20*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[20]      : 8'h00;
 assign hdr_out_array[21*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[21]      : 8'h02;
-assign hdr_out_array[22*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[22]      : dev_mac_addr[in_axis_tuser][47:40];
-assign hdr_out_array[23*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[23]      : dev_mac_addr[in_axis_tuser][39:32];
-assign hdr_out_array[24*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[24]      : dev_mac_addr[in_axis_tuser][31:24];
-assign hdr_out_array[25*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[25]      : dev_mac_addr[in_axis_tuser][23:16];
-assign hdr_out_array[26*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[30]      : dev_mac_addr[in_axis_tuser][15:08];
-assign hdr_out_array[27*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[31]      : dev_mac_addr[in_axis_tuser][07:00];
+assign hdr_out_array[22*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[22]      : dev_mac_addr[host_idx][47:40];
+assign hdr_out_array[23*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[23]      : dev_mac_addr[host_idx][39:32];
+assign hdr_out_array[24*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[24]      : dev_mac_addr[host_idx][31:24];
+assign hdr_out_array[25*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[25]      : dev_mac_addr[host_idx][23:16];
+assign hdr_out_array[26*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[30]      : dev_mac_addr[host_idx][15:08];
+assign hdr_out_array[27*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[31]      : dev_mac_addr[host_idx][07:00];
 assign hdr_out_array[28*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[32]      : hdr_array[38];
 assign hdr_out_array[29*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[33]      : hdr_array[39];
 assign hdr_out_array[30*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[26]      : hdr_array[40];
@@ -186,9 +190,9 @@ assign hdr_out_array[39*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hd
 assign hdr_out_array[40*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[40]      : hdr_array[30];
 assign hdr_out_array[41*8+:8]  = (in_ping_axis_tvalid | in_lpb_axis_tvalid) ? hdr_array[41]      : hdr_array[31];
 
-always_comb begin
-  ping_chksum = {hdr_array[36],hdr_array[37]} + 16'h0800;
-  ping_chksum = ping_chksum[16] + ping_chksum[15:0];
+always_ff @(posedge i_pclk) begin
+  ping_chksum_q <= {hdr_array[36],hdr_array[37]} + 16'h0800;
+  ping_chksum   <= ping_chksum_q[16] + ping_chksum_q[15:0];
 end
 
 
@@ -212,6 +216,7 @@ vec_to_axis #(
   .rst              ( i_prst           ),
   .trigger          ( hdr_valid        ),
   .data             ( hdr_out_array    ),
+  .tuser            ( 1'b0             ),
   .is_busy          (                  ),
   .o_axis_tx_tvalid ( hdr_axis_tvalid  ),
   .o_axis_tx_tdata  ( hdr_axis_tdata   ),

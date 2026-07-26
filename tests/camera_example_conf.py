@@ -196,7 +196,7 @@ camera_properties = {
                 "bayer_format": hololink_module.sensors.csi.BayerFormat.RGGB,
             },
             hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value: {
-                "start_bytes": 175,
+                "start_bytes": 210,
                 "start_lines": 16,
                 "width": 3840,
                 "height": 2160,
@@ -257,10 +257,11 @@ def sleep_frame_rate(last_frame_time, frame_rate_per_second):
 
 def handle_failed_subprocess(subprocess, name, kill=None):
     if kill:
-        kill()
+        subprocess.kill()
     stdout, stderr = subprocess.communicate()
     print(f"{name} subprocess stdout: \n{stdout.decode('utf-8', errors='replace')}")
     print(f"{name} subprocess stderr: \n{stderr.decode('utf-8', errors='replace')}")
+    print(f"{name} subprocess {kill=}")
 
 
 # this maps the transport and camera count settings to a specific vb1940 example application

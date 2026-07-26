@@ -139,6 +139,11 @@ LinuxReceiver::~LinuxReceiver()
     pthread_mutex_destroy(&ready_mutex_);
 }
 
+uint32_t LinuxReceiver::page_from_imm(uint32_t imm_data)
+{
+    return imm_data & 0xFFF;
+}
+
 void LinuxReceiver::run()
 {
     HSB_LOG_DEBUG("Starting, qp={:#x}.", qp_number_);
@@ -273,11 +278,37 @@ void LinuxReceiver::run()
                 frame_count++;
                 core::NvtxTrace::event_u64("frame_count", frame_count);
 
-                if (size != METADATA_SIZE) {
-                    HSB_LOG_ERROR("Unexpected size for metadata, size={}, expected={}", size, METADATA_SIZE);
+                // The trailing METADATA_SIZE bytes of the RDMA payload carry the frame
+                // metadata. A packet whose declared payload is smaller than that is
+                // malformed. Reject it before the unsigned subtraction below, otherwise
+                // 'size' (uint32_t) wraps to a huge value, which both bypasses the memcpy
+                // bounds check and causes deserialize_metadata() to read far out of bounds
+                // past the received packet buffer.
+                if (size < hololink::METADATA_SIZE) {
+                    HSB_LOG_ERROR("Ignoring runt RDMA WRITE_ONLY_WITH_IMMEDIATE packet; size={:#x} < METADATA_SIZE={:#x}", size, hololink::METADATA_SIZE);
                     break;
                 }
-                Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(content, size);
+
+                // NOTE: LinuxCoeReceiver does copy the FrameMetadata, but to remain consistent with potential users of LinuxReceiver semantics, we don't copy it here.
+                size -= hololink::METADATA_SIZE;
+
+                // copy any payload bytes to the buffer.
+                // This will copy any buffer bytes for the HSB_PAGE_SIZE alignment. Since we don't currently
+                // know how big the frame is, the buffering to 128-byte boundary will be counted in received size.
+                uint64_t target_address = address + received_address_offset_;
+                if ((size > 0) && (target_address >= cu_buffer_ && target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
+                    uint64_t offset = (target_address - cu_buffer_) % cu_page_size_;
+                    if (offset + size > cu_page_size_) {
+                        HSB_LOG_ERROR("Packet spans page boundary; address={:`#x`}, size={:`#x`}, offset={:`#x`}, cu_page_size_={:`#x`}",
+                            target_address, size, offset, cu_page_size_);
+                        break;
+                    }
+                    memcpy(&receiving->memory_[offset], content, size);
+                }
+
+                frame_bytes_received += size;
+
+                Hololink::FrameMetadata frame_metadata = Hololink::deserialize_metadata(content + size, hololink::METADATA_SIZE);
                 LinuxReceiverMetadata& metadata = receiving->metadata_;
                 metadata.frame_packets_received = frame_packets_received;
                 metadata.frame_bytes_received = frame_bytes_received;
@@ -293,7 +324,7 @@ void LinuxReceiver::run()
                 metadata.frame_metadata = frame_metadata;
                 metadata.frame_number = frame_number_.update(frame_metadata.frame_number);
 
-                unsigned page = imm_data & 0xFFF;
+                unsigned page = page_from_imm(imm_data);
                 if (page >= pages_) {
                     throw std::runtime_error(fmt::format("Invalid page={}; ignoring.", page));
                 }

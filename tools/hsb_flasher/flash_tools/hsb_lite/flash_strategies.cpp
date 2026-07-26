@@ -29,11 +29,32 @@
 #include "hsb_lite_flash_2504.hpp"
 #include "hsb_lite_flash_2507.hpp"
 
+#include <hololink/core/enumerator.hpp>
+#include <hololink/core/hololink.hpp>
+
 namespace py = pybind11;
+
+namespace hololink {
+
+bool hsb_lite_reset(const std::string& ip_address)
+{
+    auto channel_metadata = Enumerator::find_channel(ip_address);
+    auto hololink = Hololink::from_enumeration_metadata(channel_metadata);
+    hololink->start();
+    hololink->reset();
+    hololink->stop();
+    return true;
+}
+
+} // namespace hololink
 
 PYBIND11_MODULE(flash_strategies, m)
 {
     m.doc() = "Flash strategies - C++ flash routines for HSB devices";
+
+    m.def("hsb_lite_reset", &hololink::hsb_lite_reset,
+        "Connect to the device and reset it into a known state",
+        py::arg("ip_address"));
 
     m.def("hsb_lite_flash_2507", &hololink::hsb_lite_flash_2507,
         "Flash an HSB_Lite device with CLNX and CPNX firmware (modern connection)",

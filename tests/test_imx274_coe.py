@@ -33,13 +33,17 @@ from examples import linux_coe_imx274_player
 # Unaccelerated, single camera test
 @pytest.mark.skip_unless_coe
 @pytest.mark.skip_unless_imx274
-def test_coe_linux_player(headless, frame_limit, coe_interfaces, capsys):
+def test_coe_linux_player(
+    headless, frame_limit, hololink_address, coe_interfaces, capsys
+):
     arguments = [
         sys.argv[0],
         "--frame-limit",
         str(frame_limit),
         "--coe-interface",
         coe_interfaces[0],
+        "--hololink",
+        hololink_address,
     ]
     if headless:
         arguments.extend(["--headless"])
@@ -570,23 +574,33 @@ class CoeTestApplication(holoscan.core.Application):
     ],
 )
 @pytest.mark.parametrize(
-    # coe_interface is an index to coe_interfaces
-    "hololink, expander_configuration, coe_interface",
+    # coe_interface is an index to coe_interfaces. The channel IP for
+    # each case is read from --channel-ips at index `expander_configuration`
+    # (so case 0 uses channel_ips[0], case 1 uses channel_ips[1]) —
+    # matching the original hardcoded pairing of 192.168.0.{2,3} with
+    # the two camera positions.
+    "expander_configuration, coe_interface",
     [
-        ("192.168.0.2", 0, 0),
-        ("192.168.0.3", 1, 1),
+        (0, 0),
+        (1, 1),
     ],
 )
 def test_imx274_pattern_coe(
     camera_mode,
     pattern,
     headless,
-    hololink,
+    channel_ips,
     expander_configuration,
     coe_interface,
     coe_interfaces,
     frame_limit,
 ):
+    if expander_configuration >= len(channel_ips):
+        pytest.skip(
+            f"--channel-ips has {len(channel_ips)} IP(s); this case needs "
+            f"index {expander_configuration}"
+        )
+    hololink = channel_ips[expander_configuration]
     # Get a handle to data sources
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=hololink)
     logging.info("Initializing.")

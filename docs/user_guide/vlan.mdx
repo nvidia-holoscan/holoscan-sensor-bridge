@@ -1,0 +1,40 @@
+Holoscan Sensor Bridge (HSB) IP supports **IEEE 802.1Q VLAN tagging**. VLAN tagging can
+be used to prioritize network traffic by Priority Code Point (PCP) field and logically
+separate traffic using Virtual IDs (VID).
+
+IEEE 802.1Q VLAN tagging can be used with **Time Sensitive Networking (TSN)** capable
+switch to deterministically shape the network traffic. TSN requires both **IEEE 802.1Q
+VLAN tagging** and **IEEE 802.1AS gPTP synchronization**. To configure the Host and HSB
+to gPTP profile and VLAN subinterface, refer to
+[TSN IMX274 example](examples.mdx#tsn-imx274-player-example).
+
+## Data-plane VLAN behavior
+
+Each data-plane sensor virtual port can be configured to be VLAN tagged or untagged and
+with its own PCP and VID values. 3-bit PCP field is used to shape the dataplane traffic,
+for example, all camera sensors can be set to a certain PCP value and IMU sensors to a
+different PCP value to group the sensor types.
+
+Refer to [TSN Configuration Sequence](applications.mdx#tsn-configuration-sequence) to
+configure the sensor data-plane with a VLAN tag.
+
+## Control-plane VLAN behavior
+
+Control-plane VLAN behavior varies for different types.
+
+For example, BOOTP packets are always untagged so the host can always enumerate the HSB
+on the network.
+
+For ARP, PING, ECB packets, Host is the initiator and HSB is the responder so the HSB
+adapts to the packet it received. If the host sends untagged ECB packet, the HSB will
+respond with untagged ECB packet, if the Host sends tagged ARP packet, the HSB will
+respond with the same VLAN tag.
+
+Description of each control-plane packet and its VLAN behavior is listed below.
+
+| **Traffic**         | **VLAN on wire**                                                                                                                                                                                                                                             |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| ARP, PING, ECB      | **Adaptive** If the host sends a VLAN-tagged frame, the HSB stores that tag and responds with the same 802.1Q tag. If the host sends untagged traffic, responses are untagged. No VLAN ID / PCP / enable register programming is required for control plane. |
+| Control events      | **Register programmed** as part of the TSN configuration sequence.                                                                                                                                                                                           |
+| PTP                 | **Untagged only** gPTP/PTP frames are always sent and received without an 802.1Q tag.                                                                                                                                                                        |
+| BOOTP (enumeration) | **Untagged TX** The HSB transmits untagged BOOTP enumeration. Host enumeration listens on the parent interface or configured BOOTP bind device accordingly.                                                                                                  |

@@ -16,6 +16,7 @@
 module pause_gen
 #(
     parameter   AXI_DWIDTH = 64,
+    parameter   AXI_UWIDTH = 17,
     localparam  AXI_KWIDTH = AXI_DWIDTH/8
 )(
     input                   pclk,
@@ -30,7 +31,7 @@ module pause_gen
     output                  o_axis_tvalid,
     output [AXI_DWIDTH-1:0] o_axis_tdata,
     output                  o_axis_tlast,
-    output                  o_axis_tuser,
+    output [AXI_UWIDTH-1:0] o_axis_tuser,
     output [AXI_KWIDTH-1:0] o_axis_tkeep,
     input                   i_axis_tready
 );
@@ -173,15 +174,17 @@ vec_to_axis #(
   .rst              ( rst                  ),
   .trigger          ( en_pause             ),
   .data             ( pause_pkt_be         ),
+  .tuser            ( 1'b0                 ),
   .is_busy          ( o_busy               ),
   .o_axis_tx_tvalid ( o_axis_tvalid        ),
   .o_axis_tx_tdata  ( o_axis_tdata         ),
   .o_axis_tx_tlast  ( o_axis_tlast         ),
-  .o_axis_tx_tuser  ( o_axis_tuser         ),
+  .o_axis_tx_tuser  (                      ),
   .o_axis_tx_tkeep  ( o_axis_tkeep         ),
   .i_axis_tx_tready ( i_axis_tready        )
 );
 
+assign o_axis_tuser = '0;
 
 //Debug logic to count number of pauses per second
 logic [15:0] pause_cnt            /* synthesis noprune */;

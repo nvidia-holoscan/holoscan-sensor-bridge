@@ -18,6 +18,16 @@
 set(HSB_EMULATOR_PLATFORM "linux")
 set(HSB_HAL_DEFINES "")
 
+# FrameMetadata transport policy:
+#   0 = embed FrameMetadata in the final payload packet by padding with zeros
+#       (the host RDMA receiver lands it at virtual_address + metadata_offset)
+#   1 = send FrameMetadata as its own packet (no zero-padding the payload packet)
+# Linux and STM32 default to 0. Override at configure time with
+# -DSEPARATE_FRAMEMETADATA_PACKET=<0|1>. Note that the tests/test_emulator_serve_file_receiver_sequences will currently fail if set to 1 as it is specifically testing the -DSEPARATE_FRAMEMETADATA_PACKET=0 case
+set(SEPARATE_FRAMEMETADATA_PACKET 0 CACHE STRING
+    "0=embed FrameMetadata in last payload packet (zero-pad); 1=send FrameMetadata as a separate packet")
+add_compile_definitions(SEPARATE_FRAMEMETADATA_PACKET=${SEPARATE_FRAMEMETADATA_PACKET})
+
 enable_language(CUDA)
 
 if (NOT DEFINED CMAKE_CUDA_ARCHITECTURES)

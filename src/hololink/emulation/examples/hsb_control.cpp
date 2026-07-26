@@ -26,8 +26,23 @@ See README.md for detailed information.
 So that it is cross-platform, it does not use any target-specific features and no input arguments are available.
 
 It will create a default HSBEmulator instance and a default DataPlane instance that responds to control plane messages
-directed at the hard-coded IP address "192.168.0.2".
+directed at the address configured via the IPV4_ADDRESS compile-time macro (default "192.168.0.2").
+
+Compile-time configuration:
+  -DIPV4_ADDRESS=\"<a.b.c.d>\"  source IP for this emulator (default "192.168.0.2")
+  -DDATA_PLANE_ID=<n>            data-plane id (default 0)
+  -DSENSOR_ID=<n>                sensor id (default 0)
 */
+
+#ifndef IPV4_ADDRESS
+#define IPV4_ADDRESS "192.168.0.2"
+#endif
+#ifndef DATA_PLANE_ID
+#define DATA_PLANE_ID 0
+#endif
+#ifndef SENSOR_ID
+#define SENSOR_ID 0
+#endif
 
 using namespace hololink::emulation;
 
@@ -36,7 +51,7 @@ int main(void)
     HSBEmulator hsb;
     // data plane to emit Bootp. Attempting to send will fail since no transmitter is attached
     // to the default DataPlane
-    DataPlane data_plane(hsb, IPAddress_from_string("192.168.0.2"), 0, 0);
+    DataPlane data_plane(hsb, IPAddress_from_string(IPV4_ADDRESS), DATA_PLANE_ID, SENSOR_ID);
 
     // initialize components and modules of the HSBEmulator
     hsb.start();

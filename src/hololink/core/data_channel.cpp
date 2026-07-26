@@ -27,9 +27,10 @@
 
 namespace hololink {
 
-// This memory map used by DataChannel is only supported on FPGAs that are this
-// version or newer.  Note that we only check this when setting up the data
-// channel; if you're only using the control channel, we don't test this.
+// The RoCE data-plane memory map programmed by the base DataChannel is only
+// supported on FPGAs that are this version or newer; configure_roce() rejects
+// anything older. Revision-specific subclasses that understand an older layout
+// override minimum_hsb_ip_version(). Control-plane-only use isn't tested.
 constexpr int64_t MINIMUM_HSB_IP_VERSION = 0x2602;
 
 #ifndef HOLOLINK_ROCE_USE_GPU_VRAM
@@ -190,10 +191,43 @@ void DataChannel::configure_common(uint32_t frame_size, uint32_t overhead, uint3
 
     // Enable the current packetizer program.
     packetizer_program_->enable(*hololink_, sif_address_);
+
+    // Apply VLAN tagging if use_vlan() was called.
+    auto vlan_enabled = enumeration_metadata_.get<int64_t>("vlan_enabled");
+    if (vlan_enabled && vlan_enabled.value() == 1) {
+        auto vlan_id = static_cast<uint16_t>(enumeration_metadata_.get<int64_t>("vlan_id").value());
+        auto sensor_pcp = static_cast<uint8_t>(enumeration_metadata_.get<int64_t>("vlan_sensor_pcp").value());
+        auto evt_pcp = static_cast<uint8_t>(enumeration_metadata_.get<int64_t>("vlan_evt_pcp").value());
+        hololink_->configure_vlan(Hololink::VlanTarget::SENSOR_VP, sensor_, vlan_id, sensor_pcp);
+        hololink_->set_vlan_enable(Hololink::VlanTarget::SENSOR_VP, sensor_, true);
+        hololink_->configure_vlan(Hololink::VlanTarget::EVT, 0, vlan_id, evt_pcp);
+        hololink_->set_vlan_enable(Hololink::VlanTarget::EVT, 0, true);
+    }
+}
+
+int64_t DataChannel::minimum_hsb_ip_version() const
+{
+    return MINIMUM_HSB_IP_VERSION;
+}
+
+void DataChannel::verify_hsb_ip_version()
+{
+    // We're enabling the data plane; make sure the memory map in the distal
+    // device is compatible with what this DataChannel programs.
+    auto hsb_ip_version = enumeration_metadata_.get<int64_t>("hsb_ip_version"); // or None
+    if (!hsb_ip_version) {
+        throw UnsupportedVersion("No 'hsb_ip_version' field found.");
+    }
+    if (hsb_ip_version.value() < minimum_hsb_ip_version()) {
+        throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
+            hsb_ip_version.value(), minimum_hsb_ip_version()));
+    }
 }
 
 void DataChannel::configure_roce(uint64_t frame_memory, size_t frame_size, size_t page_size, unsigned pages, uint32_t local_data_port)
 {
+    verify_hsb_ip_version();
+
     // Contract enforcement
     if (frame_memory & (hololink::core::PAGE_SIZE - 1)) {
         throw std::runtime_error(fmt::format("frame_memory={:#x} must be {}-byte aligned.", frame_memory, hololink::core::PAGE_SIZE));
@@ -286,27 +320,22 @@ void DataChannel::configure_coe(uint8_t channel, size_t frame_size, uint32_t pix
 
 void DataChannel::unconfigure()
 {
-    if (fpga_uuid_ != LEOPARD_EAGLE_UUID) { // for all boards that are not leopard eagle
-
-        // This stops transmission.
-        hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
-        // Let any in-transit data flush out.
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        // Clear the ROCE configuration.
-        hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
-        hololink_->write_uint32(vp_address_ + DP_QP, 0);
-        hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
-        hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, 0);
-        hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, 0);
-        hololink_->write_uint32(vp_address_ + DP_PAGE_INC, 0);
-        hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, 0);
-        hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
-        hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
-        hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
-        hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
-    } else {
-        // skip for now as this causes to lose ping on vb1940-aio
-    }
+    // This stops transmission.
+    hololink_->and_uint32(hif_address_ + DP_VP_MASK, ~vp_mask_);
+    // Let any in-transit data flush out.
+    std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    // Clear the ROCE configuration.
+    hololink_->write_uint32(vp_address_ + DP_BUFFER_LENGTH, 0);
+    hololink_->write_uint32(vp_address_ + DP_QP, 0);
+    hololink_->write_uint32(vp_address_ + DP_RKEY, 0);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_LSB, 0);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_MSB, 0);
+    hololink_->write_uint32(vp_address_ + DP_PAGE_INC, 0);
+    hololink_->write_uint32(vp_address_ + DP_MAX_BUFF, 0);
+    hololink_->write_uint32(vp_address_ + DP_HOST_MAC_LOW, 0);
+    hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
+    hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
+    hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
 
     // Disable the packetizer program.
     packetizer_program_->disable(*hololink_, sif_address_);
@@ -314,17 +343,6 @@ void DataChannel::unconfigure()
 
 void DataChannel::configure_socket(int socket_fd)
 {
-    // We're enabling the data plane; make sure the memory map
-    // in the distal device is compatible.
-    auto hsb_ip_version = enumeration_metadata_.get<int64_t>("hsb_ip_version"); // or None
-    if (!hsb_ip_version) {
-        throw UnsupportedVersion("No 'hsb_ip_version' field found.");
-    }
-    if (hsb_ip_version.value() < MINIMUM_HSB_IP_VERSION) {
-        throw UnsupportedVersion(fmt::format("hsb_ip_version={:#X}; minimum supported version={:#X}.",
-            hsb_ip_version.value(), MINIMUM_HSB_IP_VERSION));
-    }
-
     const std::string& peer_ip = this->peer_ip();
     auto [local_ip, local_device, local_mac] = core::local_ip_and_mac(peer_ip);
 
@@ -414,6 +432,19 @@ void DataChannel::configure_socket(int socket_fd)
     enumeration_strategy->use_sensor(metadata, sensor_number);
 }
 
+/* static */ void DataChannel::use_vlan(Metadata& metadata,
+    uint16_t vlan_id, uint8_t sensor_pcp, uint8_t evt_pcp)
+{
+    if (vlan_id == 0 || vlan_id > 0x0FFEu) {
+        throw std::invalid_argument(
+            fmt::format("vlan_id {} out of range [1, 4094]", vlan_id));
+    }
+    metadata["vlan_enabled"] = static_cast<int64_t>(1);
+    metadata["vlan_id"] = static_cast<int64_t>(vlan_id);
+    metadata["vlan_sensor_pcp"] = static_cast<int64_t>(sensor_pcp);
+    metadata["vlan_evt_pcp"] = static_cast<int64_t>(evt_pcp);
+}
+
 class FrameEndSequencer
     : public Hololink::Sequencer {
 public:
@@ -467,10 +498,13 @@ ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t 
     size_t page_size = getpagesize();
     size_t page_mask = page_size - 1;
     // Make sure size isn't gonna overflow
-    if (size > std::numeric_limits<size_t>::max() - page_size) {
+    if (size > std::numeric_limits<size_t>::max() - 2 * page_size) {
         throw std::overflow_error(fmt::format("Requested buffer size={:#x} is too large for page-aligned allocation", size));
     }
-    size_t allocation_size = size + page_size;
+    // DMA-BUF export needs a page-aligned base AND length; round length up and
+    // over-allocate one page so the aligned base still fits the aligned length.
+    size_t aligned_size = hololink::core::round_up(size, page_size);
+    size_t allocation_size = aligned_size + page_size;
 
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
 
@@ -493,6 +527,9 @@ ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t 
     // or build with -DHOLOLINK_ROCE_USE_GPU_VRAM=OFF to force pinned host memory.
     bool use_gpu_vram = (integrated == 0) && HOLOLINK_ROCE_USE_GPU_VRAM;
     if (use_gpu_vram) {
+        HSB_LOG_DEBUG("Attempting GPU VRAM: size={:#x} aligned_size={:#x} allocation_size={:#x} "
+                      "page_size={:#x}",
+            size, aligned_size, allocation_size, page_size);
         CUdeviceptr device_deviceptr = 0;
         CUresult alloc_result = cuMemAlloc(&device_deviceptr, allocation_size);
         if (alloc_result != CUDA_SUCCESS) {
@@ -509,14 +546,14 @@ ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t 
             }
             int dmabuf_fd = -1;
             CUresult dmabuf_result = cuMemGetHandleForAddressRange(
-                (void*)&dmabuf_fd, aligned, size,
+                (void*)&dmabuf_fd, aligned, aligned_size,
                 CU_MEM_RANGE_HANDLE_TYPE_DMA_BUF_FD, 0);
             if (dmabuf_fd >= 0) {
                 ::close(dmabuf_fd);
             }
             if (dmabuf_result != CUDA_SUCCESS) {
                 HSB_LOG_INFO("cuMemGetHandleForAddressRange failed (result={}); "
-                             "DMA-BUF export not supported for GPU VRAM on this system. "
+                             "could not export this GPU VRAM allocation as a DMA-BUF. "
                              "Falling back to pinned host memory.",
                     (int)dmabuf_result);
                 cuMemFree(device_deviceptr);

@@ -17,12 +17,14 @@
 
 from ._emulation_sensors import (
     TEST_I2C_ADDRESS,
+    IMX274Emulator,
     TestPatternMode,
     TestSensor,
     Vb1940Emulator,
 )
 
 __all__ = [
+    "IMX274Emulator",
     "TEST_I2C_ADDRESS",
     "TestPatternMode",
     "TestSensor",

@@ -17,20 +17,20 @@ module reset_gen #(
   parameter NUM_SENSOR_RX = 2,
   parameter NUM_SENSOR_TX = 1
 )(
-  input                       i_sys_rst,   // asynchronous active low pushbutton reset
-  input                       i_cfg_rst,   // soft system active high reset
+  input                                             i_sys_rst,   // asynchronous active low pushbutton reset
+  input                                             i_cfg_rst,   // soft system active high reset
 
-  input   [NUM_SENSOR_RX-1:0] i_sif_rx_clk,
-  input   [NUM_SENSOR_TX-1:0] i_sif_tx_clk,
-  input                       i_hif_clk,
-  input                       i_apb_clk,
-  input                       i_ptp_clk,
+  input   [(NUM_SENSOR_RX>0 ? NUM_SENSOR_RX:1)-1:0] i_sif_rx_clk,
+  input   [(NUM_SENSOR_TX>0 ? NUM_SENSOR_TX:1)-1:0] i_sif_tx_clk,
+  input                                             i_hif_clk,
+  input                                             i_apb_clk,
+  input                                             i_ptp_clk,
 
-  output  [NUM_SENSOR_RX-1:0] o_sif_rx_rst,
-  output  [NUM_SENSOR_TX-1:0] o_sif_tx_rst,
-  output                      o_hif_rst,
-  output                      o_apb_rst,
-  output                      o_ptp_rst
+  output  [(NUM_SENSOR_RX>0 ? NUM_SENSOR_RX:1)-1:0] o_sif_rx_rst,
+  output  [(NUM_SENSOR_TX>0 ? NUM_SENSOR_TX:1)-1:0] o_sif_tx_rst,
+  output                                            o_hif_rst,
+  output                                            o_apb_rst,
+  output                                            o_ptp_rst
 );
 
 // APB reset
@@ -58,7 +58,8 @@ reset_sync u_hif_rst (
 );
 
 generate
-  for (genvar i=0; i<NUM_SENSOR_RX; i++) begin : gen_sif_rx_rst
+  if (NUM_SENSOR_RX > 0) begin
+    for (genvar i=0; i<NUM_SENSOR_RX; i++) begin : gen_sif_rx_rst
     // SIF reset
     reset_sync u_sif_rx_rst (
       .i_clk    ( i_sif_rx_clk[i] ),
@@ -70,22 +71,29 @@ generate
       .o_srst   ( o_sif_rx_rst[i] ),
       .o_srst_n (                 )
     );
+    end
+  end else begin
+    assign o_sif_rx_rst = 1'b0;
   end
 endgenerate
 
 generate
-  for (genvar i=0; i<NUM_SENSOR_TX; i++) begin : gen_sif_tx_rst
-    // SIF reset
-    reset_sync u_sif_tx_rst (
-      .i_clk    ( i_sif_tx_clk[i] ),
-      .i_arst_n (~i_sys_rst       ),
-      .i_srst   ( o_apb_rst       ),
-      .i_locked ( 1'b1            ),
-      .o_arst   (                 ),
-      .o_arst_n (                 ),
-      .o_srst   ( o_sif_tx_rst[i] ),
-      .o_srst_n (                 )
-    );
+  if (NUM_SENSOR_TX > 0) begin
+    for (genvar i=0; i<NUM_SENSOR_TX; i++) begin : gen_sif_tx_rst
+      // SIF reset
+      reset_sync u_sif_tx_rst (
+        .i_clk    ( i_sif_tx_clk[i] ),
+        .i_arst_n (~i_sys_rst       ),
+        .i_srst   ( o_apb_rst       ),
+        .i_locked ( 1'b1            ),
+        .o_arst   (                 ),
+        .o_arst_n (                 ),
+        .o_srst   ( o_sif_tx_rst[i] ),
+        .o_srst_n (                 )
+      );
+    end
+  end else begin
+    assign o_sif_tx_rst = 1'b0;
   end
 endgenerate
 

@@ -33,7 +33,7 @@ from examples import stereo_imx274_player
     ],
 )
 def test_stereo_imx274_player_player(
-    camera_mode, headless, frame_limit, hololink_address, capsys
+    camera_mode, headless, frame_limit, channel_ips, capsys
 ):
     arguments = [
         sys.argv[0],
@@ -41,6 +41,10 @@ def test_stereo_imx274_player_player(
         str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
+        "--hololink-left",
+        channel_ips[0],
+        "--hololink-right",
+        channel_ips[1],
     ]
     if headless:
         arguments.extend(["--headless"])

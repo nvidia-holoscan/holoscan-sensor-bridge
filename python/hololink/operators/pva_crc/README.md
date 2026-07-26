@@ -14,7 +14,7 @@ Hardware-accelerated CRC validation using NVIDIA PVA (Programmable Vision Accele
   - These versions come with PVA runtime v2.9 installed at `/opt/nvidia/pva-sdk-2.9`
 - Hololink demo container
   - Refer to
-    [Build and Test Holoscan Sensor Bridge demo container](https://docs.nvidia.com/holoscan/sensor-bridge/latest/build.html)
+    [Build and Test Holoscan Sensor Bridge demo container](https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/build)
 
 ## PVA CRC Files
 

@@ -20,7 +20,7 @@
 # in order to mount driver and development dependencies
 
 ARG CONTAINER_TYPE=invalid
-ARG HSDK_VERSION=4.2.0
+ARG HSDK_VERSION=4.4.0
 ARG DRIVER_CUDA_VERSION_MAJOR=invalid
 ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked"
@@ -29,6 +29,7 @@ ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
 # NOTE: if using -runtime- container instead of -devel-, libcufft-dev, libcurand-dev, cuda-cudart-dev, and cuda-driver-dev should also be installed
 FROM nvcr.io/nvidia/cuda:12.6.3-runtime-ubuntu22.04 AS build_cuda12_dgpu
 ARG L4T_VERSION=invalid
+ARG HSDK_VERSION=invalid
 ENV CUDA_VERSION="${CUDA_VERSION:-12.6.3}"
 ENV CUDA_VERSION_MAJOR="${CUDA_VERSION%%.*}"
 ENV HSDK_PKG_NAME="holoscan"
@@ -52,6 +53,7 @@ COPY --from=l4t-libs \
 FROM nvcr.io/nvidia/l4t-cuda:12.6.11-runtime AS build_cuda12_igpu
 ARG L4T_VERSION=invalid
 ARG TARGETARCH
+ARG HSDK_VERSION=invalid
 ENV CUDA_VERSION="${CUDA_VERSION:-12.6.11}"
 ENV CUDA_VERSION_MAJOR="${CUDA_VERSION%%.*}"
 ENV HSDK_PKG_NAME="holoscan-cuda-${CUDA_VERSION_MAJOR}"
@@ -91,6 +93,7 @@ ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 # NOTE: if using -runtime- container instead of -devel-, libcufft-dev, libcurand-dev, cuda-cudart-dev, and cuda-driver-dev should also be installed
 FROM nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04 AS build_cuda13
 ARG TARGETARCH
+ARG HSDK_VERSION=invalid
 ENV CUDA_VERSION="${CUDA_VERSION:-13.0.0}"
 ENV CUDA_VERSION_MAJOR="${CUDA_VERSION%%.*}"
 ENV HSDK_PKG_NAME="holoscan-cuda-${CUDA_VERSION_MAJOR}"
@@ -205,10 +208,9 @@ FROM build_${CONTAINER_TYPE}
 # ARGs must be redeclared after FROM to be available in this build stage
 ARG HSDK_VERSION=invalid
 ARG L4T_VERSION=invalid
-ARG CUDA_NATIVE_ARCH=invalid
 ARG IBV_DEVICES=
 ARG TARGETARCH
-ARG DOCA_VERSION=3.3.0
+ARG DOCA_VERSION=3.4.0
 ARG DEBIAN_FRONTEND=noninteractive
 
 # controls whether roce is disabled in builds (no IBV_DEVICES-->no roce)
@@ -217,7 +219,6 @@ ENV IBV_DEVICES=${IBV_DEVICES}
 ENV PIP_BREAK_SYSTEM_PACKAGES=1
 # run as root user...ignore warnings about installing as root inside container
 ENV PIP_ROOT_USER_ACTION=ignore
-ENV CUDA_NATIVE_ARCH=${CUDA_NATIVE_ARCH}
 ENV CUDA_VERSION_MINOR_PATCH="${CUDA_VERSION#*.}"
 ENV CUDA_VERSION_MINOR="${CUDA_VERSION_MINOR_PATCH%%.*}"
 ENV CUDA_PATH=/usr/local/cuda
@@ -236,6 +237,7 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
 WORKDIR /opt
 
 # Configure the DOCA APT repository
+
 RUN if [ -n "$IBV_DEVICES" ] ; then \
         if [ "${TARGETARCH}" = "amd64" ]; then \
             DOCA_ARCH="amd64"; \
@@ -247,9 +249,9 @@ RUN if [ -n "$IBV_DEVICES" ] ; then \
         fi \
         && apt-get update \
         && UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
-        && curl -fL -O https://www.mellanox.com/downloads/DOCA/DOCA_v${DOCA_VERSION}/host/doca-host_${DOCA_VERSION}-088000-26.01-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
-        && apt-get install -o DPkg::Options::="--force-confnew" -y ./doca-host_${DOCA_VERSION}-088000-26.01-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
-        && rm -f ./doca-host_${DOCA_VERSION}-088000-26.01-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
+        && curl -fL -O https://www.mellanox.com/downloads/DOCA/DOCA_v${DOCA_VERSION}/host/doca-host_${DOCA_VERSION}-085000-26.04-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
+        && apt-get install -o DPkg::Options::="--force-confnew" -y ./doca-host_${DOCA_VERSION}-085000-26.04-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
+        && rm -f ./doca-host_${DOCA_VERSION}-085000-26.04-ubuntu${UBUNTU_VERSION}_${DOCA_ARCH}.deb \
         && apt-get update \
     ; fi
 
@@ -277,6 +279,8 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     && curl -fsSL -O https://developer.download.nvidia.com/compute/nvcomp/5.2.0/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_${TARGETARCH}.deb \
     && dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_${TARGETARCH}.deb \
     && cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0/nvcomp-*-keyring.gpg /usr/share/keyrings/ \
+    # the pinning file needs to come alphanumerically before any other pinning files where the package matches. On IGX Orin, the cuda-repository-pin-600 file is present with a "Package: *" and otherwise takes precedence over this
+    && printf 'Package: *\nPin: origin ""\nPin-Priority: 1001\n' > /etc/apt/preferences.d/00-nv-local-repo \
     && apt-get update \
     && DEB_DEPENDENCIES="libnvcomp5-cuda-${CUDA_VERSION_MAJOR} libnvcomp5-dev-cuda-${CUDA_VERSION_MAJOR} libnvcomp5-static-cuda-${CUDA_VERSION_MAJOR} nvcomp-cuda-${CUDA_VERSION_MAJOR}" \
     && if [ -n "$IBV_DEVICES" ] ; then \
@@ -289,6 +293,7 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     lsb-release \
     python3 \
     x11-utils \
+    xvfb \
     vulkan-tools \
     glslang-tools \
     net-tools \
@@ -299,6 +304,11 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     cmake="3.31.11*" \
     cmake-data="3.31.11*" \
     ninja-build \
+    # lld: fast multi-threaded linker (CMAKE_LINKER_TYPE=LLD). Static-links the
+    # many tool/example binaries far faster than the default GNU BFD ld. lld is
+    # used over mold because GCC 11 on the Ubuntu 22.04 dgpu base supports
+    # -fuse-ld=lld but not -fuse-ld=mold (mold needs GCC >= 12.1).
+    lld \
     pkgconf \
     # Development libraries
     python3-setuptools \
@@ -321,6 +331,19 @@ RUN ${APT_CACHE_MOUNT} apt-get update \
     cuda-nvrtc-dev-${CUDA_VERSION_MAJOR}-${CUDA_VERSION_MINOR} \
     libnpp-dev-${CUDA_VERSION_MAJOR}-${CUDA_VERSION_MINOR} \
     $DEB_DEPENDENCIES
+
+# sccache: a shared compiler cache so successive image builds skip recompiling
+# unchanged C++/CUDA translation units. We use the RAPIDS sccache fork because it
+# supports caching nvcc (CUDA) compilations. Matches the approach in holoscan-sdk's
+# Dockerfile. This only places the binary on PATH; the compiler-launcher wiring and
+# the SCCACHE_DIR cache mount live in Dockerfile.demo's builder stage.
+ARG SCCACHE_VERSION=v0.14.0-rapids.19
+ARG SCCACHE_BASE_URL=https://github.com/rapidsai/sccache/releases/download
+RUN curl -fS -# -L -o /tmp/sccache.tar.gz \
+        ${SCCACHE_BASE_URL}/${SCCACHE_VERSION}/sccache-${SCCACHE_VERSION}-$(uname -m)-unknown-linux-musl.tar.gz \
+    && tar -xzf /tmp/sccache.tar.gz -C /usr/local/bin --strip-components=1 \
+        sccache-${SCCACHE_VERSION}-$(uname -m)-unknown-linux-musl/sccache \
+    && rm /tmp/sccache.tar.gz
 
 # python package dependencies
 # holoscan has a minimum pip version requirement that cannot be satisfied by the debian package

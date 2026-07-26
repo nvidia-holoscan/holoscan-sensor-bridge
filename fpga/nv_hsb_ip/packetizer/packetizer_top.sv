@@ -151,8 +151,6 @@ always_ff @(posedge i_sclk) begin
   end
 end
 
-assign wr_en_fall = ({wr_en_sync,wr_en_sync_q} == 2'b01);
-
 typedef enum logic [6:0] {
   PACK_IDLE     = 7'b0000001,
   PACK_WAIT     = 7'b0000010,
@@ -250,15 +248,46 @@ logic                       pack_dvalid;
 logic [W_USER-1:0]          pack_tuser;
 logic                       pack_wait;
 logic [3:0]                 ram_rd_addr;
-logic [3:0]                 ram_rd_addr_nxt;
 logic                       pack_stall;
 logic [VP_COUNT-1:0]        w_vp_almost_full;
 logic [VP_COUNT-1:0]        w_vp_is_empty;
 logic [VP_COUNT-1:0]        vp_is_empty;
-logic [VP_COUNT-1:0]        vp_is_empty_sync;
 logic                       pad_state;
 logic                       ld_nxt;
+logic [15:0]                ld_shift;
 logic                       r_pack_tready;
+logic                       ram_sos;
+logic                       ram_advance;
+logic                       pack_wait_last_cycle;
+
+always_ff @(posedge i_sclk) begin
+  if (i_srst) begin
+    ram_rd_addr          <= '0;
+    ld_shift             <= '0;
+    pack_wait_last_cycle <= '0;
+  end
+  else begin
+    pack_wait_last_cycle <= ((state == PACK_IDLE) && !buf_bypass && buf_rd_val && (latency == 4'd1)) ||
+                            ((state == PACK_WAIT) && (latency > 4'd1) && (latency_cnt == (latency - 4'd2)));
+    if (wr_en_sync) begin
+      ram_rd_addr <= wr_addr_q;
+      ld_shift    <= ld_arr;
+    end
+    else if (ram_sos || (ram_advance && (ram_rd_addr >= max_addr))) begin
+      ram_rd_addr <= '0;
+      ld_shift    <= ld_arr;
+    end
+    else if (ram_advance) begin
+      ram_rd_addr <= ram_rd_addr + 1;
+      ld_shift    <= {1'b0,ld_shift[15:1]};
+    end
+  end
+end
+
+assign ld_nxt      = ld_shift[0];
+assign ram_sos     = (state == PACK_IDLE) && (!buf_rd_val || (latency != '0));
+assign ram_advance = ((state != PACK_WAIT) || pack_wait_last_cycle) && (buf_rd_val || !ld_nxt || pad_state);
+
 
 always @ (posedge i_sclk) begin
   if (i_srst) begin
@@ -271,8 +300,6 @@ always @ (posedge i_sclk) begin
     cnt             <= '0;
     pack_dvalid     <= '0;
     latency_cnt     <= '0;
-    ram_rd_addr     <= '0;
-    ld_nxt          <= '0;
     r_pack_tready   <= '0;
   end
   else begin
@@ -288,8 +315,6 @@ always @ (posedge i_sclk) begin
                       (state == PACK_DELAY)     ? '0                                       :
                                                   (buf_rd_val && !buf_bypass) || (!ld_nxt) ;
     latency_cnt   <= ((state == PACK_WAIT) || (state == PACK_WAIT2)) ? latency_cnt + 1'b1 : '0;
-    ram_rd_addr   <= ram_rd_addr_nxt;
-    ld_nxt        <= ld_arr[ram_rd_addr_nxt];
     r_pack_tready <= pack_tready;
   end
 end
@@ -346,9 +371,6 @@ always_comb begin
 end
 
 assign pad_state   = ((state == PACK_PATTERN) || (state == PACK_PAD) || (state == PACK_WAIT2));
-assign ram_rd_addr_nxt = (state == PACK_IDLE) && (!buf_rd_val || (latency != '0)) ? '0             :
-                         (buf_rd_val || !ld_nxt || pad_state)                     ? (ram_rd_addr >= max_addr) ? '0 : ram_rd_addr + 1 :
-                                                                                    ram_rd_addr    ;
 
 assign buf_rd_req = (state == PACK_DELAY  ) ? 1'b0              :
                     (pad_state            ) ? 1'b0              :
@@ -446,8 +468,10 @@ generate
   end
 endgenerate
 
-assign ram_addr   = wr_en_fall                    ? wr_addr_q      :
-                                                   {'0,ram_rd_addr};
+
+assign wr_en_fall       = ({wr_en_sync,wr_en_sync_q} == 2'b01);
+assign ram_addr[ 3:0]   = ram_rd_addr;
+assign ram_addr[15:4]   = wr_addr_q[15:4];
 //------------------------------------------------------------------------------------------------//
 // Outgoing Data
 //------------------------------------------------------------------------------------------------//

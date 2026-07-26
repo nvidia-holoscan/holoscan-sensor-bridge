@@ -92,10 +92,10 @@ public:
     bool expired() const;
 
     /**
-     * @returns the time in seconds until the timeout triggers. Can be negative if the timeout had
-     * already been triggered.
+     * @return true if the timeout expired
+     * @param remaining_s the time in seconds until the next deadline. Populates with 0.0 if the timeout expired.
      */
-    float trigger_s() const;
+    bool expired(double& remaining_s) const;
 
     /**
      * @brief Retry.

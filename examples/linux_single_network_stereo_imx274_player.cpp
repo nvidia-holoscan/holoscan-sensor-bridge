@@ -28,6 +28,7 @@
 #include <holoscan/operators/holoviz/holoviz.hpp>
 
 #include <hololink/common/holoargs.hpp>
+#include <hololink/common/tools.hpp>
 #include <hololink/core/csi_controller.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
@@ -298,7 +299,7 @@ int main(int argc, char** argv)
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
         ("configuration", value<std::string>()->default_value("example_configuration.yaml"), "Configuration file")
-        ("hololink", value<std::string>()->default_value("192.168.0.2"), "IP address of Hololink board")
+        ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
         ("window-height", value<int>()->default_value(2160 / 4), "Set the height of the displayed window")
         ("window-width", value<int>()->default_value(3840 / 3), "Set the width of the displayed window")
         ("title", value<std::string>(), "Set the window title")
