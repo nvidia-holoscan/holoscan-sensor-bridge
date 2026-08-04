@@ -31,6 +31,7 @@
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/networking.hpp"
+#include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
 #include "hololink/module/operators/packed_format_converter_op.hpp"
@@ -89,13 +90,15 @@ public:
         std::vector<Channel> channels,
         hololink::module::sensors::vb1940::Vb1940_Mode camera_mode,
         uint32_t timeout,
-        int frame_limit)
+        int frame_limit,
+        bool no_packetizer)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , channels_(std::move(channels))
         , camera_mode_(camera_mode)
         , timeout_(timeout)
         , frame_limit_(frame_limit)
+        , no_packetizer_(no_packetizer)
     {
         enable_metadata(true);
         metadata_policy(holoscan::MetadataPolicy::kReject);
@@ -144,6 +147,11 @@ public:
             const auto camera_height = ch.camera->height();
             const std::string& name = ch.tensor_name;
 
+            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+            // always captured unpacketized.
+            const bool packetizer_enabled = !no_packetizer_
+                && pixel_format != hololink::module::csi::PixelFormat::RAW_8;
+
             std::shared_ptr<Condition> condition;
             if (frame_limit_) {
                 condition = make_condition<CountCondition>(
@@ -163,20 +171,34 @@ public:
                 Arg("timeout", timeout_),
                 Arg("device_start", std::function<void()>([cam = ch.camera] { cam->start(); })),
                 Arg("device_stop", std::function<void()>([cam = ch.camera] { cam->stop(); })));
+            fusa_coe_capture->configure_format(pixel_format, bayer_format, packetizer_enabled);
             ch.camera->configure_converter(fusa_coe_capture);
 
             const size_t size = camera_width * camera_height * 2;
             constexpr int32_t storage_type_device_memory = 1;
             constexpr size_t num_blocks = 4;
-            auto packed_format_converter_pool = make_resource<holoscan::BlockMemoryPool>(
-                fmt::format("packed_format_converter_pool_{}", name),
+            // Which converter is correct depends on the packetizer: enabled, the buffer
+            // holds HSB-packed data; disabled, it is still CSI-2 exactly as the sensor
+            // sent it.
+            auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
+                fmt::format("converter_pool_{}", name),
                 storage_type_device_memory, size, num_blocks);
 
-            auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
-                fmt::format("packed_format_converter_{}", name),
-                Arg("allocator", packed_format_converter_pool),
-                Arg("in_tensor_name", name));
-            fusa_coe_capture->configure_converter(*packed_format_converter.get());
+            std::shared_ptr<holoscan::Operator> converter;
+            if (packetizer_enabled) {
+                auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
+                    fmt::format("packed_format_converter_{}", name),
+                    Arg("allocator", converter_pool),
+                    Arg("in_tensor_name", name));
+                fusa_coe_capture->configure_converter(*packed_format_converter.get());
+                converter = packed_format_converter;
+            } else {
+                auto csi_to_bayer = make_operator<hololink::module::operators::CsiToBayerOp>(
+                    fmt::format("csi_to_bayer_{}", name),
+                    Arg("allocator", converter_pool));
+                fusa_coe_capture->configure_converter(*csi_to_bayer.get());
+                converter = csi_to_bayer;
+            }
 
             auto image_processor = make_operator<hololink::module::operators::ImageProcessorOp>(
                 fmt::format("image_processor_{}", name),
@@ -197,8 +219,8 @@ public:
                 Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
                 Arg("out_tensor_name", name));
 
-            add_flow(fusa_coe_capture, packed_format_converter, { { "output", "input" } });
-            add_flow(packed_format_converter, image_processor, { { "output", "input" } });
+            add_flow(fusa_coe_capture, converter, { { "output", "input" } });
+            add_flow(converter, image_processor, { { "output", "input" } });
             add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
             add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
         }
@@ -211,6 +233,7 @@ private:
     hololink::module::sensors::vb1940::Vb1940_Mode camera_mode_;
     uint32_t timeout_;
     int frame_limit_;
+    bool no_packetizer_;
 };
 
 static void print_usage(const char* argv0, const std::string& default_hololink_ip)
@@ -227,6 +250,8 @@ static void print_usage(const char* argv0, const std::string& default_hololink_i
               << "  --frame-limit <int>        Exit after this many frames\n"
               << "  --headless                 Run holoviz without a display\n"
               << "  --fullscreen               Run holoviz fullscreen\n"
+              << "  --no-packetizer            Capture unpacketized CSI-2 data instead of "
+                 "HSB-packed data\n"
               << "  --discovery-timeout <s>    Seconds to wait for bootp (default 30)\n"
               << "  --log-level <level>        Holoscan log level\n";
 }
@@ -237,6 +262,7 @@ int main(int argc, char** argv)
     auto camera_mode = hololink::module::sensors::vb1940::Vb1940_Mode::VB1940_MODE_2560X1984_30FPS;
     bool headless = false;
     bool fullscreen = false;
+    bool no_packetizer = false;
     int64_t frame_limit = 0;
     int32_t sensor = -1;
     uint32_t timeout = 1500;
@@ -250,6 +276,7 @@ int main(int argc, char** argv)
         { "camera-mode", required_argument, nullptr, 0 },
         { "headless", no_argument, nullptr, 0 },
         { "fullscreen", no_argument, nullptr, 0 },
+        { "no-packetizer", no_argument, nullptr, 0 },
         { "frame-limit", required_argument, nullptr, 0 },
         { "hololink", required_argument, nullptr, 0 },
         { "sensor", required_argument, nullptr, 0 },
@@ -277,6 +304,8 @@ int main(int argc, char** argv)
                     headless = true;
                 } else if (name == "fullscreen") {
                     fullscreen = true;
+                } else if (name == "no-packetizer") {
+                    no_packetizer = true;
                 } else if (name == "frame-limit") {
                     frame_limit = std::stoll(argument);
                 } else if (name == "hololink") {
@@ -387,7 +416,7 @@ int main(int argc, char** argv)
 
         auto app = std::make_unique<Application>(
             headless, fullscreen, std::move(channels), camera_mode, timeout,
-            static_cast<int>(frame_limit));
+            static_cast<int>(frame_limit), no_packetizer);
 
         app->run();
         hololink->stop();

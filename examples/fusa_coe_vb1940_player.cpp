@@ -23,10 +23,37 @@
 #include <hololink/common/tools.hpp>
 #include <hololink/core/logging.hpp>
 #include <hololink/core/networking.hpp>
+#include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/fusa_coe_capture/fusa_coe_capture.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/packed_format_converter/packed_format_converter.hpp>
 #include <hololink/sensors/camera/vb1940/native_vb1940_sensor.hpp>
+
+// Terminates a pipeline when --no-visualizer is given. A dangling output port stalls
+// the whole graph (the upstream operator "will never tick"), so the frames still need
+// somewhere to go; counting them also shows the capture path actually delivered.
+class FrameSinkOp : public holoscan::Operator {
+public:
+    HOLOSCAN_OPERATOR_FORWARD_ARGS(FrameSinkOp)
+
+    FrameSinkOp() = default;
+
+    void setup(holoscan::OperatorSpec& spec) override { spec.input<holoscan::gxf::Entity>("input"); }
+
+    void compute(holoscan::InputContext& op_input, holoscan::OutputContext&,
+        holoscan::ExecutionContext&) override
+    {
+        op_input.receive<holoscan::gxf::Entity>("input");
+        if (++frames_ % 30 == 0) {
+            HOLOSCAN_LOG_INFO("{}: received {} frames", name(), frames_);
+        }
+    }
+
+    uint64_t frames() const { return frames_; }
+
+private:
+    uint64_t frames_ = 0;
+};
 
 hololink::core::MacAddress parse_mac_address(const std::string& mac_str)
 {
@@ -66,7 +93,9 @@ public:
         std::vector<std::shared_ptr<hololink::sensors::NativeVb1940Sensor>> cameras,
         hololink::sensors::vb1940_mode::Mode camera_mode,
         uint32_t timeout,
-        int frame_limit)
+        int frame_limit,
+        bool no_packetizer,
+        bool no_visualizer)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , hololink_channels_(hololink_channels)
@@ -74,6 +103,8 @@ public:
         , camera_mode_(camera_mode)
         , timeout_(timeout)
         , frame_limit_(frame_limit)
+        , no_packetizer_(no_packetizer)
+        , no_visualizer_(no_visualizer)
     {
         // Because we have stereo camera paths going into the same visualizer, don't
         // raise an error when each path presents metadata with the same names.
@@ -91,29 +122,35 @@ public:
         auto mac_bytes = parse_mac_address(mac_str);
         HOLOSCAN_LOG_INFO("Using interface={}, mac={}", interface, mac_str);
 
-        // Holoviz is used to render the image(s).
-        const float view_width = 1.0f / cameras_.size();
-        std::vector<ops::HolovizOp::InputSpec> specs;
-        for (uint32_t i = 0; i < cameras_.size(); ++i) {
-            ops::HolovizOp::InputSpec::View view;
-            view.offset_x_ = view_width * i;
-            view.offset_y_ = 0;
-            view.width_ = view_width;
-            view.height_ = 1;
-            ops::HolovizOp::InputSpec spec(std::to_string(i), ops::HolovizOp::InputType::COLOR);
-            spec.views_.push_back(view);
-            specs.push_back(spec);
+        // Holoviz is used to render the image(s). It is optional: rendering needs a
+        // working Vulkan driver, which --headless does not avoid, so --no-visualizer
+        // terminates each pipeline at the demosaic instead. Useful for exercising the
+        // capture path on a host with no usable GPU driver.
+        std::shared_ptr<Operator> visualizer;
+        if (!no_visualizer_) {
+            const float view_width = 1.0f / cameras_.size();
+            std::vector<ops::HolovizOp::InputSpec> specs;
+            for (uint32_t i = 0; i < cameras_.size(); ++i) {
+                ops::HolovizOp::InputSpec::View view;
+                view.offset_x_ = view_width * i;
+                view.offset_y_ = 0;
+                view.width_ = view_width;
+                view.height_ = 1;
+                ops::HolovizOp::InputSpec spec(std::to_string(i), ops::HolovizOp::InputType::COLOR);
+                spec.views_.push_back(view);
+                specs.push_back(spec);
+            }
+            uint32_t width = 800 * cameras_.size();
+            uint32_t height = 620;
+            visualizer = make_operator<holoscan::ops::HolovizOp>(
+                "holoviz",
+                Arg("tensors", specs),
+                Arg("fullscreen", fullscreen_),
+                Arg("headless", headless_),
+                Arg("width", width),
+                Arg("height", height),
+                Arg("framebuffer_srgb", true));
         }
-        uint32_t width = 800 * cameras_.size();
-        uint32_t height = 620;
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
-            "holoviz",
-            Arg("tensors", specs),
-            Arg("fullscreen", fullscreen_),
-            Arg("headless", headless_),
-            Arg("width", width),
-            Arg("height", height),
-            Arg("framebuffer_srgb", true));
 
         // Create the capture/conversion pipelines for each sensor.
         for (uint32_t i = 0; i < cameras_.size(); ++i) {
@@ -131,6 +168,11 @@ public:
             auto height = cameras_[i]->get_height();
             auto name = std::to_string(i);
 
+            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+            // always captured unpacketized.
+            const bool packetizer_enabled = !no_packetizer_
+                && pixel_format != hololink::csi::PixelFormat::RAW_8;
+
             // Capture from Fusa.
             auto fusa_coe_capture = make_operator<hololink::operators::FusaCoeCaptureOp>(
                 fmt::format("fusa_coe_capture_{}", name),
@@ -142,21 +184,34 @@ public:
                 Arg("device_start", std::function<void()>([this, i] { cameras_[i]->start(); })),
                 Arg("device_stop", std::function<void()>([this, i] { cameras_[i]->stop(); })),
                 condition);
+            fusa_coe_capture->configure_format(pixel_format, bayer_format, packetizer_enabled);
             cameras_[i]->configure_converter(fusa_coe_capture);
 
-            // Convert packed RAW to 16-bit Bayer.
+            // Convert the captured RAW to 16-bit Bayer. Which converter is correct depends
+            // on the packetizer: enabled, the buffer holds HSB-packed data; disabled, it is
+            // still CSI-2 exactly as the sensor sent it.
             size_t size = width * height * 2; // 16-bit Bayer
             const int32_t storage_type_device_memory = 1;
             const size_t num_blocks = 4;
-            auto packed_format_converter_pool = make_resource<holoscan::BlockMemoryPool>(
-                fmt::format("packed_format_converter_pool_{}", name),
+            auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
+                fmt::format("converter_pool_{}", name),
                 storage_type_device_memory, size, num_blocks);
 
-            auto packed_format_converter = make_operator<hololink::operators::PackedFormatConverterOp>(
-                fmt::format("packed_format_converter_{}", name),
-                Arg("allocator", packed_format_converter_pool),
-                Arg("in_tensor_name", name));
-            fusa_coe_capture->configure_converter(*packed_format_converter.get());
+            std::shared_ptr<Operator> converter;
+            if (packetizer_enabled) {
+                auto packed_format_converter = make_operator<hololink::operators::PackedFormatConverterOp>(
+                    fmt::format("packed_format_converter_{}", name),
+                    Arg("allocator", converter_pool),
+                    Arg("in_tensor_name", name));
+                fusa_coe_capture->configure_converter(*packed_format_converter.get());
+                converter = packed_format_converter;
+            } else {
+                auto csi_to_bayer = make_operator<hololink::operators::CsiToBayerOp>(
+                    fmt::format("csi_to_bayer_{}", name),
+                    Arg("allocator", converter_pool));
+                fusa_coe_capture->configure_converter(*csi_to_bayer.get());
+                converter = csi_to_bayer;
+            }
 
             // Perform basic ISP operations.
             auto image_processor = make_operator<hololink::operators::ImageProcessorOp>(
@@ -179,10 +234,15 @@ public:
                 Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
                 Arg("out_tensor_name", name));
 
-            add_flow(fusa_coe_capture, packed_format_converter, { { "output", "input" } });
-            add_flow(packed_format_converter, image_processor, { { "output", "input" } });
+            add_flow(fusa_coe_capture, converter, { { "output", "input" } });
+            add_flow(converter, image_processor, { { "output", "input" } });
             add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
-            add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
+            if (visualizer) {
+                add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
+            } else {
+                auto sink = make_operator<FrameSinkOp>(fmt::format("sink_{}", name));
+                add_flow(bayer_demosaic, sink, { { "transmitter", "input" } });
+            }
         }
     }
 
@@ -194,6 +254,8 @@ private:
     hololink::sensors::vb1940_mode::Mode camera_mode_;
     uint32_t timeout_;
     int frame_limit_;
+    bool no_packetizer_;
+    bool no_visualizer_;
 };
 
 int main(int argc, char** argv)
@@ -210,6 +272,8 @@ int main(int argc, char** argv)
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
         ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
+        ("no-packetizer", bool_switch()->default_value(false), "Capture unpacketized CSI-2 data instead of HSB-packed data")
+        ("no-visualizer", bool_switch()->default_value(false), "Skip Holoviz rendering; run the capture pipeline only")
         ("sensor", value<uint32_t>()->default_value(-1), "Sensor to use (0 or 1, or -1 (default) for stereo mode)")
         ("timeout", value<int>()->default_value(1500), "Capture request timeout, in milliseconds")
         ;
@@ -270,7 +334,9 @@ int main(int argc, char** argv)
             std::move(cameras),
             camera_mode,
             variables_map["timeout"].as<int>(),
-            variables_map["frame-limit"].as<int>());
+            variables_map["frame-limit"].as<int>(),
+            variables_map["no-packetizer"].as<bool>(),
+            variables_map["no-visualizer"].as<bool>());
         app->run();
 
         hololink->stop();

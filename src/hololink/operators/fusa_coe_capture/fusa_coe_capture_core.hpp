@@ -38,12 +38,37 @@ struct CoeFrameMetadata {
     int64_t frame_number = 0;
 };
 
+/**
+ * Resolve the (bit depth, CFA, packetizer) triple to the one NvSciBuf color format that
+ * correctly describes the captured buffer.
+ *
+ * The packetizer is an independent control: when it is enabled HSB repacks the CSI-2 stream
+ * into the right-justified layouts NvSciBuf calls "packed", and those exist only at 10 and 12
+ * bits. When it is disabled the stream stays CSI-2 and the buffer is described by the
+ * corresponding unpacked container format.
+ *
+ *   bit depth | packetizer | color format
+ *   ----------+------------+----------------------------------------
+ *   RAW_12    | enabled    | NvSciColor_Bayer12<CFA>
+ *   RAW_12    | disabled   | NvSciColor_X4Bayer12<CFA>
+ *   RAW_10    | enabled    | NvSciColor_X2Rc10Rb10Ra10_Bayer10<CFA>
+ *   RAW_10    | disabled   | NvSciColor_X6Bayer10<CFA>
+ *   RAW_8     | enabled    | rejected -- no packed 8-bit format exists
+ *   RAW_8     | disabled   | NvSciColor_Bayer8<CFA>
+ *
+ * Throws std::runtime_error for any triple with no correct representation.
+ */
+NvSciBufAttrValColorFmt bayer_color_format(
+    hololink::csi::PixelFormat pixel_format,
+    hololink::csi::BayerFormat bayer_format,
+    bool packetizer_enabled);
+
 class CoeChannelConfig {
 public:
     virtual ~CoeChannelConfig() = default;
 
-    virtual void set_packetizer_if_needed(
-        bool csi_pixel_format, hololink::csi::PixelFormat pixel_format)
+    virtual void set_packetizer(
+        bool enabled, hololink::csi::PixelFormat pixel_format)
         = 0;
     virtual void configure_coe(
         uint8_t channel, size_t frame_size, uint32_t bytes_per_line)
@@ -62,9 +87,35 @@ public:
 class FusaCoeCaptureCore {
 public:
     static uint32_t receiver_start_byte();
-    static uint32_t received_line_bytes(uint32_t line_bytes);
-    static uint32_t transmitted_line_bytes(
-        hololink::csi::PixelFormat pixel_format, uint32_t pixel_width);
+
+    /**
+     * Bytes from the start of one received line to the start of the next. HSB pads lines to
+     * 64 bytes when the packetizer is repacking them, and to 8 bytes when it is passing
+     * CSI-2 through untouched, so this depends on the packetizer just as
+     * transmitted_line_bytes() does.
+     */
+    uint32_t received_line_bytes(uint32_t line_bytes) const;
+
+    /**
+     * State the capture format as a whole: bit depth, sensor CFA, and whether the HSB
+     * packetizer is enabled. These three are independent controls -- the packetizer is not
+     * implied by the bit depth -- and together they determine exactly one NvSciBuf color
+     * format. An unrepresentable combination throws here, at request time, rather than
+     * failing later during buffer allocation.
+     *
+     * Must be called before transmitted_line_bytes(), configure() or start(): the line
+     * geometry depends on the packetizer state.
+     */
+    void request_format(hololink::csi::PixelFormat pixel_format,
+        hololink::csi::BayerFormat bayer_format,
+        bool packetizer_enabled);
+
+    /**
+     * Bytes on the wire for one line. Depends on the packetizer: enabled, HSB emits the
+     * NvSciBuf packed layouts; disabled, the stream stays CSI-2 MIPI packed.
+     */
+    uint32_t transmitted_line_bytes(
+        hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) const;
 
     void configure(uint32_t start_byte, uint32_t received_bytes_per_line,
         uint32_t pixel_width, uint32_t pixel_height,
@@ -79,6 +130,8 @@ public:
     uint32_t pixel_width() const { return pixel_width_; }
     uint32_t pixel_height() const { return pixel_height_; }
     hololink::csi::PixelFormat pixel_format() const { return pixel_format_; }
+    hololink::csi::BayerFormat bayer_format() const { return bayer_format_; }
+    bool packetizer_enabled() const { return packetizer_enabled_; }
 
     void start(
         const std::string& interface,
@@ -191,7 +244,15 @@ private:
     uint32_t pixel_height_ = 0;
     uint32_t trailing_bytes_ = 0;
     hololink::csi::PixelFormat pixel_format_ = hololink::csi::PixelFormat::RAW_8;
-    bool csi_pixel_format_ = false;
+    hololink::csi::BayerFormat bayer_format_ = hololink::csi::BayerFormat::RGGB;
+    // Whether the HSB packetizer repacks the CSI-2 stream. Independent of bit depth and of
+    // image_mode_; set only by request_format().
+    bool packetizer_enabled_ = false;
+    hololink::csi::PixelFormat requested_pixel_format_ = hololink::csi::PixelFormat::RAW_8;
+    bool format_requested_ = false;
+    // True for image capture (configure()), false for the opaque byte-blob path
+    // (configure_frame_size()). Says nothing about the packetizer.
+    bool image_mode_ = false;
     bool configured_ = false;
 
     CUcontext cuda_context_ = nullptr;

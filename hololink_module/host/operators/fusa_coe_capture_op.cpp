@@ -38,14 +38,17 @@ public:
     {
     }
 
-    void set_packetizer_if_needed(
-        bool csi_pixel_format, hololink::csi::PixelFormat pixel_format) override
+    void set_packetizer(
+        bool enabled, hololink::csi::PixelFormat pixel_format) override
     {
-        if (!csi_pixel_format) {
-            return;
-        }
+        // The V1 channel ABI selects a packetizer program by pixel format and has no
+        // separate disable entry point. RAW_8 has no packetizer program, so asking for it
+        // selects the null program -- i.e. an explicit PACKETIZER_MODE = 0 write -- which is
+        // exactly what "packetizer disabled" means on the wire.
+        const hololink::csi::PixelFormat program_format
+            = enabled ? pixel_format : hololink::csi::PixelFormat::RAW_8;
         const hololink_module_status_t status = channel_->set_packetizer_for_pixel_format(
-            static_cast<uint32_t>(pixel_format));
+            static_cast<uint32_t>(program_format));
         if (status != HOLOLINK_MODULE_OK) {
             throw std::runtime_error(
                 "While starting FusaCoeCaptureOp: set_packetizer_for_pixel_format "
@@ -400,15 +403,27 @@ uint32_t FusaCoeCaptureOp::receiver_start_byte()
 
 uint32_t FusaCoeCaptureOp::received_line_bytes(uint32_t line_bytes)
 {
-    return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::received_line_bytes(
-        line_bytes);
+    return core_.received_line_bytes(line_bytes);
 }
 
 uint32_t FusaCoeCaptureOp::transmitted_line_bytes(
     hololink::module::csi::PixelFormat pixel_format, uint32_t pixel_width)
 {
-    return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::transmitted_line_bytes(
+    return core_.transmitted_line_bytes(
         static_cast<hololink::csi::PixelFormat>(pixel_format), pixel_width);
+}
+
+void FusaCoeCaptureOp::configure_format(
+    hololink::module::csi::PixelFormat pixel_format,
+    hololink::module::csi::BayerFormat bayer_format,
+    bool packetizer_enabled)
+{
+    // The module csi enums carry the same integer values as the legacy ones by design,
+    // so they cast across the boundary without a conversion table.
+    core_.request_format(
+        static_cast<hololink::csi::PixelFormat>(pixel_format),
+        static_cast<hololink::csi::BayerFormat>(bayer_format),
+        packetizer_enabled);
 }
 
 void FusaCoeCaptureOp::configure(

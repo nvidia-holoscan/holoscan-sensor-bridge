@@ -41,6 +41,102 @@ namespace {
 
 } // namespace
 
+NvSciBufAttrValColorFmt bayer_color_format(
+    hololink::csi::PixelFormat pixel_format,
+    hololink::csi::BayerFormat bayer_format,
+    bool packetizer_enabled)
+{
+    using hololink::csi::BayerFormat;
+    using hololink::csi::PixelFormat;
+
+    // The request is a triple, so every rejection reports the whole triple rather than just
+    // the offending member.
+    const auto triple = [&] {
+        return fmt::format("(bit depth {}, CFA {}, packetizer {})",
+            static_cast<int>(pixel_format), static_cast<int>(bayer_format),
+            packetizer_enabled ? "enabled" : "disabled");
+    };
+
+    // Range-check both enums up front. They can arrive as an arbitrary integer via the
+    // Python bindings, which static_cast a plain uint32; checking here means an out-of-range
+    // value is reported as such instead of being blamed on the packetizer branch it happens
+    // to fall through.
+    switch (pixel_format) {
+    case PixelFormat::RAW_8:
+    case PixelFormat::RAW_10:
+    case PixelFormat::RAW_12:
+        break;
+    default:
+        throw std::runtime_error(fmt::format(
+            "Unsupported capture format {}: bit depth is not one of RAW_8/RAW_10/RAW_12",
+            triple()));
+    }
+    switch (bayer_format) {
+    case BayerFormat::RGGB:
+    case BayerFormat::BGGR:
+    case BayerFormat::GRBG:
+    case BayerFormat::GBRG:
+        break;
+    default:
+        throw std::runtime_error(fmt::format(
+            "Unsupported capture format {}: CFA is not one of RGGB/BGGR/GRBG/GBRG", triple()));
+    }
+
+    // Selects one of the four CFA orderings within a format family. Every family below
+    // provides all four, so this is total.
+    const auto by_cfa = [&](NvSciBufAttrValColorFmt rggb, NvSciBufAttrValColorFmt bggr,
+                            NvSciBufAttrValColorFmt grbg, NvSciBufAttrValColorFmt gbrg) {
+        switch (bayer_format) {
+        case BayerFormat::RGGB:
+            return rggb;
+        case BayerFormat::BGGR:
+            return bggr;
+        case BayerFormat::GRBG:
+            return grbg;
+        case BayerFormat::GBRG:
+            return gbrg;
+        }
+        throw std::runtime_error(fmt::format(
+            "Unsupported capture format {}: CFA is not one of RGGB/BGGR/GRBG/GBRG", triple()));
+    };
+
+    if (packetizer_enabled) {
+        // Only RAW_10 and RAW_12 have packed representations, and correspondingly they are
+        // the only bit depths get_packetizer_program() has a program for.
+        switch (pixel_format) {
+        case PixelFormat::RAW_12:
+            return by_cfa(NvSciColor_Bayer12RGGB, NvSciColor_Bayer12BGGR,
+                NvSciColor_Bayer12GRBG, NvSciColor_Bayer12GBRG);
+        case PixelFormat::RAW_10:
+            return by_cfa(NvSciColor_X2Rc10Rb10Ra10_Bayer10RGGB,
+                NvSciColor_X2Rc10Rb10Ra10_Bayer10BGGR,
+                NvSciColor_X2Rc10Rb10Ra10_Bayer10GRBG,
+                NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG);
+        default:
+            throw std::runtime_error(fmt::format(
+                "Unsupported capture format {}: the packetizer can only be enabled for "
+                "RAW_10 and RAW_12, which are the only bit depths with packed NvSciBuf "
+                "formats",
+                triple()));
+        }
+    }
+
+    switch (pixel_format) {
+    case PixelFormat::RAW_12:
+        return by_cfa(NvSciColor_X4Bayer12RGGB, NvSciColor_X4Bayer12BGGR,
+            NvSciColor_X4Bayer12GRBG, NvSciColor_X4Bayer12GBRG);
+    case PixelFormat::RAW_10:
+        return by_cfa(NvSciColor_X6Bayer10RGGB, NvSciColor_X6Bayer10BGGR,
+            NvSciColor_X6Bayer10GRBG, NvSciColor_X6Bayer10GBRG);
+    case PixelFormat::RAW_8:
+        return by_cfa(NvSciColor_Bayer8RGGB, NvSciColor_Bayer8BGGR,
+            NvSciColor_Bayer8GRBG, NvSciColor_Bayer8GBRG);
+    }
+    throw std::runtime_error(fmt::format(
+        "Unsupported capture format {}: bit depth is not one of RAW_8/RAW_10/RAW_12",
+        triple()));
+}
+
 std::map<void*, FusaCoeCaptureCore::BufferInfo*> FusaCoeCaptureCore::pending_buffers_;
 std::mutex FusaCoeCaptureCore::pending_buffers_mutex_;
 
@@ -76,24 +172,84 @@ uint32_t FusaCoeCaptureCore::receiver_start_byte()
     return 0;
 }
 
-uint32_t FusaCoeCaptureCore::received_line_bytes(uint32_t line_bytes)
+uint32_t FusaCoeCaptureCore::received_line_bytes(uint32_t line_bytes) const
 {
-    return hololink::core::round_up(line_bytes, 64);
+    if (!format_requested_) {
+        throw std::runtime_error(
+            "request_format() must be called before received_line_bytes(): the line padding "
+            "depends on whether the packetizer is enabled");
+    }
+    // Measured on HSB: with the packetizer repacking, lines land on 64-byte boundaries; with
+    // it disabled the CSI-2 stream is passed through and lines are padded to 8, matching
+    // CsiToBayerOp. Using 64 unconditionally over-states both the line stride and the
+    // embedded-data offset whenever the true value is not already 64-aligned.
+    return hololink::core::round_up(line_bytes, packetizer_enabled_ ? 64 : 8);
 }
 
 uint32_t FusaCoeCaptureCore::transmitted_line_bytes(
-    hololink::csi::PixelFormat pixel_format, uint32_t pixel_width)
+    hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) const
 {
+    if (!format_requested_) {
+        throw std::runtime_error(
+            "request_format() must be called before transmitted_line_bytes(): the line "
+            "geometry depends on whether the packetizer is enabled");
+    }
+    if (pixel_format != requested_pixel_format_) {
+        throw std::runtime_error(fmt::format(
+            "Pixel format mismatch: requested bit depth {} but asked for line bytes of {}",
+            static_cast<int>(requested_pixel_format_), static_cast<int>(pixel_format)));
+    }
+
+    if (packetizer_enabled_) {
+        // HSB repacks into the NvSciBuf right-justified packed layouts.
+        switch (pixel_format) {
+        case hololink::csi::PixelFormat::RAW_10:
+            // 3 pixels per 4 bytes (2 padding bits)
+            return ((pixel_width + 2) / 3) * 4;
+        case hololink::csi::PixelFormat::RAW_12:
+            // 2 pixels per 3 bytes
+            return ((pixel_width + 1) / 2) * 3;
+        default:
+            throw std::runtime_error(fmt::format(
+                "Packetizer is only supported for RAW_10 and RAW_12 (got bit depth {})",
+                static_cast<int>(pixel_format)));
+        }
+    }
+
+    // Packetizer disabled: the stream stays CSI-2 MIPI packed.
     switch (pixel_format) {
     case hololink::csi::PixelFormat::RAW_8:
         return pixel_width;
     case hololink::csi::PixelFormat::RAW_10:
-        return ((pixel_width + 2) / 3) * 4;
+        // 4 pixels per 5 bytes
+        return pixel_width * 5 / 4;
     case hololink::csi::PixelFormat::RAW_12:
-        return ((pixel_width + 1) / 2) * 3;
+        // 2 pixels per 3 bytes
+        return pixel_width * 3 / 2;
     default:
         throw std::runtime_error("Invalid bit depth");
     }
+}
+
+void FusaCoeCaptureCore::request_format(
+    hololink::csi::PixelFormat pixel_format,
+    hololink::csi::BayerFormat bayer_format,
+    bool packetizer_enabled)
+{
+    // Resolve now so an unrepresentable triple is rejected here rather than at allocation.
+    const NvSciBufAttrValColorFmt color_format
+        = bayer_color_format(pixel_format, bayer_format, packetizer_enabled);
+
+    HSB_LOG_INFO("request_format: bit_depth={}, bayer_format={}, packetizer_enabled={} "
+                 "-> NvSciBufAttrValColorFmt {}",
+        static_cast<int>(pixel_format), static_cast<int>(bayer_format), packetizer_enabled,
+        static_cast<int>(color_format));
+
+    requested_pixel_format_ = pixel_format;
+    pixel_format_ = pixel_format;
+    bayer_format_ = bayer_format;
+    packetizer_enabled_ = packetizer_enabled;
+    format_requested_ = true;
 }
 
 void FusaCoeCaptureCore::configure(
@@ -102,6 +258,18 @@ void FusaCoeCaptureCore::configure(
     hololink::csi::PixelFormat pixel_format,
     uint32_t trailing_bytes)
 {
+    if (!format_requested_) {
+        throw std::runtime_error(
+            "request_format() must be called before configure(): the capture format is "
+            "(bit depth, CFA, packetizer enabled) and none of it can be inferred here");
+    }
+    if (pixel_format != requested_pixel_format_) {
+        throw std::runtime_error(fmt::format(
+            "Pixel format mismatch: request_format() asked for bit depth {} but configure() "
+            "was given {}",
+            static_cast<int>(requested_pixel_format_), static_cast<int>(pixel_format)));
+    }
+
     HSB_LOG_INFO("start={}, bytes_per_line={}, width={}, height={}, format={}, trailing_bytes={}",
         start_byte, received_bytes_per_line, pixel_width, pixel_height,
         static_cast<int>(pixel_format), trailing_bytes);
@@ -111,7 +279,7 @@ void FusaCoeCaptureCore::configure(
     pixel_height_ = pixel_height;
     pixel_format_ = pixel_format;
     trailing_bytes_ = trailing_bytes;
-    csi_pixel_format_ = true;
+    image_mode_ = true;
     configured_ = true;
 }
 
@@ -127,7 +295,8 @@ void FusaCoeCaptureCore::configure_frame_size(uint32_t frame_size_bytes)
     pixel_height_ = 1;
     pixel_format_ = hololink::csi::PixelFormat::RAW_8;
     trailing_bytes_ = 0;
-    csi_pixel_format_ = false;
+    // Opaque byte blob: no CFA, no packetizer, allocated as NvSciColor_R8.
+    image_mode_ = false;
     configured_ = true;
 }
 
@@ -189,8 +358,10 @@ void FusaCoeCaptureCore::start(
         }
 
         const uint32_t frame_size = start_byte_ + (pixel_height_ * bytes_per_line_) + trailing_bytes_;
-        if (csi_pixel_format_) {
-            channel.set_packetizer_if_needed(csi_pixel_format_, pixel_format_);
+        if (image_mode_) {
+            // Always drive the packetizer explicitly -- disabled installs the null program
+            // rather than relying on whatever the channel was last left in.
+            channel.set_packetizer(packetizer_enabled_, pixel_format_);
         }
         channel.configure_coe(
             coe_handler_->getChannelNumber(), frame_size, bytes_per_line_);
@@ -382,25 +553,11 @@ bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
 
     const uint32_t mgbe_coe_alignment = 4 * 1024;
 
-    NvSciBufAttrValColorFmt color_format;
-    if (csi_pixel_format_) {
-        switch (pixel_format_) {
-        case hololink::csi::PixelFormat::RAW_8:
-            color_format = NvSciColor_Bayer8RGGB;
-            break;
-        case hololink::csi::PixelFormat::RAW_10:
-            color_format = NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG;
-            break;
-        case hololink::csi::PixelFormat::RAW_12:
-            color_format = NvSciColor_Bayer16RGGB;
-            break;
-        default:
-            HSB_LOG_ERROR("Unsupported pixel format");
-            return false;
-        }
-    } else {
-        color_format = NvSciColor_R8;
-    }
+    // The (bit depth, CFA, packetizer) triple determines the color format outright; the blob
+    // path carries no pixel structure at all.
+    const NvSciBufAttrValColorFmt color_format = image_mode_
+        ? bayer_color_format(pixel_format_, bayer_format_, packetizer_enabled_)
+        : NvSciColor_R8;
 
     uint32_t plane_count = 1;
     NvSciBufAttrValColorStd color_std = NvSciColorStd_REC709_ER;
@@ -482,6 +639,7 @@ bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
 
     NvSciBufAttrKeyValuePair alloc_attrs[] = {
         { NvSciBufImageAttrKey_Size, NULL, 0 },
+        { NvSciBufImageAttrKey_PlanePitch, NULL, 0 },
     };
     size_t num_alloc_attrs = sizeof(alloc_attrs) / sizeof(alloc_attrs[0]);
 
@@ -492,6 +650,21 @@ bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
     }
 
     size = *(static_cast<const uint64_t*>(alloc_attrs[0].value));
+
+    // The CoE engine writes rows at bytes_per_line_ stride into this buffer, but the
+    // allocation size comes from the pitch NvSciBuf derives from the color format. If that
+    // pitch is narrower than the stride we would run off the end of the buffer, so refuse to
+    // proceed rather than corrupt memory.
+    const uint32_t plane_pitch = *(static_cast<const uint32_t*>(alloc_attrs[1].value));
+    HSB_LOG_INFO("NvSciBuf: color_format={}, width={}, height={}, plane_pitch={}, "
+                 "bytes_per_line={}, size={}",
+        static_cast<int>(color_format), width, height, plane_pitch, bytes_per_line_, size);
+    if (plane_pitch < bytes_per_line_) {
+        HSB_LOG_ERROR("NvSciBuf plane pitch {} is narrower than the CoE line stride {} for "
+                      "color format {}; refusing to allocate an undersized buffer",
+            plane_pitch, bytes_per_line_, static_cast<int>(color_format));
+        return false;
+    }
 
     return true;
 }

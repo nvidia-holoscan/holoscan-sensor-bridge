@@ -35,6 +35,24 @@ type; examples are prefixed to indicate the receiver operator used.
   Thor's MGBE interface, and require an AGX Thor or IGX T5000. **The sensor module must
   be connected to the host's QSFP MGBE port, not the RJ45 port.**
 
+- `FusaCoeCaptureOp` requires the capture format to be stated up front, via
+  `configure_format(pixel_format, bayer_format, packetizer_enabled)`. These are three
+  independent controls and together they select exactly one NvSciBuf color format:
+
+  | Bit depth | Packetizer enabled                       | Packetizer disabled         |
+  | --------- | ---------------------------------------- | --------------------------- |
+  | RAW_12    | `NvSciColor_Bayer12<CFA>`                | `NvSciColor_X4Bayer12<CFA>` |
+  | RAW_10    | `NvSciColor_X2Rc10Rb10Ra10_Bayer10<CFA>` | `NvSciColor_X6Bayer10<CFA>` |
+  | RAW_8     | *rejected*                               | `NvSciColor_Bayer8<CFA>`    |
+
+  The packetizer can only be enabled for RAW_10 and RAW_12. For more information about
+  these formats, refer to NvSci headers. In short, these packetizer formats are
+  "packed", where the pixels are no longer expected at byte boundaries, saving bandwidth
+  in transport.
+
+  Moreover, the underlying transport does not require the packetizer to be enabled,
+  which is demonstrated in example application with the option '--no-packetizer'.
+
 ### SiplCameraOutput (Thor MGBE only)
 
 - Examples starting with "sipl\_" use the

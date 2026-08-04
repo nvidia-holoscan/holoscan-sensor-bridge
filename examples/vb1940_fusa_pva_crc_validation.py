@@ -41,6 +41,10 @@ SEC_PER_NS = 1.0 / NS_PER_SEC
 recorder_queue_lock = threading.Lock()
 
 
+def packetizer_enabled(pixel_format):
+    return pixel_format != hololink_module.sensors.csi.PixelFormat.RAW_8
+
+
 # Helper operators for metadata recording
 class PassThroughOperator(holoscan.core.Operator):
     """Pass through operator that optionally renames tensors"""
@@ -479,6 +483,11 @@ class HoloscanApplication(holoscan.core.Application):
             timeout=self._timeout,
             device=self._camera,
         )
+        fusa_coe_capture.configure_format(
+            self._camera.pixel_format(),
+            self._camera.bayer_format(),
+            packetizer_enabled(self._camera.pixel_format()),
+        )
         self._camera.configure_converter(fusa_coe_capture)
 
         layout = self._camera.get_csi_frame_layout(fusa_coe_capture)
@@ -579,22 +588,30 @@ class HoloscanApplication(holoscan.core.Application):
             * self._camera._height,
             num_blocks=4,
         )
-        packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
-            self,
-            name="packed_format_converter",
-            allocator=packed_format_converter_pool,
-        )
+        if packetizer_enabled(pixel_format):
+            packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
+                self,
+                name="packed_format_converter",
+                allocator=packed_format_converter_pool,
+            )
+        else:
+            packed_format_converter = hololink_module.operators.CsiToBayerOp(
+                self,
+                name="csi_to_bayer",
+                allocator=packed_format_converter_pool,
+            )
         # Full-frame tensor from FullFrameAccessOp starts at buffer base. Use camera
         # configure_converter (non-zero start_byte + trailing_bytes) — not
         # fusa_coe_capture.configure_converter, which forces start_byte=0 for FUSA's
         # pixel-offset tensor (see Vb1940Cam.configure_converter vs FusaCoeCaptureOp::configure_converter).
         self._camera.configure_converter(packed_format_converter)
-        packed_sz = packed_format_converter.get_frame_size()
-        if packed_sz != layout.full_frame_size:
-            raise RuntimeError(
-                f"CSI frame size mismatch: PackedFormatConverter.get_frame_size()={packed_sz} "
-                f"vs layout.full_frame_size={layout.full_frame_size}"
-            )
+        if hasattr(packed_format_converter, "get_frame_size"):
+            packed_sz = packed_format_converter.get_frame_size()
+            if packed_sz != layout.full_frame_size:
+                raise RuntimeError(
+                    f"CSI frame size mismatch: PackedFormatConverter.get_frame_size()={packed_sz} "
+                    f"vs layout.full_frame_size={layout.full_frame_size}"
+                )
 
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
@@ -678,7 +695,11 @@ def main():
         description="VB1940 Frame Validation with FUSA and PVA CRC"
     )
 
-    modes = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode
+    vb1940_mode = hololink_module.sensors.vb1940.vb1940_mode
+    frame_formats = vb1940_mode.vb1940_frame_format
+    modes = [
+        mode for mode in vb1940_mode.Vb1940_Mode if mode.value < len(frame_formats)
+    ]
     mode_choices = [mode.value for mode in modes]
     mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
 

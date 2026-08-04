@@ -19,6 +19,7 @@
 
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/hololink.hpp>
+#include <hololink/core/packetizer_program.hpp>
 
 #include <gxf/std/tensor.hpp>
 #include <yaml-cpp/yaml.h>
@@ -44,13 +45,16 @@ namespace {
         {
         }
 
-        void set_packetizer_if_needed(
-            bool csi_pixel_format, hololink::csi::PixelFormat pixel_format) override
+        void set_packetizer(
+            bool enabled, hololink::csi::PixelFormat pixel_format) override
         {
-            if (csi_pixel_format) {
-                auto packetizer_program = hololink::csi::get_packetizer_program(pixel_format);
-                channel_->set_packetizer_program(packetizer_program);
+            std::shared_ptr<hololink::PacketizerProgram> packetizer_program;
+            if (enabled) {
+                packetizer_program = hololink::csi::get_packetizer_program(pixel_format);
+            } else {
+                packetizer_program = std::make_shared<hololink::NullPacketizerProgram>();
             }
+            channel_->set_packetizer_program(packetizer_program);
         }
 
         void configure_coe(
@@ -195,14 +199,19 @@ uint32_t FusaCoeCaptureOp::receiver_start_byte()
 
 uint32_t FusaCoeCaptureOp::received_line_bytes(uint32_t line_bytes)
 {
-    return fusa_coe_capture::FusaCoeCaptureCore::received_line_bytes(line_bytes);
+    return core_.received_line_bytes(line_bytes);
 }
 
 uint32_t FusaCoeCaptureOp::transmitted_line_bytes(
     csi::PixelFormat pixel_format, uint32_t pixel_width)
 {
-    return fusa_coe_capture::FusaCoeCaptureCore::transmitted_line_bytes(
-        pixel_format, pixel_width);
+    return core_.transmitted_line_bytes(pixel_format, pixel_width);
+}
+
+void FusaCoeCaptureOp::configure_format(
+    csi::PixelFormat pixel_format, csi::BayerFormat bayer_format, bool packetizer_enabled)
+{
+    core_.request_format(pixel_format, bayer_format, packetizer_enabled);
 }
 
 void FusaCoeCaptureOp::configure(

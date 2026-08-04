@@ -55,6 +55,21 @@ public:
         csi::PixelFormat pixel_format,
         uint32_t trailing_bytes) override;
 
+    /**
+     * State the capture format: bit depth, sensor CFA, and whether the HSB packetizer is
+     * enabled. These are three independent controls; together they select exactly one
+     * NvSciBuf color format. Throws if the combination has no correct representation --
+     * notably, the packetizer can only be enabled for RAW_10 and RAW_12.
+     *
+     * Must be called before configure(), configure_converter() and start(), and before
+     * the line-geometry queries received_line_bytes() / transmitted_line_bytes(): the
+     * line padding and packing both depend on the format, and none of it can be
+     * inferred there. Each of those throws if the format has not been stated yet.
+     */
+    void configure_format(csi::PixelFormat pixel_format,
+        csi::BayerFormat bayer_format,
+        bool packetizer_enabled);
+
     void configure_converter(csi::CsiConverter& converter);
     void configure_frame_size(uint32_t frame_size_bytes);
 

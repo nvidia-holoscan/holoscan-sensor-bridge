@@ -28,6 +28,7 @@
 #include "hololink/module/csi_converter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
+#include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/operators/packed_format_converter_op.hpp"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
@@ -84,7 +85,8 @@ public:
         int32_t width, int32_t height,
         int64_t frame_limit,
         const std::string& interface,
-        std::vector<std::string> window_titles)
+        std::vector<std::string> window_titles,
+        bool no_packetizer)
         : headless_(headless)
         , sif_metadatas_(std::move(sif_metadatas))
         , hawks_(std::move(hawks))
@@ -96,6 +98,7 @@ public:
         , frame_limit_(frame_limit)
         , interface_(interface)
         , window_titles_(std::move(window_titles))
+        , no_packetizer_(no_packetizer)
     {
         enable_metadata(true);
         metadata_policy(holoscan::MetadataPolicy::kReject);
@@ -127,6 +130,11 @@ public:
             auto height = cameras_[i]->get_height();
             auto name = std::to_string(i);
 
+            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+            // always captured unpacketized.
+            const bool packetizer_enabled = !no_packetizer_
+                && pixel_format != hololink::csi::PixelFormat::RAW_8;
+
             auto fusa_coe_capture = make_operator<hololink::module::operators::FusaCoeCaptureOp>(
                 fmt::format("fusa_coe_capture_{}", name),
                 Arg("enumeration_metadata", sif_metadatas_[i]),
@@ -139,6 +147,8 @@ public:
                 condition);
             {
                 const auto apf = static_cast<hololink::module::csi::PixelFormat>(static_cast<int>(pixel_format));
+                const auto abf = static_cast<hololink::module::csi::BayerFormat>(static_cast<int>(bayer_format));
+                fusa_coe_capture->configure_format(apf, abf, packetizer_enabled);
                 const uint32_t start_byte = fusa_coe_capture->receiver_start_byte();
                 const uint32_t transmitted = fusa_coe_capture->transmitted_line_bytes(apf, static_cast<uint32_t>(width));
                 const uint32_t received = fusa_coe_capture->received_line_bytes(transmitted);
@@ -148,14 +158,27 @@ public:
             const int32_t storage_type_device_memory = 1;
             const size_t num_blocks = 4;
             size_t size = width * height * 2;
-            auto packed_format_converter_pool = make_resource<BlockMemoryPool>(
-                fmt::format("packed_format_converter_pool_{}", name),
+            // Which converter is correct depends on the packetizer: enabled, the buffer
+            // holds HSB-packed data; disabled, it is still CSI-2 exactly as the sensor
+            // sent it.
+            auto converter_pool = make_resource<BlockMemoryPool>(
+                fmt::format("converter_pool_{}", name),
                 storage_type_device_memory, size, num_blocks);
-            auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
-                fmt::format("packed_format_converter_{}", name),
-                Arg("allocator", packed_format_converter_pool),
-                Arg("in_tensor_name", name));
-            fusa_coe_capture->configure_converter(*packed_format_converter.get());
+            std::shared_ptr<Operator> converter;
+            if (packetizer_enabled) {
+                auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
+                    fmt::format("packed_format_converter_{}", name),
+                    Arg("allocator", converter_pool),
+                    Arg("in_tensor_name", name));
+                fusa_coe_capture->configure_converter(*packed_format_converter.get());
+                converter = packed_format_converter;
+            } else {
+                auto csi_to_bayer = make_operator<hololink::module::operators::CsiToBayerOp>(
+                    fmt::format("csi_to_bayer_{}", name),
+                    Arg("allocator", converter_pool));
+                fusa_coe_capture->configure_converter(*csi_to_bayer.get());
+                converter = csi_to_bayer;
+            }
 
             auto image_processor = make_operator<hololink::operators::ImageProcessorOp>(
                 fmt::format("image_processor_{}", name),
@@ -182,8 +205,8 @@ public:
                 Arg("width", width_),
                 Arg("window_title", window_titles_[i]));
 
-            add_flow(fusa_coe_capture, packed_format_converter, { { "output", "input" } });
-            add_flow(packed_format_converter, image_processor, { { "output", "input" } });
+            add_flow(fusa_coe_capture, converter, { { "output", "input" } });
+            add_flow(converter, image_processor, { { "output", "input" } });
             add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
             add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
         }
@@ -201,6 +224,7 @@ private:
     const int64_t frame_limit_;
     const std::string interface_;
     std::vector<std::string> window_titles_;
+    const bool no_packetizer_;
 };
 
 } // anonymous namespace
@@ -221,6 +245,7 @@ int main(int argc, char** argv)
         ("height", value<int>()->default_value(540), "Window height")
         ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
         ("interface", value<std::string>()->default_value(""), "Ethernet interface (empty = auto)")
+        ("no-packetizer", bool_switch()->default_value(false), "Capture unpacketized CSI-2 data instead of HSB-packed data")
         ("pattern", value<int>()->default_value(0), "Sensor test pattern (0 = off)")
         ("sensor", value<std::string>()->default_value("left"), "Which AR0234 per Hawk: left or right")
         ("skip-reset", bool_switch()->default_value(false), "Skip the Hololink reset step")
@@ -238,6 +263,7 @@ int main(int argc, char** argv)
     const auto title = variables_map["title"].as<std::string>();
     const auto headless = variables_map["headless"].as<bool>();
     const auto skip_reset = variables_map["skip-reset"].as<bool>();
+    const auto no_packetizer = variables_map["no-packetizer"].as<bool>();
     const int64_t frame_limit = variables_map["frame-limit"].as<int>();
     const int32_t width = variables_map["width"].as<int>();
     const int32_t height = variables_map["height"].as<int>();
@@ -288,7 +314,7 @@ int main(int argc, char** argv)
 
         auto application = holoscan::make_application<Application>(headless,
             sif_metadatas, hawk_modules, cameras, camera_mode, timeout,
-            width, height, frame_limit, interface, window_titles);
+            width, height, frame_limit, interface, window_titles, no_packetizer);
 
         try {
             if (!skip_reset) {

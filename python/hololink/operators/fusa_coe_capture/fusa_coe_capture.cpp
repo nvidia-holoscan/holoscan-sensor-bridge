@@ -109,6 +109,8 @@ PYBIND11_MODULE(_fusa_coe_capture, m)
                   .def("setup", &FusaCoeCaptureOp::setup, "spec"_a)
                   .def("start", &FusaCoeCaptureOp::start)
                   .def("stop", &FusaCoeCaptureOp::stop)
+                  .def("configure_format", &FusaCoeCaptureOp::configure_format,
+                      "pixel_format"_a, "bayer_format"_a, "packetizer_enabled"_a)
                   .def("configure", &FusaCoeCaptureOp::configure,
                       "start_byte"_a, "received_bytes_per_line"_a,
                       "pixel_width"_a, "pixel_height"_a, "pixel_format"_a,

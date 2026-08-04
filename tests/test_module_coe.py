@@ -174,6 +174,14 @@ def _build_leg(
             rename_metadata=rename_metadata,
             out_tensor_name=capture_out_tensor_name,
         )
+        packetizer_enabled = (
+            camera.pixel_format() != hololink_module.sensors.csi.PixelFormat.RAW_8
+        )
+        capture.configure_format(
+            camera.pixel_format().value,
+            camera.bayer_format().value,
+            packetizer_enabled,
+        )
         camera.configure_converter(capture)
         unpack_pool = holoscan.resources.BlockMemoryPool(
             app,
@@ -183,13 +191,22 @@ def _build_leg(
             block_size=width * ctypes.sizeof(ctypes.c_uint16) * height,
             num_blocks=4,
         )
-        unpack = hololink_module.operators.PackedFormatConverterOp(
-            app,
-            name=f"packed_format_converter_{side}",
-            allocator=unpack_pool,
-            cuda_device_ordinal=app._cuda_device_ordinal,
-            out_tensor_name=unpack_out_tensor_name,
-        )
+        if packetizer_enabled:
+            unpack = hololink_module.operators.PackedFormatConverterOp(
+                app,
+                name=f"packed_format_converter_{side}",
+                allocator=unpack_pool,
+                cuda_device_ordinal=app._cuda_device_ordinal,
+                out_tensor_name=unpack_out_tensor_name,
+            )
+        else:
+            unpack = hololink_module.operators.CsiToBayerOp(
+                app,
+                name=f"csi_to_bayer_{side}",
+                allocator=unpack_pool,
+                cuda_device_ordinal=app._cuda_device_ordinal,
+                out_tensor_name=unpack_out_tensor_name,
+            )
         capture.configure_converter(unpack)
         return capture, unpack
 

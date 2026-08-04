@@ -82,6 +82,9 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera.set_mode(self._camera_mode)
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
+        packetizer_enabled = (
+            pixel_format != hololink_module.sensors.csi.PixelFormat.RAW_8
+        )
 
         # Capture from Fusa.
         fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
@@ -93,6 +96,9 @@ class HoloscanApplication(holoscan.core.Application):
             hololink_channel=self._hololink_channel,
             device=self._camera,
             timeout=1500,
+        )
+        fusa_coe_capture.configure_format(
+            pixel_format, bayer_format, packetizer_enabled
         )
         self._camera.configure_converter(fusa_coe_capture)
 
@@ -107,11 +113,18 @@ class HoloscanApplication(holoscan.core.Application):
             * self._camera._height,
             num_blocks=4,
         )
-        packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
-            self,
-            name="packed_format_converter",
-            allocator=packed_format_converter_pool,
-        )
+        if packetizer_enabled:
+            packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
+                self,
+                name="packed_format_converter",
+                allocator=packed_format_converter_pool,
+            )
+        else:
+            packed_format_converter = hololink_module.operators.CsiToBayerOp(
+                self,
+                name="csi_to_bayer",
+                allocator=packed_format_converter_pool,
+            )
         fusa_coe_capture.configure_converter(packed_format_converter)
 
         # Perform basic ISP operations.

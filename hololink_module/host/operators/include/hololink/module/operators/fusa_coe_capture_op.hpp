@@ -50,6 +50,16 @@ public:
         hololink::module::csi::PixelFormat pixel_format,
         uint32_t trailing_bytes) override;
 
+    /* State the capture format: bit depth, sensor CFA, and whether the HSB
+     * packetizer is enabled. These are three independent controls; together
+     * they select exactly one NvSciBuf color format. Throws if the combination
+     * has no correct representation -- notably, the packetizer can only be
+     * enabled for RAW_10 and RAW_12. Must be called before
+     * configure_converter() / configure() / start(). */
+    void configure_format(hololink::module::csi::PixelFormat pixel_format,
+        hololink::module::csi::BayerFormat bayer_format,
+        bool packetizer_enabled);
+
     // Train a downstream module converter (e.g. the native
     // PackedFormatConverterOp) on the received frame geometry.
     void configure_converter(hololink::module::csi::CsiConverterV1& converter);

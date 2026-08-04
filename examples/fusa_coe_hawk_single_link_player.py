@@ -18,6 +18,7 @@ import ctypes
 
 import hololink_module.operators
 import hololink_module.sensors.ar0234.ar0234_mode as _ar0234_mode_module
+import hololink_module.sensors.csi as _csi_module
 import hololink_module.sensors.deserializers.max96716a as _max96716a_module
 import hololink_module.sensors.hawk as _hawk_module
 import hololink_module.taurotech_da326 as _da326_module
@@ -45,6 +46,7 @@ class App(holoscan.core.Application):
         window_height,
         frame_limit,
         window_titles,
+        no_packetizer,
     ):
         super().__init__()
         self._hololink_channels = sif_metadatas
@@ -58,6 +60,7 @@ class App(holoscan.core.Application):
         self._window_height = window_height
         self._frame_limit = frame_limit
         self._window_titles = window_titles
+        self._no_packetizer = no_packetizer
 
         self.enable_metadata(True)
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
@@ -85,6 +88,12 @@ class App(holoscan.core.Application):
         bayer_format = camera.bayer_format()
         name = f"{i}"
 
+        # The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+        # always captured unpacketized.
+        packetizer_enabled = (
+            not self._no_packetizer and pixel_format != _csi_module.PixelFormat.RAW_8
+        )
+
         fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
             self,
             condition,
@@ -96,22 +105,34 @@ class App(holoscan.core.Application):
             device=self._hawk,
             out_tensor_name=name,
         )
+        fusa_coe_capture.configure_format(
+            pixel_format.value, bayer_format.value, packetizer_enabled
+        )
         camera.configure_converter(fusa_coe_capture)
 
-        packed_format_converter_pool = holoscan.resources.BlockMemoryPool(
+        # Which converter is correct depends on the packetizer: enabled, the buffer holds
+        # HSB-packed data; disabled, it is still CSI-2 exactly as the sensor sent it.
+        converter_pool = holoscan.resources.BlockMemoryPool(
             self,
-            name=f"packed_format_converter_pool_{name}",
+            name=f"converter_pool_{name}",
             storage_type=1,
             block_size=camera._width * ctypes.sizeof(ctypes.c_uint16) * camera._height,
             num_blocks=4,
         )
-        packed_format_converter = hololink_module.operators.PackedFormatConverterOp(
-            self,
-            name=f"packed_format_converter_{name}",
-            allocator=packed_format_converter_pool,
-            in_tensor_name=name,
-        )
-        fusa_coe_capture.configure_converter(packed_format_converter)
+        if packetizer_enabled:
+            converter = hololink_module.operators.PackedFormatConverterOp(
+                self,
+                name=f"packed_format_converter_{name}",
+                allocator=converter_pool,
+                in_tensor_name=name,
+            )
+        else:
+            converter = hololink_module.operators.CsiToBayerOp(
+                self,
+                name=f"csi_to_bayer_{name}",
+                allocator=converter_pool,
+            )
+        fusa_coe_capture.configure_converter(converter)
 
         image_processor = hololink_legacy.operators.ImageProcessorOp(
             self,
@@ -153,8 +174,8 @@ class App(holoscan.core.Application):
             window_title=window_title,
         )
 
-        self.add_flow(fusa_coe_capture, packed_format_converter, {("output", "input")})
-        self.add_flow(packed_format_converter, image_processor, {("output", "input")})
+        self.add_flow(fusa_coe_capture, converter, {("output", "input")})
+        self.add_flow(converter, image_processor, {("output", "input")})
         self.add_flow(image_processor, bayer_demosaic, {("output", "receiver")})
         self.add_flow(bayer_demosaic, visualizer, {("transmitter", "receivers")})
 
@@ -194,6 +215,11 @@ def main():
     parser.add_argument("--timeout", type=int, default=1500)
     parser.add_argument("--interface", default=None)
     parser.add_argument("--skip-reset", action="store_true")
+    parser.add_argument(
+        "--no-packetizer",
+        action="store_true",
+        help="Capture unpacketized CSI-2 data instead of HSB-packed data",
+    )
     args = parser.parse_args()
 
     hololink_legacy.logging_level(args.log_level)
@@ -236,6 +262,7 @@ def main():
         per_window_height,
         args.frame_limit,
         window_titles,
+        args.no_packetizer,
     )
 
     try:

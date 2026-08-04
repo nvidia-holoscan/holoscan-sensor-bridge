@@ -25,6 +25,7 @@
 #include <hololink/common/tools.hpp>
 #include <hololink/core/logging.hpp>
 #include <hololink/core/networking.hpp>
+#include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/fusa_coe_capture/fusa_coe_capture.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/packed_format_converter/packed_format_converter.hpp>
@@ -99,7 +100,8 @@ public:
         hololink::sensors::imx274_mode::Mode camera_mode,
         uint32_t timeout,
         int frame_limit,
-        bool print_metadata)
+        bool print_metadata,
+        bool no_packetizer)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , hololink_channels_(hololink_channels)
@@ -108,6 +110,7 @@ public:
         , timeout_(timeout)
         , frame_limit_(frame_limit)
         , print_metadata_(print_metadata)
+        , no_packetizer_(no_packetizer)
     {
         // Because we have stereo camera paths going into the same visualizer, don't
         // raise an error when each path presents metadata with the same names.
@@ -165,6 +168,11 @@ public:
             auto height = cameras_[i]->get_height();
             auto name = std::to_string(i);
 
+            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+            // always captured unpacketized.
+            const bool packetizer_enabled = !no_packetizer_
+                && pixel_format != hololink::csi::PixelFormat::RAW_8;
+
             // Capture from Fusa.
             auto fusa_coe_capture = make_operator<hololink::operators::FusaCoeCaptureOp>(
                 fmt::format("fusa_coe_capture_{}", name),
@@ -176,6 +184,7 @@ public:
                 Arg("device_start", std::function<void()>([this, i] { cameras_[i]->start(); })),
                 Arg("device_stop", std::function<void()>([this, i] { cameras_[i]->stop(); })),
                 condition);
+            fusa_coe_capture->configure_format(pixel_format, bayer_format, packetizer_enabled);
             cameras_[i]->configure_converter(fusa_coe_capture);
 
             if (print_metadata_) {
@@ -183,19 +192,31 @@ public:
                 add_flow(fusa_coe_capture, metadata_printer, { { "output", "input" } });
             }
 
-            // Convert packed RAW to 16-bit Bayer.
+            // Convert the captured RAW to 16-bit Bayer. Which converter is correct depends
+            // on the packetizer: enabled, the buffer holds HSB-packed data; disabled, it is
+            // still CSI-2 exactly as the sensor sent it.
             size_t size = width * height * 2; // 16-bit Bayer
             const int32_t storage_type_device_memory = 1;
             const size_t num_blocks = 4;
-            auto packed_format_converter_pool = make_resource<holoscan::BlockMemoryPool>(
-                fmt::format("packed_format_converter_pool_{}", name),
+            auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
+                fmt::format("converter_pool_{}", name),
                 storage_type_device_memory, size, num_blocks);
 
-            auto packed_format_converter = make_operator<hololink::operators::PackedFormatConverterOp>(
-                fmt::format("packed_format_converter_{}", name),
-                Arg("allocator", packed_format_converter_pool),
-                Arg("in_tensor_name", name));
-            fusa_coe_capture->configure_converter(*packed_format_converter.get());
+            std::shared_ptr<Operator> converter;
+            if (packetizer_enabled) {
+                auto packed_format_converter = make_operator<hololink::operators::PackedFormatConverterOp>(
+                    fmt::format("packed_format_converter_{}", name),
+                    Arg("allocator", converter_pool),
+                    Arg("in_tensor_name", name));
+                fusa_coe_capture->configure_converter(*packed_format_converter.get());
+                converter = packed_format_converter;
+            } else {
+                auto csi_to_bayer = make_operator<hololink::operators::CsiToBayerOp>(
+                    fmt::format("csi_to_bayer_{}", name),
+                    Arg("allocator", converter_pool));
+                fusa_coe_capture->configure_converter(*csi_to_bayer.get());
+                converter = csi_to_bayer;
+            }
 
             // Perform basic ISP operations.
             auto image_processor = make_operator<hololink::operators::ImageProcessorOp>(
@@ -218,8 +239,8 @@ public:
                 Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
                 Arg("out_tensor_name", name));
 
-            add_flow(fusa_coe_capture, packed_format_converter, { { "output", "input" } });
-            add_flow(packed_format_converter, image_processor, { { "output", "input" } });
+            add_flow(fusa_coe_capture, converter, { { "output", "input" } });
+            add_flow(converter, image_processor, { { "output", "input" } });
             add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
             add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
         }
@@ -234,6 +255,7 @@ private:
     uint32_t timeout_;
     int frame_limit_;
     bool print_metadata_;
+    bool no_packetizer_;
 };
 
 int main(int argc, char** argv)
@@ -255,6 +277,7 @@ int main(int argc, char** argv)
         ("sensor", value<int>()->default_value(-1), "Sensor to use (0 or 1, or -1 (default) for stereo mode)")
         ("timeout", value<int>()->default_value(1500), "Capture request timeout, in milliseconds")
         ("metadata", bool_switch()->default_value(false), "Print frame metadata")
+        ("no-packetizer", bool_switch()->default_value(false), "Capture unpacketized CSI-2 data instead of HSB-packed data")
         ;
     // clang-format on
 
@@ -323,7 +346,8 @@ int main(int argc, char** argv)
             camera_mode,
             variables_map["timeout"].as<int>(),
             variables_map["frame-limit"].as<int>(),
-            variables_map["metadata"].as<bool>());
+            variables_map["metadata"].as<bool>(),
+            variables_map["no-packetizer"].as<bool>());
         app->run();
 
         hololink->stop();

@@ -132,6 +132,12 @@ class App(holoscan.core.Application):
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
 
+        # The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+        # always captured unpacketized.
+        packetizer_enabled = (
+            pixel_format != hololink_module.sensors.csi.PixelFormat.RAW_8
+        )
+
         # Capture
         fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
             self,
@@ -143,22 +149,32 @@ class App(holoscan.core.Application):
             timeout=self._timeout,
             device=self._camera,
         )
+        fusa_coe_capture.configure_format(
+            pixel_format, bayer_format, packetizer_enabled
+        )
         self._camera.configure_converter(fusa_coe_capture)
 
-        # Format conversion
-        packed_pool = holoscan.resources.BlockMemoryPool(
+        # Format conversion. Which converter is correct depends on the packetizer:
+        # enabled, the buffer holds HSB-packed data; disabled, it is still CSI-2
+        # exactly as the sensor sent it.
+        converter_pool = holoscan.resources.BlockMemoryPool(
             self,
-            name="packed_pool",
+            name="converter_pool",
             storage_type=1,
             block_size=self._camera._width
             * ctypes.sizeof(ctypes.c_uint16)
             * self._camera._height,
             num_blocks=4,
         )
-        packed_converter = hololink_module.operators.PackedFormatConverterOp(
-            self, name="packed_converter", allocator=packed_pool
-        )
-        fusa_coe_capture.configure_converter(packed_converter)
+        if packetizer_enabled:
+            converter = hololink_module.operators.PackedFormatConverterOp(
+                self, name="packed_converter", allocator=converter_pool
+            )
+        else:
+            converter = hololink_module.operators.CsiToBayerOp(
+                self, name="csi_to_bayer", allocator=converter_pool
+            )
+        fusa_coe_capture.configure_converter(converter)
 
         # Image processing
         image_processor = hololink_module.operators.ImageProcessorOp(
@@ -208,8 +224,8 @@ class App(holoscan.core.Application):
         )
 
         # Connect pipeline
-        self.add_flow(fusa_coe_capture, packed_converter, {("output", "input")})
-        self.add_flow(packed_converter, image_processor, {("output", "input")})
+        self.add_flow(fusa_coe_capture, converter, {("output", "input")})
+        self.add_flow(converter, image_processor, {("output", "input")})
         self.add_flow(image_processor, demosaic, {("output", "receiver")})
         self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
         self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})
@@ -285,7 +301,11 @@ def main():
         description="VB1940 latency measurement (FuSa CoE)"
     )
 
-    modes = hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode
+    vb1940_mode = hololink_module.sensors.vb1940.vb1940_mode
+    frame_formats = vb1940_mode.vb1940_frame_format
+    modes = [
+        mode for mode in vb1940_mode.Vb1940_Mode if mode.value < len(frame_formats)
+    ]
     mode_choices = [m.value for m in modes]
     mode_help = ", ".join([f"{m.value}={m.name}" for m in modes])
 

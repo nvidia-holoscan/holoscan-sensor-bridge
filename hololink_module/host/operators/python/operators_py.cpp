@@ -812,6 +812,16 @@ PYBIND11_MODULE(_hololink_module_operators, m)
         // PackedFormatConverterOp, so the pure-Python sensor drivers can pass
         // csi.PixelFormat.value at the boundary without importing the C++ enum.
         .def(
+            "configure_format",
+            [](hololink::module::operators::FusaCoeCaptureOp& self, uint32_t pixel_format,
+                uint32_t bayer_format, bool packetizer_enabled) {
+                self.configure_format(
+                    static_cast<hololink::module::csi::PixelFormat>(pixel_format),
+                    static_cast<hololink::module::csi::BayerFormat>(bayer_format),
+                    packetizer_enabled);
+            },
+            "pixel_format"_a, "bayer_format"_a, "packetizer_enabled"_a)
+        .def(
             "configure",
             [](hololink::module::operators::FusaCoeCaptureOp& self, uint32_t start_byte,
                 uint32_t received_bytes_per_line, uint32_t pixel_width, uint32_t pixel_height,
