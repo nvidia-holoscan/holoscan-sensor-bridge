@@ -2,12 +2,16 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * VB1940 CoE capture player using the hololink_module API.
+ * IMX274 CoE capture player using the hololink_module API.
  *
- * Module port of `examples/fusa_coe_vb1940_player.cpp`: FusaCoeCaptureOp
+ * Module port of `examples/fusa_coe_imx274_player.cpp`: FusaCoeCaptureOp
  * resolves CoeDataChannelInterfaceV1 + FrameMetadataInterfaceV1 from
- * enumeration metadata; Vb1940Cam drives the sensor over the module
- * V1 surface. Supports mono (sensor 0 or 1) or stereo (sensor -1).
+ * enumeration metadata; Imx274Cam drives the sensor over the module V1
+ * surface. Supports mono (sensor 0 or 1) or stereo (sensor -1).
+ *
+ * This is the HSB-Lite counterpart of module_fusa_coe_vb1940_player, and the
+ * only player that exercises the CrossLink-NX D-PHY layout (ClnxMipiDphyV1,
+ * reached over SPI rather than an APB window).
  */
 
 #include <getopt.h>
@@ -17,6 +21,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -38,7 +43,8 @@
 #include "hololink/module/operators/packed_format_converter_op.hpp"
 #include "hololink/module/tools.hpp"
 
-#include "hololink/module/sensors/vb1940/vb1940_cam.hpp"
+#include "hololink/module/sensors/imx274/imx274_cam.hpp"
+#include "hololink/module/sensors/imx274/imx274_mode.hpp"
 
 hololink::module::MacAddress parse_mac_address(const std::string& mac_str)
 {
@@ -79,7 +85,7 @@ hololink::module::MacAddress parse_mac_address(const std::string& mac_str)
 
 struct Channel {
     hololink::module::EnumerationMetadata metadata;
-    std::shared_ptr<hololink::module::sensors::vb1940::Vb1940Cam> camera;
+    std::shared_ptr<hololink::module::sensors::imx274::Imx274Cam> camera;
     std::string tensor_name;
 };
 
@@ -89,10 +95,12 @@ public:
         bool headless,
         bool fullscreen,
         std::vector<Channel> channels,
-        hololink::module::sensors::vb1940::Vb1940_Mode camera_mode,
+        hololink::module::sensors::imx274::Imx274_Mode camera_mode,
         uint32_t timeout,
         int frame_limit,
-        bool no_packetizer)
+        bool no_packetizer,
+        uint8_t pattern,
+        bool pattern_set)
         : headless_(headless)
         , fullscreen_(fullscreen)
         , channels_(std::move(channels))
@@ -100,6 +108,8 @@ public:
         , timeout_(timeout)
         , frame_limit_(frame_limit)
         , no_packetizer_(no_packetizer)
+        , pattern_(pattern)
+        , pattern_set_(pattern_set)
     {
         enable_metadata(true);
         metadata_policy(holoscan::MetadataPolicy::kReject);
@@ -141,6 +151,10 @@ public:
         for (uint32_t i = 0; i < channels_.size(); ++i) {
             Channel& ch = channels_[i];
             ch.camera->configure(camera_mode_);
+            ch.camera->set_digital_gain_reg(4);
+            if (pattern_set_) {
+                ch.camera->test_pattern_enable(pattern_);
+            }
 
             const auto pixel_format = ch.camera->pixel_format();
             const auto bayer_format = ch.camera->bayer_format();
@@ -148,10 +162,9 @@ public:
             const auto camera_height = ch.camera->height();
             const std::string& name = ch.tensor_name;
 
-            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
-            // always captured unpacketized.
-            const bool packetizer_enabled = !no_packetizer_
-                && pixel_format != hololink::module::csi::PixelFormat::RAW_8;
+            // Every IMX274 mode is RAW_10 or RAW_12, both of which the
+            // packetizer has a program for.
+            const bool packetizer_enabled = !no_packetizer_;
 
             std::shared_ptr<Condition> condition;
             if (frame_limit_) {
@@ -203,7 +216,8 @@ public:
 
             auto image_processor = make_operator<hololink::module::operators::ImageProcessorOp>(
                 fmt::format("image_processor_{}", name),
-                Arg("optical_black", 0),
+                // Optical black value for IMX274 is 50.
+                Arg("optical_black", 50),
                 Arg("bayer_format", static_cast<int>(bayer_format)),
                 Arg("pixel_format", static_cast<int>(pixel_format)));
 
@@ -231,21 +245,39 @@ private:
     bool headless_;
     bool fullscreen_;
     std::vector<Channel> channels_;
-    hololink::module::sensors::vb1940::Vb1940_Mode camera_mode_;
+    hololink::module::sensors::imx274::Imx274_Mode camera_mode_;
     uint32_t timeout_;
     int frame_limit_;
     bool no_packetizer_;
+    uint8_t pattern_;
+    bool pattern_set_;
 };
+
+/* std::stoll already rejects text that isn't a number, but a value that parses
+ * and then doesn't fit its destination narrows silently -- a mistyped
+ * --timeout -1 becomes 49 days. Bound it before the cast; main's existing
+ * std::out_of_range handler turns the throw into usage output. */
+static int64_t parse_bounded(const std::string& name, const std::string& argument,
+    int64_t minimum, int64_t maximum)
+{
+    const int64_t value = std::stoll(argument);
+    if ((value < minimum) || (value > maximum)) {
+        throw std::out_of_range("--" + name + " must be in ["
+            + std::to_string(minimum) + ", " + std::to_string(maximum) + "]");
+    }
+    return value;
+}
 
 static void print_usage(const char* argv0, const std::string& default_hololink_ip)
 {
     std::cout << "Usage: " << argv0 << " [options]\n"
-              << "  --hololink <ip>            IP of the Leopard VB1940 board (default "
+              << "  --hololink <ip>            IP of the HSB-Lite board (default "
               << default_hololink_ip << ")\n"
               << "  --module-dir <path>        Directory containing hololink_<UUID>.so\n"
-              << "  --camera-mode <int>        VB1940 mode (0=2560x1984 30fps default, "
-                 "1=1920x1080 30fps, 2=2560x1984 30fps 8-bit, 3=2560x1984 60fps)\n"
+              << "  --camera-mode <int>        IMX274 mode (1=1920x1080 60fps default, "
+                 "0=3840x2160 60fps RAW10, 2=3840x2160 60fps RAW12)\n"
               << "  --sensor <int>             Sensor to use (0 or 1, or -1 for stereo)\n"
+              << "  --pattern <int>            Enable the IMX274 test pattern with this value\n"
               << "  --timeout <ms>             CoE capture timeout in milliseconds "
                  "(default 1500)\n"
               << "  --frame-limit <int>        Exit after this many frames\n"
@@ -260,13 +292,15 @@ static void print_usage(const char* argv0, const std::string& default_hololink_i
 int main(int argc, char** argv)
 {
     const std::string default_hololink_ip = hololink::module::env_hololink_ip(0, "192.168.0.2");
-    auto camera_mode = hololink::module::sensors::vb1940::Vb1940_Mode::VB1940_MODE_2560X1984_30FPS;
+    auto camera_mode = hololink::module::sensors::imx274::Imx274_Mode::IMX274_MODE_1920X1080_60FPS;
     bool headless = false;
     bool fullscreen = false;
     bool no_packetizer = false;
     int64_t frame_limit = 0;
     int32_t sensor = -1;
     uint32_t timeout = 1500;
+    uint8_t pattern = 0;
+    bool pattern_set = false;
     std::string hololink_ip = default_hololink_ip;
     std::string module_dir;
     std::chrono::seconds discovery_timeout(30);
@@ -281,6 +315,7 @@ int main(int argc, char** argv)
         { "frame-limit", required_argument, nullptr, 0 },
         { "hololink", required_argument, nullptr, 0 },
         { "sensor", required_argument, nullptr, 0 },
+        { "pattern", required_argument, nullptr, 0 },
         { "timeout", required_argument, nullptr, 0 },
         { "module-dir", required_argument, nullptr, 0 },
         { "discovery-timeout", required_argument, nullptr, 0 },
@@ -299,7 +334,7 @@ int main(int argc, char** argv)
             if (c == 0) {
                 const std::string name = long_options[option_index].name;
                 if (name == "camera-mode") {
-                    camera_mode = static_cast<hololink::module::sensors::vb1940::Vb1940_Mode>(
+                    camera_mode = static_cast<hololink::module::sensors::imx274::Imx274_Mode>(
                         std::stoi(argument));
                 } else if (name == "headless") {
                     headless = true;
@@ -308,17 +343,24 @@ int main(int argc, char** argv)
                 } else if (name == "no-packetizer") {
                     no_packetizer = true;
                 } else if (name == "frame-limit") {
-                    frame_limit = std::stoll(argument);
+                    frame_limit = parse_bounded(name, argument, 0,
+                        std::numeric_limits<int>::max());
                 } else if (name == "hololink") {
                     hololink_ip = argument;
                 } else if (name == "sensor") {
                     sensor = std::stoi(argument);
+                } else if (name == "pattern") {
+                    pattern = static_cast<uint8_t>(parse_bounded(name, argument, 0,
+                        std::numeric_limits<uint8_t>::max()));
+                    pattern_set = true;
                 } else if (name == "timeout") {
-                    timeout = static_cast<uint32_t>(std::stoll(argument));
+                    timeout = static_cast<uint32_t>(parse_bounded(name, argument, 0,
+                        std::numeric_limits<uint32_t>::max()));
                 } else if (name == "module-dir") {
                     module_dir = argument;
                 } else if (name == "discovery-timeout") {
-                    discovery_timeout = std::chrono::seconds(std::stoll(argument));
+                    discovery_timeout = std::chrono::seconds(parse_bounded(
+                        name, argument, 0, std::numeric_limits<int64_t>::max()));
                 } else if (name == "log-level") {
                     if (argument == "trace" || argument == "TRACE") {
                         log_level = holoscan::LogLevel::TRACE;
@@ -386,17 +428,15 @@ int main(int argc, char** argv)
 
         if ((sensor == -1) || (sensor == 0) || (sensor == 1)) {
             constexpr unsigned MIPI_LANE_COUNT = 4;
-            const unsigned line_rate_mbps = (camera_mode == hololink::module::sensors::vb1940::Vb1940_Mode::VB1940_MODE_2560X1984_60FPS)
-                ? 1140u
-                : 570u;
             auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(base_metadata);
             // Currently, each SIF corresponds with the physical MIPI
             const std::vector<unsigned> physical_mipi_interfaces = (sensor == -1)
                 ? std::vector<unsigned> { 0u, 1u }
                 : std::vector<unsigned> { static_cast<unsigned>(sensor) };
             for (unsigned physical_mipi_interface : physical_mipi_interfaces) {
-                const auto status = dphy->program(
-                    physical_mipi_interface, MIPI_LANE_COUNT, line_rate_mbps);
+                const auto status = dphy->program(physical_mipi_interface, MIPI_LANE_COUNT,
+                    hololink::module::MipiDphyInterfaceV1::LINE_RATE_DESIGN_MAXIMUM);
+
                 if (status != HOLOLINK_MODULE_OK) {
                     throw std::runtime_error(fmt::format(
                         "Could not program MIPI interface {}: status {}",
@@ -405,31 +445,27 @@ int main(int argc, char** argv)
             }
         }
 
-        std::vector<Channel> channels;
-        if (sensor == -1) {
-            Channel left;
-            left.metadata = base_metadata;
-            adapter.use_sensor(left.metadata, 0);
-            left.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-                left.metadata);
-            left.tensor_name = "0";
-            channels.push_back(std::move(left));
-
-            Channel right;
-            right.metadata = base_metadata;
-            adapter.use_sensor(right.metadata, 1);
-            right.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-                right.metadata);
-            right.tensor_name = "1";
-            channels.push_back(std::move(right));
-        } else if (sensor == 0 || sensor == 1) {
+        // The I2C expander output selects which camera sits behind the bus, and
+        // must match the data channel's sensor id -- otherwise --sensor 1 drives
+        // sensor 0's I2C path.
+        auto make_channel = [&adapter, &base_metadata](int sensor_id) {
             Channel ch;
             ch.metadata = base_metadata;
-            adapter.use_sensor(ch.metadata, sensor);
-            ch.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
+            adapter.use_sensor(ch.metadata, sensor_id);
+            hololink::module::sensors::imx274::Imx274Cam::use_expander_configuration(
+                ch.metadata, static_cast<uint32_t>(sensor_id));
+            ch.camera = std::make_shared<hololink::module::sensors::imx274::Imx274Cam>(
                 ch.metadata);
-            ch.tensor_name = std::to_string(sensor);
-            channels.push_back(std::move(ch));
+            ch.tensor_name = std::to_string(sensor_id);
+            return ch;
+        };
+
+        std::vector<Channel> channels;
+        if (sensor == -1) {
+            channels.push_back(make_channel(0));
+            channels.push_back(make_channel(1));
+        } else if (sensor == 0 || sensor == 1) {
+            channels.push_back(make_channel(sensor));
         } else {
             HOLOSCAN_LOG_ERROR("sensor value must be 0 or 1 (given {})", sensor);
             hololink->stop();
@@ -438,7 +474,7 @@ int main(int argc, char** argv)
 
         auto app = std::make_unique<Application>(
             headless, fullscreen, std::move(channels), camera_mode, timeout,
-            static_cast<int>(frame_limit), no_packetizer);
+            static_cast<int>(frame_limit), no_packetizer, pattern, pattern_set);
 
         app->run();
         hololink->stop();

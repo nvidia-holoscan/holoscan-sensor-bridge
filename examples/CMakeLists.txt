@@ -441,6 +441,23 @@ if(HOLOLINK_BUILD_FUSA)
 
   list(APPEND EXAMPLE_INSTALL_TARGETS module_fusa_coe_vb1940_player)
 
+  add_executable(module_fusa_coe_imx274_player
+    module_fusa_coe_imx274_player.cpp
+    )
+
+  target_link_libraries(module_fusa_coe_imx274_player
+    PRIVATE
+      hololink::module
+      hololink::hsb_lite::headers
+      hololink::operators
+      hololink::module::sensors::imx274
+      holoscan::core
+      holoscan::ops::bayer_demosaic
+      holoscan::ops::holoviz
+    )
+
+  list(APPEND EXAMPLE_INSTALL_TARGETS module_fusa_coe_imx274_player)
+
   add_executable(fusa_coe_test_sensor_receiver
     fusa_coe_test_sensor_receiver.cpp
     )

@@ -305,6 +305,21 @@ public:
 class LeopardVb1940Publisher
     : public hololink::module::module_core::HsbLitePublisher {
 protected:
+    /* Single-FPGA CertusPro-NX, so both halves of the D-PHY pairing differ
+     * from the HSB-Lite default this publisher inherits. */
+    void set_mipi_dphy_metadata(
+        hololink::module::EnumerationMetadata& metadata) override
+    {
+        hololink::module::module_core::stamp_cpnx_mipi_dphy_metadata(metadata, 60);
+    }
+
+    bool construct_mipi_dphy(
+        const std::string& instance_id,
+        const std::string& type_id) override
+    {
+        return construct_cpnx_mipi_dphy(instance_id, type_id);
+    }
+
     std::string module_name() const override { return "leopard_vb1940"; }
 
     /* Publish the Leopard-specific channel configuration instead of the

@@ -28,6 +28,7 @@
 #include "hololink/module/csi_converter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
+#include "hololink/module/mipi_dphy.hpp"
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/operators/packed_format_converter_op.hpp"
@@ -383,6 +384,21 @@ int main(int argc, char** argv)
                 link, 2, Max96716a::VideoPipe::PIPE_Z);
             deserializer->set_register(Max96716a::VIDEO_PIPE_SEL,
                 static_cast<uint8_t>(left | right));
+
+            constexpr unsigned MIPI_LANE_COUNT = 4;
+            constexpr unsigned MIPI_LINE_RATE_MBPS = 450;
+            auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(adapter_metadata);
+            // Currently, each SIF corresponds with the physical MIPI
+            for (int physical_mipi_interface : sif_list) {
+                const auto status = dphy->program(static_cast<unsigned>(physical_mipi_interface),
+                    MIPI_LANE_COUNT, MIPI_LINE_RATE_MBPS);
+
+                if (status != HOLOLINK_MODULE_OK) {
+                    throw std::runtime_error(fmt::format(
+                        "Could not program MIPI interface {}: status {}",
+                        physical_mipi_interface, status));
+                }
+            }
 
             hawk->configure(camera_mode);
             if (pattern) {

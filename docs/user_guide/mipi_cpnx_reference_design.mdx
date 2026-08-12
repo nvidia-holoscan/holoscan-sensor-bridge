@@ -70,6 +70,36 @@ def program_soft_mipi_phy(camera_idx, num_lanes, clock_freq):
     hololink.write_uint32(base_addr + 0xD8 + (camera_idx * 0x1000_0000), regD8)
 ```
 
+### Programming the D-PHY from a hololink module
+
+Applications built on `hololink_module` should use `MipiDphyInterfaceV1` instead of
+writing the registers directly. It hides the register layout and the per-design
+constants behind one call:
+
+```cpp
+#include "hololink/module/mipi_dphy.hpp"
+
+auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(metadata);
+auto status = dphy->program(physical_mipi_interface, lane_count, line_rate_mbps);
+```
+
+- `physical_mipi_interface` selects the receiver.
+- `lane_count` is the sensor's active CSI-2 data lane count.
+- `line_rate_mbps` is the sensor's **per-lane** bit rate.
+
+Program the D-PHY after `reset()`, which restores the FPGA's power-on defaults, and
+before starting the sensor. `program` returns a status rather than throwing: a design
+with no D-PHY reports `HOLOLINK_MODULE_NOT_FOUND`, and a lane count or rate the design
+cannot carry reports `HOLOLINK_MODULE_INVALID_PARAMETER`.
+
+`program` also derives the data-lane settle time.
+
+The service is published by the module that matches the board's FPGA UUID, so the same
+call works on any supported board - including the two-FPGA designs, where the D-PHY
+lives in a CrossLink-NX reached over SPI rather than in an APB window. See
+[Describing the FPGA topology](module_device_tutorial.mdx#describing-the-fpga-topology)
+for how a module states its FPGA's shape.
+
 ## Source Files
 
 The FPGA source code for the project is located in the Holoscan Sensor Bridge repository

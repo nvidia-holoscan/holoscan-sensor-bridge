@@ -409,6 +409,72 @@ Applications that want to use those features can get this device-specific servic
 call its methods — with the recognition that those calls tightly couple the application
 to that device.
 
+### Describing the FPGA topology
+
+The framework does not discover an FPGA's shape at run time, it is stated by the module
+that the UUID selected. Because the loader already resolved
+`hololink_<UUID>_<compat-id>.so`, the loaded module *is* the statement of which design
+is present.
+
+A module states that shape by stamping numbers into the enumeration metadata, the same
+way `sif_address` and `vp_address` arrive. The Soft MIPI D-PHY is a worked example: the
+register numbers, receiver count, settle clock, and maximum line rate are all stamped,
+and the implementation reads them back in `configure()`:
+
+```cpp
+inline void stamp_cpnx_mipi_dphy_metadata(
+    EnumerationMetadata& metadata, unsigned settle_clk_mhz)
+{
+    metadata[mipi_dphy_key::SETTLE_CLK_MHZ] = int64_t { settle_clk_mhz };
+    metadata[mipi_dphy_key::BASE_ADDRESS] = int64_t { 0x5000'0000 };
+    metadata[mipi_dphy_key::RECEIVER_STRIDE] = int64_t { 0x1000'0000 };
+    metadata[mipi_dphy_key::RECEIVER_COUNT] = int64_t { 2 };
+    metadata[mipi_dphy_key::LANE_CONFIG_REGISTER] = int64_t { 0x0A };
+    metadata[mipi_dphy_key::DATA_SETTLE_REGISTER] = int64_t { 0x36 };
+    metadata[mipi_dphy_key::MAX_LINE_RATE_MBPS] = int64_t { 1500 };
+}
+```
+
+Two hooks on the publisher carry this, and a board overrides whichever differ from the
+ones it inherits:
+
+- `set_mipi_dphy_metadata`: called from `update_metadata` during enumeration. Stamps the
+  design's numbers. A board that stamps nothing leaves the service unconfigured, and
+  every `program()` call reports `HOLOLINK_MODULE_NOT_FOUND`.
+- `construct_mipi_dphy`: a branch of the `construct_service` chain, called lazily on
+  first fetch. Publishes the implementation matching the register layout and the bus it
+  sits on.
+
+The two must agree. Stamping one design's shape while constructing another design's
+layout leaves the service unconfigured rather than writing to the wrong registers, which
+is what the implementation's `configured()` check is for.
+
+`module_core::HsbLitePublisher` supplies defaults for the HSB-Lite FPGA it is named
+after, so a board built on the same design inherits them and its `module_entry.cpp`
+contributes only its identity. A board that inherits the publisher's machinery without
+inheriting its FPGA (i.e. the single-FPGA CertusPro-NX boards), overrides both hooks
+together:
+
+```cpp
+class TauroTechDa326Publisher : public HsbLitePublisher {
+protected:
+    void set_mipi_dphy_metadata(EnumerationMetadata& metadata) override
+    {
+        module_core::stamp_cpnx_mipi_dphy_metadata(metadata, 150);
+    }
+
+    bool construct_mipi_dphy(
+        const std::string& instance_id, const std::string& type_id) override
+    {
+        return construct_cpnx_mipi_dphy(instance_id, type_id);
+    }
+};
+```
+
+This is why an FPGA revision that moves a register needs no change to any consumer: the
+new bitstream ships a new `.so` selected by its `compat-id`, that module stamps
+different numbers, and the interface applications call is unchanged.
+
 ### Version management
 
 A `compat-id` names a specific set of registers, peripherals, and their behaviors; any

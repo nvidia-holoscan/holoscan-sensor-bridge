@@ -36,6 +36,8 @@
 #include "hsb_lite_default.hpp"
 #include "i2c_default.hpp"
 #include "linux_data_channel_default.hpp"
+#include "mipi_dphy/clnx.hpp"
+#include "mipi_dphy/cpnx.hpp"
 #include "null_vsync_default.hpp"
 #include "ptp_pps_output_default.hpp"
 #include "roce_data_channel_default.hpp"
@@ -215,7 +217,8 @@ public:
             || construct_hsb_lite(instance_id, type_id)
             || construct_oscillator(instance_id, type_id)
             || construct_sequencer(instance_id, type_id)
-            || construct_i2c(instance_id, type_id);
+            || construct_i2c(instance_id, type_id)
+            || construct_mipi_dphy(instance_id, type_id);
     }
 
     /* EnumerationInterfaceV1 contract. The Publisher is its own
@@ -253,7 +256,20 @@ public:
             return HOLOLINK_MODULE_ENUMERATION_SKIPPED;
         }
         config->use_sensor(metadata, data_plane);
+        set_mipi_dphy_metadata(metadata);
         return HOLOLINK_MODULE_OK;
+    }
+
+    /* Stamp the shape of this design's soft MIPI D-PHY -- register numbers,
+     * interface count, settle clock, maximum line rate. HSB-Lite is CPNX +
+     * CLNX and its D-PHY lives in the CrossLink, so that is the default;
+     * boards that inherit this publisher without inheriting its FPGA override
+     * both this and construct_mipi_dphy. The two must agree: a board stamping
+     * one design's shape while constructing another's layout leaves the
+     * service unconfigured, and every program() reports NOT_FOUND. */
+    virtual void set_mipi_dphy_metadata(EnumerationMetadata& metadata)
+    {
+        stamp_clnx_mipi_dphy_metadata(metadata);
     }
 
     /* Registers this Publisher as the EnumerationInterfaceV1
@@ -610,6 +626,84 @@ protected:
         ServicePublisher<SequencerInterfaceV1>(shared_from_this())
             .publish(instance_id, impl);
         return true;
+    }
+
+    /* instance_id is "serial=<n>". HSB-Lite's D-PHY lives in the CrossLink-NX
+     * behind its SPI register table, so that layout is the default; a board
+     * inheriting this publisher without inheriting its FPGA -- the single-FPGA
+     * CertusPro-NX ones -- overrides with construct_cpnx_mipi_dphy, the way
+     * HsbLite2510Publisher overrides the RoCE branches. Only one branch can be
+     * effective: both layouts report the MipiDphyInterfaceV1 alias, so the
+     * first to claim the type_id wins.
+     *
+     * The register shape arrives through the enumeration metadata, so a design
+     * that stamps none is inert: configure() leaves it unconfigured and every
+     * program() call reports HOLOLINK_MODULE_NOT_FOUND. */
+    virtual bool construct_mipi_dphy(
+        const std::string& instance_id,
+        const std::string& type_id)
+    {
+        return construct_clnx_mipi_dphy(instance_id, type_id);
+    }
+
+    /* Lattice mipi_rx_ip over an APB window, for single-FPGA CertusPro-NX
+     * boards. Pair with stamp_cpnx_mipi_dphy_metadata. */
+    bool construct_cpnx_mipi_dphy(
+        const std::string& instance_id,
+        const std::string& type_id)
+    {
+        if (!Publisher::has_type_id<CpnxMipiDphyV1>(type_id)) {
+            return false;
+        }
+        auto hololink_impl = mipi_dphy_parent(instance_id);
+        auto impl = std::make_shared<CpnxMipiDphyV1>(hololink_impl);
+        ServicePublisher<CpnxMipiDphyV1>(shared_from_this())
+            .publish(instance_id, impl);
+        return true;
+    }
+
+    /* Lattice mipi_csi_rx_rcfg over the CrossLink's SPI register table, for
+     * the two-FPGA boards. Pair with stamp_clnx_mipi_dphy_metadata. */
+    bool construct_clnx_mipi_dphy(
+        const std::string& instance_id,
+        const std::string& type_id)
+    {
+        if (!Publisher::has_type_id<ClnxMipiDphyV1>(type_id)) {
+            return false;
+        }
+        auto hololink_impl = mipi_dphy_parent(instance_id);
+        auto impl = std::make_shared<ClnxMipiDphyV1>(
+            hololink_impl->legacy_access());
+        ServicePublisher<ClnxMipiDphyV1>(shared_from_this())
+            .publish(instance_id, impl);
+        return true;
+    }
+
+    /* The configured HololinkV1 named by a "serial=<n>" instance_id. Throws
+     * rather than returning null: the instance-id form does not configure, so
+     * a parent fetched before the application resolved it by metadata has no
+     * backing and would fault on the first register access. */
+    std::shared_ptr<HololinkV1> mipi_dphy_parent(const std::string& instance_id)
+    {
+        const auto fields = parse_name_value_pairs(instance_id);
+        const auto serial_it = fields.find("serial");
+        if (serial_it == fields.end()) {
+            throw std::runtime_error(
+                std::string("While constructing MipiDphy for instance_id '")
+                + instance_id + "': missing 'serial'");
+        }
+        const std::string hololink_id = "serial=" + serial_it->second;
+        auto hololink_impl = HololinkV1::get_service(
+            this->self_module(), hololink_id.c_str());
+        if (!hololink_impl->legacy_access()) {
+            throw std::runtime_error(
+                std::string("While constructing MipiDphy for instance_id '")
+                + instance_id + "': the parent HololinkInterface (serial='"
+                + serial_it->second
+                + "') has not been configured yet — fetch it via "
+                  "HololinkInterfaceV1::get_service(metadata) first");
+        }
+        return hololink_impl;
     }
 
     /* instance_id is "serial=<n>;bus=<b>;address=<a>". The per-bus

@@ -169,6 +169,22 @@ public:
 
 class TauroTechDa326Publisher : public HsbLitePublisher {
 protected:
+    /* Single-FPGA CertusPro-NX, so both halves of the D-PHY pairing differ
+     * from the HSB-Lite default this publisher inherits. */
+    void set_mipi_dphy_metadata(
+        hololink::module::EnumerationMetadata& metadata) override
+    {
+        /* sync_clk_i is pcs_clk, osc_clk's 150 MHz HF output. */
+        module_core::stamp_cpnx_mipi_dphy_metadata(metadata, 150);
+    }
+
+    bool construct_mipi_dphy(
+        const std::string& instance_id,
+        const std::string& type_id) override
+    {
+        return construct_cpnx_mipi_dphy(instance_id, type_id);
+    }
+
     std::string module_name() const override { return "taurotech_da326"; }
 
     void publish_channel_configuration() override
