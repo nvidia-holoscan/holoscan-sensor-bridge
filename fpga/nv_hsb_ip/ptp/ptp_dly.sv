@@ -132,11 +132,11 @@ logic [7:0]  controlField_sync;
 logic [7:0]  logMessageInterval_sync;
 logic [79:0] timestamp_sync;
 logic [79:0] req_src_portid_sync;
-logic [7:0]  i_ptp_domain_sync; 
+logic [7:0]  ptp_domain_sync; 
 
 assign majorSdoId         = i_is_gPTP ? 1'h1 : 1'h0;
 assign versionPTP         = 4'h2;
-assign domainNumber       = i_ptp_domain_sync;
+assign domainNumber       = ptp_domain_sync;
 assign minorSdoId         = 8'h0;
 assign flagField          = {6'd0, twoStep_sync, 9'd0};
 assign correctionField    = 64'h0;
@@ -174,7 +174,7 @@ reg_cdc #(
   .i_b_rst( i_hif_rst                                                                                   ),
   .o_b_val( pdly_req_tx_vld_sync                                                                        ),
   .o_b_reg( {msg_type_sync,messageLength_sync,sequenceId_sync,controlField_sync,logMessageInterval_sync,timestamp_sync,
-              req_src_portid_sync,ptp_tx_len_sync, majorSdoId_sync, twoStep_sync, eth_mac_addr_sync, i_ptp_domain_sync})
+              req_src_portid_sync,ptp_tx_len_sync, majorSdoId_sync, twoStep_sync, eth_mac_addr_sync, ptp_domain_sync})
 );
 
 always_ff @(posedge i_hif_clk) begin
