@@ -230,6 +230,12 @@ def main():
         args.coe_interface,
     )
     application.config(args.configuration)
+    scheduler = holoscan.schedulers.EventBasedScheduler(
+        application,
+        worker_thread_number=4,
+        name="event_scheduler",
+    )
+    application.scheduler(scheduler)
 
     # Run it.
     hololink = hololink_channel.hololink()
