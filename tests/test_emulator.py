@@ -707,6 +707,54 @@ def test_serve_roce_msg(
     )
 
 
+class _RegisterPeripheral(hemu.I2CPeripheral):
+    """I2C peripheral with 16-bit register addresses, like a camera sensor."""
+
+    def __init__(self, i2c_address):
+        super().__init__()
+        self._i2c_address = i2c_address
+        self.registers = bytearray(0x10000)
+
+    def attach_to_i2c(self, i2c_controller, bus_address):
+        i2c_controller.attach_i2c_peripheral(bus_address, self._i2c_address, self)
+
+    def i2c_transaction(
+        self, peripheral_address, write_bytes, write_size, read_bytes, read_size
+    ):
+        register = int.from_bytes(write_bytes[:2], "big")
+        payload = write_bytes[2:write_size]
+        self.registers[register : register + len(payload)] = payload
+        read_bytes[:read_size] = self.registers[register : register + read_size]
+        return hemu.I2CStatus.I2C_STATUS_SUCCESS
+
+
+def test_python_i2c_peripheral():
+    """A Python I2CPeripheral gets the full write and can answer a read."""
+    ipv4_address = "127.0.0.1"
+    i2c_address = 0x1A
+    hsb = hemu.HSBEmulator()
+    # Keep the data plane alive until the emulator stops.
+    data_plane = hemu.LinuxDataPlane(hsb, hemu.IPAddress(ipv4_address), 0, 0)
+    peripheral = _RegisterPeripheral(i2c_address)
+    peripheral.attach_to_i2c(
+        hsb.get_i2c(hololink_module.I2C_CTRL), hololink_module.CAM_I2C_BUS
+    )
+    hsb.start()
+    try:
+        hololink, _ = _host_controller_setup(ipv4_address)
+        try:
+            i2c = hololink.get_i2c(hololink_module.CAM_I2C_BUS)
+            i2c.i2c_transaction(i2c_address, bytes([0x30, 0x00, 0x5A, 0xA5]), 0)
+            assert peripheral.registers[0x3000:0x3002] == b"\x5a\xa5"
+            reply = i2c.i2c_transaction(i2c_address, bytes([0x30, 0x00]), 2)
+            assert list(reply) == [0x5A, 0xA5]
+        finally:
+            hololink.stop()
+    finally:
+        hsb.stop()
+        del data_plane
+
+
 csi_kernels = """
 #include <cstdint>
 #include <cstddef>

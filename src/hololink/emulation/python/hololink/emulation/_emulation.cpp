@@ -76,9 +76,14 @@ public:
     using I2CPeripheral::I2CPeripheral;
 
     // Trampoline (need one for each virtual function)
+    // Give Python real buffers. Raw pointers would arrive as just their first byte.
     I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override
     {
-        PYBIND11_OVERRIDE_PURE(I2CStatus, I2CPeripheral, i2c_transaction, peripheral_address, write_bytes, write_size, read_bytes, read_size);
+        // Needed to create the bytes and memoryview below.
+        py::gil_scoped_acquire gil;
+        py::bytes write(reinterpret_cast<const char*>(write_bytes), write_size);
+        py::memoryview read = py::memoryview::from_memory(read_bytes, read_size, /*readonly=*/false);
+        PYBIND11_OVERRIDE_PURE(I2CStatus, I2CPeripheral, i2c_transaction, peripheral_address, write, write_size, read, read_size);
     }
 
     void start() override
