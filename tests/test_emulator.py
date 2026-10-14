@@ -714,6 +714,7 @@ class _RegisterPeripheral(hemu.I2CPeripheral):
         super().__init__()
         self._i2c_address = i2c_address
         self.registers = bytearray(0x10000)
+        self.last_read = None
 
     def attach_to_i2c(self, i2c_controller, bus_address):
         i2c_controller.attach_i2c_peripheral(bus_address, self._i2c_address, self)
@@ -725,6 +726,8 @@ class _RegisterPeripheral(hemu.I2CPeripheral):
         payload = write_bytes[2:write_size]
         self.registers[register : register + len(payload)] = payload
         read_bytes[:read_size] = self.registers[register : register + read_size]
+        # Keeping the read buffer after the call has to be safe.
+        self.last_read = read_bytes
         return hemu.I2CStatus.I2C_STATUS_SUCCESS
 
 
@@ -748,6 +751,7 @@ def test_python_i2c_peripheral():
             assert peripheral.registers[0x3000:0x3002] == b"\x5a\xa5"
             reply = i2c.i2c_transaction(i2c_address, bytes([0x30, 0x00]), 2)
             assert list(reply) == [0x5A, 0xA5]
+            assert peripheral.last_read == b"\x5a\xa5"
         finally:
             hololink.stop()
     finally:

@@ -78,7 +78,7 @@ public:
     /**
      * python:
      *
-     * `def i2c_transaction(self: hemu.I2CPeripheral, peripheral_address: int, write_bytes: List[int], read_bytes: List[int]) -> hemu.I2CStatus`
+     * `def i2c_transaction(self: hemu.I2CPeripheral, peripheral_address: int, write_bytes: bytes, write_size: int, read_bytes: bytearray, read_size: int) -> hemu.I2CStatus`
      *
      * @brief perform an I2C transaction. This will be called by the I2CController when a transaction is requested.
      *
