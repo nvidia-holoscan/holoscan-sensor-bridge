@@ -2,7 +2,7 @@
   "$schema": "holoscan/module/v2",
   "module": {
     "name": "holoscan-sensor-bridge",
-    "version": "2.6.0",
+    "version": "2.7.0",
     "description": "FPGA-based sensor data bridge for low-latency capture into Holoscan pipelines. Provides Holoscan operators for camera, audio, and signal-processing data planes (RoCE, UDP, Linux socket, CoE), with a software emulator that allows the operators to be exercised without hardware.",
     "authors": [
       {
@@ -43,8 +43,8 @@
       "Leopard VB1940"
     ],
     "holoscan_sdk": {
-      "minimum_required_version": "4.2",
-      "tested_versions": ["4.2.0"]
+      "minimum_required_version": "4.4",
+      "tested_versions": ["4.4.0"]
     },
     "operator_names": [
       "ArgusIspOp",
