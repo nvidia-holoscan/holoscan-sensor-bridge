@@ -35,10 +35,10 @@ struct RoCEv2Ctxt;
 
 void set_opcode(RoCEv2Ctxt* rocev2_ctxt, uint8_t opcode);
 void update_frame_metadata_end(RoCEv2Ctxt* rocev2_ctxt, uint16_t packet_bytes);
-uint32_t condition_packet_crc(RoCEv2Ctxt* metadata, const ETH_BufferTypeDef* tx_buffer_base);
+uint32_t condition_packet_crc(RoCEv2Ctxt* metadata, const ETH_BufferTypeDef* tx_buffer_base, uint8_t pad_bytes);
 
 /**
- * @brief The RoCEv2Transmitter implements the BaseTransmitter interface and encapsulates the transport over RoCEv2
+ * @brief The RoCEv2Transmitter implements the BaseTransmitter interface and encapsulates the transport over RoCEv2.
  */
 class RoCEv2Transmitter : public BaseTransmitter {
 public:

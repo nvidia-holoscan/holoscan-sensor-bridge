@@ -24,7 +24,6 @@ module rrarb #(
 )
 (
   input  logic             clk,    // Clock
-  input  logic             rst_n,  // Asynchronous reset active low
   input  logic             rst,    // Synchronous reset active high
   input  logic             idle,   // Only allow new grants when idle. Tie to 1 to grant new req at any time.
   input  logic [WIDTH-1:0] req,    // vector of requests
@@ -117,14 +116,7 @@ endfunction
 
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
-    gnt_d1         <= '0;
-    gnt_idx_d1     <= '0;
-    ptr            <= '0;
-    ptr_group      <= '0;
-    ptr_local_mask <= '1;
-  end
-  else if (rst) begin
+  if (rst) begin
     gnt_d1         <= '0;
     gnt_idx_d1     <= '0;
     ptr            <= '0;
@@ -232,24 +224,24 @@ always_comb begin
 end
 
 `ifdef ASSERT_ON
-  asrt_grant_onehot0 : assert property ( @(posedge clk) disable iff (!rst_n)
+  asrt_grant_onehot0 : assert property ( @(posedge clk) disable iff (rst)
       $onehot0(gnt) && $onehot0(gnt_d1)
   ); //else $error("Arbiter gnt vector should be zero/one hot");
-  asrt_no_new_gnt_if_not_idle : assert property ( @(posedge clk) disable iff (!rst_n)
+  asrt_no_new_gnt_if_not_idle : assert property ( @(posedge clk) disable iff (rst)
        !idle |-> ((gnt == gnt_d1) | (gnt == 'b0))
   ); //else $error("If not idle, grant either falls or doesn't change");
   for (genvar r = 0; r < WIDTH; r++) begin : gen_asrt
     if (PORT_EN[r]) begin: port_r
       `ifndef SIMULATION
-      asrt_req_fall_liveness : assert property ( @(posedge clk) disable iff (!rst_n)
+      asrt_req_fall_liveness : assert property ( @(posedge clk) disable iff (rst)
           $rose(req[r]) |-> strong ( ##[1:$] $fell(req[r]))
       ); //else $error("request should eventually deassert");
       `endif
-      asrt_gnt_lock : assert property ( @(posedge clk) disable iff (!rst_n)
+      asrt_gnt_lock : assert property ( @(posedge clk) disable iff (rst)
           gnt[r] ##1 req[r] |-> gnt[r]
       ); //else $error("If request won grant and request is held, it should continue to win grant");
       if (!STICKY_EN) begin
-          asrt_gnt_implies_req : assert property ( @(posedge clk) disable iff (!rst_n)
+          asrt_gnt_implies_req : assert property ( @(posedge clk) disable iff (rst)
               gnt[r] |-> req[r]
           ); //else $error("Grant should not be asserted without request");
       end

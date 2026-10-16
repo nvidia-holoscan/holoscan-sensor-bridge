@@ -154,7 +154,6 @@ if (CUDAToolkit_FOUND)
             hololink::emulation
             hololink::emulation::roce
             emulator_utils
-            ${ZLIB_LIBRARIES}
             CUDA::cudart
         )
     endif()
@@ -219,7 +218,6 @@ if (CUDAToolkit_FOUND)
             hololink::emulation::roce
             hololink::emulation::sensors
             emulator_utils
-            ${ZLIB_LIBRARIES}
             CUDA::cudart
         )
         
@@ -233,7 +231,6 @@ if (CUDAToolkit_FOUND)
             hololink::emulation::roce
             hololink::emulation::sensors
             emulator_utils
-            ${ZLIB_LIBRARIES}
             CUDA::cudart
         )
 
@@ -247,7 +244,6 @@ if (CUDAToolkit_FOUND)
             hololink::emulation::roce
             hololink::emulation::sensors
             emulator_utils
-            ${ZLIB_LIBRARIES}
             CUDA::cudart
         )
 
@@ -261,7 +257,6 @@ if (CUDAToolkit_FOUND)
             hololink::emulation::roce
             hololink::emulation::sensors
             emulator_utils
-            ${ZLIB_LIBRARIES}
             CUDA::cudart
         )
     endif()

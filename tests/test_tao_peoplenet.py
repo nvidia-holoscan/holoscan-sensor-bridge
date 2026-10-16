@@ -15,8 +15,9 @@
 
 # See README.md for detailed information.
 
+import os
 import sys
-from os.path import exists
+import tempfile
 from unittest import mock
 from urllib.request import urlretrieve
 
@@ -30,10 +31,24 @@ from examples import linux_tao_peoplenet, tao_peoplenet
 @pytest.fixture
 def peoplenet_onnx_file():
     # Download the PeopleNet ONNX model
-    file_name = "examples/resnet34_peoplenet_int8.onnx"
-    if not exists(file_name):
+    model_directory = os.environ.get("HSB_PEOPLENET_CACHE_DIR") or "examples"
+    os.makedirs(model_directory, exist_ok=True)
+    file_name = os.path.join(model_directory, "resnet34_peoplenet_int8.onnx")
+    if not os.path.exists(file_name):
         url = "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/peoplenet/pruned_quantized_decrypted_v2.3.3/files?redirect=true&path=resnet34_peoplenet_int8.onnx"
-        urlretrieve(url, file_name)
+        temporary_file = tempfile.NamedTemporaryFile(
+            dir=model_directory,
+            prefix="resnet34_peoplenet_int8.onnx.",
+            suffix=".download",
+            delete=False,
+        )
+        temporary_file.close()
+        try:
+            urlretrieve(url, temporary_file.name)
+            os.replace(temporary_file.name, file_name)
+        finally:
+            if os.path.exists(temporary_file.name):
+                os.unlink(temporary_file.name)
     yield file_name
 
 
@@ -61,6 +76,8 @@ def test_tao_peoplenet(
         str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
+        "--engine",
+        peoplenet_onnx_file,
         "--hololink",
         hololink_address,
         "--ibv-name",
@@ -95,6 +112,8 @@ def test_linux_tao_peoplenet(
         str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
+        "--engine",
+        peoplenet_onnx_file,
         "--hololink",
         hololink_address,
     ]

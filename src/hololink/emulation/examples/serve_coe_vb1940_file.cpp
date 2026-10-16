@@ -43,7 +43,7 @@
  * - frame-rate: 30 (per second)
  * - frame-limit: 0 (infinite)
  * - frame-size: 0 (use the entire size of the source file)
- * - gpu: false (serve data from the CPU)
+ * - gpu: false (serve data from the CPU).
  */
 
 using namespace hololink::emulation;

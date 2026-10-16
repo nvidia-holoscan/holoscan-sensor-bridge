@@ -65,7 +65,7 @@ data_sync #(
   .SYNC_DEPTH                       (2                 )
 ) dst_ack_to_src_sync (
   .clk                              (src_clk           ),
-  .rst_n                            (!src_rst          ),
+  .rst                              (src_rst           ),
   .sync_in                          (dest_ack          ),
   .sync_out                         (dest_ack_sync     )
 );
@@ -76,7 +76,7 @@ data_sync #(
   .SYNC_DEPTH                       (2                 )
 ) dst_ready_to_src_sync (
   .clk                              (src_clk           ),
-  .rst_n                            (!src_rst          ),
+  .rst                              (src_rst           ),
   .sync_in                          (dest_ready        ),
   .sync_out                         (dest_ready_sync   )
 );
@@ -112,7 +112,7 @@ data_sync #(
   .SYNC_DEPTH                       (2                      )
 ) src_ready_to_dst_sync (
   .clk                              (dst_clk                ),
-  .rst_n                            (!dst_rst               ),
+  .rst                              (dst_rst                ),
   .sync_in                          (src_ready              ),
   .sync_out                         (src_ready_sync         )
 );

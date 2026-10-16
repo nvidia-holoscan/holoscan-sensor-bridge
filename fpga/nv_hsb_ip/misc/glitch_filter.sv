@@ -18,32 +18,53 @@
 module glitch_filter #(
   parameter DATA_WIDTH    = 1,
   parameter RESET_VALUE   = 1'b0,
-  parameter FILTER_DEPTH  = 4
+  parameter FILTER_DEPTH  = 4,
+  parameter RST_SYNC      = "TRUE" // "TRUE"|"FALSE"
 ) (
   input                         clk,
-  input                         rst_n,
+  input                         rst,
   input      [DATA_WIDTH-1:0]   sync_in,
   output reg [DATA_WIDTH-1:0]   sync_out
 );
 
 genvar s_idx;
-reg [FILTER_DEPTH-1:0] filter_pipe [DATA_WIDTH-1:0];
+(* DONT_TOUCH = "TRUE" *) (* ASYNC_REG = "TRUE" *) reg [FILTER_DEPTH-1:0] filter_pipe [DATA_WIDTH-1:0]/* synthesis syn_preserve=1 CDC_Register=2 syn_maxfan=1 syn_replicate=0 syn_allow_retiming=0 */;
 
 generate
-  for(s_idx=0; s_idx < DATA_WIDTH; s_idx++) begin: FILTER_SYNC
-    always @(posedge clk or negedge rst_n) begin
-      if (!rst_n) begin
-        filter_pipe[s_idx] <= {FILTER_DEPTH{RESET_VALUE}};
-        sync_out   [s_idx] <= RESET_VALUE;
+  if (RST_SYNC == "TRUE") begin
+    for(s_idx=0; s_idx < DATA_WIDTH; s_idx++) begin: FILTER_SYNC
+      always @(posedge clk) begin
+        if (rst) begin
+          filter_pipe[s_idx] <= {FILTER_DEPTH{RESET_VALUE}};
+          sync_out   [s_idx] <= RESET_VALUE;
+        end
+        else begin
+          if (&filter_pipe[s_idx]) begin
+            sync_out[s_idx] <= 1'b1;
+          end
+          else if (~|filter_pipe[s_idx]) begin
+            sync_out[s_idx] <= 1'b0;
+          end
+          filter_pipe[s_idx] <= {filter_pipe[s_idx], sync_in[s_idx]};
+        end
       end
-      else begin
-        if (&filter_pipe[s_idx]) begin
-          sync_out[s_idx] <= 1'b1;
+    end
+  end else begin
+    for(s_idx=0; s_idx < DATA_WIDTH; s_idx++) begin: FILTER_SYNC
+      always @(posedge clk or posedge rst) begin
+        if (rst) begin
+          filter_pipe[s_idx] <= {FILTER_DEPTH{RESET_VALUE}};
+          sync_out   [s_idx] <= RESET_VALUE;
         end
-        else if (~|filter_pipe[s_idx]) begin
-          sync_out[s_idx] <= 1'b0;
+        else begin
+          if (&filter_pipe[s_idx]) begin
+            sync_out[s_idx] <= 1'b1;
+          end
+          else if (~|filter_pipe[s_idx]) begin
+            sync_out[s_idx] <= 1'b0;
+          end
+          filter_pipe[s_idx] <= {filter_pipe[s_idx], sync_in[s_idx]};
         end
-        filter_pipe[s_idx] <= {filter_pipe[s_idx], sync_in[s_idx]};
       end
     end
   end

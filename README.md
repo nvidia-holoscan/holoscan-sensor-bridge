@@ -40,7 +40,8 @@ This software is published under the Apache 2.0 license, allowing unrestricted
 commercial and noncommercial use. Please consider submitting your changes to this
 framework by consulting the instructions in the [CONTRIBUTING.md](CONTRIBUTING.md) file.
 
-Note that all code submissions must pass the rules enforced by running `ci/lint.sh`. You
-can run the source code formatter by executing `ci/lint.sh --format` -- this will run
+Note that all code submissions must pass the rules enforced by running
+`scripts/lint/lint.sh`. You can run the source code formatter by executing
+`scripts/lint/lint.sh --format` -- this will run
 the formatter on all C++, Python, and markdown files in the project, and is usually all
-that's necessary to get `ci/lint.sh` to pass.
+that's necessary to get `scripts/lint/lint.sh` to pass.

@@ -222,7 +222,8 @@ void RoceReceiverOp::start()
         peer_ip,
         metadata_.get().get<int64_t>("data_channel", int64_t { -1 }),
         metadata_.get().get<std::string>("serial_number", std::string {}));
-    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(peer_ip);
+    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(
+        peer_ip, metadata_.get().get<std::string>("interface", std::string {}));
 
     const hololink_module_status_t start_status = receiver_->start(
         ibv_name,
@@ -248,6 +249,10 @@ void RoceReceiverOp::start()
             + std::to_string(status));
     }
     configured_ = true;
+
+    // Drop any timeout/frame counters left over from a prior run, so a reused
+    // operator instance doesn't report a stall carried over from before.
+    ingress_stall_.reset();
 
     running_ = true;
     // Register the frame-ready callback before the monitor thread starts
@@ -336,7 +341,16 @@ void RoceReceiverOp::compute(holoscan::InputContext& /*op_input*/,
     hololink::module::RoceReceiverFrameInfoV1 frame_info {};
     if (!receiver_->get_next_frame(GET_NEXT_FRAME_TIMEOUT_MS, frame_info)) {
         // Timeout: produce no output; the scheduler will revisit us.
+        if (ingress_stall_.on_timeout(GET_NEXT_FRAME_TIMEOUT_MS)) {
+            HSB_LOG_WARN("Ingress stalled: no frame for {} consecutive {}ms polls "
+                         "after {} received frames",
+                ingress_stall_.consecutive_timeouts(), GET_NEXT_FRAME_TIMEOUT_MS,
+                ingress_stall_.frames_received());
+        }
         return;
+    }
+    if (const uint64_t stalled_polls = ingress_stall_.on_frame()) {
+        HSB_LOG_WARN("Ingress resumed after {} empty polls", stalled_polls);
     }
 
     if (frame_ready_condition_) {

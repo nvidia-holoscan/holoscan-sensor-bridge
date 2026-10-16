@@ -121,6 +121,11 @@ void SpiDaemonThread::thread_func()
             // Gather the SPI parameters/bytes.
             uint8_t id = (msg->u.spi.id_cs >> 4) & 0xF;
             uint8_t cs = msg->u.spi.id_cs & 0xF;
+            // id is a 4-bit field, so it can name a bus we didn't open.
+            if (static_cast<size_t>(id) >= MAX_SPI_DEVICES) {
+                throw std::runtime_error(fmt::format(
+                    "Invalid SPI device id: {} (have {})", id, MAX_SPI_DEVICES));
+            }
             uint8_t* cmd_bytes_base = ((uint8_t*)buffer) + sizeof(*msg);
             std::vector<uint8_t> cmd_bytes(cmd_bytes_base, cmd_bytes_base + msg->u.spi.cmd_bytes);
             uint8_t* wr_bytes_base = cmd_bytes_base + msg->u.spi.cmd_bytes;

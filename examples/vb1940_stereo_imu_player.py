@@ -60,7 +60,10 @@ class ProfilerOperator(holoscan.core.Operator):
             sensor_data = ["%02X" % x for x in deserializer.next_buffer(6)]
             ff = deserializer.next_uint8()
             logging.info(f"{timestamp_s=} {tag=:#x} {sensor_data=}")
-            assert ff == 0xFF
+            if ff != 0xFF:
+                raise RuntimeError(
+                    f"Unexpected IMU frame terminator {ff:#x}; expected 0xFF."
+                )
         #
         metadata = self.metadata
         imu_frame_number = metadata.get("imu_frame_number", 0)
@@ -154,7 +157,10 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera_right.configure_converter(csi_to_bayer_operator_right)
 
         camera_frame_size = csi_to_bayer_operator_left.get_csi_length()
-        assert camera_frame_size == csi_to_bayer_operator_right.get_csi_length()
+        if camera_frame_size != csi_to_bayer_operator_right.get_csi_length():
+            raise RuntimeError(
+                "Left and right cameras produce different CSI frame sizes."
+            )
 
         frame_context = self._cuda_context
         receiver_operator_left = hololink_module.operators.RoceReceiverOp(
@@ -200,9 +206,11 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         bayer_format = self._camera_left.bayer_format()
-        assert bayer_format == self._camera_right.bayer_format()
+        if bayer_format != self._camera_right.bayer_format():
+            raise RuntimeError("Left and right cameras report different Bayer formats.")
         pixel_format = self._camera_left.pixel_format()
-        assert pixel_format == self._camera_right.pixel_format()
+        if pixel_format != self._camera_right.pixel_format():
+            raise RuntimeError("Left and right cameras report different pixel formats.")
         image_processor_left = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor_left",
@@ -402,12 +410,15 @@ def main():
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
     # Get a handle to the data source
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     logging.debug(f"{channel_metadata=}")
@@ -425,8 +436,10 @@ def main():
     hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
     hololink_channel_imu = hololink_module.DataChannel(imu_channel_metadata)
     hololink = hololink_channel_imu.hololink()
-    assert hololink is hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
+    if hololink is not hololink_channel_left.hololink():
+        raise RuntimeError("Data channels are on different HSB devices.")
+    if hololink is not hololink_channel_right.hololink():
+        raise RuntimeError("Data channels are on different HSB devices.")
     # Get a handle to cameras
     vsync = hololink.ptp_pps_output(args.frequency)
     camera_left = hololink_module.sensors.vb1940.Vb1940Cam(
@@ -500,7 +513,8 @@ def main():
         hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
 
 if __name__ == "__main__":

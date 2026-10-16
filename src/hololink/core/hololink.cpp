@@ -19,12 +19,12 @@
 
 #include <arpa/inet.h>
 #include <fcntl.h>
+#include <net/if.h>
 #include <netinet/in.h>
 #include <semaphore.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 
-#include <cassert>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -33,12 +33,43 @@
 #include "arp_wrapper.hpp"
 #include "csi_controller.hpp"
 #include "deserializer.hpp"
+#include "frame_metadata_parser.hpp"
 #include "logging_internal.hpp"
 #include "metadata.hpp"
 #include "reactor.hpp"
 #include "serializer.hpp"
 
 namespace hololink {
+
+namespace {
+
+    // Create a UDP socket guaranteed not to occupy fds 0/1/2. The
+    // FuSa capture library (libnvfusacap's INvFusaCapture::closeHandler) performs
+    // an unconditional close(0) on every CoE handler teardown; if our long-lived
+    // control/async sockets ever land on fd 0 (which happens once stdin is closed
+    // and its slot reused), that stray close destroys them and the next
+    // send/recv hits EBADF. Keeping these sockets above the stdio range makes the
+    // library's close(0) unable to target them. Returns -1 (errno set) on failure.
+    int make_udp_socket_above_stdio()
+    {
+        int fd = ::socket(AF_INET, SOCK_DGRAM, 0);
+        if (fd < 0) {
+            return fd;
+        }
+        if (fd <= 2) {
+            int high_fd = ::fcntl(fd, F_DUPFD, 3);
+            int saved_errno = errno;
+            ::close(fd);
+            if (high_fd < 0) {
+                errno = saved_errno;
+                return -1;
+            }
+            fd = high_fd;
+        }
+        return fd;
+    }
+
+} // namespace
 
 // SPI control flags
 constexpr uint32_t SPI_START = 0b0000'0000'0000'0001;
@@ -241,7 +272,7 @@ namespace {
 } // anonymous namespace
 
 Hololink::Hololink(
-    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool block_enable)
+    const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization, bool ptp_enable, bool block_enable, const std::string& peer_interface)
     : peer_ip_(peer_ip)
     , control_port_(control_port)
     , serial_number_(serial_number)
@@ -259,6 +290,14 @@ Hololink::Hololink(
     , block_enable_(block_enable)
     , ptp_sync_stat_(0)
 {
+    send_msg_.msg_control = &cmsgbuf_[0];
+    send_msg_.msg_controllen = sizeof(cmsgbuf_);
+    struct cmsghdr* cmsg = (struct cmsghdr*)CMSG_FIRSTHDR(&send_msg_);
+    cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+    cmsg->cmsg_level = IPPROTO_IP;
+    cmsg->cmsg_type = IP_PKTINFO;
+    struct in_pktinfo* pktinfo = (struct in_pktinfo*)CMSG_DATA(cmsg);
+    pktinfo->ipi_ifindex = if_nametoindex(peer_interface.c_str());
 }
 
 Hololink::~Hololink()
@@ -282,6 +321,15 @@ Hololink::~Hololink()
         if (!peer_ip) {
             throw std::runtime_error("Metadata has no \"peer_ip\"");
         }
+        // Optional, unlike peer_ip/control_port. Enumeration always records it
+        // (enumerator.cpp, from the bootp reply's IP_PKTINFO), but the manual-
+        // enumeration paths that exist for boards which cannot answer bootp --
+        // the cpnx100 programmers, hsb_lite_flash_2504, the python tools --
+        // hand-build their metadata and have no interface to name. Absent or
+        // empty resolves to ifindex 0, which leaves egress to the routing
+        // table: the behavior those paths have always had. Same treatment the
+        // key already gets in DataChannel::configure_common.
+        auto peer_interface = metadata.get<std::string>("interface");
         auto control_port = metadata.get<int64_t>("control_port");
         if (!control_port) {
             throw std::runtime_error("Metadata has no \"control_port\"");
@@ -310,7 +358,7 @@ Hololink::~Hololink()
             block_enable = opt_block_enable.value() != 0;
         }
         r = std::make_shared<Hololink>(
-            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, block_enable);
+            peer_ip.value(), control_port.value(), serial_number.value(), sequence_number_checking, skip_sequence_initialization, ptp_enable, block_enable, peer_interface.value_or(std::string()));
         hololink_by_serial_number[serial_number.value()] = r;
     } else {
         r = it->second;
@@ -352,15 +400,26 @@ void Hololink::start()
         return;
     }
 
-    control_socket_.reset(socket(AF_INET, SOCK_DGRAM, 0));
+    control_socket_.reset(make_udp_socket_above_stdio());
     if (!control_socket_) {
         throw std::runtime_error("Failed to create socket");
     }
+
+    // Report the arrival interface on each reply. This is also the option that
+    // makes the cached IP_PKTINFO cmsg in send_control meaningful; the control
+    // socket is never bind()ed (only async_event_socket_ is), so it autobinds
+    // on first send and needs no SO_REUSEADDR/SO_REUSEPORT.
+    int pktinfo = 1;
+    if (setsockopt(control_socket_.get(), IPPROTO_IP, IP_PKTINFO, &pktinfo, sizeof(pktinfo)) < 0) {
+        throw std::runtime_error("Failed to set socket pktinfo");
+    }
     // We listen to async event packets on this port.
-    async_event_socket_.reset(socket(AF_INET, SOCK_DGRAM, 0));
+    async_event_socket_.reset(make_udp_socket_above_stdio());
     if (!async_event_socket_) {
         throw std::runtime_error("Failed to create async event socket");
     }
+    HSB_LOG_DEBUG("control_socket fd={}, async_event_socket fd={} (kept above stdio)",
+        static_cast<int>(control_socket_.get()), static_cast<int>(async_event_socket_.get()));
     // Assign a UDP port number
     struct sockaddr_in async_event_address { }; // fills with 0s
     async_event_address.sin_family = AF_INET;
@@ -388,11 +447,17 @@ void Hololink::stop()
         return;
     }
     control_socket_.reset();
-    // Wake up async_event_thread in a way that
-    // makes it exit
+    // Wake up async_event_thread in a way that makes it exit: shutdown() sets
+    // RCV_SHUTDOWN, so a recvfrom that is blocked returns 0 now and one that is
+    // entered later returns 0 immediately. JOIN BEFORE CLOSING the descriptor:
+    // the thread is not necessarily asleep in recvfrom when we get here (it may
+    // be between iterations, handling the async event a just-finished I2C
+    // transaction raised), and closing the fd under it made its next recvfrom
+    // fail with EBADF — or, had the fd number been reused meanwhile, block
+    // forever on somebody else's socket.
     shutdown(async_event_socket_.get(), SHUT_RDWR);
-    async_event_socket_.reset();
     async_event_thread_.join();
+    async_event_socket_.reset();
     started_ = false;
 }
 
@@ -753,7 +818,10 @@ std::tuple<bool, std::optional<uint32_t>> Hololink::read_uint32_(
         malformed_response("Unable to deserialize");
         return { false, {} };
     }
-    assert(response_address == address);
+    if (response_address != address) {
+        malformed_response("Unexpected response address");
+        return { false, {} };
+    }
     HSB_LOG_DEBUG("read_uint32(address={:#x})={:#x}", address, value);
     return { true, value };
 }
@@ -929,11 +997,20 @@ void Hololink::send_control(const std::vector<uint8_t>& request)
         throw std::runtime_error(fmt::format("Failed to convert address {}", peer_ip_));
     }
 
-    if (sendto(control_socket_.get(), request.data(), request.size(), 0, (sockaddr*)&address,
-            sizeof(address))
+    struct iovec iov = {
+        .iov_base = (void*)request.data(),
+        .iov_len = request.size(),
+    };
+
+    send_msg_.msg_name = (void*)&address;
+    send_msg_.msg_namelen = sizeof(address);
+    send_msg_.msg_iov = &iov;
+    send_msg_.msg_iovlen = 1;
+
+    if (sendmsg(control_socket_.get(), &send_msg_, 0)
         < 0) {
         throw std::runtime_error(
-            fmt::format("sendto failed with errno={}: \"{}\"", errno, strerror(errno)));
+            fmt::format("sendmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
 }
 
@@ -1941,10 +2018,10 @@ private:
      * @brief Convert baud rate to divisor value for UART configuration
      *
      * For 19.53125 MHz APB clock with 8x oversampling:
-     * BAUD_DIV = (APB_CLK_FREQ / (8 * BAUD_RATE)) - 1
+     * BAUD_DIV = (APB_CLK_FREQ / (8 * BAUD_RATE)) - 1.
      *
-     * @param baud_rate Baud rate in bps (9600, 19200, 38400, 57600, or 115200)
-     * @return int Baud divisor value
+     * @param baud_rate Baud rate in bps (9600, 19200, 38400, 57600, or 115200).
+     * @return int Baud divisor value.
      * @throws std::runtime_error if baud rate is not supported
      */
     int baud_rate_to_divisor(uint32_t baud_rate) const
@@ -1975,10 +2052,10 @@ private:
     /**
      * @brief Convert user-facing stop_bits value to register encoding
      *
-     * Register encoding: 0=1 stop bit (default), 1=1.5 stop bits, 2=2 stop bits, 3=Reserved
+     * Register encoding: 0=1 stop bit (default), 1=1.5 stop bits, 2=2 stop bits, 3=Reserved.
      *
-     * @param stop_bits User-facing value: 1, 15 (for 1.5), or 2
-     * @return uint32_t Register encoding: 0, 1, or 2
+     * @param stop_bits User-facing value: 1, 15 (for 1.5), or 2.
+     * @return uint32_t Register encoding: 0, 1, or 2.
      * @throws std::runtime_error if stop_bits is not valid
      */
     uint32_t stop_bits_to_encoding(uint32_t stop_bits) const
@@ -2566,7 +2643,12 @@ public:
         // round up to get the whole next word
         const uint32_t word_count = (read_byte_count + 3) / 4;
         // we should have one read_index for each word
-        assert(word_count == read_indexes.size());
+        if (word_count != read_indexes.size()) {
+            hololink_.bad_read_response(RESPONSE_HOST_ERROR,
+                fmt::format("I2C read of {} bytes needs {} cached words but the sequencer encoded {}.",
+                    read_byte_count, word_count, read_indexes.size()));
+            return {};
+        }
         r.reserve(word_count * 4);
         for (const auto& item : read_indexes) {
             uint32_t address = sequencer->location() + item * 4;
@@ -2589,7 +2671,7 @@ public:
     }
 
     /**
-     * @returns {write_indexes, read_indexes, status_index}
+     * @return {write_indexes, read_indexes, status_index}.
      */
     std::tuple<std::vector<unsigned>, std::vector<unsigned>, unsigned> encode_i2c_request(
         Hololink::Sequencer& sequencer,
@@ -2938,15 +3020,36 @@ void Hololink::on_async_event(std::shared_ptr<Hololink::AsyncEventListener> list
 std::string Hololink::device_specific_filename(std::string name)
 {
     // Create a directory, if necessary, with our serial number.
+    //
+    // Each level is created mode 1777 (world-writable + sticky, like /tmp
+    // itself) and chmod()ed explicitly, because mkdir()'s mode argument is
+    // masked by the caller's umask. The lock files placed here are already
+    // forced to 0666 so that any user's process can take them (see
+    // NamedLock); the directories have to be shareable the same way, or the
+    // first process to create "<tmp>/hololink" -- a sudo run, a service user
+    // -- leaves a 0755 parent that every other user hits EACCES on as soon as
+    // it needs a NEW serial-number directory, i.e. talks to a different board.
+    // A directory that already exists is left exactly as its creator made it.
+    auto make_shared_directory = [](const std::filesystem::path& dir) {
+        constexpr mode_t shared_mode = S_ISVTX | S_IRWXU | S_IRWXG | S_IRWXO; // 01777
+        if (::mkdir(dir.c_str(), shared_mode) == 0) {
+            if (::chmod(dir.c_str(), shared_mode) != 0) {
+                HSB_LOG_WARN("chmod({}, 01777) failed with errno={}: \"{}\"; other users may be unable to share this device's locks.",
+                    std::string(dir), errno, strerror(errno));
+            }
+            return;
+        }
+        if (errno == EEXIST) {
+            return;
+        }
+        throw std::runtime_error(
+            fmt::format("mkdir({}) failed with errno={}: \"{}\"", std::string(dir), errno, strerror(errno)));
+    };
     auto path = std::filesystem::temp_directory_path();
     path.append("hololink");
+    make_shared_directory(path);
     path.append(serial_number_);
-    if (!std::filesystem::exists(path)) {
-        if (!std::filesystem::create_directories(path)) {
-            throw std::runtime_error(
-                fmt::format("create_directory({}) failed with errno={}: \"{}\"", std::string(path), errno, strerror(errno)));
-        }
-    }
+    make_shared_directory(path);
     path.append(name);
     return std::string(path);
 }
@@ -2961,18 +3064,35 @@ Hololink::AsyncEventListener::~AsyncEventListener()
 
 bool Hololink::ptp_synchronize(const std::shared_ptr<Timeout>& timeout)
 {
+    const double start_s = Timeout::now_s();
+    uint32_t previous_status = 0;
+    bool status_reported = false;
     while (true) {
-        if (ptp_synchronized()) {
-            break;
+        try {
+            const bool synchronized = ptp_synchronized();
+            const double elapsed_s = Timeout::now_s() - start_s;
+            if (synchronized) {
+                HSB_LOG_INFO("ptp_synchronize: synchronized after {:.3f}s; PTP_SYNC_STAT={:#X}.", elapsed_s, ptp_sync_stat_);
+                return true;
+            }
+            if (!status_reported || ptp_sync_stat_ != previous_status) {
+                HSB_LOG_INFO("ptp_synchronize: waiting after {:.3f}s; PTP_SYNC_STAT={:#X}.", elapsed_s, ptp_sync_stat_);
+                previous_status = ptp_sync_stat_;
+                status_reported = true;
+            }
+        } catch (const TimeoutError& e) {
+            // ptp_synchronized() reads FPGA_PTP_SYNC_STAT over the control plane.
+            // That read can time out transiently with TimeoutError exception while the board is still
+            // settling (e.g. immediately after reset())
+            HSB_LOG_DEBUG("ptp_synchronize: transient control-plane read timeout ({}); retrying.", e.what());
         }
         if (timeout->expired()) {
-            HSB_LOG_ERROR("ptp_synchronize timed out; PTP_SYNC_STAT={:#X}.", ptp_sync_stat_);
+            const double elapsed_s = Timeout::now_s() - start_s;
+            HSB_LOG_ERROR("ptp_synchronize timed out after {:.3f}s; PTP_SYNC_STAT={:#X}.", elapsed_s, ptp_sync_stat_);
             return false;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(100));
     }
-    // Time is sync'd now.
-    return true;
 }
 
 bool Hololink::ptp_synchronized()
@@ -3138,21 +3258,8 @@ public:
 
 Hololink::FrameMetadata Hololink::deserialize_metadata(const uint8_t* metadata_buffer, unsigned metadata_buffer_size)
 {
-    hololink::core::Deserializer deserializer(metadata_buffer, metadata_buffer_size);
-    FrameMetadata r = {}; // fill with 0s
-    uint16_t ignored = 0;
-    if (!(deserializer.next_uint32_be(r.flags)
-            && deserializer.next_uint32_be(r.psn)
-            && deserializer.next_uint32_be(r.crc)
-            && deserializer.next_uint64_be(r.timestamp_s)
-            && deserializer.next_uint32_be(r.timestamp_ns)
-            && deserializer.next_uint64_be(r.bytes_written)
-            && deserializer.next_uint16_be(ignored)
-            && deserializer.next_uint16_be(r.frame_number)
-            && deserializer.next_uint64_be(r.metadata_s)
-            && deserializer.next_uint32_be(r.metadata_ns))) {
-        throw std::runtime_error(fmt::format("Buffer underflow in metadata"));
-    }
+    const FrameMetadata r = hololink::core::parse_frame_metadata(
+        metadata_buffer, metadata_buffer_size);
     HSB_LOG_TRACE("flags={:#x} psn={:#x} crc={:#x} timestamp_s={:#x} timestamp_ns={:#x} bytes_written={:#x} frame_number={:#x}",
         r.flags, r.psn, r.crc, r.timestamp_s, r.timestamp_ns, r.bytes_written, r.frame_number);
     return r;
@@ -3340,7 +3447,8 @@ void Hololink::async_event_thread()
             }
             if (received_bytes != -1) {
                 // This is outside specification for recvfrom
-                throw std::runtime_error(fmt::format("async_event_thread recvfrom received_bytes={} errno={}", received_bytes, errno));
+                HSB_LOG_ERROR("async_event_thread recvfrom received_bytes={} errno={}; exiting.", received_bytes, errno);
+                return;
             }
             // In this case, errno is set.
             if (errno == EAGAIN) {
@@ -3349,8 +3457,20 @@ void Hololink::async_event_thread()
             if (errno == EWOULDBLOCK) {
                 continue;
             }
-            HSB_LOG_ERROR("async_event_thread errno={}.", errno);
-            throw std::runtime_error(fmt::format("async_event_thread recvfrom errno={}", errno));
+            if (errno == EINTR) {
+                continue;
+            }
+            if (errno == EBADF) {
+                // The socket was closed under us (stop() ran); same as the
+                // received_bytes == 0 shutdown path.
+                HSB_LOG_DEBUG("async_event_thread shutdown (socket closed).");
+                return;
+            }
+            // Any other error ends the thread. Never throw out of a thread
+            // body: an uncaught exception here is std::terminate for the whole
+            // process, on what is only the loss of async-event delivery.
+            HSB_LOG_ERROR("async_event_thread recvfrom errno={}; exiting.", errno);
+            return;
         }
 
         received.resize(received_bytes);

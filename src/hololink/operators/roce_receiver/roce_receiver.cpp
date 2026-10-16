@@ -43,7 +43,6 @@ public:
     common::UniqueCUevent metadata_event_;
 
     uint64_t received_frame_number_;
-    uint64_t rx_write_requests_; // over all of time
     uint32_t imm_data_;
     struct timespec received_;
     uint32_t dropped_;
@@ -86,9 +85,9 @@ RoceReceiver::RoceReceiver(
     , ready_condition_(PTHREAD_COND_INITIALIZER)
     , dropped_(0)
     , done_(false)
+    , receive_path_failed_(false)
     , control_r_(-1)
     , control_w_(-1)
-    , rx_write_requests_fd_(-1)
     , frame_ready_([](const RoceReceiver&) {})
     , frame_number_()
     , monitor_running_()
@@ -116,22 +115,6 @@ RoceReceiver::RoceReceiver(
     control_r_ = pipe_fds[0];
     control_w_ = pipe_fds[1];
 
-    char rx_write_requests_filename[8192];
-    int written = snprintf(rx_write_requests_filename, sizeof(rx_write_requests_filename),
-        "/sys/class/infiniband/%s/ports/%d/hw_counters/rx_write_requests",
-        ibv_name_, ibv_port_);
-    if (written < 0) {
-        throw std::runtime_error("Error writing to rx_write_requests_filename.");
-    } else if (((size_t)written) >= sizeof(rx_write_requests_filename)) {
-        throw std::runtime_error("Buffer isn't large enough to compute rx_write_requests filename.");
-    } else {
-        rx_write_requests_fd_ = open(rx_write_requests_filename, O_RDONLY);
-    }
-    if (rx_write_requests_fd_ < 0) {
-        // Note that the rest of the code is OK if this occurs.
-        HSB_LOG_ERROR("Unable to fetch rx_write_requests; ignoring.");
-    }
-
     metadata_stream_.reset([] {
         CUstream stream;
         CudaCheck(cuStreamCreate(&stream, CU_STREAM_NON_BLOCKING));
@@ -143,7 +126,6 @@ RoceReceiver::~RoceReceiver()
 {
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
-    ::close(rx_write_requests_fd_); // we ignore an error here if fd==-1
 
     free(ibv_name_);
     free(peer_ip_);
@@ -152,6 +134,9 @@ RoceReceiver::~RoceReceiver()
 bool RoceReceiver::start()
 {
     HSB_LOG_DEBUG("Starting.");
+
+    // New IB resources should not inherit a previous run's failure state.
+    receive_path_failed_ = false;
 
     // ibv calls seem to have trouble with
     // reentrancy.  No problem; since we're only
@@ -536,13 +521,19 @@ void RoceReceiver::blocking_monitor()
         throw std::runtime_error(fmt::format("ibv_req_notify_cq failed, errno={}.", r));
     }
 
-    struct pollfd poll_fds[2] = {
+    // A dead CQ stops signaling its completion channel. Poll async_fd so fatal
+    // CQ/QP events can wake and terminate the receive path.
+    struct pollfd poll_fds[3] = {
         {
             .fd = control_r_,
             .events = POLLIN | POLLHUP | POLLERR,
         },
         {
             .fd = ib_completion_channel_->fd,
+            .events = POLLIN | POLLHUP | POLLERR,
+        },
+        {
+            .fd = ib_context_->async_fd,
             .events = POLLIN | POLLHUP | POLLERR,
         }
     };
@@ -570,6 +561,11 @@ void RoceReceiver::blocking_monitor()
             // that this loop is instructed to terminate.
             HSB_LOG_DEBUG("Closing.");
             break;
+        }
+
+        // Drain async events immediately because a dead CQ cannot wake us again.
+        if (poll_fds[2].revents) {
+            check_async_events();
         }
 
         // CQ event.  The Hololink device, on the last UDP/ROCE request, sends
@@ -613,12 +609,6 @@ void RoceReceiver::blocking_monitor()
                 frame_count++;
                 core::NvtxTrace::event_u64("frame_count", frame_count);
 
-                // Note some metadata
-                char buffer[1024];
-                lseek(rx_write_requests_fd_, 0, SEEK_SET); // may fail if fd==-1, we don't care
-                // if rx_write_requests_fd_ is -1, then buffer_size_ will be less than 0
-                ssize_t buffer_size = read(rx_write_requests_fd_, buffer, sizeof(buffer));
-
                 const uint32_t imm_data = ntohl(ib_wc.imm_data); // ibverbs just gives us the bytes here
                 const uint32_t page = page_from_imm(imm_data);
                 if (page >= pages_) {
@@ -631,24 +621,23 @@ void RoceReceiver::blocking_monitor()
                     throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
                 }
 
+                // Frames queue as long as descriptors are available, even before the
+                // consumer's first get_next_frame: replacing the queued frame during
+                // the consumer-attach window silently lost the first frame of every
+                // fast back-to-back burst (N requested, N-1 delivered, the last
+                // compute starved). Only recycle when the ring is truly exhausted,
+                // and always account the loss in dropped_.
                 RoceReceiverDescriptor* descriptor;
-                if (!consumer_ready_ && !ready_.empty()) {
-                    // if the consumer is not ready yet, avoid queueing up more frames
+                if (available_.empty()) {
                     descriptor = ready_.front();
                     ready_.pop();
-                } else {
-                    if (available_.empty()) {
-                        // if there is no available descriptor use the oldest ready one and drop the frame
-                        descriptor = ready_.front();
-                        ready_.pop();
-                        if (consumer_ready_) {
-                            HSB_LOG_DEBUG("No available descriptors, dropping oldest ready frame {}.", descriptor->received_frame_number_);
-                        }
-                        dropped_++;
-                    } else {
-                        descriptor = available_.front();
-                        available_.pop();
+                    if (consumer_ready_) {
+                        HSB_LOG_DEBUG("No available descriptors, dropping oldest ready frame {}.", descriptor->received_frame_number_);
                     }
+                    dropped_++;
+                } else {
+                    descriptor = available_.front();
+                    available_.pop();
                 }
 
                 descriptor->page_ = page;
@@ -657,13 +646,6 @@ void RoceReceiver::blocking_monitor()
                 copy_metadata_to_host(descriptor->page_, descriptor->metadata_buffer_.get(), descriptor->metadata_event_.get());
 
                 descriptor->received_frame_number_ = frame_count;
-                if ((buffer_size > 0) && (buffer_size < 1000)) {
-                    buffer[buffer_size] = '\0';
-                    descriptor->rx_write_requests_ = strtoull(buffer, NULL, 10);
-                    // otherwise we'll continue to use the 0 from the constructor
-                } else {
-                    descriptor->rx_write_requests_ = 0;
-                }
                 descriptor->imm_data_ = imm_data;
                 descriptor->received_.tv_sec = event_time.tv_sec;
                 descriptor->received_.tv_nsec = event_time.tv_nsec;
@@ -825,6 +807,11 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
 
     bool result = true;
     while (ready_.empty()) {
+        // A dead receive path cannot produce another frame.
+        if (receive_path_failed_.load()) {
+            result = false;
+            break;
+        }
         status = pthread_cond_timedwait(&ready_condition_, &ready_mutex_, &timeout);
         if (status == ETIMEDOUT) {
             result = false;
@@ -849,7 +836,6 @@ bool RoceReceiver::get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& met
 
         metadata.received_frame_number = ready_descriptor->received_frame_number_;
         metadata.dropped = ready_descriptor->dropped_;
-        metadata.rx_write_requests = ready_descriptor->rx_write_requests_;
         metadata.imm_data = ready_descriptor->imm_data_;
         metadata.received_s = ready_descriptor->received_.tv_sec;
         metadata.received_ns = ready_descriptor->received_.tv_nsec;
@@ -881,7 +867,9 @@ bool RoceReceiver::frames_ready()
     if (status != 0) {
         throw std::runtime_error(fmt::format("pthread_mutex_unlock returned status={}.", status));
     }
-    return !result;
+
+    // Failure makes get_next_frame() nonblocking, so keep the operator runnable.
+    return !result || receive_path_failed_.load();
 }
 
 const Hololink::FrameMetadata RoceReceiver::get_frame_metadata(void* metadata_buffer, CUevent metadata_event)
@@ -907,12 +895,38 @@ bool RoceReceiver::check_async_events()
         case IBV_EVENT_COMM_EST:
             // Communication established isn't an error; don't complain about it
             break;
+        case IBV_EVENT_CQ_ERR:
+        case IBV_EVENT_QP_FATAL:
+        case IBV_EVENT_QP_REQ_ERR:
+        case IBV_EVENT_QP_ACCESS_ERR:
+        case IBV_EVENT_DEVICE_FATAL:
+            // These events permanently stop CQ/QP completion delivery.
+            HSB_LOG_ERROR("Fatal receive-path event: {} ({}); the completion "
+                          "queue is dead, no further frames will arrive.",
+                static_cast<int>(event_type), ibv_event_type_str(event_type));
+            receive_path_failed_ = true;
+            break;
         default:
             HSB_LOG_ERROR("ib_async_event.event_type={} ({}).", static_cast<int>(event_type), ibv_event_type_str(event_type));
             break;
         }
 
         ibv_ack_async_event(&ib_async_event);
+    }
+
+    if (receive_path_failed_.load()) {
+        // Wake a consumer already waiting for a frame.
+        int r = pthread_mutex_lock(&ready_mutex_);
+        if (r != 0) {
+            throw std::runtime_error(fmt::format("pthread_mutex_lock returned r={}.", r));
+        }
+        pthread_cond_broadcast(&ready_condition_);
+        r = pthread_mutex_unlock(&ready_mutex_);
+        if (r != 0) {
+            throw std::runtime_error(fmt::format("pthread_mutex_unlock returned r={}.", r));
+        }
+        // Wake the operator's AsynchronousCondition.
+        frame_ready_(this[0]);
     }
     return true;
 }

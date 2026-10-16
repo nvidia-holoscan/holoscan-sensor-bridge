@@ -43,7 +43,7 @@ enum I2CStatus {
 };
 
 /**
- * @brief Abstract base class for all I2C-based emulated sensors giving them access to I2C transactions originating from the HSB host
+ * @brief Abstract base class for all I2C-based emulated sensors giving them access to I2C transactions originating from the HSB host.
  * @note configuration of the "bus" is done by HSBEmulator calling get_i2c_config(). Derived class can assume this only happens at most once before any calls to start() or reset() without an intervening call to stop()
  */
 class I2CPeripheral {
@@ -52,7 +52,7 @@ public:
     virtual ~I2CPeripheral() = default;
 
     /**
-     * @brief start the peripheral. This will be called when I2CController itself starts and should not be done by the client code
+     * @brief start the peripheral. This will be called when I2CController itself starts and should not be done by the client code.
      */
     virtual void start() { }
 
@@ -61,15 +61,15 @@ public:
      *
      * `def attach_to_i2c(self: hemu.I2CPeripheral, i2c_controller: hemu.I2CController, bus_address: int)`
      *
-     * @brief attach the peripheral to the I2C controller. This should be called by client code before start() is called
+     * @brief attach the peripheral to the I2C controller. This should be called by client code before start() is called.
      *
-     * @param i2c_controller The I2C controller to attach to. Retrieved from HSBEmulator with get_i2c(controller_address)
+     * @param i2c_controller The I2C controller to attach to. Retrieved from HSBEmulator with get_i2c(controller_address).
      * @param bus_address The bus address of the peripheral.
      */
     virtual void attach_to_i2c(I2CController& i2c_controller, uint8_t bus_address) = 0;
 
     /**
-     * @brief stop the peripheral. This will be called when the I2CController is stopped and should not be done by the client code
+     * @brief stop the peripheral. This will be called when the I2CController is stopped and should not be done by the client code.
      *
      * @note Peripheral should release all resources in case a subsequent start() is called.
      */
@@ -78,15 +78,15 @@ public:
     /**
      * python:
      *
-     * `def i2c_transaction(self: hemu.I2CPeripheral, peripheral_address: int, write_bytes: bytes, write_size: int, read_bytes: bytearray, read_size: int) -> hemu.I2CStatus`
+     * `def i2c_transaction(self: hemu.I2CPeripheral, peripheral_address: int, write_bytes: List[int], read_bytes: List[int]) -> hemu.I2CStatus`
      *
      * @brief perform an I2C transaction. This will be called by the I2CController when a transaction is requested.
      *
      * @param peripheral_address The peripheral address to communicate with.
      * @param write_bytes The bytes to write to the peripheral.
-     * @param write_size The size of the write bytes
+     * @param write_size The size of the write bytes.
      * @param read_bytes The bytes to read from the peripheral. This shall be filled with 0s to the requested read size and replaced by peripheral. This is to ensure peripheral can get the read count from read_bytes.size() and enough valid data is returned for no-ops.
-     * @param read_size The size of the read bytes
+     * @param read_size The size of the read bytes.
      * @return I2CStatus The status of the transaction.
      *
      * @note read request size is the size of the read_bytes vector as initialized by the caller

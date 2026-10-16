@@ -16,6 +16,7 @@
 import argparse
 import ctypes
 import os
+import threading
 
 import cuda.bindings.driver as cuda
 import cupy as cp
@@ -68,6 +69,25 @@ class HoloscanApplication(holoscan.core.Application):
         self._window_height = window_height
         self._window_width = window_width
         self._window_titles = window_titles
+        # Both receive pipelines share one Hawk. Keep it streaming until both
+        # receivers have stopped; otherwise the first CountCondition to finish
+        # stops both sensors and strands the slower pipeline below its limit.
+        self._camera_lifecycle_lock = threading.Lock()
+        self._camera_users = 0
+
+    def _start_camera(self):
+        with self._camera_lifecycle_lock:
+            if self._camera_users == 0:
+                self._camera.start()
+            self._camera_users += 1
+
+    def _stop_camera(self):
+        with self._camera_lifecycle_lock:
+            if self._camera_users == 0:
+                return
+            self._camera_users -= 1
+            if self._camera_users == 0:
+                self._camera.stop()
 
     def compose(self):
         self._camera.set_mode(self._camera_mode)
@@ -110,8 +130,8 @@ class HoloscanApplication(holoscan.core.Application):
             enumeration_metadata=sif_metadata,
             frame_context=self._cuda_context,
             frame_size=csi_to_bayer_operator.get_csi_length(),
-            device_start=lambda: self._camera.start(),
-            device_stop=lambda: self._camera.stop(),
+            device_start=self._start_camera,
+            device_stop=self._stop_camera,
         )
 
         profiler = PassThroughOp(self, name=f"profiler_{idx}")
@@ -210,12 +230,15 @@ def main():
 
     # CUDA section
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     # hololink channel(s) setup
     sif_list = SENSOR_ARG_TO_SIF[args.sensor]
@@ -340,7 +363,8 @@ def main():
         holo_iface.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
 
 if __name__ == "__main__":

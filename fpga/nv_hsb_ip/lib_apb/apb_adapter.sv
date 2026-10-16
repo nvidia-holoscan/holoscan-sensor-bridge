@@ -20,7 +20,7 @@ module apb_adapter
   parameter W_OFSET  = 9
 )(
   input                                               i_aclk,
-  input                                               i_arst_n,
+  input                                               i_arst,
   //Peripheral Data Bus address interface
   output                                              o_wren,
   output  [31:0]                                      o_addr,
@@ -59,8 +59,8 @@ assign o_apb_s2m.pserr    = i_apb_m2s.psel && i_apb_m2s.penable && reg_ready ? r
 assign o_apb_s2m.prdata   = reg_rdata;
 
 
-always @ (posedge i_aclk or negedge i_arst_n) begin
-  if (!i_arst_n) begin
+always_ff @(posedge i_aclk) begin
+  if (i_arst) begin
     reg_ready <= 1'b0 ;
     reg_error <= 1'b0 ;
     reg_rdChk <= 1'b0 ;

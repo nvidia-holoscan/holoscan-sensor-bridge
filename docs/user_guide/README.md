@@ -70,16 +70,17 @@ Or use the build script from the repo root (Docker or `--no-docker`).
 
 ## C++ API reference
 
-Fern generates the C++ API reference only from `src/hololink/emulation/`. Generate it
-explicitly with:
+Fern generates the C++ API reference from the headers in the current checkout.
+Generate it explicitly with:
 
 ```bash
 docs/make_docs.sh --with-library-mdx
 ```
 
-This requires Fern authentication. Builds with an explicit `FERN_TOKEN` generate it
-automatically; unauthenticated local checks use a placeholder page instead. Pass
-`--skip-library-mdx` to suppress automatic generation.
+Local generation requires a running Docker-compatible runtime because Fern starts its
+C++ parser in a sibling container. Builds with an explicit `FERN_TOKEN` generate the
+reference automatically; local checks without the explicit flag use a placeholder page.
+Pass `--skip-library-mdx` to suppress automatic generation.
 
 ## Publish preview
 

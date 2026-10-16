@@ -70,7 +70,7 @@ package HOLOLINK_pkg;
 // Sensor RX IF
 //-----------------------------------------------------
 
-  `define SENSOR_RX_IF_INST  1               // Number of Sensor RX Interface. Valid values: undefined, 1 - 32
+  `define SENSOR_RX_IF_INST  4               // Number of Sensor RX Interface. Valid values: undefined, 1 - 32
   //----------------------------------------------------------------------------------
   //If no Sensor RX Interfaces are used, then comment out "`define SENSOR_RX_IF_INST" 
   //This will remove Sensor RX IF I/Os from HOLOLINK_top module.
@@ -99,11 +99,11 @@ package HOLOLINK_pkg;
 // Sensor TX IF
 //-----------------------------------------------------
 
-  `define SENSOR_TX_IF_INST  1               // Number of Sensor TX Interface. Valid values: undefined, 1 - 32
+  `define SENSOR_TX_IF_INST  4               // Number of Sensor TX Interface. Valid values: undefined, 1 - 32
 
   `ifdef SENSOR_TX_IF_INST
-    localparam integer  SIF_TX_WIDTH        [`SENSOR_TX_IF_INST-1:0] = {512};                // Define width for each interface. 
-    localparam integer  SIF_TX_BUF_SIZE     [`SENSOR_TX_IF_INST-1:0] = '{default : 4096};   // Define buffer size for each interface. 
+    localparam integer  SIF_TX_WIDTH        [`SENSOR_TX_IF_INST-1:0] = '{default:`DATAPATH_WIDTH}; // Define width for each interface. 
+    localparam integer  SIF_TX_BUF_SIZE     [`SENSOR_TX_IF_INST-1:0] = '{default : 256};    // Define buffer size for each interface. 
   `endif
 
 //-----------------------------------------------------
@@ -132,6 +132,11 @@ package HOLOLINK_pkg;
 // Creates <REG_INST> number of APB register interfaces for user logic access
 //------------------------------------------------------------------------------
 
+  // User APB drops:
+  //   [2]    Timestamp ILA bank, switched internally to 4 sensor ILAs
+  //   [3]    SIF ILA bank, switched internally to 4 sensor ILAs
+  //   [4]    RAM player bank, switched internally to 4 sensor RAM players
+  //   [7:5]  Unused. Tied off in FPGA_top so the original 8-drop map still elaborates.
   `define REG_INST 8
 
 //------------------------------------------------------------------------------

@@ -39,6 +39,25 @@ namespace {
         F fn_;
     };
 
+    // A control-plane teardown op (channel.unconfigure() / device_stop()) issues
+    // a sendto() on the board's control socket, which can throw -- e.g. EBADF when
+    // that (shared, stereo) control socket was closed out from under us during
+    // shutdown (NvFusa's closeHandler closes an fd the control socket may have
+    // reused). stop() is invoked from GXF's noexcept codelet-stop path, so letting
+    // such a throw escape calls std::terminate(). Run these ops through here so a
+    // teardown-time control-plane failure is logged and swallowed instead.
+    template <typename F>
+    void guard_teardown(const char* what, F&& fn)
+    {
+        try {
+            fn();
+        } catch (const std::exception& e) {
+            HSB_LOG_ERROR("{} during teardown failed (ignored): {}", what, e.what());
+        } catch (...) {
+            HSB_LOG_ERROR("{} during teardown failed (ignored, unknown exception)", what);
+        }
+    }
+
 } // namespace
 
 NvSciBufAttrValColorFmt bayer_color_format(
@@ -395,10 +414,12 @@ void FusaCoeCaptureCore::stop(
 
     // device_stop() is control-plane teardown (a sendto to the board) and can
     // throw -- e.g. EBADF when the control socket was already torn down during a
-    // stereo/failed shutdown. Release owned resources on scope exit so that throw
-    // still tears everything down (and then propagates). Order matters: reset the
-    // CoE handle first -- it unregisters every buffer, needing both the handle and
-    // the buffers alive -- then free the buffers, then close the SciBuf module.
+    // stereo/failed shutdown -- so it is run through guard_teardown() (which logs
+    // and swallows) rather than allowed to escape into GXF's noexcept stop().
+    // Release owned resources on scope exit so a throw still tears everything down.
+    // Order matters: reset the CoE handle first -- it unregisters every buffer,
+    // needing both the handle and the buffers alive -- then free the buffers, then
+    // close the SciBuf module.
     OnScopeExit release([&] {
         coe_handler_.reset();
         {
@@ -414,10 +435,10 @@ void FusaCoeCaptureCore::stop(
             cuDevicePrimaryCtxRelease(cuda_device_);
             cuda_context_ = nullptr;
         }
-        channel.unconfigure();
+        guard_teardown("channel.unconfigure()", [&] { channel.unconfigure(); });
     });
 
-    device_stop();
+    guard_teardown("device_stop()", [&] { device_stop(); });
 }
 
 void FusaCoeCaptureCore::acquire_buffer_thread_func()
@@ -434,6 +455,20 @@ void FusaCoeCaptureCore::acquire_buffer_thread_func()
         auto buffer = in_flight_captures_.front();
         auto capture_status = coe_handler_->getCaptureStatus(
             buffer->sci_buf_, capture_timeout_ms_);
+        if (capture_status == NvFusaCaptureStatus::TIMEOUT) {
+            // A timeout is ordinary: NvFusaCapture's guidance is to pick one
+            // short enough to discard a late capture rather than stall. Treating
+            // it as fatal (it used to set capture_failed_) terminated the process
+            // from the caller's monitor thread on any sensor hiccup. The driver
+            // drops a timed-out request -- re-polling the buffer answers
+            // BAD_PARAMETER -- so recycle it and let the round-robin re-issue it.
+            in_flight_captures_.pop();
+
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            available_buffers_.push_back(buffer);
+            while (issue_capture()) { }
+            continue;
+        }
         if (capture_status != NvFusaCaptureStatus::OK) {
             HSB_LOG_DEBUG(
                 "acquire_buffer_thread_func: getCaptureStatus returned {} after "
@@ -826,11 +861,11 @@ void FusaCoeCaptureCore::rollback_failed_start(
             cuDevicePrimaryCtxRelease(cuda_device_);
             cuda_context_ = nullptr;
         }
-        channel.unconfigure();
+        guard_teardown("channel.unconfigure()", [&] { channel.unconfigure(); });
     });
 
     if (device_started && device_stop) {
-        device_stop();
+        guard_teardown("device_stop()", [&] { device_stop(); });
     }
 }
 

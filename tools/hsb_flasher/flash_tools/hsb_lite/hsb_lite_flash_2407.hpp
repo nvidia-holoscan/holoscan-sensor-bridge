@@ -24,13 +24,13 @@
 namespace hololink {
 
 /**
- * Flash firmware using raw UDP packets (blind mode).
+ * Flash firmware using UDP register writes.
  * For older FPGA versions that don't work with the Hololink library.
  *
- * @param ip_address IP address of the device
- * @param clnx_path Path to CLNX firmware file
- * @param cpnx_path Path to CPNX firmware file
- * @return true if flash succeeded (note: no verification possible)
+ * @param ip_address IP address of the device.
+ * @param clnx_path Path to CLNX firmware file.
+ * @param cpnx_path Path to CPNX firmware file.
+ * @return true if flash succeeded and read-back verification passed.
  */
 bool hsb_lite_flash_2407(const std::string& ip_address,
     const std::string& clnx_path,

@@ -2,6 +2,7 @@ __pycache__
 .cache
 *.swp
 ci/coverage.xml
+ci/cdash-results
 dist
 !docs/user_guide/fern/dist/
 !docs/user_guide/fern/dist/**
@@ -32,3 +33,11 @@ spi-vm.pid
 *.so
 !fpga/**/build
 docs/.fern-docker-home/
+# in-place kbuild of src/ehsb/kmod (`make -C src/ehsb/kmod`); the CMake target stages into <build>/ehsb/kmod instead
+src/ehsb/kmod/*.ko
+src/ehsb/kmod/*.o
+src/ehsb/kmod/*.mod
+src/ehsb/kmod/*.mod.c
+src/ehsb/kmod/.*.cmd
+src/ehsb/kmod/Module.symvers
+src/ehsb/kmod/modules.order

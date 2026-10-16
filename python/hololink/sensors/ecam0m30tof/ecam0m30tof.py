@@ -121,7 +121,10 @@ class ECam0M30Tof:
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported ECAM0M30TOF version:{version}, expected {VERSION}."
+            )
 
         # configure the sensor based on the mode
         self.configure_sensor(ecam0m30_tof_mode, depth_range)

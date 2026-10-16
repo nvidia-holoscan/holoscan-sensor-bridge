@@ -1,6 +1,7 @@
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+find_dependency(ZLIB)
 
 # Hololink config: provides imported targets under the hololink:: namespace
 

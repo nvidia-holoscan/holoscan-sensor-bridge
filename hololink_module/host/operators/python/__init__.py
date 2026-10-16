@@ -15,7 +15,7 @@ Holoscan never load this module.
 # holoscan::Operator (and holoscan::Fragment / Condition / Resource)
 # with pybind11's type system, which our operator's pybind class
 # references as a base type.
-import holoscan  # noqa: F401 — side-effect import for pybind type registration
+import holoscan.core  # noqa: F401 — side-effect import for pybind type registration
 
 from . import _hololink_module_operators as _native
 

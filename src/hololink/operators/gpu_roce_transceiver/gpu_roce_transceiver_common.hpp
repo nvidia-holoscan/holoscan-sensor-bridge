@@ -29,6 +29,7 @@
 #define DSEG_SIZE_3 28
 #define MAX_SEND_INLINE_WQE 44
 #define GPU_ROCE_TRANSCEIVER_DEBUG 0
+#define GPU_ROCE_TRANSCEIVER_MAX_QP 4
 
 #define WQE_NUM 64
 #define DOCA_UC_QP_RST2INIT_REQ_ATTR_MASK \
@@ -43,6 +44,8 @@
 #define ALIGN_SIZE(size, align) size = ((size + (align)-1) / (align)) * (align);
 
 #define GPU_ROCE_MAX_RECV_INLINE_WQE 32
+#define GPU_ROCE_EXIT_POLL_INTERVAL 1024 /* Polls between two reads of the exit flag while waiting */
+#define GPU_ROCE_RECV_EXIT 1 /* receive_or_exit(): exit flag set while waiting for a packet */
 #define DOCA_SIMULATE_RX_COMPUTE_TX 0
 #define DOCA_UNRELIABLE_BF 1
 

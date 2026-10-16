@@ -1,0 +1,27 @@
+# Doxyfile for Fern's C++ library docs generator (`fern docs md generate`),
+# covering the versioned `hololink::module` service interfaces.
+#
+# Fern's C++ parser takes ALIASES, PREDEFINED, FILE_PATTERNS and
+# OPTIMIZE_OUTPUT_FOR_C from this file, and supplies every other doxygen
+# setting itself -- including the directory to scan, which it reads from
+# `input.path` in docs.yml. Headers keep their internal declarations out of
+# the generated pages with `\cond` / `\endcond`.
+
+GENERATE_XML   = YES
+GENERATE_HTML  = NO
+GENERATE_LATEX = NO
+
+# The include tree an application compiles against: every versioned service
+# interface (`HololinkInterfaceV1`, `I2cInterfaceV1`, ...) plus the ABI and
+# status headers they depend on.
+INPUT         = hololink_module/host/include/hololink/module
+RECURSIVE     = NO
+
+# `.hpp` for the C++ interfaces, `.h` for the C-linkage headers
+# (`status.h`, `abi_check.h`, `service_locator.h`).
+FILE_PATTERNS = *.h *.hpp
+
+EXTRACT_ALL          = YES
+EXTRACT_STATIC       = YES
+WARN_IF_UNDOCUMENTED = NO
+QUIET                = YES

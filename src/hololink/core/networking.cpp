@@ -19,6 +19,7 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
@@ -176,11 +177,82 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_from_socket(in
     return { inet_ntoa(ip.sin_addr), binterface, mac };
 }
 
+std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_for_interface(
+    const std::string& interface, const std::string& destination_ip)
+{
+    if (interface.empty()) {
+        return local_ip_and_mac(destination_ip);
+    }
+
+    in_addr peer {};
+    const bool have_peer = (inet_pton(AF_INET, destination_ip.c_str(), &peer) == 1);
+
+    ifaddrs* ifa_list = nullptr;
+    if (getifaddrs(&ifa_list) != 0) {
+        HSB_LOG_DEBUG("getifaddrs failed with errno={}: \"{}\"; falling back to a "
+                      "routing-table lookup for {}.",
+            errno, strerror(errno), destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+    std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> ifa_guard(ifa_list, &freeifaddrs);
+
+    // An interface may hold several IPv4 addresses. Prefer the one whose subnet
+    // contains the board -- that is the address the board can actually reach,
+    // and the one the kernel would have put in ipi_spec_dst. Otherwise take the
+    // first, which is the single-address case.
+    std::string first_ipv4;
+    std::string subnet_ipv4;
+    for (ifaddrs* ifa = ifa_list; ifa != nullptr; ifa = ifa->ifa_next) {
+        if ((ifa->ifa_addr == nullptr) || (ifa->ifa_addr->sa_family != AF_INET)) {
+            continue;
+        }
+        if ((ifa->ifa_name == nullptr) || (interface != ifa->ifa_name)) {
+            continue;
+        }
+        const in_addr addr = reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr)->sin_addr;
+        char addr_buffer[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &addr, addr_buffer, sizeof(addr_buffer));
+        if (first_ipv4.empty()) {
+            first_ipv4 = addr_buffer;
+        }
+        if (have_peer && (ifa->ifa_netmask != nullptr)) {
+            const in_addr mask
+                = reinterpret_cast<const sockaddr_in*>(ifa->ifa_netmask)->sin_addr;
+            if ((addr.s_addr & mask.s_addr) == (peer.s_addr & mask.s_addr)) {
+                subnet_ipv4 = addr_buffer;
+                break;
+            }
+        }
+    }
+
+    const std::string local_ip = subnet_ipv4.empty() ? first_ipv4 : subnet_ipv4;
+    if (local_ip.empty()) {
+        HSB_LOG_DEBUG("Interface \"{}\" has no IPv4 address; falling back to a "
+                      "routing-table lookup for {}.",
+            interface, destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+
+    MacAddress mac {};
+    try {
+        mac = local_mac(interface);
+    } catch (const std::exception& e) {
+        HSB_LOG_DEBUG("No MAC for interface \"{}\" ({}); falling back to a "
+                      "routing-table lookup for {}.",
+            interface, e.what(), destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+
+    HSB_LOG_TRACE("local_ip_and_mac_for_interface interface={} destination_ip={} -> local_ip={}",
+        interface, destination_ip, local_ip);
+    return { local_ip, interface, mac };
+}
+
 /**
  * @brief
  *
  * @param interface
- * @return MacAddress
+ * @return MacAddress.
  */
 MacAddress local_mac(const std::string& interface)
 {

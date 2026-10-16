@@ -26,12 +26,21 @@ option(HOLOLINK_MODULE_BUILD_OPERATORS
 # (hololink::hsb_lite::headers, hololink::leopard_vb1940::headers) exist
 # by the time the per-sensor camera drivers link against them. host/
 # itself stays first because it defines hololink::module_headers,
-# which everything below depends on.
+# which everything below depends on. host/pcie precedes module/hsb_pcie:
+# it defines hololink::module::pcie_headers (the uapi / regs / sysfs
+# headers) that the hsb_pcie archive and header target link; the receiver
+# archive in host/pcie links hololink::hsb_pcie::headers in return, which
+# is fine as a forward reference (link names resolve at generate time).
 add_subdirectory(host)
 add_subdirectory(module/core)
+if(HOLOLINK_BUILD_PCIE)
+  add_subdirectory(host/pcie)
+  add_subdirectory(module/hsb_pcie)
+endif()
 add_subdirectory(module/hsb_lite)
 add_subdirectory(module/hsb_lite_2510)
 add_subdirectory(module/leopard_vb1940)
+add_subdirectory(module/leopard_vb1940_2510)
 add_subdirectory(module/taurotech_da326)
 add_subdirectory(module/tutorial)
 add_subdirectory(host/operators)

@@ -1,0 +1,82 @@
+## Description: <br>
+Create or port Hololink example apps across receiver types, cameras, and pipelines. <br>
+
+This skill is ready for commercial/non-commercial use. <br>
+
+## Owner
+NVIDIA <br>
+
+### License/Terms of Use: <br>
+Apache-2.0 <br>
+## Use Case: <br>
+Developers and engineers who need to create or port Hololink/HSB example Python applications across different receiver transports (RoCE, Linux, FuSa CoE, GPU RoCE), cameras, and processing pipelines. <br>
+
+### Deployment Geography for Use: <br>
+Global <br>
+
+## Requirements / Dependencies: <br>
+**Requires API Key or External Credential:** [No] <br>
+**Credential Type(s):** [None] <br>
+
+Do not include secrets in prompts/logs/output; use least-privilege credentials; rotate keys as appropriate. <br>
+
+## Known Risks and Mitigations: <br>
+Risk: Review before execution as proposals could introduce incorrect or misleading guidance into skills. <br>
+Mitigation: Review and scan skill before deployment. <br>
+
+## Reference(s): <br>
+- [Pipeline Reference](references/pipeline-reference.md) <br>
+- [Receiver Reference](references/receiver-reference.md) <br>
+
+
+## Skill Output: <br>
+**Output Type(s):** [Code, Files] <br>
+**Output Format:** [Python source files] <br>
+**Output Parameters:** [1D] <br>
+**Other Properties Related to Output:** [None] <br>
+
+## Evaluation Agents Used: <br>
+- Claude Code (`aws/anthropic/bedrock-claude-opus-4-8`) <br>
+- Codex (`openai/openai/gpt-5.5`) <br>
+
+
+
+## Evaluation Tasks: <br>
+3 evaluation tasks (3 positive) in isolated k8s-sandbox pods, dataset digest sha256:68dbcb03e1e723d45f0e3265fcb32db400b2e2f9508ec72a59bb87fda10bead7. <br>
+
+## Evaluation Metrics Used: <br>
+Reported benchmark dimensions: <br>
+- Security: Whether the skill is safe to use (unsafe operations, secret leakage, unauthorized access). <br>
+- Correctness: Whether the final answer is correct against the reference answer. <br>
+- Discoverability: Whether the right skill was found and executed when needed. <br>
+- Effectiveness: Whether the skill helped complete the user's goal and expected workflow (goal_accuracy 50% + behavior_check 50%). <br>
+- Efficiency: Whether the skill avoided wasted tool or skill usage (routing quality, workspace-aware reads, productive tool use). <br>
+
+Underlying evaluation signals used in this run: <br>
+- `security`: Checks for unsafe operations, secret leakage, and unauthorized access. <br>
+- `skill_execution`: Whether the expected skill was found and executed. <br>
+- `skill_efficiency`: Routing quality, workspace-aware skill reads, and productive tool use. <br>
+- `accuracy`: Final-answer correctness against the reference answer. <br>
+- `goal_accuracy`: Whether the user's goal was achieved. <br>
+- `behavior_check`: Whether the expected workflow behavior was followed. <br>
+
+
+
+## Evaluation Results: <br>
+| Measure | Claude Code (Baseline → Skill Uplift) | Codex (Baseline → Skill Uplift) |
+|---|---:|---:|
+| Overall | Not available | 43% → 84% (+41 points) |
+| Security | Not available | 83% → 83% (±0 points) |
+| Correctness | Not available | 47% → 100% (+53 points) |
+| Discoverability | Not available | 33% → 75% (+42 points) |
+| Effectiveness | Not available | 18% → 77% (+58 points) |
+| Efficiency | Not available | 33% → 85% (+52 points) |
+
+## Skill Version(s): <br>
+1.0.0 (source: frontmatter) <br>
+
+## Ethical Considerations: <br>
+NVIDIA believes Trustworthy AI is a shared responsibility and we have established policies and practices to enable development for a wide array of AI applications. When downloaded or used in accordance with our terms of service, developers should work with their internal team to ensure this skill meets requirements for the relevant industry and use case and addresses unforeseen product misuse. <br>
+
+(For Release on NVIDIA Platforms Only) <br>
+Please report quality, risk, security vulnerabilities or NVIDIA AI Concerns [here](https://app.intigriti.com/programs/nvidia/nvidiavdp/detail). <br>

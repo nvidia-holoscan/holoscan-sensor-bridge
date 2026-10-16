@@ -24,6 +24,9 @@ f=0
 igpu=0
 dgpu=0
 usage=1
+# Resolved --no-cache flag passed to docker build. Enabled by the --no-cache
+# option or the NO_CACHE=1 environment variable (the option wins).
+NO_CACHE_ARG=
 GPU_CONFIG=
 HOLOLINK_ROCE_USE_GPU_VRAM=ON
 # Empty means "not set on the command line"; the default is resolved later
@@ -53,6 +56,9 @@ do
             ;;
         "--disable-roce-gpu-vram")
             HOLOLINK_ROCE_USE_GPU_VRAM=OFF
+            ;;
+        "--no-cache")
+            NO_CACHE_ARG="--no-cache"
             ;;
         --use-sccache=*)
             case "${1#--use-sccache=}" in
@@ -88,8 +94,16 @@ fi
 
 if [ $usage -ne 0 ]
 then
-echo "Usage: $0 [-f] --igpu|--dgpu [--disable-roce-gpu-vram] [--use-sccache=0|1]" >&2
+echo "Usage: $0 [-f] --igpu|--dgpu [--disable-roce-gpu-vram] [--use-sccache=0|1] [--no-cache]" >&2
 exit 1
+fi
+
+# Resolve --no-cache: the command-line option wins; otherwise honor the NO_CACHE
+# environment variable. This lets callers (e.g. CI) force a cacheless build by
+# exporting NO_CACHE=1
+if [ -z "$NO_CACHE_ARG" ] && [ "$NO_CACHE" = "1" ]
+then
+    NO_CACHE_ARG="--no-cache"
 fi
 
 # get the product name from the system. L4T and DGX OS support Desktop Management Interface (DMI)
@@ -346,6 +360,7 @@ set -x
 # the dgpu or igpu stages that aren't included in the final image we're
 # creating.
 DOCKER_BUILDKIT=1 docker build \
+    $NO_CACHE_ARG \
     --network=host \
     --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     --build-arg "HSDK_VERSION=$HSDK_VERSION" \
@@ -358,8 +373,10 @@ DOCKER_BUILDKIT=1 docker build \
 
 # Build a container that has python extensions set up.
 DOCKER_BUILDKIT=1 docker build \
+    $NO_CACHE_ARG \
     --network=host \
     --build-arg CONTAINER_VERSION=hololink-prototype:$VERSION \
+    --build-arg "CONTAINER_TYPE=$CONTAINER_TYPE" \
     --build-arg "INSTALL_ENVIRONMENT=$INSTALL_ENVIRONMENT" \
     --build-arg "CUDAARCHS=$HOLOLINK_CUDA_ARCHS" \
     --build-arg "HOLOLINK_ROCE_USE_GPU_VRAM=$HOLOLINK_ROCE_USE_GPU_VRAM" \
@@ -367,4 +384,3 @@ DOCKER_BUILDKIT=1 docker build \
     -t hololink-demo:$VERSION \
     -f $HERE/Dockerfile.demo \
     $ROOT
-

@@ -85,7 +85,7 @@ protected:
     void frame_ready();
 
 private:
-    bool ok_ = false;
+    bool ok_ = true; // start true so the FIRST ingress timeout is logged too
     std::atomic<bool> running_ = false;
 };
 

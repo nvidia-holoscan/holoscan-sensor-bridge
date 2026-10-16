@@ -20,6 +20,7 @@ module HOLOLINK_top
   import HOLOLINK_pkg::*;
   import apb_pkg::*;
   import regmap_pkg::*;
+  import packetizer_pkg::*;
 #(
   parameter BUILD_REV = 48'h0
 )(
@@ -30,6 +31,7 @@ module HOLOLINK_top
   // Control Plane
   input                           i_apb_clk,
   output                          o_apb_rst,
+`ifdef REG_INST
   // APB Register Interface
   output [`REG_INST-1      :0]    o_apb_psel,
   output                          o_apb_penable,
@@ -39,6 +41,7 @@ module HOLOLINK_top
   input  [`REG_INST-1      :0]    i_apb_pready,
   input  [31               :0]    i_apb_prdata      [`REG_INST-1:0],
   input  [`REG_INST-1      :0]    i_apb_pserr,
+`endif
 //------------------------------------------------------------------------------------------------//
 // User Auto Initialization Complete
 //------------------------------------------------------------------------------------------------//
@@ -107,7 +110,7 @@ module HOLOLINK_top
   output [`SPI_INST-1      :0]    o_spi_sck,
   input  [3                :0]    i_spi_sdio        [`SPI_INST-1:0],
   output [3                :0]    o_spi_sdio        [`SPI_INST-1:0],
-  output [`SPI_INST-1      :0]    o_spi_oen,
+  output [3                :0]    o_spi_oen         [`SPI_INST-1:0],
 `endif
 `ifdef I2C_INST
   // I2C Interface
@@ -148,7 +151,7 @@ module HOLOLINK_top
 `endif
 );
 
-localparam HOLOLINK_REV = 16'h2606;
+localparam HOLOLINK_REV = 16'h2609;
 localparam HOLOLINK_BACKWARD_COMPAT_REV = 16'h2603;
 
 `ifdef SYNC_CLK_HIF_APB
@@ -161,6 +164,18 @@ localparam HOLOLINK_BACKWARD_COMPAT_REV = 16'h2603;
   localparam SYNC_CLK_HIF_PTP = 1;
 `else
   localparam SYNC_CLK_HIF_PTP = 0;
+`endif
+
+`ifdef REG_INST
+  localparam NUM_REG_INST = `REG_INST;
+`else
+  localparam NUM_REG_INST = 0;
+`endif
+
+`ifdef DISABLE_VLAN
+  localparam VLAN_DISABLE = 1;
+`else
+  localparam VLAN_DISABLE = 0;
 `endif
 
 //------------------------------------------------------------------------------------------------//
@@ -370,6 +385,7 @@ generate
       .AXI_LS_DWIDTH                     ( 8                                          ),
       .MTU                               ( `HOST_MTU                                  ),
       .USER_WIDTH                        ( VLAN_TUSER                                 ),
+      .VLAN_DISABLE                      ( VLAN_DISABLE                               ),
       .NUM_LS_INST                       ( NUM_LS_RX_INST                             ),
       `ifdef SENSOR_TX_IF_INST
       .N_QP                              ( `SENSOR_TX_IF_INST                         ),
@@ -548,19 +564,23 @@ logic         eeprom_dval;
 logic eeprom_dval_r;
 always_ff @(posedge i_apb_clk) begin
   if (o_apb_rst) begin
+    init_done     <= 1'b0;
     eeprom_dval_r <= 1'b0;
   end
   else begin
     if (eeprom_dval) begin
       eeprom_dval_r <= eeprom_dval;
     end
+
+    if (eeprom_dval_r && sys_init_done) begin
+      init_done <= 1'b1;
+    end
   end
 end
 
-assign init_done = eeprom_dval_r && sys_init_done;
 assign o_init_done = init_done;
 
-data_sync u_init_done_sync ( .clk (i_hif_clk), .rst_n (!o_hif_rst), .sync_in(init_done), .sync_out(init_done_hif_clk) );
+data_sync u_init_done_sync ( .clk (i_hif_clk), .rst (o_hif_rst), .sync_in(init_done), .sync_out(init_done_hif_clk) );
 
 //------------------------------------------------------------------------------------------------//
 // APB Interconnect
@@ -570,8 +590,34 @@ data_sync u_init_done_sync ( .clk (i_hif_clk), .rst_n (!o_hif_rst), .sync_in(ini
 apb_m2s s_apb_m2s_per [3];
 apb_s2m s_apb_s2m_per [3];
 
+localparam N_MIN_REG_INST = (NUM_REG_INST==0) ? 1 : NUM_REG_INST;
+
+logic [N_MIN_REG_INST-1:0]   apb_psel;
+logic                        apb_penable;
+logic [31:0]                 apb_paddr;
+logic [31:0]                 apb_pwdata;
+logic                        apb_pwrite;
+logic [N_MIN_REG_INST-1:0]   apb_pready;
+logic [31:0]                 apb_prdata [N_MIN_REG_INST-1:0];
+logic [N_MIN_REG_INST-1:0]   apb_pserr;
+
+`ifdef REG_INST
+  assign o_apb_psel    = apb_psel;
+  assign o_apb_penable = apb_penable;
+  assign o_apb_paddr   = apb_paddr;
+  assign o_apb_pwdata  = apb_pwdata;
+  assign o_apb_pwrite  = apb_pwrite;
+  assign apb_pready    = i_apb_pready;
+  assign apb_prdata    = i_apb_prdata;
+  assign apb_pserr     = i_apb_pserr;
+`else
+  assign apb_pready    = '0;
+  assign apb_prdata    = '{default:0};
+  assign apb_pserr     = '0;
+`endif
+
 apb_intc_top #(
-  .N_EXT_APB        ( `REG_INST          ),
+  .N_EXT_APB        ( NUM_REG_INST       ),
   .N_SENSOR_RX      ( NUM_SENSOR_RX      ),
   .N_SENSOR_RX_MOD  ( num_sen_rx_mod     ),
   .N_SENSOR_TX      ( NUM_SENSOR_TX      ),
@@ -604,18 +650,19 @@ apb_intc_top #(
   // Connect to Peripheral Modules
   .i_apb_s2m_per      ( s_apb_s2m_per      ),
   .o_apb_m2s_per      ( s_apb_m2s_per      ),
+  // Connect to User Modules, not using defined type struct
+  .o_apb_psel         ( apb_psel           ),
+  .o_apb_penable      ( apb_penable        ),
+  .o_apb_paddr        ( apb_paddr          ),
+  .o_apb_pwdata       ( apb_pwdata         ),
+  .o_apb_pwrite       ( apb_pwrite         ),
+  .i_apb_pready       ( apb_pready         ),
+  .i_apb_prdata       ( apb_prdata         ),
+  .i_apb_pserr        ( apb_pserr          ),
   // Connect to Bridge Module
   .i_apb_s2m_bridge   ( s_apb_s2m_bridge   ),
-  .o_apb_m2s_bridge   ( s_apb_m2s_bridge   ),
-  // Connect to User Modules, not using defined type struct
-  .o_apb_psel         ( o_apb_psel         ),
-  .o_apb_penable      ( o_apb_penable      ),
-  .o_apb_paddr        ( o_apb_paddr        ),
-  .o_apb_pwdata       ( o_apb_pwdata       ),
-  .o_apb_pwrite       ( o_apb_pwrite       ),
-  .i_apb_pready       ( i_apb_pready       ),
-  .i_apb_prdata       ( i_apb_prdata       ),
-  .i_apb_pserr        ( i_apb_pserr        )
+  .o_apb_m2s_bridge   ( s_apb_m2s_bridge   )
+
 );
 
 //------------------------------------------------------------------------------------------------//
@@ -838,7 +885,7 @@ assign enum_data = {
 
 data_sync u_eeprom_ip_addr_vld_sync (
   .clk      ( i_hif_clk                  ),
-  .rst_n    ( !o_hif_rst                 ),
+  .rst      ( o_hif_rst                  ),
   .sync_in  ( eeprom_ip_addr_vld         ),
   .sync_out ( eeprom_ip_addr_vld_hif_clk )
 );
@@ -920,6 +967,7 @@ generate
       .N_INPT                   ( PORT_NUM                                  ),
       .W_DATA                   ( `HOST_WIDTH                               ),
       .W_USER                   ( VLAN_TUSER                                ),
+      .VLAN_DISABLE             ( VLAN_DISABLE                             ),
       .SYNC_CLK                 ( SYNC_CLK_HIF_APB                          )
     ) u_eth_pkt  (
       .i_pclk                   ( i_hif_clk                                 ),
@@ -989,7 +1037,7 @@ streaming_cdc #(
 
   logic                         spi_csn;
   logic                         spi_sck;
-  logic                         spi_oen;
+  logic [3                  :0] spi_oen;
   logic [3                  :0] spi_sdio_i;
   logic [3                  :0] spi_sdio_o;
   logic [$clog2(`SPI_INST)-1:0] spi_bus_en;
@@ -1000,7 +1048,7 @@ streaming_cdc #(
       assign o_spi_csn [i] = (spi_bus_en == i) ? spi_csn    : 1'b1;
       assign o_spi_sck [i] = (spi_bus_en == i) ? spi_sck    : 1'b0;
       assign o_spi_sdio[i] = (spi_bus_en == i) ? spi_sdio_o : 4'h0;
-      assign o_spi_oen [i] = (spi_bus_en == i) ? spi_oen    : 1'b0;
+      assign o_spi_oen [i] = (spi_bus_en == i) ? spi_oen    : 4'h0;
     end
   endgenerate
 
@@ -1396,6 +1444,16 @@ streaming_cdc #(
     return pos;
   endfunction
 
+  // Platforms select static packetizer formats per SIF by defining
+  // SIF_RX_PCK_PATTERNS as a list of PKT_<format> masks in their definition
+  // file. The names are resolved here so the definition file stays free of any
+  // dependency on packetizer_pkg. Without the define, every pattern is enabled.
+  `ifdef SIF_RX_PCK_PATTERNS
+    localparam logic [63:0] PACK_PATTERN_MASKS [`SENSOR_RX_IF_INST-1:0] = `SIF_RX_PCK_PATTERNS;
+  `else
+    localparam logic [63:0] PACK_PATTERN_MASKS [`SENSOR_RX_IF_INST-1:0] = '{default:{64{1'b1}}};
+  `endif
+
     generate
       for (i=0; i<`SENSOR_RX_IF_INST; i++) begin: gen_pack_inst
         assign sen_rx_mux_axis_tvalid[i] = sen_rx_data_gen_axis_mux[i] ? sen_rx_data_gen_axis_tvalid[i] : i_sif_axis_tvalid[i];
@@ -1411,6 +1469,7 @@ streaming_cdc #(
         localparam PACK_MIXED_VP_SIZE   = 0;
         localparam PACK_DYN_VP          = 0;
         localparam PACK_NUM_CYCLES      = SIF_RX_PACKETIZER_EN[i] ? SIF_RX_NUM_CYCLES[i] : 1;
+        localparam logic [63:0] PACK_PATTERN_MASK = PACK_PATTERN_MASKS[i];
 
         logic [SIF_VP_INST-1:0]     pkt_raw_sof;
         logic [SIF_VP_INST-1:0]     pkt_raw_axis_tvalid;
@@ -1431,6 +1490,7 @@ streaming_cdc #(
           .DYNAMIC_VP       ( PACK_DYN_VP             ),
           .NUM_CYCLES       ( PACK_NUM_CYCLES         ),
           .PACKETIZER_ENABLE( SIF_RX_PACKETIZER_EN[i] ),
+          .PATTERN_MASK     ( PACK_PATTERN_MASK        ),
           .MTU              ( `HOST_MTU               )
         ) packetizer_top_inst (
           // Register Map, abp clk domain
@@ -1844,7 +1904,7 @@ streaming_cdc #(
     axis_checker #(
     .STBL_CHECK  (1),
     .NLST_BT_B2B (1),
-    .MIN_PKTL_CHK (1),
+    .MIN_PKTL_CHK (0),
     .MAX_PKTL_CHK (1),
     .AXI_TDATA   (`HOST_WIDTH),
     .AXI_TUSER   (`HOSTUSER_WIDTH),

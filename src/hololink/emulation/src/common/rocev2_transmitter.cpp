@@ -159,8 +159,9 @@ static inline uint32_t calculate_crc(const ETH_BufferTypeDef* tx_buffer)
 #endif
 
 // tx_buffer_base is the first buffer in the chain that does not contain the CRC
-// it must include all the headers and the payload
-uint32_t condition_packet_crc(RoCEv2Ctxt* metadata, const ETH_BufferTypeDef* tx_buffer_base)
+// it must include all the headers and the payload (and the quadlet pad chunk, if any;
+// pad_bytes is its length, 0..3, so dmalen can exclude it and BTH PadCnt can report it)
+uint32_t condition_packet_crc(RoCEv2Ctxt* metadata, const ETH_BufferTypeDef* tx_buffer_base, uint8_t pad_bytes)
 {
     // set up headers
     struct iphdr* ip_header = (struct iphdr*)(RoCEv2Ctxt_get_buffer_base(metadata) + IP_HDR_OFFSET);
@@ -184,7 +185,11 @@ uint32_t condition_packet_crc(RoCEv2Ctxt* metadata, const ETH_BufferTypeDef* tx_
     if (bt_header->opcode == IB_OPCODE_WRITE_IMMEDIATE) {
         payload_size -= sizeof(uint32_t);
     }
+    // dmalen is the DMA length the responder writes; the quadlet pad rides in the
+    // packet (and the iCRC) but is not data. Report it in BTH PadCnt (flags 5:4).
+    payload_size -= pad_bytes;
     ret_header->dmalen = htonl((uint32_t)payload_size);
+    bt_header->flags = (uint8_t)((bt_header->flags & ~0x30u) | ((pad_bytes & 3u) << 4));
     // va is updated in send_packet because it must happen after the buffer is sent since we must know that data was sent to update this value
     // an alternative is to keep separate track of what this address should be in the metadata, but that's redundant. Another implementation can do this
     // ret_header->va
@@ -258,6 +263,18 @@ int64_t RoCEv2Transmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size
         goto cleanup;
     }
 
+    // The destination registers above are read live, but payload_size was latched by
+    // update_metadata() before this call (and, for a device-memory frame, before a
+    // cudaMemcpy that can take a millisecond).  The host writes DP_PACKET_SIZE before
+    // DP_HOST_IP / DP_HOST_UDP_PORT, so a snapshot taken while the data plane was still
+    // unconfigured can pair payload_size == 0 with a destination that has since become
+    // valid.  send_packet() consumes payload_size bytes per packet, so entering the loop
+    // below with a zero would spin forever, never emitting a frame.  Skip this frame
+    // instead; the next update_metadata() picks up the configured size.
+    if (!rocev2_ctxt->payload_size) {
+        goto cleanup;
+    }
+
     if (!RoCEv2Ctxt_is_in_use(rocev2_ctxt)) {
         RoCEv2Ctxt_mark_in_use(rocev2_ctxt);
         update_packet_headers(rocev2_ctxt);
@@ -271,6 +288,14 @@ int64_t RoCEv2Transmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size
 
         int32_t sent_bytes = send_packet(rocev2_ctxt, buffer, buffer_size, &frame_metadata);
         if (sent_bytes < 0) {
+            n_bytes_sent = -1;
+            goto cleanup;
+        }
+        if ((sent_bytes == 0) && buffer_size) {
+            // send_packet() consumes min(payload_size, buffer_size) bytes, so this can
+            // only happen with payload_size == 0 -- which the check above rules out.
+            // Fail loudly if it ever does; the alternative is spinning here forever.
+            Error_Handler("RoCEv2Transmitter::send() made no forward progress");
             n_bytes_sent = -1;
             goto cleanup;
         }
@@ -400,8 +425,34 @@ int32_t send_packet(RoCEv2Ctxt* rocev2_ctxt, const uint8_t* buffer, size_t buffe
         tx_buffers[buffer_index - 1].next = &tx_buffers[buffer_index];
     }
 
-    // [last] iCRC trailer (computed across the chain assembled so far)
-    uint32_t crc = condition_packet_crc(rocev2_ctxt, &tx_buffers[0]);
+    // [next] quadlet pad. InfiniBand carries the payload padded to a 4-byte
+    // boundary and reports the pad in BTH PadCnt; a packet whose payload is not a
+    // quadlet multiple is malformed and RDMA hardware drops it silently (the
+    // software UDP receivers never check, which is why loopback hid this). Only
+    // a final data packet of a frame_size % 4 != 0 frame needs it: the merged
+    // FrameMetadata path ends on metadata_offset + 128, which is aligned. The
+    // pad is not part of dmalen (condition_packet_crc subtracts it) but IS
+    // covered by the iCRC. Chain budget: the pad only arises when FrameMetadata
+    // is NOT merged, so [hdr, imm?, payload, pad, crc] stays within kMaxTxBuffers
+    // (== ETH_TX_DESC_CNT on STM32); the guard keeps the old behaviour otherwise.
+    uint8_t pad_bytes = 0;
+    {
+        uint32_t payload_bytes = to_consume;
+        if (insert_frame_metadata) {
+            payload_bytes += zeros_len + sizeof(FrameMetadata);
+        }
+        const uint8_t pad = static_cast<uint8_t>((4u - (payload_bytes & 3u)) & 3u);
+        if (pad && (buffer_index + 2 < kMaxTxBuffers)) {
+            pad_bytes = pad;
+            ++buffer_index;
+            tx_buffers[buffer_index] = {};
+            tx_buffers[buffer_index].buffer = &zeros[0];
+            tx_buffers[buffer_index].len = pad_bytes;
+            tx_buffers[buffer_index - 1].next = &tx_buffers[buffer_index];
+        }
+    }
+    // [last] iCRC trailer (computed across the chain assembled so far, pad included)
+    uint32_t crc = condition_packet_crc(rocev2_ctxt, &tx_buffers[0], pad_bytes);
     ++buffer_index;
     tx_buffers[buffer_index] = {};
     tx_buffers[buffer_index].buffer = (uint8_t*)&crc;

@@ -17,7 +17,6 @@
 
 #include "native_imx274_sensor.hpp"
 
-#include <cassert>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -58,7 +57,10 @@ void NativeImx274Sensor::configure(CameraMode mode)
     // Make sure this is a version we know about.
     uint32_t version = get_version();
     HSB_LOG_INFO("version={}", version);
-    assert(version == VERSION);
+    if (version != VERSION) {
+        throw std::runtime_error("Unsupported IMX274 version:" + std::to_string(version)
+            + ", expected " + std::to_string(VERSION) + ".");
+    }
 
     configure_camera(mode);
 }

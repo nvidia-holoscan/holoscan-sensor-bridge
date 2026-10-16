@@ -33,12 +33,10 @@ add_subdirectory(common)
 # they are only referenced from the vector table in the same static lib.
 add_library(emulation INTERFACE)
 
-# need --whole-archive to link all the objects in the static libraries. prevents erroneous dead code elimination from library link orders
+# Scope whole-archive to these libraries so their transitive dependencies are
+# linked normally rather than being force-loaded as whole archives.
 target_link_libraries(emulation INTERFACE
-    -Wl,--whole-archive
-    emulation_host
-    emulation_common
-    -Wl,--no-whole-archive
+    "$<LINK_LIBRARY:WHOLE_ARCHIVE,emulation_host,emulation_common>"
     dlpack::dlpack
 )
 
@@ -120,7 +118,7 @@ _hsb_add_transport_library(emulationroce roce
 # RoCE iCRC needs zlib's crc32 unless the platform provides a CRC peripheral
 # (CRC_OFFLOAD). On the linux target ZLIB_FOUND is set by find_package(ZLIB).
 if(TARGET emulationroce AND ZLIB_FOUND)
-    target_link_libraries(emulationroce PUBLIC ${ZLIB_LIBRARIES})
+    target_link_libraries(emulationroce PRIVATE ZLIB::ZLIB)
 endif()
 
 _hsb_add_transport_library(emulationcoe coe

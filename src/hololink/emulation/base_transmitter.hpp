@@ -75,11 +75,11 @@ size_t serialize_frame_metadata(hololink::core::Serializer& serializer, FrameMet
 class BaseTransmitter {
 public:
     /**
-     * @brief Construct a new BaseTransmitter object
+     * @brief Construct a new BaseTransmitter object.
      */
     BaseTransmitter() = default;
     /**
-     * @brief Destroy the BaseTransmitter object
+     * @brief Destroy the BaseTransmitter object.
      */
     virtual ~BaseTransmitter() { }
 

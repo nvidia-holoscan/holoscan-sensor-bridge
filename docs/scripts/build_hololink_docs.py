@@ -21,7 +21,7 @@ User guide pages are committed as ``*.mdx`` under ``docs/user_guide/``. Fern con
 ``docs/user_guide/fern/``. The public C++ API for ``src/hololink/emulation`` is
 generated under ``docs/user_guide/fern/generated/``.
 
-With ``--with-library-mdx``, the pipeline runs ``fern docs md generate`` and
+With ``--with-library-mdx``, the pipeline runs ``fern docs md generate --local`` and
 post-processes the generated MDX before ``fern check --local`` (local validation),
 ``fern docs dev`` (``--preview``),
 ``fern generate --docs --preview`` (``--publish-preview`` for CI), or
@@ -49,6 +49,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -146,9 +147,15 @@ def _check_source_assets(*, allow_lfs_pointers: bool) -> int:
     return _report_lfs_pointers(pointers)
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     print("+ " + " ".join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=cwd or REPO, check=check)
+    return subprocess.run(cmd, cwd=cwd or REPO, check=check, env=env)
 
 
 # Warnings `fern docs dev` always emits for a local, unauthenticated preview: the
@@ -185,6 +192,52 @@ def _run_preview(fern_exe: str, fern_dir: Path, *, port: int) -> int:
 
 def _fern_exe() -> str | None:
     return shutil.which("fern")
+
+
+def _checkout_commit() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def _local_library_runtime_error() -> str | None:
+    """Return an actionable error when Fern cannot run its local parser."""
+    docker_exe = shutil.which("docker")
+    if docker_exe is None:
+        return (
+            "local C++ API generation requires Docker; install and start Docker "
+            "before running with --with-library-mdx"
+        )
+
+    result = subprocess.run(
+        [docker_exe, "info"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return f"Docker is installed but its daemon is unavailable{suffix}"
+
+    if sys.platform == "darwin":
+        context = subprocess.run(
+            [docker_exe, "context", "show"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if context == "colima" and not _is_under(REPO.resolve(), Path.home().resolve()):
+            return (
+                "Colima only shares the macOS home directory by default, but the "
+                f"repository checkout is {REPO}. Move the checkout under {Path.home()} "
+                "or configure Colima to mount this path"
+            )
+    return None
 
 
 def _require_fern_auth(*, action: str) -> int | None:
@@ -510,11 +563,32 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 127
+        runtime_error = _local_library_runtime_error()
+        if runtime_error is not None:
+            print(f"error: {runtime_error}.", file=sys.stderr)
+            return 1
         if not FIX_LIBRARY_MDX.is_file():
             print(f"Missing post-process script: {FIX_LIBRARY_MDX}", file=sys.stderr)
             return 2
+        print(f"C++ API source checkout: {REPO} ({_checkout_commit()})", flush=True)
         _clean_generated_api_docs(generated_docs)
-        _run([fern_exe, "docs", "md", "generate"], cwd=fern_dir)
+        tmpdir = Path(tempfile.mkdtemp(prefix=".fern-library-", dir=SOURCE))
+        env = os.environ.copy()
+        env["TMPDIR"] = str(tmpdir)
+        result = _run(
+            [fern_exe, "docs", "md", "generate", "--local"],
+            cwd=fern_dir,
+            check=False,
+            env=env,
+        )
+        if result.returncode:
+            print(
+                f"error: fern docs md generate --local exited with {result.returncode}.",
+                file=sys.stderr,
+            )
+            print(f"Fern temporary files retained at: {tmpdir}", file=sys.stderr)
+            return result.returncode
+        shutil.rmtree(tmpdir)
 
     if generated_docs.is_dir():
         if not FIX_LIBRARY_MDX.is_file():
@@ -748,6 +822,84 @@ def _ensure_docker_available() -> int | None:
     return None
 
 
+def _active_docker_socket() -> str:
+    """Return the Unix socket used by the active Docker context."""
+    if sys.platform == "darwin":
+        context = subprocess.run(
+            ["docker", "context", "show"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if context == "colima":
+            # Colima's macOS client socket is not visible inside its Linux VM.
+            # The daemon-visible source path for sibling containers is the
+            # conventional socket maintained inside that VM.
+            return "/var/run/docker.sock"
+
+    docker_host = os.environ.get("DOCKER_HOST", "").strip()
+    if not docker_host:
+        result = subprocess.run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        docker_host = result.stdout.strip()
+        if result.returncode or not docker_host:
+            detail = result.stderr.strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            raise RuntimeError(f"could not determine the active Docker socket{suffix}")
+
+    if not docker_host.startswith("unix://"):
+        raise RuntimeError(
+            f"the active Docker endpoint is not a Unix socket: {docker_host}"
+        )
+    socket_path = docker_host.removeprefix("unix://")
+    if not socket_path.startswith("/"):
+        raise RuntimeError(
+            f"the active Docker socket path is not absolute: {socket_path}"
+        )
+    return socket_path
+
+
+def _container_docker_options(*, image: str, with_library_mdx: bool) -> list[str]:
+    """Return docker-run options that let Fern start its local parser."""
+    if not with_library_mdx:
+        return []
+
+    socket_mount = f"{_active_docker_socket()}:/var/run/docker.sock"
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            socket_mount,
+            image,
+            "stat",
+            "-c",
+            "%g",
+            "/var/run/docker.sock",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    socket_gid = result.stdout.strip()
+    if result.returncode or not socket_gid.isdigit():
+        detail = result.stderr.strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        raise RuntimeError(f"could not inspect the Docker daemon socket{suffix}")
+    return [
+        "-eDOCKER_HOST=unix:///var/run/docker.sock",
+        "--group-add",
+        socket_gid,
+        "-v",
+        socket_mount,
+    ]
+
+
 def _run_in_docker(args: argparse.Namespace) -> int:
     if not DOCKERFILE.is_file():
         print(f"Missing Dockerfile: {DOCKERFILE}", file=sys.stderr)
@@ -765,6 +917,19 @@ def _run_in_docker(args: argparse.Namespace) -> int:
             print("Git LFS: git-lfs not on PATH; skipping automatic pull.", file=sys.stderr)
 
     image = _build_docs_image()
+
+    try:
+        docker_options = _container_docker_options(
+            image=image,
+            with_library_mdx=args.with_library_mdx,
+        )
+    except RuntimeError as exc:
+        print(
+            f"error: Docker-container C++ API generation {exc}; "
+            "use a local Docker daemon or run with --no-docker.",
+            file=sys.stderr,
+        )
+        return 1
 
     repo_root = REPO.resolve()
     fern_dir = args.fern_dir.expanduser().resolve()
@@ -828,6 +993,7 @@ def _run_in_docker(args: argparse.Namespace) -> int:
         "docker",
         "run",
         *docker_env,
+        *docker_options,
         "--rm",
     ]
     if args.preview:
@@ -903,7 +1069,7 @@ def main() -> int:
     parser.add_argument(
         "--with-library-mdx",
         action="store_true",
-        help="Generate the Emulation C++ API MDX (requires Fern auth).",
+        help="Generate C++ API MDX from this checkout (requires Docker).",
     )
     parser.add_argument(
         "--skip-library-mdx",
@@ -989,13 +1155,6 @@ def main() -> int:
         # CI preview and production jobs provide an org token. Generate there
         # automatically while keeping unauthenticated local checks non-interactive.
         args.with_library_mdx = _has_fern_org_token()
-
-    if args.with_library_mdx and not _fern_auth_token():
-        print(
-            "error: C++ API generation requires Fern auth (run 'fern login' or set FERN_TOKEN).",
-            file=sys.stderr,
-        )
-        return 1
 
     if args.no_docker:
         return run_pipeline(args)

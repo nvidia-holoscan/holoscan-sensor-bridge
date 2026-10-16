@@ -19,7 +19,7 @@ module ptp_dly
   parameter  PTP_EGRESS_WIDTH = 64*8,
   parameter  NUM_HOST         = 2,
   parameter  W_NUM_HOST       = NUM_HOST>1 ? $clog2(NUM_HOST) : 1,
-  localparam PTP_TX_WIDTH     = $clog2(PTP_EGRESS_WIDTH/8)
+  localparam PTP_TX_WIDTH     = $clog2(PTP_EGRESS_WIDTH/8+1)
 )(
   input                           i_pclk,
   input                           i_prst,
@@ -65,8 +65,8 @@ module ptp_dly
   output                          o_dly_ld
 );
 
-logic [$clog2(PTP_EGRESS_WIDTH/8)-1:0] ptp_tx_len;
-logic [$clog2(PTP_EGRESS_WIDTH/8)-1:0] ptp_tx_len_sync;
+logic [PTP_TX_WIDTH-1:0] ptp_tx_len;
+logic [PTP_TX_WIDTH-1:0] ptp_tx_len_sync;
 
 //------------------------------------------------------------------------------------------------//
 // TX ETHERNET L2 LAYER
@@ -132,10 +132,11 @@ logic [7:0]  controlField_sync;
 logic [7:0]  logMessageInterval_sync;
 logic [79:0] timestamp_sync;
 logic [79:0] req_src_portid_sync;
+logic [7:0]  ptp_domain_sync;
 
 assign majorSdoId         = i_is_gPTP ? 1'h1 : 1'h0;
 assign versionPTP         = 4'h2;
-assign domainNumber       = i_ptp_domain;
+assign domainNumber       = ptp_domain_sync;
 assign minorSdoId         = 8'h0;
 assign flagField          = {6'd0, twoStep_sync, 9'd0};
 assign correctionField    = 64'h0;
@@ -162,18 +163,18 @@ assign ptp_tx_data = {
 };
 
 reg_cdc #(
-  .NBITS(52+80+80+$clog2(PTP_EGRESS_WIDTH/8) +1+1+48)
+  .NBITS(52+80+80+PTP_TX_WIDTH+1+1+48+8)
 ) u_ptp_egress_data_cdc (
   .i_a_clk( i_pclk                                                                                      ),
   .i_a_rst( i_prst                                                                                      ),
   .i_a_val( pdly_req_tx_vld                                                                             ),
   .i_a_reg( {msg_type,messageLength,sequenceId,controlField,logMessageInterval,timestamp,
-              req_src_portid,ptp_tx_len, majorSdoId, twoStep, eth_mac_addr}),
+              req_src_portid,ptp_tx_len, majorSdoId, twoStep, eth_mac_addr, i_ptp_domain}),
   .i_b_clk( i_hif_clk                                                                                   ),
   .i_b_rst( i_hif_rst                                                                                   ),
   .o_b_val( pdly_req_tx_vld_sync                                                                        ),
   .o_b_reg( {msg_type_sync,messageLength_sync,sequenceId_sync,controlField_sync,logMessageInterval_sync,timestamp_sync,
-              req_src_portid_sync,ptp_tx_len_sync, majorSdoId_sync, twoStep_sync, eth_mac_addr_sync})
+              req_src_portid_sync,ptp_tx_len_sync, majorSdoId_sync, twoStep_sync, eth_mac_addr_sync, ptp_domain_sync})
 );
 
 always_ff @(posedge i_hif_clk) begin

@@ -46,7 +46,7 @@
  * Default values
  * - frame-rate: 30 (per second)
  * - frame-limit: 0 (infinite)
- * - gpu: false (serve data from the CPU)
+ * - gpu: false (serve data from the CPU).
  *
  */
 

@@ -28,6 +28,7 @@ class HsbLiteInterfaceV1
     : public ConfigurableService<HsbLiteInterfaceV1> {
 public:
     static constexpr const char* type_id = "hsb_lite.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* Per-board instance_id derivation used by the metadata-form
      * get_service. Throws if the metadata is missing 'serial_number'. */

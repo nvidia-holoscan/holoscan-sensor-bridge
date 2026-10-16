@@ -1,8 +1,5 @@
 #----------------------------------------------------------------------------------------------
-# FPGA Version v01.1.0
-#----------------------------------------------------------------------------------------------
-
-set prj_name    fpga_mipi_cpnx_ref_design
+set prj_name    mipi_cpnx100
 set vendor_ID   0000
 set date        [clock format [clock seconds] -format "%m%d%Y"]
 
@@ -26,8 +23,8 @@ prj_set_strategy_value -strategy Strategy1 syn_pipelining_retiming=Pipelining an
                                             syn_critical_path_num=100 \
                                             syn_start_end_pt_num=20 \
                                             syn_frequency=157 \
-                                            par_core_number=8 \
-                                            par_place_iterator=8 \
+                                            par_core_number=16 \
+                                            par_place_iterator=16 \
                                             par_stop_zero=True
 
 prj_set_strategy_value -strategy Strategy1 syn_ram_rw_check=False syn_allow_dup_modules=True syn_default_enum_encode=Onehot syn_res_sharing=False
@@ -84,9 +81,7 @@ proc addFiles { basedir pattern } {
 set src_dir "../../../"
 set hsb_dir "../../../../../"
 
-ip_catalog_install -vlnv latticesemi.com:ip:ten_gbe_mac:1.1.0
-ip_catalog_install -vlnv latticesemi.com:ip:ten_gbe_pcs:1.3.0
-ip_catalog_install -vlnv latticesemi.com:ip:dphy_rx:2.1.0
+
 
 # IP Generation
 
@@ -112,6 +107,12 @@ exec ipgen -o ../../ip/osc_clk \
            -ip $env(RADIANT_PATH)/ip/lifcl/osc \
            -name osc_clk \
            -cfg "../../ip/osc_clk/osc_clk.cfg" \
+           -a LFCPNX -p LFCPNX-100 -t CBG256 -sp 9_High-Performance_1.0V -op COM
+
+exec ipgen -o ../../ip/i2s_pll \
+           -ip $env(RADIANT_PATH)/ip/lifcl/pll \
+           -name i2s_pll \
+           -cfg "../../ip/i2s_pll/i2s_pll.cfg" \
            -a LFCPNX -p LFCPNX-100 -t CBG256 -sp 9_High-Performance_1.0V -op COM
 
 exec ipgen -o ../../ip/ptp_sensor_pll \
@@ -204,4 +205,4 @@ prj_close
 # Copy Bitfile
 #----------------------------------------------------------------------------------------------
 
-file copy ./impl_1/mipi_cpnx_ref_design_impl_1.bit ../../../bitfile/mipi_cpnx_ref_design_$dateTime.bit
+file copy ./impl_1/${prj_name}_impl_1.bit ../../../bitfile/${prj_name}_${dateTime}.bit

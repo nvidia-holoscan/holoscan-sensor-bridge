@@ -255,12 +255,22 @@ def sleep_frame_rate(last_frame_time, frame_rate_per_second):
         time.sleep(delta_s)
 
 
-def handle_failed_subprocess(subprocess, name, kill=None):
+def handle_failed_subprocess(subprocess, name, kill=None, out_file=None, err_file=None):
     if kill:
         subprocess.kill()
     stdout, stderr = subprocess.communicate()
-    print(f"{name} subprocess stdout: \n{stdout.decode('utf-8', errors='replace')}")
-    print(f"{name} subprocess stderr: \n{stderr.decode('utf-8', errors='replace')}")
+    if out_file:
+        out_file.seek(0)
+        out_contents = out_file.read().decode("utf-8", errors="replace")
+    else:
+        out_contents = stdout.decode("utf-8", errors="replace")
+    if err_file:
+        err_file.seek(0)
+        err_contents = err_file.read().decode("utf-8", errors="replace")
+    else:
+        err_contents = stderr.decode("utf-8", errors="replace")
+    print(f"{name} subprocess stdout: \n{out_contents}")
+    print(f"{name} subprocess stderr: \n{err_contents}")
     print(f"{name} subprocess {kill=}")
 
 

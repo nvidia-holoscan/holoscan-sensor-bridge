@@ -2,6 +2,12 @@
 # Python cache
 .pytest_cache
 __pycache__
+# CI-generated test outputs
+ci/cdash-results
+ci/coverage.xml
+ptp-controller/
+core
+dmesg/
 # cache
 .cache
 # build folders

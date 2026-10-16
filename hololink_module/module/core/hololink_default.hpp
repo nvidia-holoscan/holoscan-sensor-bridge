@@ -361,6 +361,21 @@ protected:
         return "serial=" + serial_number_ + ";kind=null";
     }
 
+    /* Factory for the backing legacy Hololink, called once from
+     * configure() after serial_number_ and enumeration_metadata_ are
+     * set. The default materializes a LegacyHololinkAccess over the
+     * Ethernet control plane (peer_ip / control_port from the
+     * metadata). A carrier module that carries the control plane over
+     * another transport (e.g. PCIe) subclasses HololinkV1 and overrides
+     * only this to return its own hololink::Hololink subclass — riding
+     * under the LegacyHololinkAccess type the sibling services (I2cV1,
+     * SequencerV1, DataChannelV1, ...) already expect via
+     * legacy_access(). This keeps the frozen V1 interfaces untouched:
+     * the extension point is on module_core's implementation class,
+     * not on HololinkInterfaceV1. */
+    virtual std::shared_ptr<LegacyHololinkAccess> create_backing(
+        const EnumerationMetadata& metadata);
+
 private:
     // Reset-callback registry. on_reset() keeps callbacks here (keyed by
     // a monotonic id) and registers a single aggregating controller with

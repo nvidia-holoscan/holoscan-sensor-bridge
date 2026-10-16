@@ -65,7 +65,10 @@ class Imx274Cam:
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported IMX274 version:{version}, expected {VERSION}."
+            )
 
         # configure the camera based on the mode
         self.configure_camera(imx274_mode_set)

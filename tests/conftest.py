@@ -15,11 +15,14 @@
 
 # See README.md for detailed information.
 
+import functools
 import gc
+import hashlib
 import json
 import logging
 import logging.handlers
 import os
+import pathlib
 import re
 import socket
 import subprocess
@@ -31,6 +34,59 @@ import pytest
 
 import hololink as hololink_legacy
 import hololink_module
+
+# pytest rewrites the asserts in test modules so they keep running under
+# "python -O"; the helper modules here are compiled by the interpreter, which
+# drops their asserts.  Register them for the same rewriting, so a check that
+# fails still fails.
+_REWRITE = sorted(
+    path.stem
+    for path in pathlib.Path(__file__).parent.glob("*.py")
+    if path.name != "conftest.py" and not path.name.startswith("test_")
+)
+pytest.register_assert_rewrite(*_REWRITE)
+
+
+@functools.cache
+def _default_scheduler_matrix():
+    """Cover default, Greedy, and EventBased without equivalent runs."""
+    import holoscan.core
+    import holoscan.schedulers
+
+    application = holoscan.core.Application()
+    default_scheduler = application.scheduler()
+    explicit_schedulers = (
+        ("greedy", holoscan.schedulers.GreedyScheduler),
+        ("event", holoscan.schedulers.EventBasedScheduler),
+    )
+
+    return [
+        "default",
+        *(
+            name
+            for name, scheduler_type in explicit_schedulers
+            if not isinstance(default_scheduler, scheduler_type)
+        ),
+    ]
+
+
+def pytest_runtest_logreport(report):
+    """Recover marked HSB tests after a failed attempt and before its retry."""
+    if report.outcome != "rerun" or "reset_hsb_before_retry" not in report.keywords:
+        return
+
+    repository_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    recovery_script = os.path.join(repository_root, "ci", "hsb_recovery.sh")
+    logging.warning(
+        "Resetting HSB and checking health before retrying %s", report.nodeid
+    )
+    recovery = subprocess.run(["sh", recovery_script])
+    if recovery.returncode != 0:
+        pytest.exit(
+            f"HSB recovery failed before retrying {report.nodeid}; "
+            "refusing to run the retry on an unhealthy board"
+        )
+
 
 # If desired, forward python logging to UDP port 514 in not exactly a SYSLOG
 # compatible way but a way that works great with wireshark.  This
@@ -164,6 +220,12 @@ def pytest_addoption(parser):
         default=False,
         help="Don't skip dgpu based test.",
     )
+    parser.addoption(
+        "--no-xvfb",
+        action="store_true",
+        default=False,
+        help="Run ci/unit_test.sh pytest processes without xvfb-run.",
+    )
     infiniband_interfaces = hololink_legacy.infiniband_devices()
     parser.addoption(
         "--ibv-name",
@@ -239,15 +301,28 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--schedulers",
-        default=["default", "greedy", "multithread", "event"],
+        default=None,
         nargs="+",
-        help="Use these schedulers.",
+        help="Use these schedulers. By default, cover default, Greedy, and "
+        "EventBased without running the default scheduler type twice.",
+    )
+    parser.addoption(
+        "--reduced-mtu-matrix",
+        action="store_true",
+        default=False,
+        help="Use representative MTU pairs instead of the full cross-product.",
     )
     parser.addoption(
         "--vb1940",
         action="store_true",
         default=False,
         help="Don't skip tests using VB1940.",
+    )
+    parser.addoption(
+        "--vb1940-test-shard",
+        choices=("A", "B"),
+        default=None,
+        help="Run one deterministic half of the selected VB1940 tests.",
     )
     coe_interfaces = coe_devices()
     parser.addoption(
@@ -357,6 +432,24 @@ def is_jetpack_7():
 
 
 def pytest_collection_modifyitems(config, items):
+    vb1940_test_shard = config.getoption("--vb1940-test-shard")
+    if vb1940_test_shard:
+        selected = []
+        deselected = []
+        # Keep assignments stable across processes and runners. The versioned
+        # prefix can be changed when measured test costs need rebalancing; this
+        # value splits recent dGPU and iGPU VB1940 runtimes within about 22s.
+        shard_prefix = b"vb1940-v1-balanced:"
+        for item in items:
+            digest = hashlib.sha256(shard_prefix + item.nodeid.encode()).digest()
+            item_shard = "A" if digest[0] % 2 == 0 else "B"
+            if item_shard == vb1940_test_shard:
+                selected.append(item)
+            else:
+                deselected.append(item)
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
+
     if is_jetpack_7():
         skip_jetpack_7 = pytest.mark.skip(
             reason="Test is not supported on JetPack 7.x (Jetson Linux / L4T R38.x, e.g. AGX Thor)."
@@ -667,6 +760,8 @@ def pytest_generate_tests(metafunc):
     # from the list given on the command line.
     if "scheduler" in metafunc.fixturenames:
         schedulers = metafunc.config.getoption("--schedulers")
+        if schedulers is None:
+            schedulers = _default_scheduler_matrix()
         metafunc.parametrize("scheduler", schedulers)
 
 

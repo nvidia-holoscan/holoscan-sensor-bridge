@@ -40,7 +40,6 @@ void RoceReceiverOp::initialize()
     // Cache the metadata key names using the rename callback
     const auto& rename_fn = rename_metadata_;
     received_frame_number_metadata_ = rename_fn("received_frame_number");
-    rx_write_requests_metadata_ = rename_fn("rx_write_requests");
     received_s_metadata_ = rename_fn("received_s");
     received_ns_metadata_ = rename_fn("received_ns");
     imm_data_metadata_ = rename_fn("imm_data");
@@ -177,7 +176,6 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> RoceReceiverOp::get
 
     auto metadata = std::make_shared<Metadata>();
     (*metadata)[received_frame_number_metadata_] = int64_t(roce_receiver_metadata.received_frame_number);
-    (*metadata)[rx_write_requests_metadata_] = int64_t(roce_receiver_metadata.rx_write_requests);
     (*metadata)[received_s_metadata_] = int64_t(roce_receiver_metadata.received_s);
     (*metadata)[received_ns_metadata_] = int64_t(roce_receiver_metadata.received_ns);
     (*metadata)[imm_data_metadata_] = int64_t(roce_receiver_metadata.imm_data);

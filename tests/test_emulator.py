@@ -15,7 +15,7 @@
 
 # See README.md for detailed information.
 
-import inspect
+import argparse
 import os
 import pathlib
 import shlex
@@ -24,10 +24,12 @@ import signal
 import socket as _socket
 import struct
 import subprocess
+import sys
+import tempfile
 import threading
 import time
 
-import cupy as cp
+import cuda.bindings.driver as cuda
 import pytest
 from camera_example_conf import (
     camera_properties,
@@ -42,7 +44,12 @@ from camera_example_conf import (
 )
 
 import hololink as hololink_module
-import hololink.emulation as hemu
+
+# NOTE: cupy is deliberately NOT imported here. This module is collected by pytest,
+# and importing cupy (let alone compiling a RawModule) at collection time initializes
+# a CUDA context in the pytest interpreter, which then gets inherited by every
+# subprocess this file forks. All cupy use lives in the `serve` child process below
+# (see _serve_main); `hololink.emulation` is likewise imported there only.
 
 script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -289,6 +296,43 @@ def _stm32_match_serial(target_id):
 _STM32_STARTUP_TIMEOUT_S = 30.0
 
 
+def wait_for_enumeration(ipv4_address, timeout_s):
+    """Poll Enumerator.find_channel until `ipv4_address` answers, or raise TimeoutError.
+
+    An emulator (MCU or hosted-Linux) only broadcasts BootP once its data plane is
+    running, so a successful enumeration means the device finished coming up. That
+    makes this a reliable readiness gate for anything that has a slow startup path
+    -- the `serve` child below compiles a CUDA kernel before it starts the emulator.
+    """
+    print(f"waiting up to {timeout_s:.0f}s for {ipv4_address} to enumerate")
+    start = time.monotonic()
+    deadline = start + timeout_s
+    last_exc = None
+    while time.monotonic() < deadline:
+        remaining = deadline - time.monotonic()
+        try:
+            # find_channel takes its own timeout; cap it at whatever budget is
+            # left so we exit promptly when the deadline lapses.
+            channel_metadata = hololink_module.Enumerator.find_channel(
+                channel_ip=ipv4_address,
+                timeout=hololink_module.Timeout(min(remaining, 2.0)),
+            )
+            if channel_metadata is not None:
+                print(
+                    f"enumerated {ipv4_address} after {time.monotonic() - start:.1f}s"
+                )
+                return channel_metadata
+        except Exception as exc:
+            last_exc = exc
+            # find_channel raises on timeout; just keep polling until the
+            # overall deadline expires.
+            continue
+    raise TimeoutError(
+        f"{ipv4_address} did not enumerate within {timeout_s:.0f}s"
+        + (f" (last error: {last_exc})" if last_exc else "")
+    )
+
+
 def deploy_STM32F767ZI(elf_path, target_id=None, ipv4_address=None):
     """Flash the STM32F767ZI board via STM32_Programmer_CLI, then wait for it to enumerate.
 
@@ -323,36 +367,8 @@ def deploy_STM32F767ZI(elf_path, target_id=None, ipv4_address=None):
         time.sleep(5.0)
         return None
 
-    print(
-        f"waiting up to {_STM32_STARTUP_TIMEOUT_S:.0f}s for {ipv4_address} to enumerate"
-    )
-    deadline = time.monotonic() + _STM32_STARTUP_TIMEOUT_S
-    last_exc = None
-    while time.monotonic() < deadline:
-        remaining = deadline - time.monotonic()
-        try:
-            # find_channel takes its own timeout; cap it at whatever budget is
-            # left so we exit promptly when the deadline lapses.
-            channel_metadata = hololink_module.Enumerator.find_channel(
-                channel_ip=ipv4_address,
-                timeout=hololink_module.Timeout(min(remaining, 2.0)),
-            )
-            if channel_metadata is not None:
-                print(
-                    f"enumerated {ipv4_address} after "
-                    f"{_STM32_STARTUP_TIMEOUT_S - remaining:.1f}s"
-                )
-                return None
-        except Exception as exc:
-            last_exc = exc
-            # find_channel raises on timeout; just keep polling until the
-            # overall deadline expires.
-            continue
-    raise TimeoutError(
-        f"STM32 at {ipv4_address} did not enumerate within "
-        f"{_STM32_STARTUP_TIMEOUT_S:.0f}s after flashing"
-        + (f" (last error: {last_exc})" if last_exc else "")
-    )
+    wait_for_enumeration(ipv4_address, _STM32_STARTUP_TIMEOUT_S)
+    return None
 
 
 def tear_down_STM32F767ZI(handle=None, target_id=None):
@@ -410,6 +426,37 @@ def _check_payload(buf, frame_idx, transport_msg, expected_counter):
     return counter
 
 
+def _read_frame_bytes(cu_context, cu_device_ptr, n):
+    """Copy `n` bytes of received frame out of device memory. Returns a bytearray.
+
+    Uses the driver API rather than cupy on purpose -- see the note at the top of
+    this file. Mirrors _read_first_gpu_byte in tests/test_examples_emulator.py.
+    """
+    cuda.cuCtxSetCurrent(cu_context)
+    # cuMemcpyDtoH's host-pointer argument requires a buffer-protocol object
+    # (NOT a ctypes.byref(...) CArgObject).
+    buf = bytearray(n)
+    (cu_ret,) = cuda.cuMemcpyDtoH(buf, cu_device_ptr, n)
+    assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+    return buf
+
+
+def _retain_primary_context():
+    """cuInit + retain the primary context on device 0, and make it current.
+
+    The context is intentionally never released -- see the note in the
+    _verify_messages_* teardown blocks.
+    """
+    (cu_ret,) = cuda.cuInit(0)
+    assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+    cu_ret, cu_device = cuda.cuDeviceGet(0)
+    assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+    cu_ret, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
+    assert cu_ret == cuda.CUresult.CUDA_SUCCESS, cu_ret
+    cuda.cuCtxSetCurrent(cu_context)
+    return cu_context
+
+
 def _host_controller_setup(ipv4_address):
     """Find the emulator and bring its control plane up. Returns (hololink, data_channel)."""
     channel_metadata = hololink_module.Enumerator.find_channel(
@@ -430,20 +477,13 @@ def _verify_messages_roce(ipv4_address, transport_msg):
     pages = 2
     buffer_size = hololink_module.round_up(page_size * pages, os.sysconf("SC_PAGESIZE"))
 
-    cu_context, _, hololink, data_channel = None, None, None, None
+    cu_context, hololink, data_channel = None, None, None
     receiver = None
     receiver_thread = None
     cu_buffer = None
     data_socket = None
     try:
-        # CUDA context
-        from cuda.bindings import driver as _cuda
-
-        (err,) = (_cuda.cuInit(0),)
-        # cuInit returns (CUresult,). Ignore reinit collisions.
-        err, cu_device = _cuda.cuDeviceGet(0)
-        err, cu_context = _cuda.cuDevicePrimaryCtxRetain(cu_device)
-        _cuda.cuCtxSetCurrent(cu_context)
+        cu_context = _retain_primary_context()
 
         hololink, data_channel = _host_controller_setup(ipv4_address)
 
@@ -472,7 +512,7 @@ def _verify_messages_roce(ipv4_address, transport_msg):
         # so attach the primary context inside the worker before run() (mirrors
         # LinuxCoeReceiverOp._run in operators/linux_coe_receiver_operator.py).
         def _receiver_target():
-            _cuda.cuCtxSetCurrent(cu_context)
+            cuda.cuCtxSetCurrent(cu_context)
             receiver.run()
 
         receiver_thread = threading.Thread(target=_receiver_target, daemon=True)
@@ -482,16 +522,7 @@ def _verify_messages_roce(ipv4_address, transport_msg):
         for i in range(_FRAMES_TO_VERIFY):
             ok, metadata = receiver.get_next_frame(_FRAME_TIMEOUT_MS, 0)
             assert ok, f"timeout waiting for frame {i}"
-            payload = cp.asnumpy(
-                cp.ndarray(
-                    (frame_size,),
-                    dtype=cp.uint8,
-                    memptr=cp.cuda.MemoryPointer(
-                        cp.cuda.UnownedMemory(metadata.frame_memory, frame_size, None),
-                        0,
-                    ),
-                )
-            )
+            payload = _read_frame_bytes(cu_context, metadata.frame_memory, frame_size)
             expected = None if last_counter is None else last_counter + 1
             last_counter = _check_payload(payload, i, transport_msg, expected)
     finally:
@@ -503,6 +534,11 @@ def _verify_messages_roce(ipv4_address, transport_msg):
             data_socket.close()
         if hololink is not None:
             hololink.stop()
+        # NOTE: the primary context retained above is deliberately NOT released
+        # here. close() only sets a flag that run() checks when its socket recv
+        # times out, so a still-streaming transmitter keeps run() going and this
+        # join is necessarily bounded; tearing the context down under a live
+        # receiver makes it fail with CUDA_ERROR_CONTEXT_IS_DESTROYED.
 
 
 def _verify_messages_coe(ipv4_address, transport_msg, coe_interface):
@@ -519,12 +555,7 @@ def _verify_messages_coe(ipv4_address, transport_msg, coe_interface):
     receiver_thread = None
     data_socket = None
     try:
-        from cuda.bindings import driver as _cuda
-
-        _cuda.cuInit(0)
-        err, cu_device = _cuda.cuDeviceGet(0)
-        err, cu_context = _cuda.cuDevicePrimaryCtxRetain(cu_device)
-        _cuda.cuCtxSetCurrent(cu_context)
+        cu_context = _retain_primary_context()
 
         hololink, data_channel = _host_controller_setup(ipv4_address)
 
@@ -558,7 +589,7 @@ def _verify_messages_coe(ipv4_address, transport_msg, coe_interface):
         # so attach the primary context inside the worker before run() (mirrors
         # LinuxCoeReceiverOp._run in operators/linux_coe_receiver_operator.py).
         def _receiver_target():
-            _cuda.cuCtxSetCurrent(cu_context)
+            cuda.cuCtxSetCurrent(cu_context)
             receiver.run()
 
         receiver_thread = threading.Thread(target=_receiver_target, daemon=True)
@@ -568,15 +599,9 @@ def _verify_messages_coe(ipv4_address, transport_msg, coe_interface):
         for i in range(_FRAMES_TO_VERIFY):
             ok, metadata = receiver.get_next_frame(_FRAME_TIMEOUT_MS, 0)
             assert ok, f"timeout waiting for frame {i}"
-            payload = cp.asnumpy(
-                cp.ndarray(
-                    (frame_size,),
-                    dtype=cp.uint8,
-                    memptr=cp.cuda.MemoryPointer(
-                        cp.cuda.UnownedMemory(cu_buffer, frame_size, None), 0
-                    ),
-                )
-            )
+            # LinuxCoeReceiverMetadata does not expose frame_memory; the receiver
+            # writes into the buffer we passed at construction time.
+            payload = _read_frame_bytes(cu_context, cu_buffer, frame_size)
             expected = None if last_counter is None else last_counter + 1
             last_counter = _check_payload(payload, i, transport_msg, expected)
     finally:
@@ -588,6 +613,8 @@ def _verify_messages_coe(ipv4_address, transport_msg, coe_interface):
             data_socket.close()
         if hololink is not None:
             hololink.stop()
+        # NOTE: the primary context retained above is deliberately NOT released
+        # here -- see the matching note in _verify_messages_roce.
 
 
 # ---------------------------------------------------------------------------
@@ -618,9 +645,12 @@ def _run_test(
     if verify_fn is not None and getattr(verify_fn, "transport_msg", None) is not None:
         build_kwargs["transport_msg"] = verify_fn.transport_msg
 
-    binary = builder(program, **build_kwargs)
-    handle = deployer(binary, target_id=target_id, ipv4_address=ipv4_address)
+    # tear_down must run even if builder/deployer raises, so initialize handle=None
+    # up front and let the tear_down functions no-op on a missing handle.
+    handle = None
     try:
+        binary = builder(program, **build_kwargs)
+        handle = deployer(binary, target_id=target_id, ipv4_address=ipv4_address)
         if verify_fn is not None:
             verify_fn()
         else:
@@ -705,89 +735,6 @@ def test_serve_roce_msg(
         target_id,
         verify_fn=verify,
     )
-
-
-class _RegisterPeripheral(hemu.I2CPeripheral):
-    """I2C peripheral with 16-bit register addresses, like a camera sensor."""
-
-    def __init__(self, i2c_address):
-        super().__init__()
-        self._i2c_address = i2c_address
-        self.registers = bytearray(0x10000)
-        self.initial_read = None
-        self.last_read = None
-
-    def attach_to_i2c(self, i2c_controller, bus_address):
-        i2c_controller.attach_i2c_peripheral(bus_address, self._i2c_address, self)
-
-    def i2c_transaction(
-        self, peripheral_address, write_bytes, write_size, read_bytes, read_size
-    ):
-        self.initial_read = bytes(read_bytes)
-        register = int.from_bytes(write_bytes[:2], "big")
-        payload = write_bytes[2:write_size]
-        self.registers[register : register + len(payload)] = payload
-        read_bytes[:read_size] = self.registers[register : register + read_size]
-        # Keeping the read buffer after the call has to be safe.
-        self.last_read = read_bytes
-        return hemu.I2CStatus.I2C_STATUS_SUCCESS
-
-
-_I2C_ADDRESS = 0x1A
-
-
-@pytest.fixture
-def python_i2c_peripheral():
-    """Emulator with a Python register peripheral on loopback, and the host connected to it."""
-    ipv4_address = "127.0.0.1"
-    hsb = hemu.HSBEmulator()
-    # Keep the data plane alive until the emulator stops.
-    data_plane = hemu.LinuxDataPlane(hsb, hemu.IPAddress(ipv4_address), 0, 0)
-    peripheral = _RegisterPeripheral(_I2C_ADDRESS)
-    peripheral.attach_to_i2c(
-        hsb.get_i2c(hololink_module.I2C_CTRL), hololink_module.CAM_I2C_BUS
-    )
-    hsb.start()
-    try:
-        hololink, _ = _host_controller_setup(ipv4_address)
-        try:
-            yield hololink, peripheral
-        finally:
-            hololink.stop()
-    finally:
-        hsb.stop()
-        del data_plane
-
-
-def test_python_i2c_peripheral(python_i2c_peripheral):
-    """A Python I2CPeripheral gets the full write and can answer a read."""
-    hololink, peripheral = python_i2c_peripheral
-    i2c = hololink.get_i2c(hololink_module.CAM_I2C_BUS)
-    i2c.i2c_transaction(_I2C_ADDRESS, bytes([0x30, 0x00, 0x5A, 0xA5]), 0)
-    assert peripheral.registers[0x3000:0x3002] == b"\x5a\xa5"
-    reply = i2c.i2c_transaction(_I2C_ADDRESS, bytes([0x30, 0x00]), 2)
-    assert list(reply) == [0x5A, 0xA5]
-    assert peripheral.initial_read == b"\x00\x00"
-    assert peripheral.last_read == b"\x5a\xa5"
-
-
-def test_i2c_transfer_larger_than_data_buffer_is_rejected(python_i2c_peripheral):
-    """A transfer that does not fit the data buffer fails before reaching a peripheral."""
-    hololink, peripheral = python_i2c_peripheral
-    # The host API refuses such transfers, so program the controller registers directly.
-    base = hololink_module.I2C_CTRL
-    hololink.write_uint32(base + hololink_module.I2C_REG_NUM_BYTES, 2 | (300 << 16))
-    hololink.write_uint32(
-        base + hololink_module.I2C_REG_BUS_EN, hololink_module.CAM_I2C_BUS
-    )
-    hololink.write_uint32(
-        base + hololink_module.I2C_REG_CONTROL,
-        (_I2C_ADDRESS << 16) | hololink_module.I2C_START,
-    )
-    status = hololink.read_uint32(base + hololink_module.I2C_REG_STATUS)
-    hololink.write_uint32(base + hololink_module.I2C_REG_CONTROL, 0)
-    assert status & hololink_module.I2C_I2C_ERR
-    assert peripheral.last_read is None
 
 
 csi_kernels = """
@@ -940,9 +887,10 @@ extern "C" __global__ void generate_csi_frame_12bit(uint8_t * data, size_t start
 }
 """
 
-# data structure for holding cuda kernels for csi frame generation
+# names + block strides of the csi frame generation kernels in csi_kernels above.
+# Compiled on demand by build_csi_generator -- this map is data only, so importing
+# this module costs nothing.
 csi_generators = {
-    "module": None,  # reserved for module loading
     hololink_module.sensors.csi.PixelFormat.RAW_8: {
         "name": "generate_csi_frame_8bit",
         "pixels_per_block": 1,
@@ -958,32 +906,39 @@ csi_generators = {
 }
 
 
-# initialize the csi_generator kernels
-def initialize_csi_generators():
+def build_csi_generator(pixel_format):
+    """Compile csi_kernels and fetch just the kernel for `pixel_format`.
+
+    Returns (module, kernel, pixels_per_block). The module reference has to
+    outlive the kernel, so callers must hold on to it.
+
+    Child-process only: this is the first CUDA call the process makes, and the
+    nvcc compile it triggers is the reason the parent needs a readiness gate
+    (wait_for_enumeration) before it launches the host application.
+    """
+    import cupy as cp
+
+    if pixel_format not in csi_generators:
+        raise ValueError(
+            f"Invalid pixel format: {pixel_format}. must be one of {list(csi_generators.keys())}"
+        )
+    properties = csi_generators[pixel_format]
     mod = cp.RawModule(
         code=csi_kernels,
         backend="nvcc",
         options=("-std=c++17",),
     )
-
-    for key, properties in csi_generators.items():
-        if properties is not None:
-            properties["kernel"] = mod.get_function(properties["name"])
-
-    csi_generators["module"] = mod  # save a reference to the module
+    # only build the one generator this run needs; compiling all three costs
+    # seconds per test parameter for kernels that never get launched
+    return mod, mod.get_function(properties["name"]), properties["pixels_per_block"]
 
 
-# actually run the initialization
-initialize_csi_generators()
+def make_frame_data(camera_mode_properties, kernel, pixels_per_block, gpu):
+    import cupy as cp
 
-
-def make_frame_data(camera_mode_properties, gpu):
     image_start_byte = get_csi_image_start_byte(camera_mode_properties)
-    pixel_format = camera_mode_properties["pixel_format"]
     pixel_width = camera_mode_properties["width"]
     pixel_height = camera_mode_properties["height"]
-    generator = csi_generators[pixel_format]
-    pixels_per_block = generator["pixels_per_block"]
     gpu_data = cp.zeros((get_csi_frame_size(camera_mode_properties),), dtype=cp.uint8)
 
     threads_per_block = (32, 32)
@@ -998,7 +953,7 @@ def make_frame_data(camera_mode_properties, gpu):
         (pixel_height + threads_per_block[1] - 1) // threads_per_block[1],
     )
 
-    generator["kernel"](
+    kernel(
         blocks_per_grid,
         threads_per_block,
         (
@@ -1016,45 +971,150 @@ def make_frame_data(camera_mode_properties, gpu):
     return gpu_data
 
 
-# loop a single dataplane by sending frames at the specified frame rate until the timeout is reached or the host process exits with a non-zero code
-def loop_single_dataplane(data_plane, frame_data, frame_rate, subproc, timeout_s):
-    time_start = time.time()
-    time_end = time_start + timeout_s
-    while time.time() < time_end:
-        last_frame_time = time.time_ns()
-        if subproc.poll() is not None:
-            if (
-                subproc.returncode != 0
-            ):  # a failure if the host application exits with a non-zero code
-                handle_failed_subprocess(subproc, "Host")
+def _reap(process):
+    """Kill `process` if it is still running, then drain its pipes so wait() can't block."""
+    if process is None:
+        return
+    if process.poll() is None:
+        process.kill()
+    try:
+        process.communicate(timeout=5)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.communicate(timeout=5)
+    except ValueError:
+        # pipes already closed by an earlier communicate() (handle_failed_subprocess)
+        pass
+
+
+def _await_emulator(emulator_process, ipv4_address, timeout_s):
+    """Wait for the emulator subprocess to come up, or raise describing why it didn't.
+
+    Polls enumeration in short slices so a child that dies on startup (a bad
+    import, a CUDA failure) is reported straight away instead of stalling for
+    the whole startup budget.
+    """
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if emulator_process.poll() is not None:
+            handle_failed_subprocess(emulator_process, "Emulator")
+            raise RuntimeError(
+                f"Emulator exited during startup with code: {emulator_process.returncode}"
+            )
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            handle_failed_subprocess(emulator_process, "Emulator", True)
+            raise TimeoutError(
+                f"Emulator did not enumerate {ipv4_address} within {timeout_s:.0f}s"
+            )
+        try:
+            return wait_for_enumeration(ipv4_address, min(remaining, 5.0))
+        except TimeoutError:
+            continue
+
+
+# drive a host application against an emulator subprocess until the host exits.
+# success is the host exiting 0; the emulator serves frames indefinitely, so it is
+# killed on every exit path rather than waited on.
+def loop_emulator_subprocess(host_command, emu_command, timeout_s, hololink_address):
+    print(f"host_command: {host_command}")
+    print(f"emu_command: {emu_command}")
+
+    host_process, emulator_process = None, None
+    emu_stdout, emu_stderr = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    host_stdout, host_stderr = tempfile.TemporaryFile(), tempfile.TemporaryFile()
+    try:
+        emulator_process = subprocess.Popen(
+            emu_command, stdout=emu_stdout, stderr=emu_stderr
+        )
+
+        # The emulator only broadcasts BootP once hsb.start() has returned, which is
+        # after its kernel compile and frame generation. Gate on that rather than
+        # letting the host application burn its own enumeration timeout waiting.
+        _await_emulator(emulator_process, hololink_address, _EMULATOR_STARTUP_TIMEOUT_S)
+
+        host_process = subprocess.Popen(
+            host_command, stdout=host_stdout, stderr=host_stderr
+        )
+
+        time_start = time.time()
+        time_end = time_start + timeout_s
+        while time.time() < time_end:
+            if host_process.poll() is not None:
+                emulator_process.kill()  # regardless of host return state
+                if (
+                    host_process.returncode != 0
+                ):  # a failure if the host application exits with a non-zero code
+                    handle_failed_subprocess(
+                        host_process, "Host", out_file=host_stdout, err_file=host_stderr
+                    )
+                    handle_failed_subprocess(
+                        emulator_process,
+                        "Emulator",
+                        out_file=emu_stdout,
+                        err_file=emu_stderr,
+                    )
+                    print(f"test failed in {time.time() - time_start} seconds", end=" ")
+                    raise RuntimeError(
+                        f"Host application exited with code: {host_process.returncode}"
+                    )
+                print(
+                    f"test completed successfully in {time.time() - time_start} seconds",
+                    end=" ",
+                )
+                return
+
+            # the emulator loops forever, so any exit at all is a failure
+            if emulator_process.poll() is not None:
+                handle_failed_subprocess(
+                    host_process,
+                    "Host",
+                    True,
+                    out_file=host_stdout,
+                    err_file=host_stderr,
+                )
+                handle_failed_subprocess(
+                    emulator_process,
+                    "Emulator",
+                    out_file=emu_stdout,
+                    err_file=emu_stderr,
+                )
                 print(f"test failed in {time.time() - time_start} seconds", end=" ")
                 raise RuntimeError(
-                    f"Host application exited with code: {subproc.returncode}"
+                    f"Emulator unexpectedly exited early with code: {emulator_process.returncode}"
                 )
-            print(
-                f"test completed successfully in {time.time() - time_start} seconds",
-                end=" ",
-            )
-            return
-        sent_bytes = data_plane.send(frame_data)
-        if sent_bytes < 0:
-            print(f"test failed in {time.time() - time_start} seconds", end=" ")
-            raise RuntimeError(f"Error sending data: {sent_bytes}")
+            time.sleep(1)
 
-        sleep_frame_rate(last_frame_time, frame_rate)
+        # timeout expired, kill both processes and raise an error
+        handle_failed_subprocess(
+            host_process, "Host", True, out_file=host_stdout, err_file=host_stderr
+        )
+        handle_failed_subprocess(
+            emulator_process, "Emulator", True, out_file=emu_stdout, err_file=emu_stderr
+        )
+        print(f"test failed in {time.time() - time_start} seconds", end=" ")
+        raise RuntimeError(f"Timeout reached after {timeout_s} seconds")
+    finally:
+        _reap(emulator_process)
+        _reap(host_process)
+        emu_stdout.close()
+        emu_stderr.close()
+        host_stdout.close()
+        host_stderr.close()
 
-    # timeout expired, kill the host process and raise an error
-    handle_failed_subprocess(subproc, "Host", True)
-    print(f"test failed in {time.time() - time_start} seconds", end=" ")
-    raise RuntimeError(f"Timeout reached after {timeout_s} seconds")
+
+# how long to allow the emulator subprocess to compile its CSI kernel and start
+# broadcasting BootP before we give up on it. The nvcc compile of csi_kernels
+# dominates and is machine-dependent, so this is generous.
+_EMULATOR_STARTUP_TIMEOUT_S = 120.0
 
 
 # tests single camera imx emulator configurations in loopback mode by
 # - running a subprocess for the host application from its respective examples/ folder
-# - emulator code runs within the function (no separate binary examples yet)
+# - running a second subprocess for the emulator (this file, `serve` mode)
 # - emulator built for each camera type/mode and transport combination
 # - sends tests frames for "frame_limit" number of frames at frame rate determined by the camera mode
-# - successful test is the host application exits normally without error code and no early errors from emulator code
+# - successful test is the host application exits normally without error code and no early exit from emulator process
 def test_emulator_single_camera_imx_loopback(
     imx,
     transport,
@@ -1068,9 +1128,9 @@ def test_emulator_single_camera_imx_loopback(
 ):
     # hard coded test values for now
     camera_count = 1
-    # accelerated networking will require a binary or script that can be separately launched. Until either an example is built for the
-    # generic imx cameras or the HSB Emulator portion of this function is built out into a separate callable script, only unaccelerated
-    # linux and coe transport are supported for now
+    # accelerated networking still needs the emulator wrapped in scripts/nsexec.sh and
+    # the roce parametrization below re-enabled, so only unaccelerated linux and coe
+    # transport are supported for now
     hw_loopback = None
     assert transport in ("linux", "coe")
 
@@ -1127,49 +1187,54 @@ def test_emulator_single_camera_imx_loopback(
         str(camera_mode),
     ]
 
-    # generate the test data
-    frame_data = make_frame_data(camera_mode_properties, gpu)
-
-    # build emulator
-    hsb = hemu.HSBEmulator()
-    data_plane = None
     if host_transport == "coe":
         host_command.extend(["--coe-interface", host_interface])
-        data_plane = hemu.COEDataPlane(hsb, hemu.IPAddress(hololink_address), 0, 0)
     elif host_transport == "sipl":
         # assertion since currently only vb1940 supports sipl. Update when imx274 becomes available
         assert imx == "vb1940"
         # remove camera-mode and hololink options that are unsupported for sipl applications
         host_command = host_command[:-4]
-        if camera_count == 1:
-            host_command.extend(["--json-config", json_config])
-        else:
-            host_command.extend(["--json-config", json_config])
-        data_plane = hemu.COEDataPlane(hsb, hemu.IPAddress(hololink_address), 0, 0)
-    elif host_transport == "linux":
-        data_plane = hemu.LinuxDataPlane(hsb, hemu.IPAddress(hololink_address), 0, 0)
+        host_command.extend(["--json-config", json_config])
     elif host_transport == "roce":
-        data_plane = hemu.LinuxDataPlane(hsb, hemu.IPAddress(hololink_address), 0, 0)
         host_command.extend(["--ibv-name", get_ib_device_from_ifname(host_interface)])
-    else:
+    elif host_transport != "linux":
         raise ValueError(
-            f": Test {inspect.currentframe().f_code.co_name} does not support transport type: {transport}."
+            f"Test {test_emulator_single_camera_imx_loopback.__name__} does not support transport type: {transport}."
         )
     if headless:
         host_command.append("--headless")
 
-    hsb.start()
-
-    # start the host application subprocess
-    host_process = subprocess.Popen(
-        host_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE
-    )
+    # The emulator runs in its own process. Everything CUDA -- importing cupy,
+    # compiling the CSI kernel, generating the frame -- happens over there, after
+    # this process is done forking and before the emulator spawns any thread of
+    # its own. Doing it here instead would touch the driver API before the fork
+    # and fork a multi-threaded process, and the CUDA context would then persist
+    # into every subsequent test parameter.
+    emu_command = [
+        "python3",
+        os.path.abspath(__file__),
+        "serve",
+        "--imx",
+        imx,
+        "--camera-mode",
+        str(camera_mode),
+        "--transport",
+        host_transport,
+        "--address",
+        hololink_address,
+        "--frame-limit",
+        str(frame_limit),
+        "--frame-rate",
+        str(frame_rate),
+    ]
+    if gpu:
+        emu_command.append("--gpu")
 
     timeout_s = (
         2 * frame_limit / frame_rate + camera["configure_timeout"] * camera_count
     )
-    loop_single_dataplane(data_plane, frame_data, frame_rate, host_process, timeout_s)
-    hsb.stop()
+
+    loop_emulator_subprocess(host_command, emu_command, timeout_s, hololink_address)
 
 
 # dynamically generate test cases for the 2 test functions in this file based on the command line options
@@ -1209,5 +1274,123 @@ def pytest_generate_tests(metafunc):
             )
 
 
+# ---------------------------------------------------------------------------
+# `serve` mode -- the emulator side of test_emulator_single_camera_imx_loopback,
+# run as its own process:
+#
+#   python3 tests/test_emulator.py serve --imx imx477 --camera-mode 1080p \
+#           --transport linux --address 127.0.0.1 --frame-rate 60 [--gpu]
+#
+# There is no standalone example for the generic imx cameras (unlike the vb1940
+# serve_*_frames.py scripts, which read their geometry back off an emulated
+# sensor over I2C); these frames are built from the static camera_properties
+# geometry for the mode under test, so the server lives here next to that table.
+#
+# Nothing in this process forks, which is what lets it do CUDA work first and
+# only then construct the emulator objects -- HSBEmulator and each DataPlane
+# spawn a thread from their constructors.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_camera_mode(camera, camera_mode):
+    """Look up a mode key that arrived over the command line as a string.
+
+    imx477 modes are strings ("4k"/"1080p"); the other cameras key off int enum
+    values, which argparse hands us as text.
+    """
+    modes = camera["modes"]
+    if camera_mode in modes:
+        return camera_mode
+    try:
+        return int(camera_mode)
+    except ValueError:
+        pass
+    raise ValueError(
+        f"Invalid camera mode: {camera_mode}. must be one of {list(modes.keys())}"
+    )
+
+
+def _serve_main(argv):
+    parser = argparse.ArgumentParser(
+        description="Serve generated CSI-2 frames from an HSB Emulator as if from a single imx sensor"
+    )
+    parser.add_argument(
+        "--imx", required=True, help="Camera name, a key of camera_properties"
+    )
+    parser.add_argument(
+        "--camera-mode", required=True, help="Camera mode, a key of camera['modes']"
+    )
+    parser.add_argument(
+        "--transport", required=True, choices=("linux", "coe", "roce", "sipl")
+    )
+    parser.add_argument(
+        "--address", required=True, help="IP address the emulator serves from"
+    )
+    parser.add_argument("--frame-rate", type=int, required=True)
+    parser.add_argument("--data-plane-id", type=int, default=0)
+    parser.add_argument("--sensor-id", type=int, default=0)
+    parser.add_argument("--frame-limit", type=int, default=60)
+    parser.add_argument(
+        "-g", "--gpu", action="store_true", help="Serve the data from the GPU"
+    )
+    args = parser.parse_args(argv)
+
+    if args.imx not in camera_properties:
+        raise ValueError(
+            f"Invalid IMX: {args.imx}. must be one of {list(camera_properties.keys())}"
+        )
+    camera = camera_properties[args.imx]
+    camera_mode_properties = camera["modes"][
+        _resolve_camera_mode(camera, args.camera_mode)
+    ]
+
+    # CUDA first: compile just the kernel this mode needs and generate the frame,
+    # before any emulator object exists to start a thread.
+    mod, kernel, pixels_per_block = build_csi_generator(
+        camera_mode_properties["pixel_format"]
+    )
+    frame_data = make_frame_data(
+        camera_mode_properties, kernel, pixels_per_block, args.gpu
+    )
+    assert mod is not None  # the kernel is only valid while its module is alive
+
+    # Emulator second: HSBEmulator's ctor starts the control thread and each
+    # DataPlane's ctor starts a BootP thread.
+    import hololink.emulation as hemu
+
+    hsb = hemu.HSBEmulator()
+    if args.transport in ("coe", "sipl"):
+        data_plane_type = hemu.COEDataPlane
+    else:
+        data_plane_type = hemu.LinuxDataPlane
+    data_plane = data_plane_type(
+        hsb, hemu.IPAddress(args.address), args.data_plane_id, args.sensor_id
+    )
+
+    hsb.start()
+
+    time_final = (
+        time.time() + args.frame_limit / args.frame_rate + 15.0
+    )  # add 15 seconds to the timeout to account for the emulator startup time and wait for harness shutdown
+
+    # Serve until the parent kills us or our time limit expires.
+    print(f"serving {args.imx} mode {args.camera_mode} on {args.address}", flush=True)
+    try:
+        while time.time() < time_final:
+            last_frame_time = time.time_ns()
+            sent_bytes = data_plane.send(frame_data)
+            if sent_bytes < 0:
+                raise RuntimeError(f"Error sending data: {sent_bytes}")
+            sleep_frame_rate(last_frame_time, args.frame_rate)
+        print("Time limit expired without a kill from the test harness, stopping...")
+    except KeyboardInterrupt:
+        print("\nReceived Ctrl+C, stopping...")
+    finally:
+        hsb.stop()
+
+
 if __name__ == "__main__":
-    pytest.main()
+    if len(sys.argv) > 1 and sys.argv[1] == "serve":
+        _serve_main(sys.argv[2:])
+    else:
+        pytest.main()

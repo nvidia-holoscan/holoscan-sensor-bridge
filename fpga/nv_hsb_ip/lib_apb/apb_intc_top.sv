@@ -14,11 +14,11 @@
 // limitations under the License.
 
 module apb_intc_top
-  import HOLOLINK_pkg::*;
   import apb_pkg::*;
   import regmap_pkg::*;
 #(
   parameter  N_EXT_APB        = 2,
+  localparam N_MIN_EXT_APB    = (N_EXT_APB==0) ? 1 : N_EXT_APB,
   parameter  N_PER            = 2,
   parameter  N_MPORT          = 4,
   parameter  N_SENSOR_RX      = 2,
@@ -52,18 +52,19 @@ module apb_intc_top
   // Connect to HOLOLINK Peripheral Modules
   input  apb_s2m         i_apb_s2m_per    [N_PER],
   output apb_m2s         o_apb_m2s_per    [N_PER],
+  // Connect to User Modules, not using defined type struct
+  output [N_MIN_EXT_APB-1:0] o_apb_psel,
+  output                     o_apb_penable,
+  output [31        :0]      o_apb_paddr,
+  output [31        :0]      o_apb_pwdata,
+  output                     o_apb_pwrite,
+  input  [N_MIN_EXT_APB-1:0] i_apb_pready,
+  input  [31        :0]      i_apb_prdata     [N_MIN_EXT_APB-1:0],
+  input  [N_MIN_EXT_APB-1:0] i_apb_pserr,
   // Connect to Bridge Module
   input  apb_s2m         i_apb_s2m_bridge,
-  output apb_m2s         o_apb_m2s_bridge,
-  // Connect to User Modules, not using defined type struct
-  output [N_EXT_APB-1:0] o_apb_psel,
-  output                 o_apb_penable,
-  output [31        :0]  o_apb_paddr,
-  output [31        :0]  o_apb_pwdata,
-  output                 o_apb_pwrite,
-  input  [N_EXT_APB-1:0] i_apb_pready,
-  input  [31        :0]  i_apb_prdata     [N_EXT_APB-1:0],
-  input  [N_EXT_APB-1:0] i_apb_pserr
+  output apb_m2s         o_apb_m2s_bridge
+
 );
 
 localparam SENSOR_TXRX = (N_SENSOR_TX>0) ? 2 : 1;
@@ -442,6 +443,7 @@ generate
   end
 endgenerate
 
+if (N_EXT_APB>0) begin
 //------------------------------------------------------------------------------------------------//
 // User Added Logic
 //------------------------------------------------------------------------------------------------//
@@ -472,5 +474,13 @@ assign o_apb_penable = apb_m2s_ext[0].penable;
 assign o_apb_paddr   = apb_m2s_ext[0].paddr;
 assign o_apb_pwdata  = apb_m2s_ext[0].pwdata;
 assign o_apb_pwrite  = apb_m2s_ext[0].pwrite;
+
+end else begin
+  assign o_apb_psel    = '0;
+  assign o_apb_penable = '0;
+  assign o_apb_paddr   = '0;
+  assign o_apb_pwdata  = '0;
+  assign o_apb_pwrite  = '0;
+end
 
 endmodule

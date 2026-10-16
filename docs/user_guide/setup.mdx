@@ -51,7 +51,8 @@ Next, follow the directions on the appropriate tab below to configure your host 
 
 <Tab title="IGX">
 
-- Update the GPU driver to 535.309.01 and install IGX 1.1.3 by running the following.
+- For IGX Orin systems only, update the GPU driver to 535.309.01 and install IGX 1.1.3
+  by running the following.
 
   ```none
   sudo tee /etc/apt/preferences.d/nvidia-driver-pin >/dev/null <<'EOF'
@@ -61,7 +62,7 @@ Next, follow the directions on the appropriate tab below to configure your host 
   EOF
 
   sudo apt-get purge "nvidia-kernel-*"
-  sudo apt-get update && sudo apt-get install -y nvidia-driver-535-open=535.309.01-0ubuntu0.22.04.1
+  sudo apt-get update && sudo apt-get install -y 'nvidia-driver-535-open=535.309.01-0ubuntu0.22.04.*'
   sudo apt dist-upgrade
   ```
 
@@ -812,7 +813,12 @@ Now, for all configurations,
   sudo apt update && sudo apt install -y linuxptp
   ```
 
-  Next, set up a systemd service file that will run `phc2sys`.
+  Next, set up a systemd service file that will run `phc2sys`. The `Restart=` settings
+  matter: `phc2sys` holds an open handle to the NIC's PTP hardware clock, and whenever
+  the NIC is reset (for example when the CoE capture driver recovers `$EN0` after a
+  `ptp4l` fault) that clock is re-registered under a new `/dev/ptpN` and `phc2sys` exits
+  with `ioctl PTP_SYS_OFFSET: No such device`. Without a restart policy the NIC clock
+  then free-runs until someone notices.
 
   ```none
   PHC2SYS_SERVICE=/etc/systemd/system/phc2sys-$EN0.service
@@ -822,16 +828,26 @@ Now, for all configurations,
   Requires=NetworkManager.service
   After=NetworkManager.service
   After=timemaster.service
+  # Never give up restarting; the default 5-starts-per-10-s limit would leave the
+  # clock unsynchronized after a burst of NIC resets.
+  StartLimitIntervalSec=0
 
   [Service]
   Type=simple
   ExecStartPre=timeout 3m bash -c "until [ \"\$(nmcli -g GENERAL.STATE device show $EN0)\" = \"100 (connected)\" ]; do sleep 1; done"
   ExecStart=/usr/sbin/phc2sys -c $EN0 -s CLOCK_REALTIME -O 0 -S 0.0001
+  # Restart when phc2sys exits on its own (NIC reset, PTP clock re-registered); wait
+  # long enough for the interface to come back before the ExecStartPre check runs.
+  Restart=on-failure
+  RestartSec=5
 
   [Install]
   WantedBy=multi-user.target
   EOF
   ```
+
+  Note that each restart steps the NIC clock onto system time again, so expect one PTP
+  step on the HSB after every NIC reset.
 
   Configure it for execution at startup, and start it now.
 
@@ -843,14 +859,50 @@ Now, for all configurations,
 
 Next, run `ptp4l` to send PTP SYNC messages to $EN0.
 
+The host is the only PTP clock on this link, so `ptp4l` is configured as a dedicated
+time source (`serverOnly 1`) with the Best Master Clock Algorithm switched off
+(`BMCA noop`). This matters because HSB applications reset the FPGA when they start,
+which drops the Ethernet link for a moment. With the default algorithm `ptp4l` reacts to
+every link flap by going FAULTY, then LISTENING, and only becomes MASTER again after the
+announce-receipt timeout, three announce intervals of 2 s plus a random 0 to 2 s. For
+those 6 to 8 s no SYNC messages are sent, the HSB cannot lock, and an application that
+waits for PTP lock before streaming (for example the stereo VSYNC path) is stalled for
+that long on every start. With the designated-master state machine selected by these two
+options the port goes straight from FAULTY to MASTER when the link comes back, and SYNC
+resumes within the next sync interval. `ptp4l` requires one of `serverOnly` or
+`clientOnly` whenever `BMCA` is `noop`; with `serverOnly` the port will never follow
+another master, which is the intended behaviour here.
+
+The last two settings keep a transmit-timestamp fault from taking the master away for
+long. Some NICs occasionally take more than the default 10 ms to return the hardware
+transmit timestamp of a SYNC message; `ptp4l` then logs
+`timed out while polling for tx timestamp` and `send sync failed`, puts the port in
+FAULTY, and with the default `fault_reset_interval` of 4 (the value is log2 seconds)
+sends nothing for 16 s. While the master is silent the HSB keeps its clock running at
+the last correction it computed, and when SYNC returns the HSB steps its clock back onto
+host time; after 16 s that step can be large enough to disturb a running synchronized
+camera pair. `tx_timestamp_timeout 50` gives the NIC 50 ms for the timestamp so the
+fault becomes rare, and `fault_reset_interval 0` re-initializes the port after about one
+second, so a fault that still happens costs about one second of SYNC instead of 16.
+
 ```none
 cat <<EOF | sudo tee /etc/linuxptp/hsb-ptp.conf >/dev/null
 # This configuration is appropriate for NVIDIA Holoscan sensor bridge
 # applications, where PTP messages are sent over L2 and a 1/2 second interval.
+# The host is the only time source on the link: run as a dedicated master and skip
+# the BMCA election, so SYNC resumes right after a link flap (HSB reset) instead
+# of after the 6-8 s announce-receipt timeout.
+# Allow 50 ms for the NIC to return a SYNC transmit timestamp, and re-initialize the
+# port about one second (2^0 s) after a fault instead of the default 16 s, so the HSB
+# is not left on its own clock for long.
 [global]
 logSyncInterval -1
 logMinDelayReqInterval -1
 network_transport L2
+serverOnly 1
+BMCA noop
+tx_timestamp_timeout 50
+fault_reset_interval 0
 EOF
 ```
 
@@ -879,6 +931,30 @@ sudo chmod u+x $PTP4L_SERVICE
 sudo systemctl enable ptp4l-$EN0.service
 sudo systemctl start ptp4l-$EN0.service
 ```
+
+If `hsb-ptp.conf` changed on a host where `ptp4l` is already running, restart the
+service so the new configuration is picked up. Do this while no HSB application is
+streaming, because the HSB re-synchronizes to the master when it comes back.
+
+```none
+sudo systemctl restart ptp4l-$EN0.service
+```
+
+To confirm the configuration is active, start an HSB application (or bounce the link)
+and look at the service journal:
+
+```none
+journalctl -u ptp4l-$EN0.service -f
+```
+
+After the link flap the port must log `FAULTY to MASTER on INIT_COMPLETE`. Seeing
+`FAULTY to LISTENING on INIT_COMPLETE` followed several seconds later by
+`LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES` means the default election is
+still in use and `serverOnly 1` / `BMCA noop` are not in the configuration file the
+service loads (check the `-f` path in `ExecStart`). If a
+`timed out while polling for tx timestamp` fault does occur, the following
+`FAULTY to MASTER on INIT_COMPLETE` must appear about one second later; a 16 s gap means
+`fault_reset_interval 0` is not in effect.
 
 - For Orin iGPU with Cuda 12 configurations only (Jetpack 6 and IGX 1.X): Install
   [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.

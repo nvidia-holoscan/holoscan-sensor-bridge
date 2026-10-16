@@ -56,6 +56,16 @@ navigation:
         title: Emulation API
         slug: emulation-api
         collapsed: true
+      # Same arrangement for the versioned service interfaces (docs.yml
+      # `libraries.hololink-module`): point at the deep subtree so the
+      # `hololink -> namespaces -> module` breadcrumb is skipped. Keep this
+      # path in sync with GENERATED_API_FOLDERS in
+      # docs/scripts/build_hololink_docs.py, which writes the placeholder
+      # that keeps unauthenticated builds resolving.
+      - folder: ./generated/api-reference/cpp/module/hololink/namespaces/module
+        title: Module API
+        slug: module-api
+        collapsed: true
 
   - section: FPGA IP
     contents:

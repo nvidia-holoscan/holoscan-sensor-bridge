@@ -321,29 +321,35 @@ int64_t DataPlane::send(const DLTensor& tensor, FrameMetadata* frame_metadata)
         frame_metadata = DEFAULT_FRAME_METADATA;
     }
 
-    // metadata_mutex serializes update_metadata + transmitter->send. NOT running_mutex —
-    // send paths do not read base.running.
     LinuxDataPlaneCtxt* lctxt = linux_ctxt(data_plane_ctxt_.get());
+    int64_t n_bytes = -1;
     {
-        std::scoped_lock<std::mutex> lock(*lctxt->metadata_mutex);
-        update_metadata();
-    }
+        // send_mutex serializes DataPlane::send() against multithreaded sends of data.
+        // Needed in order to prevent race conditions in case the sends themselves
+        // are made non-blocking, which is currently true from Python code
+        std::scoped_lock<std::mutex> lock(lctxt->send_mutex);
+        // metadata_mutex serializes update_metadata. NOT running_mutex —
+        // send paths do not read base.running.
+        {
+            std::scoped_lock<std::mutex> lock(*lctxt->metadata_mutex);
+            update_metadata();
+        }
+        // Bounce CUDA-device data into the per-DataPlane host buffer; host-memory tensors
+        // (CPU / pinned / managed) get returned with size==0 and the original pointer is
+        // used directly.
+        uint8_t* content = (uint8_t*)tensor.data;
+        int64_t size = double_buffer_gpu_memory(&lctxt->double_buffer, &lctxt->double_buffer_size, tensor);
+        if (size < 0) {
+            Error_Handler("Failed to copy tensor to host");
+            return -1;
+        } else if (size > 0) {
+            content = lctxt->double_buffer;
+        } else {
+            size = DLTensor_n_bytes(tensor);
+        }
 
-    // Bounce CUDA-device data into the per-DataPlane host buffer; host-memory tensors
-    // (CPU / pinned / managed) get returned with size==0 and the original pointer is
-    // used directly.
-    uint8_t* content = (uint8_t*)tensor.data;
-    int64_t size = double_buffer_gpu_memory(&lctxt->double_buffer, &lctxt->double_buffer_size, tensor);
-    if (size < 0) {
-        Error_Handler("Failed to copy tensor to host");
-        return -1;
-    } else if (size > 0) {
-        content = lctxt->double_buffer;
-    } else {
-        size = DLTensor_n_bytes(tensor);
+        n_bytes = transmitter_->send(data_plane_ctxt_.get(), content, size, frame_metadata);
     }
-
-    int64_t n_bytes = transmitter_->send(data_plane_ctxt_.get(), content, size, frame_metadata);
     if (n_bytes < 0) {
         fprintf(stderr, "DataPlane::send() error sending tensor\n");
     }
@@ -356,12 +362,19 @@ int64_t DataPlane::send(const uint8_t* buffer, size_t buffer_size, FrameMetadata
         fprintf(stderr, "DataPlane::send() no transmitter\n");
         return -1;
     }
+    int64_t n_bytes = -1;
     LinuxDataPlaneCtxt* lctxt = linux_ctxt(data_plane_ctxt_.get());
     {
-        std::scoped_lock<std::mutex> lock(*lctxt->metadata_mutex);
-        update_metadata();
+        // send_mutex serializes DataPlane::send() against multithreaded sends of data.
+        // Needed in order to prevent race conditions in case the sends themselves
+        // are made non-blocking, which is currently true from Python code
+        std::scoped_lock<std::mutex> lock(lctxt->send_mutex);
+        {
+            std::scoped_lock<std::mutex> lock(*lctxt->metadata_mutex);
+            update_metadata();
+        }
+        n_bytes = transmitter_->send(data_plane_ctxt_.get(), buffer, buffer_size, frame_metadata);
     }
-    int64_t n_bytes = transmitter_->send(data_plane_ctxt_.get(), buffer, buffer_size, frame_metadata);
     if (n_bytes < 0) {
         fprintf(stderr, "DataPlane::send() error sending buffer\n");
     }

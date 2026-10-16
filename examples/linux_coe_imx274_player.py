@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -132,6 +132,7 @@ class HoloscanApplication(holoscan.core.Application):
         camera_mode,
         frame_limit,
         coe_interface,
+        stall_timeout_ms,
     ):
         logging.info("__init__")
         super().__init__()
@@ -144,6 +145,8 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera_mode = camera_mode
         self._frame_limit = frame_limit
         self._coe_interface = coe_interface
+        self._stall_timeout_ms = stall_timeout_ms
+        self._receiver = None
         # This is a control for HSDK
         self.is_metadata_enabled = True
 
@@ -198,7 +201,9 @@ class HoloscanApplication(holoscan.core.Application):
             coe_interface=self._coe_interface,
             pixel_width=pixel_width,
             coe_channel=coe_channel,
+            stall_timeout_ms=self._stall_timeout_ms,
         )
+        self._receiver = receiver_operator
 
         pixel_format = self._camera.pixel_format()
         bayer_format = self._camera.bayer_format()
@@ -257,6 +262,11 @@ class HoloscanApplication(holoscan.core.Application):
         self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
         self.add_flow(visualizer, timer, {("camera_pose_output", "input")})
 
+    def capture_stall(self):
+        if self._receiver is None or not self._receiver.capture_stalled():
+            return None
+        return self._receiver.capture_stall_duration_ms()
+
 
 def main():
     parser = argparse.ArgumentParser()
@@ -279,6 +289,12 @@ def main():
         type=int,
         default=None,
         help="Exit after receiving this many frames",
+    )
+    parser.add_argument(
+        "--stall-timeout-ms",
+        type=int,
+        default=0,
+        help="Fail after this many milliseconds without a CoE frame (0 disables)",
     )
     default_configuration = os.path.join(
         os.path.dirname(__file__), "example_configuration.yaml"
@@ -322,12 +338,15 @@ def main():
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     hololink_channel = hololink_module.DataChannel(channel_metadata)
@@ -349,6 +368,7 @@ def main():
         camera_mode,
         args.frame_limit,
         args.coe_interface,
+        args.stall_timeout_ms,
     )
     application.config(args.configuration)
     # Run it.
@@ -368,11 +388,20 @@ def main():
         if args.pattern is not None:
             camera.test_pattern(args.pattern)
         application.run()
+        stalled_for_ms = application.capture_stall()
+        if stalled_for_ms is not None:
+            raise RuntimeError(
+                f"CoE capture stalled for {stalled_for_ms}ms without a frame"
+            )
     finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+        try:
+            hololink.stop()
+        finally:
+            (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
+    # Checked out here so that a teardown failure doesn't displace an exception
+    # coming out of application.run().
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
 
 if __name__ == "__main__":

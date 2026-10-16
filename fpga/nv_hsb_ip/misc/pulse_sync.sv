@@ -76,7 +76,7 @@ data_sync #(
   .SYNC_DEPTH                       (2                      )
 ) src_pulse_to_dst_sync (
   .clk                              (dst_clk                ),
-  .rst_n                            (!dst_rst               ),
+  .rst                              (dst_rst                ),
   .sync_in                          (src_pulse_reg          ),
   .sync_out                         (dst_pulse_sync         )
 );

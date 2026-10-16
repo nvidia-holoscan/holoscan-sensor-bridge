@@ -121,7 +121,7 @@ end
 
 always_comb begin
   ftr = '0;
-  if ((append_state == APPEND_IDLE) && i_axis_rx_tlast && i_ftr_en) begin
+  if (((append_state == APPEND_IDLE) || (append_state == APPEND_WAIT)) && i_axis_rx_tlast && i_ftr_en) begin
     ftr = i_ftr << (idx << 3);
   end
   else if (append_state == APPEND_FTR) begin

@@ -33,7 +33,7 @@ class DataChannel;
 namespace hololink::operators {
 
 /**
- * @brief Operator class to capture images using NvFusaCaptureCoe
+ * @brief Operator class to capture images using NvFusaCaptureCoe.
  */
 class FusaCoeCaptureOp : public holoscan::Operator, public csi::CsiConverter {
 public:

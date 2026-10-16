@@ -14,7 +14,6 @@
 // limitations under the License.
 
 module bootp
-  import HOLOLINK_pkg::*;
 #(
   parameter  IP_DEFAULT  = 0,
   parameter  AXI_DWIDTH  = 64,
@@ -59,7 +58,7 @@ module bootp
   output [AXI_DWIDTH-1:0]  o_axis_tdata,
   output                   o_axis_tlast,
   output [KEEP_WIDTH-1:0]  o_axis_tkeep,
-  output [W_NUM_HOST-1:0]  o_axis_tuser,
+  output [16+W_NUM_HOST:0] o_axis_tuser,
   input                    i_axis_tready
 );
 
@@ -359,8 +358,20 @@ logic [23:0] pkt_cnt_be;
 assign pkt_cnt_be = {pkt_cnt[out_host_idx][7:0],pkt_cnt[out_host_idx][15:8],pkt_cnt[out_host_idx][23:16]};
 
 logic [BOOTP_VEND_DATA_WIDTH-1:0] bootp_vend_data;
+logic [7:0] hsb_stat_sync;
+
+data_sync #(
+  .DATA_WIDTH ( 8      ),
+  .RST_SYNC   ( "TRUE" )
+) u_hsb_stat_sync (
+  .clk      ( i_clk         ),
+  .rst      ( i_rst         ),
+  .sync_in  ( i_hsb_stat    ),
+  .sync_out ( hsb_stat_sync )
+);
+
 assign bootp_vend_data = {
-  i_hsb_stat, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, i_backward_compat_rev, bootp_vend_prefix
+  hsb_stat_sync, psn_be, ptp_be, i_enum_data[ENUM_DWIDTH-1:176],8'h0,pkt_cnt_be, uuid_be, i_backward_compat_rev, bootp_vend_prefix
 };
 
 vec_to_axis #(
@@ -385,7 +396,8 @@ vec_to_axis #(
 assign o_axis_tvalid = axis_tvalid | axis_vend_tvalid;
 assign o_axis_tdata  = axis_tdata  | axis_vend_tdata;
 assign o_axis_tlast  =               axis_vend_tlast;
-assign o_axis_tuser  = out_host_idx;
+assign o_axis_tuser[W_NUM_HOST-1:0]           = out_host_idx;
+assign o_axis_tuser[16+W_NUM_HOST:W_NUM_HOST] = 'd0;
 assign o_axis_tkeep  = axis_tkeep  | axis_vend_tkeep;
 assign o_pld_len     = pld;
 

@@ -29,7 +29,7 @@ module spi #(
 (
     // System
     input                 clk,
-    input                 rst_n,
+    input                 rst,
 
     input  [3:0]          prescaler,  // Indicates number of clocks for each edge of the SCLK, 0 = 1 clock cycle.  This allows slowing down the bus
     input  [1:0]          spi_mode,   // {CPHA,CPOL}: CPOL has to change at least one clock cycle before a new command to allow correct SCK edge direction
@@ -55,7 +55,7 @@ module spi #(
 
     output [MAX_TARGET:0] CS_N, //SPI interface pins
     output                SCK,
-    output                SDIO_en,       // Tri-State output enable.  "Pad" is at the top level.
+    output [3:0]          SDIO_en,       // Tri-State output enable.  "Pad" is at the top level.
     input  [3:0]          SDIO_in,
     output [3:0]          SDIO_out
 );
@@ -74,7 +74,7 @@ STATE_SPI_CS_SETUP                     = `STATE_SPI_WIDTH'h4;  // Fixed CS setup
 // SPI FSM
 
 reg [3:0]           rSDIO;
-reg                 rSDIO_en;
+reg [3:0]           rSDIO_en;
 reg                 rSCK;
 reg [MAX_TARGET:0]  rCS_N;
 
@@ -97,6 +97,20 @@ reg [3:0]                    rPreScaler;
 reg [2:0]                    incr;
 
 
+function automatic [3:0] f_sdio_en;
+    input do_write;
+    input [1:0] width;
+    if (!do_write) begin
+      f_sdio_en = 4'b0000;
+    end else begin
+      case (width)
+        2'h1:    f_sdio_en = 4'b1111; // Dual SPI
+        2'h2:    f_sdio_en = 4'b1111; // Quad SPI
+        default: f_sdio_en = 4'b1101; // Single SPI (SDR)
+      endcase
+    end
+endfunction
+
 always_comb begin
   case (rSpiWidth)
     2'h0:   begin           // Single SPI
@@ -118,8 +132,8 @@ always_comb begin
   endcase
 end
 
-always@(posedge clk or negedge rst_n) begin
-  if (!rst_n) begin
+always@(posedge clk) begin
+  if (rst) begin
     rSpiState       <=  STATE_SPI_IDLE ;
     rWrData         <=  8'h00;
     rRdData         <=  8'h00;
@@ -133,7 +147,7 @@ always@(posedge clk or negedge rst_n) begin
     rRdDataValid    <= 1'b0;
     rCycleCnt       <= 4'h0;
     rSentCnt        <= 6'h0;
-    rSDIO_en        <= 1'b0;
+    rSDIO_en        <= 4'b0000;
     rSDIO           <= 4'b0000;
     rCsSetupCnt     <= 3'h0;
   end
@@ -158,7 +172,7 @@ always@(posedge clk or negedge rst_n) begin
           end
           rSCK         <= spi_mode[`CPOL];
           rCsSetupCnt  <= 3'h0;
-          rSDIO_en     <= (!write) ? 1'b0 : 1'b1;
+          rSDIO_en     <= f_sdio_en(write, spi_width);
           rSDIO        <= (!write)            ? 4'b0000 :
                           (spi_width == 2'h1) ? {2'b11, wr_data[7:6]} :  // Dual Spi
                           (spi_width == 2'h2) ? wr_data[7:4] :           // Quad Spi
@@ -169,7 +183,7 @@ always@(posedge clk or negedge rst_n) begin
           rCmdAck         <= 1'b0;
           rSCK            <= spi_mode[`CPOL];
           rCS_N           <= {NUM_TARGETS{1'b1}};
-          rSDIO_en        <= 1'b0;
+          rSDIO_en        <= 4'b0000;
           rSDIO           <= 4'b0000;
         end
       end
@@ -230,14 +244,14 @@ always@(posedge clk or negedge rst_n) begin
           if (rSentCnt < 6'h8) begin
             rSCK      <= ~rSCK;
             rSpiState <=  STATE_SPI_SEND;
-            rSDIO_en  <= (!rSpiCmd[`WRITE])  ? 1'b0 : 1'b1;             // No write
+            rSDIO_en  <= f_sdio_en(rSpiCmd[`WRITE], rSpiWidth);          // No write
             rSDIO     <= (!rSpiCmd[`WRITE])  ? 4'b0000 :                // No write
                          (rSpiWidth == 2'h1) ? {2'b11, rWrData[7:6]} :  // Dual Spi
                          (rSpiWidth == 2'h2) ? rWrData[7:4] :           // Quad Spi
                                                {3'b110, rWrData[7]};    // Single Spi
           end
           else if (rSpiCmd[`PAUSE]) begin
-            rSDIO_en          <= 1'b0;
+            rSDIO_en          <= 4'b0000;
             rSDIO             <= 4'b0000;
             rSpiState         <= STATE_SPI_IDLE;
             rCS_N             <= {NUM_TARGETS{1'b1}};
@@ -248,7 +262,7 @@ always@(posedge clk or negedge rst_n) begin
             rSpiState       <= STATE_SPI_TURNAROUND;
             rCmdAck         <= 1'b1;
             rSCK            <= ~rSCK;
-            rSDIO_en        <= 1'b0;
+            rSDIO_en        <= 4'b0000;
             rSDIO           <= 4'b0000;
           end
           else begin
@@ -259,7 +273,7 @@ always@(posedge clk or negedge rst_n) begin
             rPreScaler          <= prescaler;
             rSpiState           <= STATE_SPI_SEND;
             rCmdAck             <= 1'b1;
-            rSDIO_en            <= (!write)            ? 1'b0 : 1'b1;
+            rSDIO_en            <= f_sdio_en(write, spi_width);
             rSDIO               <= (!write)            ? 4'b0000 :
                                    (spi_width == 2'h1) ? {2'b11, wr_data[7:6]} :  // Dual Spi
                                    (spi_width == 2'h2) ? wr_data[7:4] :           // Quad Spi

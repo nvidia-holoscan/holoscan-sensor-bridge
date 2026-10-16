@@ -62,7 +62,6 @@ DEMO_PULSE_DOCKER=""
 if [ -S "$DEMO_PULSE_NATIVE" ]; then
     DEMO_ASOUND_CONF="${HERE}/asound.conf.pulse"
     DEMO_PULSE_DOCKER="-v ${DEMO_PULSE_RUNDIR}/pulse:${DEMO_PULSE_RUNDIR}/pulse \
-        -e HOME=${HOME} \
         -e XDG_RUNTIME_DIR=${DEMO_PULSE_RUNDIR} \
         -e XDG_CONFIG_HOME=${DEMO_XDG_CONFIG_HOME} \
         -e PULSE_SERVER=unix:${DEMO_PULSE_NATIVE}"
@@ -73,6 +72,25 @@ if [ -S "$DEMO_PULSE_NATIVE" ]; then
         DEMO_PULSE_DOCKER="${DEMO_PULSE_DOCKER} -v ${DEMO_ASOUND_CONF}:/etc/asound.conf:ro"
     fi
 fi
+
+# On IGX Thor, CUDA's default ordering makes device 0 the dGPU when present or
+# the sole iGPU otherwise. Other platforms do not get an automatic
+# CUDA_VISIBLE_DEVICES setting.
+PRODUCT_NAME=""
+if [ -r /sys/class/dmi/id/product_name ]; then
+    PRODUCT_NAME=`cat /sys/class/dmi/id/product_name`
+elif [ -r /proc/device-tree/model ]; then
+    PRODUCT_NAME=`tr -d '\000' < /proc/device-tree/model`
+fi
+
+DEMO_CUDA_OPTION=""
+case "$PRODUCT_NAME" in
+    *IGX*Thor*)
+        # CUDA_VISIBLE_DEVICES orders devices based on capability
+        # Selects the igpu if only igpu is present, and dGPU if both igpu and dgpu are present
+        DEMO_CUDA_OPTION="-e CUDA_VISIBLE_DEVICES=0"
+        ;;
+esac
 
 docker run \
     -it \
@@ -100,7 +118,7 @@ docker run \
     -v /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings \
     -w $PWD \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
-    -e NVIDIA_VISIBLE_DEVICES=all \
+    $DEMO_CUDA_OPTION \
     -e DISPLAY=$DISPLAY \
     -e enableRawReprocess=2 \
     -e rawReprocessModulePartName="A6V26" \

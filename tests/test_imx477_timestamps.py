@@ -257,8 +257,7 @@ def test_imx477_timestamps(
         with mock.patch(
             "examples.imx477_player.HoloscanApplication", TimestampTestApplication
         ):
-            with utils.PriorityScheduler():
-                imx477_player.main()
+            imx477_player.main()
 
     # check for errors
     global timestamps

@@ -138,7 +138,10 @@ class Imx274Cam:
     def configure(self, imx274_mode_set):
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported IMX274 version:{version}, expected {VERSION}."
+            )
         # IMX274 needs a 25 MHz reference clock on the HSB-Lite
         # carrier. The per-data-plane oscillator the supplement
         # publishes either programs that rate (returns True) or

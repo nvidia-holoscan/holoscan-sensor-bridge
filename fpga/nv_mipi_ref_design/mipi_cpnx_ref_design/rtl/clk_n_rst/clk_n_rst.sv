@@ -94,7 +94,7 @@ module clk_n_rst (
     .SYNC_DEPTH  ( 32         )
   ) u_sw_erst_sync (
     .clk         ( o_pcs_clk  ),
-    .rst_n       ( i_pb_rst_n ),
+    .rst         ( !i_pb_rst_n ),
     .sync_in     ( i_sw_rst   ),
     .sync_out    ( pcs_rst    )
   );

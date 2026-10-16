@@ -40,18 +40,18 @@ public:
      * Camera drivers use this call to train this object on
      * how to interpret the block of GPU memory that the sensor
      * delivers.
-     * @param start_byte is the location within the received buffer
+     * @param start_byte Location within the received buffer
      *      of the first displayable pixel.  This is used to skip
      *      over framing data and other stuff transmitted by the device
      *      that isn't a part of the displayed image.
-     * @param recieved_bytes_per_line is where to find the next horizontal
+     * @param recieved_bytes_per_line Location of the next horizontal
      *      line of image data, relative to the start of the previous line.
      *      The first line always starts at (start_byte).
-     * @param pixel_width, pixel_height are the dimensions of the
-     *      received image; and (except for RAW_8) aren't the same as bytes.
-     * @param pixel_format is how the pixel data is encoded within
+     * @param pixel_width Width of the received image in pixels.
+     * @param pixel_height Height of the received image in pixels.
+     * @param pixel_format Encoding of the pixel data within
      *      the received buffer.
-     * @param trailer is how many bytes are transmitted after visual data
+     * @param trailing_bytes Number of bytes transmitted after visual data
      *      that are not actual visual data.
      *
      * For example, IMX274, RAW10, sends a video frame like this:

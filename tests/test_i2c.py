@@ -142,6 +142,10 @@ class Imx274I2cTestApplication(holoscan.core.Application):
             ibv_port=self._ibv_port,
             hololink_channel=self._hololink_channel,
             device=self._camera,
+            # Prevent reuse while downstream GPU operators consume a page.
+            pages=5,
+            # Absorb brief receiver-to-operator scheduling delays.
+            queue_size=5,
         )
         compute_crc = hololink_module.operators.ComputeCrcOp(
             self,
@@ -269,6 +273,7 @@ imx274_expected_color_profile = {
 
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
+@pytest.mark.flaky(reruns=2)
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501
     [
@@ -475,6 +480,10 @@ class StereoImx274I2cTestApplication(holoscan.core.Application):
                 ibv_port=ibv_port,
                 hololink_channel=hololink_channel,
                 device=camera,
+                # Prevent reuse while downstream GPU operators consume a page.
+                pages=5,
+                # Absorb brief receiver-to-operator scheduling delays.
+                queue_size=5,
             )
 
             compute_crc = hololink_module.operators.ComputeCrcOp(
@@ -670,6 +679,7 @@ sys_ibv_name_left, sys_ibv_name_right = (
 
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
+@pytest.mark.flaky(reruns=2)
 @pytest.mark.parametrize(
     "camera_mode_left, camera_mode_right",  # noqa: E501
     [

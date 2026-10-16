@@ -81,6 +81,7 @@ logic [31:0]            stat_reg  [2];
 logic trigger_en;
 logic ila_rst;
 logic fsm_busy;
+logic fsm_busy_r;
 logic fsm_done;
 logic fsm_busy_sync;
 
@@ -140,8 +141,8 @@ data_sync #(
   .SYNC_DEPTH                       (2                      )
 ) u_fsm_busy_sync (
   .clk                              (i_aclk                 ),
-  .rst_n                            (!i_arst                ),
-  .sync_in                          (fsm_busy               ),
+  .rst                              (i_arst                 ),
+  .sync_in                          (fsm_busy_r             ),
   .sync_out                         (fsm_busy_sync          )
 );
 
@@ -172,8 +173,10 @@ always_ff @(posedge i_pclk) begin
     ila_state   <= ILA_IDLE;
     sample_addr <= '0;
     wr_state    <= '0;
+    fsm_busy_r  <= '0;
   end
   else begin
+    fsm_busy_r <= fsm_busy;
     case (ila_state)
       ILA_IDLE: begin
         if (ila_rst) begin

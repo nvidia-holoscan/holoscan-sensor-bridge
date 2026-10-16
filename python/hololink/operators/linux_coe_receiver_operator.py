@@ -19,6 +19,7 @@ import logging
 import os
 import socket
 import threading
+import time
 
 import cuda.bindings.driver as cuda
 import cupy as cp
@@ -35,6 +36,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         coe_interface=None,
         pixel_width=None,
         coe_channel=0,
+        stall_timeout_ms=0,
         rename_metadata=lambda original_name: original_name,
         **kwargs,
     ):
@@ -43,6 +45,18 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         self._coe_interface = coe_interface
         self._pixel_width = pixel_width
         self._coe_channel = coe_channel
+        # Match FusaCoeCaptureOp's opt-in stall contract on this legacy path:
+        # zero disables detection; expiry records the stall and interrupts the graph.
+        self._stall_timeout_ms = int(stall_timeout_ms)
+        if self._stall_timeout_ms < 0:
+            raise ValueError("stall_timeout_ms must not be negative")
+        self._stall_lock = threading.Lock()
+        self._stall_monitor_running = False
+        self._stall_reactor = None
+        self._stall_alarm = None
+        self._last_frame_time = None
+        self._capture_stalled = False
+        self._capture_stall_duration_ms = 0
         self._vlan_enabled = False
         if self._receiver_affinity is None:
             # By default, run us on the third core in the system;
@@ -93,6 +107,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
             holoscan.conditions.AsynchronousEventState.EVENT_WAITING
         )
         self._device.start()
+        self._start_stall_monitor()
 
     def _start_receiver(self):
         # We receive all packets on the interface.
@@ -109,6 +124,7 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
         )
 
         def _ready(receiver):
+            self._frame_arrived()
             self.frame_ready()
 
         self._receiver.set_frame_ready(_ready)
@@ -116,6 +132,64 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
             daemon=True, name=self.name, target=self._run
         )
         self._receiver_thread.start()
+
+    def _start_stall_monitor(self):
+        if self._stall_timeout_ms == 0:
+            return
+        self._stall_reactor = hololink_module.Reactor.get_reactor()
+        with self._stall_lock:
+            self._capture_stalled = False
+            self._capture_stall_duration_ms = 0
+            self._last_frame_time = time.monotonic()
+            self._stall_monitor_running = True
+            self._stall_alarm = self._stall_reactor.add_alarm_s(
+                self._stall_timeout_ms / 1000, self._check_capture_stall
+            )
+
+    def _stop_stall_monitor(self):
+        if self._stall_timeout_ms == 0:
+            return
+        with self._stall_lock:
+            self._stall_monitor_running = False
+            alarm = self._stall_alarm
+            self._stall_alarm = None
+        if self._stall_reactor is not None:
+            self._stall_reactor.cancel_alarm(alarm)
+
+    def _frame_arrived(self):
+        if self._stall_timeout_ms == 0:
+            return
+        with self._stall_lock:
+            if self._stall_monitor_running:
+                self._last_frame_time = time.monotonic()
+
+    def _check_capture_stall(self):
+        with self._stall_lock:
+            if not self._stall_monitor_running:
+                return
+            elapsed_ms = int((time.monotonic() - self._last_frame_time) * 1000)
+            if elapsed_ms < self._stall_timeout_ms:
+                remaining_ms = self._stall_timeout_ms - elapsed_ms
+                self._stall_alarm = self._stall_reactor.add_alarm_s(
+                    remaining_ms / 1000, self._check_capture_stall
+                )
+                return
+            self._stall_monitor_running = False
+            self._stall_alarm = None
+            self._capture_stalled = True
+            self._capture_stall_duration_ms = elapsed_ms
+            frames_received = self._count
+
+        logging.error(
+            f"CoE capture stalled: failing after {elapsed_ms}ms without a frame "
+            f"({frames_received} received frames)"
+        )
+        if not self.fragment.executor.interrupt():
+            logging.warning("CoE capture stalled, but the graph was already stopped")
+
+    def stop(self):
+        self._stop_stall_monitor()
+        super().stop()
 
     def _run(self):
         cuda.cuCtxSetCurrent(self._frame_context)
@@ -155,3 +229,9 @@ class LinuxCoeReceiverOp(hololink_module.operators.BaseReceiverOp):
 
     def frames_ready(self):
         return self._receiver.frames_ready()
+
+    def capture_stalled(self):
+        return self._capture_stalled
+
+    def capture_stall_duration_ms(self):
+        return self._capture_stall_duration_ms

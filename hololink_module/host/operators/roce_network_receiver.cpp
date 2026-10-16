@@ -98,7 +98,8 @@ hololink_module_status_t RoceNetworkReceiver::construct(
     receiver_ = hololink::module::RoceReceiverInterfaceV1::get_service(metadata);
 
     const std::string peer_ip = metadata.get<std::string>("peer_ip");
-    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(peer_ip);
+    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(
+        peer_ip, metadata.get<std::string>("interface", std::string {}));
 
     const hololink_module_status_t start_status = receiver_->start(
         ibv_name,

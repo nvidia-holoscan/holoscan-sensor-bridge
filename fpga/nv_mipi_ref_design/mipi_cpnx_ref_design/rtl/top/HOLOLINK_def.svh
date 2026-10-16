@@ -53,16 +53,8 @@ package HOLOLINK_pkg;
   // Otherwise, soft MAC address and Board Serial Number can be used
   `define ENUM_EEPROM
 
-
   `ifdef ENUM_EEPROM
     `define EEPROM_REG_ADDR_BITS 8                //EEPROM Register Address Bits. Valid values: 8, 16
-  `endif
-  `ifndef ENUM_EEPROM
-    `define MAC_ADDR  48'hCAFEC0FFEE00
-    `define BOARD_VER 160'h0
-    `define BOARD_SN  56'h0
-    `define FPGA_CRC  16'h0
-    `define MISC      32'h0
   `endif
 
 //-----------------------------------------------------
@@ -128,8 +120,8 @@ package HOLOLINK_pkg;
 // Peripheral Control
 //------------------------------------------------------------------------------
 
-  `define SPI_INST  2   // SPI interface instantiation number. Valid values: undefined, 1 - 8
-  `define I2C_INST  3   // I2C interface instantiation number. Valid values: undefined, 1 - 8
+  `define SPI_INST  1   // SPI interface instantiation number. Valid values: undefined, 1 - 8
+  `define I2C_INST  4   // I2C interface instantiation number. Valid values: undefined, 1 - 8
   //`define UART_INST 1
   `define GPIO_INST 16  // INOUT GPIO instantiation number.    Valid values: 1 - 255
 
@@ -150,10 +142,11 @@ package HOLOLINK_pkg;
 // established between the Device and the Host
 //------------------------------------------------------------------------------
 
-  `define N_INIT_REG 15
+  `define N_INIT_REG 16
 
   localparam logic [63:0] init_reg [`N_INIT_REG] = '{
     // 32b Addr   | 32b Data
+    {32'h0000_002C, 32'h0000_000A}, // GPIO[3]=CFG1 input, GPIO[1]=POC_INT_L input
     {32'h1000_7A74, 32'h0000_0000}, // Lattice pcs 0, pcs_lpbk_ctrl
     {32'h1000_7AD9, 32'h0000_0079}, // Lattice pcs 0, pcs_eqlz_en
     {32'h1000_7AD1, 32'h0000_0065}, // Lattice pcs 0, pcs_preq_gain
@@ -173,8 +166,4 @@ package HOLOLINK_pkg;
 
 endpackage: HOLOLINK_pkg
 `endif
-
-
-
-
 

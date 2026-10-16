@@ -36,7 +36,7 @@ module rst (
     .SYNC_DEPTH  ( 3          )
   ) u_sw_erst_sync (
     .clk         ( i_apb_clk  ),
-    .rst_n       ( ~i_pb_rst ),
+    .rst         ( i_pb_rst  ),
     .sync_in     ( i_aligned  ),
     .sync_out    ( mac_aligned)
   );

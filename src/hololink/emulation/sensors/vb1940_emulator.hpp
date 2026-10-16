@@ -38,7 +38,7 @@ public:
     ~Vb1940Emulator();
 
     /**
-     * @brief Reset the Vb1940Emulator internal state machines to their initial states
+     * @brief Reset the Vb1940Emulator internal state machines to their initial states.
      */
     void reset();
 
@@ -47,9 +47,9 @@ public:
      *
      * `def attach_to_i2c(self: hemu.sensors.Vb1940Emulator, i2c_controller: hemu.I2CController, bus_address: int)`
      *
-     * @brief Attach the Vb1940Emulator to an I2C controller at a specified bus
-     * @param i2c_controller The I2C controller to attach to. Retrieved from HSBEmulator with get_i2c(controller_address)
-     * @param bus_address The bus address of the I2C controller
+     * @brief Attach the Vb1940Emulator to an I2C controller at a specified bus.
+     * @param i2c_controller The I2C controller to attach to. Retrieved from HSBEmulator with get_i2c(controller_address).
+     * @param bus_address The bus address of the I2C controller.
      */
     void attach_to_i2c(I2CController& i2c_controller, uint8_t bus_address) override;
 
@@ -58,19 +58,19 @@ public:
      *
      * `def i2c_transaction(self: hemu.sensors.Vb1940Emulator, peripheral_address: int, write_bytes: bytes, write_size: int, read_bytes: bytes, read_size: int) -> hemu.I2CStatus`
      *
-     * @brief Receive and act on I2C transaction from HSBEmulator's I2C controller(s)
-     * @param peripheral_address The address of the peripheral to transaction with
-     * @param write_bytes The bytes to write to the peripheral
-     * @param write_size The size of the write bytes
-     * @param read_bytes The bytes to read from the peripheral
-     * @param read_size The size of the read bytes
-     * @return The status of the I2C transaction
+     * @brief Receive and act on I2C transaction from HSBEmulator's I2C controller(s).
+     * @param peripheral_address The address of the peripheral to transaction with.
+     * @param write_bytes The bytes to write to the peripheral.
+     * @param write_size The size of the write bytes.
+     * @param read_bytes The bytes to read from the peripheral.
+     * @param read_size The size of the read bytes.
+     * @return The status of the I2C transaction.
      */
     I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override;
 
     /**
      * @brief Check if the Host application has set the sensor to streaming mode. It is expected that the host application does not send any commands that set the sensor to streaming mode if the sensor is not yet configured.
-     * @return True if the Vb1940Emulator is streaming, false otherwise
+     * @return true if the Vb1940Emulator is streaming, false otherwise.
      */
     bool is_streaming() const;
 
@@ -93,7 +93,7 @@ public:
     uint16_t get_bytes_per_line() const;
 
     /**
-     * @brief Get the start byte offset for the CSI image frame
+     * @brief Get the start byte offset for the CSI image frame.
      * @return The byte offset of the CSI image frame where the image starts or 0 if the sensor has not been configured; see is_streaming().
      */
     uint32_t get_image_start_byte() const;
@@ -109,6 +109,14 @@ public:
      * @return The number of bits per pixel or 0 if the sensor has not been configured; see is_streaming().
      */
     uint8_t get_pixel_bits() const;
+
+    /**
+     * @brief Get the configured frame rate.
+     * @return The frame rate in fps (30 or 60), decoded from the frame-length
+     * register the mode sequence programs, or 0 if the sensor has not been
+     * configured; see is_streaming()
+     */
+    uint16_t get_fps() const;
 
     /// Size (bytes) of the rig calibration EEPROM region that NativeVb1940Sensor reads
     /// over I²C at EEPROM_I2C_ADDRESS. Must match hololink's EEPROM_PAGE_SIZE * 4 pages = 256.
@@ -133,32 +141,32 @@ public:
 
 private:
     /**
-     * @brief Build the internal state machine for the Vb1940Emulator
+     * @brief Build the internal state machine for the Vb1940Emulator.
      */
     void build_state_machine();
 
     /**
-     * @brief state machine callback for writes to the system up register
+     * @brief state machine callback for writes to the system up register.
      */
     I2CStatus system_up_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
-     * @brief state machine callback for writes to the boot register
+     * @brief state machine callback for writes to the boot register.
      */
     I2CStatus boot_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
-     * @brief state machine callback for writes to the software standby register
+     * @brief state machine callback for writes to the software standby register.
      */
     I2CStatus sw_stby_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
-     * @brief state machine callback for writes to the streaming register
+     * @brief state machine callback for writes to the streaming register.
      */
     I2CStatus streaming_reg(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
     /**
-     * @brief The map of register addresses to their corresponding state machine callback
+     * @brief The map of register addresses to their corresponding state machine callback.
      */
     typedef I2CStatus (Vb1940Emulator::*i2c_callback_type)(const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size);
 
@@ -173,7 +181,7 @@ private:
     i2c_callback_type get_callback(uint16_t reg_addr);
 
     /**
-     * @brief The memory map of the Vb1940Emulator
+     * @brief The memory map of the Vb1940Emulator.
      */
     uint8_t memory_[VB1940_MEMORY_SIZE] = { 0 };
 

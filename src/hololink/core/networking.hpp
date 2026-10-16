@@ -57,7 +57,7 @@ using UniqueFileDescriptor = std::unique_ptr<Nullable<int, -1>, Nullable<int, -1
  *
  * @param destination_ip
  * @param port
- * @returns our IP address that can connect to `destination_ip` and the MAC ID for that interface.
+ * @return our IP address that can connect to `destination_ip` and the MAC ID for that interface.
  */
 std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
     const std::string& destination_ip, uint32_t port = 1);
@@ -65,16 +65,44 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac(
 /**
  * @brief Works only on Linux.
  *
- * @returns our IP address, interface name, and the MAC ID for the interface that
+ * @return our IP address, interface name, and the MAC ID for the interface that
  * socket_fd uses to transmit.
  */
 std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_from_socket(int socket_fd);
 
 /**
- * @brief Get the Mac ID for the given interface by name
+ * @brief Resolve the host-side endpoint from a NAMED interface rather than from
+ * the routing table.
+ *
+ * local_ip_and_mac() connect()s a UDP socket to the board and reads back the
+ * source address the kernel picked -- an answer that comes from the routing
+ * table. Every HSB board ships with the same default 192.168.0.x data-plane
+ * addressing, so with two boards on two NICs the subnets collide and the lookup
+ * returns whichever interface won the route tie, for BOTH boards. The FPGA is
+ * then told to send frames to a MAC belonging to a different NIC than the one
+ * it is cabled to and they are dropped on arrival: link up, control plane fine,
+ * zero frames delivered. Per-interface host routes used to paper over this.
+ *
+ * Enumeration already records the NIC the bootp reply arrived on (IP_PKTINFO),
+ * and an interface has an unambiguous MAC and, for the board's subnet, an
+ * unambiguous address. So prefer that over asking the routing table.
+ *
+ * Falls back to local_ip_and_mac(destination_ip) when `interface` is empty or
+ * carries no usable IPv4 address -- metadata that predates the "interface" key,
+ * or a hand-built blob, still works.
+ *
+ * @param interface NIC name the device enumerated on; "" to force the fallback
+ * @param destination_ip the board, used to pick among an interface's addresses
+ * @returns our IP address, interface name, and the MAC ID for that interface
+ */
+std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_for_interface(
+    const std::string& interface, const std::string& destination_ip);
+
+/**
+ * @brief Get the Mac ID for the given interface by name.
  *
  * @param interface
- * @return MacAddress
+ * @return MacAddress.
  */
 MacAddress local_mac(const std::string& interface);
 

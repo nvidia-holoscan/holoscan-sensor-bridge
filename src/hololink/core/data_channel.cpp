@@ -156,7 +156,14 @@ void DataChannel::configure_common(uint32_t frame_size, uint32_t overhead, uint3
     uint32_t payload_size = compute_payload_size(frame_size, overhead, mtu);
 
     const std::string& peer_ip = this->peer_ip();
-    auto [local_ip, local_device, local_mac] = core::local_ip_and_mac(peer_ip);
+    // Resolve the host-side endpoint from the NIC the board enumerated on, not
+    // from the routing table: two boards on the default 192.168.0.x subnet tie
+    // in the route lookup, and the loser gets programmed with the winner's MAC
+    // and never delivers a frame. See local_ip_and_mac_for_interface, which
+    // falls back to the routing table when no interface was recorded.
+    const std::string interface = enumeration_metadata_.get<std::string>("interface").value_or(std::string());
+    auto [local_ip, local_device, local_mac]
+        = core::local_ip_and_mac_for_interface(interface, peer_ip);
 
     // Data plane destination addresses
     uint32_t mac_high = (local_mac[0] << 8) | (local_mac[1] << 0);
@@ -188,6 +195,7 @@ void DataChannel::configure_common(uint32_t frame_size, uint32_t overhead, uint3
     hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, mac_high);
     hololink_->write_uint32(vp_address_ + DP_HOST_IP, ip);
     hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, udp_port);
+    hololink_->write_uint32(vp_address_ + DP_VLAN, 0);
 
     // Enable the current packetizer program.
     packetizer_program_->enable(*hololink_, sif_address_);
@@ -336,6 +344,7 @@ void DataChannel::unconfigure()
     hololink_->write_uint32(vp_address_ + DP_HOST_MAC_HIGH, 0);
     hololink_->write_uint32(vp_address_ + DP_HOST_IP, 0);
     hololink_->write_uint32(vp_address_ + DP_HOST_UDP_PORT, 0);
+    hololink_->write_uint32(vp_address_ + DP_VLAN, 0);
 
     // Disable the packetizer program.
     packetizer_program_->disable(*hololink_, sif_address_);
@@ -344,7 +353,12 @@ void DataChannel::unconfigure()
 void DataChannel::configure_socket(int socket_fd)
 {
     const std::string& peer_ip = this->peer_ip();
-    auto [local_ip, local_device, local_mac] = core::local_ip_and_mac(peer_ip);
+    // Same reasoning as configure_common: local_device feeds SO_BINDTODEVICE
+    // below, so a route-table answer would bind the broadcast receive to the
+    // wrong NIC exactly when two boards share a subnet.
+    const std::string interface = enumeration_metadata_.get<std::string>("interface").value_or(std::string());
+    auto [local_ip, local_device, local_mac]
+        = core::local_ip_and_mac_for_interface(interface, peer_ip);
 
     if (broadcast_port_) {
         //

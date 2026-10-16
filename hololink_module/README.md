@@ -1008,6 +1008,14 @@ The `RoceReceiverInterfaceV1::start(...)` contract is unchanged — it still tak
 service intentionally pins which device the QP is bound to. This change only relocates
 *where the lookup happens*: the operator now does it once, internally, from `peer_ip`.
 
+**Later refinement.** `ibv_device_for_peer` takes a second, defaulted `interface`
+argument, and the operator passes `metadata["interface"]` — the NIC the bootp reply
+arrived on. The original route lookup remains as the fallback for an empty interface,
+but it cannot distinguish two boards that share the default 192.168.0.x data-plane
+subnet: it returns the same NIC for both, so one leg's QP lands on an IB device its
+board cannot reach and receives nothing. `RoceReceiverInterfaceV1` is again unaffected
+— only the inputs to the lookup that precedes `start(...)` changed.
+
 **Build commands.**
 
 ```bash
@@ -3879,3 +3887,260 @@ and, being the only caller of the gate, hit it.
 ```bash
 pytest tests/test_module_coe.py::test_imx274_mono_linux_naive --imx274 --headless -vv
 ```
+
+## Phase 5 extension — `HsbIp` base publisher + `leopard_vb1940_2510`
+
+**Implemented; the hardware run against a 2510 VB1940 board is pending.** A 2510-FPGA
+Leopard VB1940 now has a module, and the publisher hierarchy it needed was factored out
+of `HsbLitePublisher` first.
+
+- **`module/core/hsb_ip_publisher.hpp` — `module_core::HsbIpPublisher`.** The canonical
+  publisher for every board whose control plane, data planes, sequencer and I2C speak
+  the HSB IP register map: the `construct_service` chain, the `update_metadata`
+  enumeration body, `setup()` and the `publish_*` hooks. It names nothing
+  carrier-specific — no clock generator, no MIPI D-PHY, no board supplement, no sensor
+  layout. `construct_oscillator` publishes nothing by default and
+  `publish_channel_configuration` is pure virtual, so every board states its own sensor
+  layout. Neither `construct_mipi_dphy` nor `set_mipi_dphy_metadata` exists on it — a
+  board publishes its D-PHY from `construct_board_services` and stamps the matching
+  register shape from `update_board_metadata`, the two new tail hooks mirroring
+  `construct_overrides` at the head of the construct chain. The two construct hooks
+  divide by intent: `construct_overrides` substitutes a board's impl for a service the
+  canonical chain would otherwise build, `construct_board_services` publishes services
+  the chain knows nothing about — the board's own supplement and its carrier-specific
+  peripherals. Every in-tree board's supplement moved from the first to the second. The
+  other addition of its own is
+  `construct_shared_oscillator<Impl>`, which holds the share-by-serial caching that
+  `HsbLitePublisher` and the Leopard publisher each open-coded.
+  `hsb_lite_sensor_metadata` is renamed `hsb_ip_sensor_metadata` (it is the HSB IP
+  addressing formula, not an HSB-Lite one), and `HsbIpChannelConfigurationV1` carries the
+  `channel_configuration.module_core.v1` type_id plus the board-independent `use_mtu` /
+  `use_multicast`.
+
+- **`HsbLitePublisher` is now the HSB-Lite carrier definition**, deriving from
+  `HsbIpPublisher` and adding only what makes a board an HSB-Lite one: the CrossLink-NX
+  D-PHY (both halves of the pairing), the Renesas Bajoran TS1 oscillator, the 3-sensor /
+  two-SIF `HsbLiteChannelConfigurationV1`, and the `HsbLiteInterfaceV1` supplement.
+
+- **The two D-PHY publish helpers moved next to their implementations** as free
+  functions — `construct_clnx_mipi_dphy(publisher, instance_id, type_id)` in
+  `mipi_dphy/clnx.hpp` and `construct_cpnx_mipi_dphy(...)` in `mipi_dphy/cpnx.hpp` — so
+  boards on either FPGA design reach the one matching theirs without the base publisher
+  including either. `HsbLitePublisher::mipi_dphy_parent` became
+  `HsbIpPublisher::configured_hololink(instance_id, what)`, which `construct_i2c` and
+  `construct_ptp_pps_output` now share.
+
+- **`leopard_vb1940` and `taurotech_da326` derive from `HsbIpPublisher`.** Leopard drops
+  the `construct_hsb_lite` override that existed only to suppress the HSB-Lite
+  supplement, and the DA326 stops publishing `hsb_lite.v1` — it is not expected to
+  implement it; the type_id resolved there only as an accident of inheritance. The DA326
+  names `HsbLiteOscillatorV1` explicitly (it carries the same Bajoran TS1) and its
+  channel configuration gained an `is_sensor_valid` bounded by its own two sensors —
+  previously it inherited HSB-Lite's three, so `update_metadata` accepted a bootp
+  `data_plane` of 2 and then threw out of `use_sensor` in the reactor's bootp callback.
+  `module/tutorial/` stays on `HsbLitePublisher`: it is an HSB-Lite-shaped device, and
+  `docs/user_guide/module_device_tutorial.mdx` describes that inheritance.
+
+- **The 2510 implementations are now `HsbIp2510*`** in `hsb_ip_2510_data_channel.hpp`,
+  `hsb_ip_2510_roce_receiver.hpp` and `hsb_ip_2510_linux_receiver.hpp` — the pre-0x2602
+  memory map and pre-0x2603 immediate-data layout are properties of the HSB IP revision,
+  not of a carrier. The `HsbLite2510*` transport names and their `*.hsb_lite_2510.v1`
+  type_ids are **retired**, and the three `hsb_lite_2510_*.hpp` headers that held them
+  deleted: nothing in-tree resolved those strings, and `INTERFACES.md` lists them among
+  the internal override targets that stay editable. Both `HsbLite2510Publisher` and the
+  Leopard 2510 publisher now construct the `HsbIp2510*` types directly.
+
+- **New `module/leopard_vb1940_2510/`.** `LeopardVb1940_2510_Publisher` derives from
+  `LeopardVb1940Publisher` — the D-PHY configuration (CertusPro-NX, 60 MHz settle clock)
+  and Bajoran TS2 oscillator are identical on both FPGA revisions, so it inherits them
+  and carries only the four transport branches (`HsbIp2510RoceDataChannelV1`,
+  `HsbIp2510LinuxDataChannelV1`, `HsbIp2510RoceReceiverV1`, `HsbIp2510LinuxReceiverV1`)
+  plus an FPGA-version gate. `LeopardVb1940Publisher` and the three impls it constructs
+  moved out of `module/leopard_vb1940/module_entry.cpp` into a module-private
+  `leopard_vb1940_publisher.hpp` that both module directories include.
+
+- **Filenames follow the `hsb_lite` pair.** The 2510 VB1940 reports `compat_id` 0, so it
+  cannot be selected by filename: `module/leopard_vb1940_2510/` ships the bare
+  `hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so` and is the catch-all for the UUID,
+  while `module/leopard_vb1940/` drops `NO_COMPAT_SUFFIX` and builds as
+  `hololink_f1627640-b4dc-48af-a360-c55b09b3d230_2603.so` for the current FPGA, which
+  does report `compat_id` 0x2603.
+
+- **The version gate has an upper bound only** — it declines `hsb_ip_version > 0x2603`,
+  unlike `hsb_lite_2510`, which also declines below 0x2510. A 2510 VB1940 is known only
+  to report *some* version below 0x2603, and this module is its UUID's catch-all, so a
+  lower bound guessed too high would decline the board the module exists for. Add one
+  once the exact reported version is known; the `hsb_ip_version={:#x}` log line in
+  `make_backing` prints it on the first channel configuration. Both revisions are driven
+  correctly meanwhile: each transport's `make_backing` / `make_receiver` compares the
+  reported version and picks the modern class at or above the cutover.
+
+**Out of scope.** Any 2510-specific behavior beyond what `hsb_lite_2510` already
+encodes; real deltas land when 2510 VB1940 hardware verification surfaces them. Also:
+moving `roce_receiver_construct.cpp` / `linux_receiver_construct.cpp` into
+`hololink_module_core` proper — the split removes the reason they must be compiled
+per-module (`HsbIpPublisher` no longer includes a board supplement header), but retiring
+`add_hololink_module()`'s injection is a separate change.
+
+**Build commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+cmake -S . -B "$BUILD"
+cmake --build "$BUILD" --target leopard_vb1940
+cmake --build "$BUILD" --target leopard_vb1940_2510
+cmake --build "$BUILD" --target hololink_module_leopard_vb1940_test
+```
+
+**Test-run commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+ctest --test-dir "$BUILD" -R "hololink_module_leopard_vb1940_test|hololink_module_hsb_lite_test" --output-on-failure
+ls "$BUILD"/lib/hololink/modules/
+```
+
+## `release_version` on every service interface
+
+**Implemented.** The release that froze an interface is a member of the class rather than
+a line in its comment. Every interface reachable through the service locator declares one
+next to its `type_id` — the version string of the release that froze it:
+
+```cpp
+class HololinkInterfaceV1 : public ConfigurableService<HololinkInterfaceV1> {
+public:
+    static constexpr const char* type_id = "hololink.v1";
+    static constexpr const char* release_version = "2.7.0";
+```
+
+An interface no release has published yet names a sentinel instead, and stays editable in
+place with its callers updated in the same commit:
+
+```cpp
+    static constexpr const char* release_version = UNRELEASED;
+```
+
+A second sentinel marks an interface application code must not use at all:
+
+```cpp
+    static constexpr const char* release_version = TEST_ONLY;
+```
+
+`TEST_ONLY` is for the fixtures under `tests/` that exercise the framework — the stub
+modules' services, the bootp capture. It is not a step toward a release the way
+`UNRELEASED` is: no release will ever freeze one, none is listed in `INTERFACES.md`, and
+an application reaching for one is reaching for something the next change may delete.
+
+`UNRELEASED` comes from the new `hololink/module/release.hpp`, which `service.hpp`
+includes, so any class deriving from `Service<T>` / `ConfigurableService<T>` picks it up.
+The four released classes that are not locator services — `I2cLockV1`, `CsiConverterV1`,
+`RoceReceiverFrameInfoV1`, `LinuxReceiverFrameInfoV1` — carry the marker with no
+`type_id`. A `static constexpr` member changes neither object layout nor vtable, so
+marking the released 2.7.0 classes is not a change to those interfaces.
+
+**Implementations inherit it.** `module_core::CoeDataChannelV1` derives from
+`CoeDataChannelInterfaceV1` and so reports `"2.7.0"` without declaring anything, and that
+is the reading of the marker: it names the release that froze the *contract being served*,
+not a promise about the implementation's own declaration. Implementations stay editable —
+they are override targets, not the application boundary — and the thing that says so is
+where they live (`module/core/`, a module tree) rather than a marker each one repeats.
+The classes that do declare their own are the ones with no interface base to inherit
+from: `MipiDphyInterfaceV1` (added after 2.7.0, so `UNRELEASED`) and the three test
+fixtures (`TEST_ONLY`).
+
+**One `static_assert` in the framework** (`service.hpp`), placed in member-function
+bodies since `Service<Derived>` is a CRTP base and `Derived` is incomplete in the base's
+class body: `check_release_version<T>()` runs in `Service<Derived>::get_service` (both
+forms), `Service<Derived>::for_each_type_id`, and `ServicePublisher<T>::publish`, so a
+class that reaches the locator with no marker in reach fails to build. In practice that
+means a new interface: an implementation inherits one.
+
+Two gaps the compile-time check does not close, both left to the release process:
+
+- A class that is neither published nor consumed in-tree is never instantiated, so nothing
+  asserts on it. Catching that takes a scan of the public interface trees.
+- A future `FooInterfaceV2 : FooInterfaceV1` that forgets to redeclare would silently
+  report the release that froze V1. Because an implementation of a frozen interface is
+  structurally identical to such a V2 — both derive from it, both carry their own
+  `type_id` and `ServiceAlias` — no compile-time rule can separate them. What separates
+  them is the file they are declared in, so the same public-tree scan is what catches it:
+  every class declared in a public interface tree declares its own marker.
+
+**Python.** The 17 `py::class_` sites that carried a `"Frozen: 2.7.0"` docstring now
+publish real attributes read from the C++ members:
+
+```cpp
+py::object cls = m.attr("HololinkInterfaceV1");
+cls.attr("type_id") = ad::HololinkInterfaceV1::type_id;
+cls.attr("release_version") = ad::HololinkInterfaceV1::release_version;
+```
+
+so `help()`, generated docs, and any test read one source instead of a hand-copied
+string.
+
+**Build commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+cmake -S . -B "$BUILD"
+cmake --build "$BUILD"
+```
+
+**Test-run commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+ctest --test-dir "$BUILD" -R hololink_module --output-on-failure
+python3 -c "import hololink_module; print(hololink_module.HololinkInterfaceV1.release_version)"
+```
+
+## Discovery is bootp-only; the kernel driver announces PCIe endpoints
+
+**Implemented.** The `Adapter` discovers devices through exactly one mechanism, its bootp listener
+on UDP 12267, as it did before the PCIe work. The transport-provider abstraction that briefly sat
+underneath it (`DiscoveryProvider`, a PCIe provider walking `/sys/class/hololink_pcie` and
+listening for uevents, `Adapter::rescan()`, `Adapter::discovery_providers()`) has been removed
+again; `adapter.hpp` carries nothing PCIe-specific.
+
+PCIe endpoints reach the listener the same way Ethernet boards do. The `hololink_pcie` kernel
+driver (`src/ehsb/kmod`) runs one delayed work on the shared system workqueue that, once per
+second, synthesizes a 300-byte RFC 951 bootp announcement per bound endpoint -- the HSB vendor
+extension (`0xE0`, `'NVDA'`, enum version 2, the board UUID, `hsb_ip_version`) exactly as the
+Ethernet firmware sends it -- and injects it into the loopback interface with `netif_rx()`
+(`<packed BDF>:12268 -> 127.255.255.255:12267`: the destination is the loopback subnet
+broadcast, so -- as an Ethernet board's broadcast does -- the announcement reaches every socket
+bound to port 12267 on `INADDR_ANY` instead of the single sharer of the port a unicast to
+`127.0.0.1` is delivered to (most specific bind wins, so a later `INADDR_ANY` binder would take
+it away from the daemon); the IP source is the BDF packed as `(domain << 16) | (bus << 8) |
+devfn`, the same value as `ciaddr`; the local table's `broadcast 127.255.255.255 dev lo` route is
+attached so the frame passes with no sysctl changes. A raw listener bound to `127.0.0.1` rather
+than `INADDR_ANY` does not receive it; a userspace sender mimicking the driver sends to
+`127.255.255.255` with `SO_BROADCAST`). The layout is `src/ehsb/kmod/include/hololink_pcie_bootp.h`,
+plain C over `__u8`, mirrored to `hololink/module/pcie/hololink_pcie_bootp.h` and checked
+byte-identical at configure time so `hololink_module_pcie_bootp_test` can pin it to the host
+parser without a kernel.
+
+The announcement's header says what the carrier is: `htype = 0x50` ('P'; Ethernet boards send
+1) with a 4-byte `chaddr` = the BDF big-endian. Both host parsers (`bootp.cpp` and the legacy
+`enumerator.cpp`) select on it and render the BDF text (`"0005:01:00.0"`) into `peer_ip` -- the
+channel key -- and `mac_id`; the datagram's IPv4 source (the driver packs the BDF there too,
+`"0.5.1.0"`) is not kept separately, since `client_ip_address` carries that same packed BDF
+for older parsers. The vendor area follows the Ethernet firmware's layout to the end (tag length 56): the
+7-byte serial is the endpoint's PCIe Device Serial Number when it has one (status bit1) or the
+`"PCIE"`+BDF placeholder, and bytes 45..54 carry a snapshot of the endpoint's PTP clock when the
+driver runs with `bootp_ptp=1` (status bit0); the parsers decode `ptp_timestamp_s/ns`,
+`bootp_psn` and `bootp_status` for Ethernet and PCIe alike. The `hsb_pcie` module (selected by
+the board UUID like any module) then stamps, inside `EnumerationInterfaceV1::update_metadata`
+-- which the Adapter runs *before* it matches `register_ip` / `wait_for_channel` subscribers --
+`pcie_bdf`, `pcie_domain/bus/device/function`, `transport = pcie`, and decides
+`serial_number`: a Device Serial Number is kept (`pcie_serial_source = dsn`), the placeholder
+becomes `pcie-<bdf>` (`bdf`). An older driver's `htype 1` record (IPv4 `peer_ip` + packed BDF in
+`client_ip_address`) is still restored to the BDF the same way. Applications keep addressing
+and waiting for the endpoint by BDF (`wait_for_channel("0005:01:00.0")`). Raw subscribers
+(`register_raw_*`, and the legacy `hololink-enumerate`) see `peer_ip = mac_id = 0005:01:00.0`
+already; only the `pcie_*` stamps and the serial decision are the module's.
+
+Consequences: a hot-plugged board is announced within a second; there is no "gone" message
+(as for Ethernet); only the initial network namespace sees the announcements; and the examples
+simply `wait_for_channel(bdf)` -- no scan, no replay. `bootp_announce=0` on the driver disables
+publishing. `adapter_enumerator -d` dedups on the post-enrichment `peer_ip`, the BDF.

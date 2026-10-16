@@ -43,8 +43,8 @@
       "Leopard VB1940"
     ],
     "holoscan_sdk": {
-      "minimum_required_version": "4.4",
-      "tested_versions": ["4.4.0"]
+      "minimum_required_version": "4.6",
+      "tested_versions": ["4.6.0"]
     },
     "operator_names": [
       "ArgusIspOp",

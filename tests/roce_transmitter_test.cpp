@@ -18,6 +18,7 @@
 #include "gtest/gtest.h"
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -26,31 +27,26 @@
 #include <thread>
 #include <vector>
 
+#include <unistd.h>
+
 #include <hololink/common/cuda_error.hpp>
-#include <hololink/operators/roce_transmitter/ibv.hpp>
+#include <hololink/operators/roce_transmitter/roce_transmitter_buffer.hpp>
 #include <hololink/operators/roce_transmitter/roce_transmitter_op.hpp>
+#include <hololink/transport/roce/ibv.hpp>
 
 namespace hololink::tests {
 
 static std::string get_device_ip(const std::string& device_name, int ib_port)
 {
-    // Get list of InfiniBand devices
-    operators::ibv::DeviceList device_list;
-    auto device = device_list.find(device_name);
-    if (!device)
-        return "";
-
     // Open the device context
-    auto context = device->get_context();
-    if (!context)
-        return "";
+    transport::roce::ibv::Context context(device_name);
 
     // Get the GID index for RoCE v2
     int gid_index = context.query_gid_roce_v2_ip();
 
     // Get the GID for RoCE v2
     ibv_gid gid = context.query_gid(ib_port, gid_index);
-    return operators::ibv::gid_to_ipv4(gid);
+    return transport::roce::ibv::gid_to_ipv4(gid);
 }
 
 struct RoceTestDeviceInfo {
@@ -61,22 +57,22 @@ struct RoceTestDeviceInfo {
 
 static std::optional<RoceTestDeviceInfo> get_roce_test_device_info()
 {
-    operators::ibv::DeviceList device_list;
-    if (device_list.size() == 0) {
+    const std::optional<std::string> ibv_name
+        = transport::roce::ibv::DeviceList().first_name();
+    if (!ibv_name) {
         return std::nullopt;
     }
-    std::string ibv_name = device_list.get(0).name();
     uint32_t ibv_port = 1;
-    std::string host_ip = get_device_ip(ibv_name, ibv_port);
+    std::string host_ip = get_device_ip(ibv_name.value(), ibv_port);
     if (host_ip.empty()) {
         return std::nullopt;
     }
-    return RoceTestDeviceInfo { ibv_name, ibv_port, host_ip };
+    return RoceTestDeviceInfo { ibv_name.value(), ibv_port, host_ip };
 }
 
 using Tensor = std::shared_ptr<holoscan::Tensor>;
 using Data = std::vector<float>;
-namespace ibv = hololink::operators::ibv;
+namespace ibv = hololink::transport::roce::ibv;
 
 // Tag parameter so the generator is not nullary: holoscan::Arg otherwise stores any nullary
 // callable as std::function<void()> (Arg::set_value_ in holoscan arg.hpp).
@@ -156,7 +152,7 @@ public:
               IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE))
         , queue_pair_(
               protection_domain_.create_queue_pair(
-                  ibv::QueuePair::InitAttr().query_pair_type(IBV_QPT_UC).send_completion_queue(completion_queue_.ptr_).receive_completion_queue(completion_queue_.ptr_).capacity(ibv::QueuePair::Capacity().max_send_write_read(512).max_receive_write_read(512).max_send_scatter_gather_entry(1).max_receive_scallter_gather_entry(1))))
+                  ibv::QueuePair::InitAttr().query_pair_type(IBV_QPT_UC).send_completion_queue(completion_queue_.ptr_).receive_completion_queue(completion_queue_.ptr_).capacity(ibv::QueuePair::Capacity().max_send_write_read(512).max_receive_write_read(512).max_send_scatter_gather_entry(1).max_receive_scatter_gather_entry(1))))
         , ibv_port_(ibv_port)
         , remote_gid_(ibv::ipv4_to_gid(remote_ip.c_str()))
     {
@@ -169,7 +165,9 @@ public:
 
     void connect(uint32_t remote_qp_num)
     {
-        if (!queue_pair_.reset_to_init(ibv_port_) || !queue_pair_.init_to_rtr(ibv_port_, remote_gid_, remote_qp_num, gid_index_) || !queue_pair_.rtr_to_rts())
+        auto port_attr = context_.query_port(ibv_port_);
+        auto host_if_name = context_.get_host_if_name();
+        if (queue_pair_.reset_to_init(ibv_port_) || queue_pair_.init_to_rtr(ibv_port_, port_attr, host_if_name, remote_gid_, remote_qp_num, gid_index_) || queue_pair_.rtr_to_rts())
             throw std::exception();
 
         // Prepare the receive work request
@@ -180,7 +178,8 @@ public:
 
         // Send the receive work request
         ibv::ReceiveWorkRequest wr(1, &sge);
-        queue_pair_.post_receive(wr);
+        if (queue_pair_.post_receive(wr))
+            throw std::exception();
     }
 
     bool validate(std::chrono::milliseconds timeout)
@@ -279,7 +278,10 @@ public:
 
 private:
     size_t roce_transmitter_buffer_size_;
-    const DataGeneratorOp::DataGenerator& data_generator_;
+    // Held by value: every caller passes a temporary, and compose() does not run until
+    // run() is called, well after that temporary's full-expression has ended.  As a
+    // reference this member dangled by the time compose() copied it into the Arg.
+    DataGeneratorOp::DataGenerator data_generator_;
     RoceReceiver roce_receiver_;
     RoceTestDeviceInfo device_info_;
 
@@ -297,12 +299,41 @@ static Data generate_data(size_t size)
     return d;
 }
 
+TEST(RoceTransmitterAlignmentTest, HostPageAlignsDmaBufRegistration)
+{
+    const size_t page_size = static_cast<size_t>(getpagesize());
+    const size_t payload_size = 8 * sizeof(float);
+    const auto layout = operators::detail::dma_buf_layout(payload_size, page_size);
+
+    ASSERT_LT(payload_size, page_size);
+    EXPECT_EQ(layout.registered_size, page_size);
+    EXPECT_EQ(layout.registered_size % page_size, 0);
+    EXPECT_EQ(layout.allocation_size, layout.registered_size + page_size);
+
+    // Add scratch space so the simulated CUDA allocation can be made deliberately
+    // unaligned while retaining layout.allocation_size bytes after its base.
+    std::vector<char> storage(layout.allocation_size + page_size);
+    char* allocation = storage.data();
+    if (reinterpret_cast<std::uintptr_t>(allocation) % page_size == 0) {
+        ++allocation;
+    }
+    ASSERT_NE(reinterpret_cast<std::uintptr_t>(allocation) % page_size, 0);
+
+    char* registered = operators::detail::page_aligned_pointer(allocation, page_size);
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(registered) % page_size, 0);
+    EXPECT_GE(registered, allocation);
+    EXPECT_LT(registered, allocation + page_size);
+    EXPECT_LE(registered + layout.registered_size, allocation + layout.allocation_size);
+}
+
 TEST(RoceTransmitterTest, float_8)
 {
     auto device_info = get_roce_test_device_info();
     if (!device_info) {
         GTEST_SKIP() << "No RoCE-capable InfiniBand device available";
     }
+    // Keep this payload smaller than a host page: the transmitter must page-align
+    // its DMA-BUF registration without changing the number of bytes it sends.
     Data d(generate_data(8));
     RoceTransmitterTestApp app(
         d.size() * sizeof(Data::value_type),

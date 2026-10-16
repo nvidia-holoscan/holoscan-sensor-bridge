@@ -192,8 +192,8 @@ generate
     if (SAME_CLK) begin
       assign reg_stat[i] = i_stat[i];
     end else if (SYNC_CLK) begin
-      always_ff @(posedge i_pclk) begin
-        if (i_prst) begin
+      always_ff @(posedge i_aclk) begin
+        if (i_arst) begin
           reg_stat[i] <= '0;
         end else begin
           reg_stat[i] <= i_stat[i];

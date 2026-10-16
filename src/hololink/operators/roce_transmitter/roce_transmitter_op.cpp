@@ -17,9 +17,11 @@
 #include "roce_transmitter_op.hpp"
 
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <queue>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 
 #include <infiniband/mlx5dv.h>
@@ -28,15 +30,16 @@
 #include <hololink/common/cuda_error.hpp>
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/logging_internal.hpp>
+#include <hololink/transport/roce/ibv.hpp>
 
-#include "ibv.hpp"
+#include "roce_transmitter_buffer.hpp"
 
 #define THROW_ERROR(streamable)                   \
     do {                                          \
         using namespace hololink::operators;      \
         std::stringstream ss;                     \
         ss << streamable;                         \
-        HSB_LOG_ERROR(ss.str());                  \
+        HSB_LOG_ERROR("{}", ss.str());            \
         throw RoceTransmitterOp::Error(ss.str()); \
     } while (0)
 
@@ -60,6 +63,7 @@
 YAML_CONVERTER(hololink::operators::RoceTransmitterOp::OnStartCallback);
 
 namespace hololink::operators {
+namespace ibv = hololink::transport::roce::ibv;
 namespace {
 
     enum cudaAllocateType {
@@ -97,11 +101,11 @@ namespace {
     using CudaUniquePtr = std::unique_ptr<T, CudaDeleter>;
 
     /**
-     * @brief Allocate a CUDA memory region that can be used for RDMA operations. Namely registering memory regions
+     * @brief Allocate a CUDA memory region that can be used for RDMA operations. Namely registering memory regions.
      *
      * @tparam T
      * @param length
-     * @return CudaUniquePtr<T>
+     * @return CudaUniquePtr<T>.
      */
     template <typename T>
     CudaUniquePtr<T> CudaRDMAAllocate(size_t length = 1)
@@ -130,6 +134,28 @@ namespace {
         CUDA_CHECK(cudaMalloc(&ptr, sizeof(T) * length));
         return CudaUniquePtr<T>(ptr, CudaDeleter(cudaAllocateType::cudaAllocateTypeDevice));
     }
+
+    class CudaRDMABuffer {
+    public:
+        CudaRDMABuffer() = default;
+
+        explicit CudaRDMABuffer(size_t payload_size)
+            : page_size_(static_cast<size_t>(getpagesize()))
+            , layout_(detail::dma_buf_layout(payload_size, page_size_))
+            , allocation_(CudaRDMAAllocate<char>(layout_.allocation_size))
+            , data_(detail::page_aligned_pointer(allocation_.get(), page_size_))
+        {
+        }
+
+        char* data() const { return data_; }
+        size_t size() const { return layout_.registered_size; }
+
+    private:
+        size_t page_size_ {};
+        detail::DmaBufLayout layout_ {};
+        CudaUniquePtr<char> allocation_;
+        char* data_ {};
+    };
 
     struct CudaStream {
         CudaStream()
@@ -176,8 +202,9 @@ class RoceTransmitterOp::Buffer {
 public:
     Buffer(ibv::ProtectionDomain& protection_domain, size_t size)
         : output_buffer_size_(size)
-        , output_buffer_(CudaRDMAAllocate<char>(output_buffer_size_))
-        , memory_region_(register_dmabuf_memory(protection_domain, output_buffer_.get(), output_buffer_size_))
+        , output_buffer_(output_buffer_size_)
+        , memory_region_(register_dmabuf_memory(
+              protection_domain, output_buffer_.data(), output_buffer_.size()))
     {
     }
 
@@ -215,7 +242,7 @@ public:
         }
 
         return ibv::ScatterGatherElement(
-            reinterpret_cast<uint64_t>(output_buffer_.get()),
+            reinterpret_cast<uint64_t>(output_buffer_.data()),
             payload_size_,
             memory_region_.ptr_->lkey);
     }
@@ -231,7 +258,7 @@ public:
 
         input_tensor_ = tensor;
         payload_size_ = input_tensor_->nbytes();
-        CUDA_CHECK(cudaMemcpyAsync(output_buffer_.get(), input_tensor_->data(), payload_size_, cudaMemcpyDeviceToDevice, stream_));
+        CUDA_CHECK(cudaMemcpyAsync(output_buffer_.data(), input_tensor_->data(), payload_size_, cudaMemcpyDeviceToDevice, stream_));
     }
 
 private:
@@ -249,7 +276,7 @@ private:
             // Try to register memory region using dmabuf
             try {
                 uint64_t iova = reinterpret_cast<uint64_t>(addr);
-                auto mr = protection_domain.register_dmabuf_memory_region(size, iova, dmabuf_fd_, access);
+                auto mr = protection_domain.register_dmabuf_memory_region(0, size, iova, dmabuf_fd_, access);
                 HSB_LOG_DEBUG("Successfully registered memory using dmabuf for p={:#x}, size={}", iova, size);
                 return mr;
             } catch (const std::exception& e) {
@@ -270,7 +297,7 @@ private:
 
     CudaStream stream_;
     size_t output_buffer_size_;
-    CudaUniquePtr<char> output_buffer_;
+    CudaRDMABuffer output_buffer_;
 
     Tensor input_tensor_;
     size_t payload_size_ {};
@@ -286,6 +313,7 @@ struct RoceTransmitterOp::Resource {
 
     ibv::Context context_;
     ::ibv_device_attr device_attr_;
+    std::string host_if_name_;
     ::ibv_port_attr port_attr_;
     int gid_index_;
     ::ibv_gid local_gid_;
@@ -306,6 +334,7 @@ RoceTransmitterOp::Resource::Resource(const std::string& ibv_name, unsigned ibv_
     size_t queue_size, const std::string& hololink_ip, uint32_t ibv_qp)
     : context_(ibv_name)
     , device_attr_(context_.query_device())
+    , host_if_name_(context_.get_host_if_name())
     , port_attr_(context_.query_port(ibv_port))
     , gid_index_(context_.query_gid_roce_v2_ip())
     , local_gid_(context_.query_gid(ibv_port, gid_index_))
@@ -328,7 +357,7 @@ RoceTransmitterOp::Resource::Resource(const std::string& ibv_name, unsigned ibv_
     }())
     , queue_pair_(
           protection_domain_.create_queue_pair(
-              ibv::QueuePair::InitAttr().query_pair_type(IBV_QPT_UC).send_completion_queue(completion_queue_.ptr_).receive_completion_queue(completion_queue_.ptr_).capacity(ibv::QueuePair::Capacity().max_send_write_read(512).max_receive_write_read(512).max_send_scatter_gather_entry(1).max_receive_scallter_gather_entry(1))))
+              ibv::QueuePair::InitAttr().query_pair_type(IBV_QPT_UC).send_completion_queue(completion_queue_.ptr_).receive_completion_queue(completion_queue_.ptr_).capacity(ibv::QueuePair::Capacity().max_send_write_read(512).max_receive_write_read(512).max_send_scatter_gather_entry(1).max_receive_scatter_gather_entry(1))))
     , remote_gid_(ibv::ipv4_to_gid(hololink_ip))
     , remote_qp_num_(ibv_qp)
 {
@@ -359,13 +388,27 @@ void RoceTransmitterOp::start()
         ibv_fork_init_done = true;
     }
 
-    // Create resource
-    resource_ = std::make_unique<Resource>(ibv_name_.get(), ibv_port_.get(), buffer_size_.get(), queue_size_.get(), hololink_ip_.get(), ibv_qp_.get());
+    // Create resource. Context requires a device name, so an empty name is
+    // resolved here. The warning stays with the caller.
+    std::string ibv_name = ibv_name_.get();
+    try {
+        if (ibv_name.empty()) {
+            const std::optional<std::string> first_device_name
+                = ibv::DeviceList().first_name();
+            if (!first_device_name)
+                THROW_ERROR("Failed to find Device ''");
+            ibv_name = first_device_name.value();
+            HSB_LOG_WARN("No device name given, taken first device on list");
+        }
+        resource_ = std::make_unique<Resource>(ibv_name, ibv_port_.get(), buffer_size_.get(), queue_size_.get(), hololink_ip_.get(), ibv_qp_.get());
 
-    // Connecting the QP by transitioning the state to Ready-to-Send.
-    // We are doing one sided bring up for TX
-    if (!connect())
-        THROW_ERROR("Failed to connect QPs");
+        // Connecting the QP by transitioning the state to Ready-to-Send.
+        // We are doing one sided bring up for TX
+        if (!connect())
+            THROW_ERROR("Failed to connect QPs");
+    } catch (const ibv::Error& e) {
+        THROW_ERROR(e.what());
+    }
 
     if (on_start_.get())
         on_start_.get()(ConnectionInfo {
@@ -379,7 +422,16 @@ void RoceTransmitterOp::stop()
 {
     if (on_stop_.get())
         on_stop_.get()(ConnectionInfo { resource_->queue_pair_.ptr_->qp_num });
-    running_ = false;
+    // transmission_thread() re-checks running_ inside cv_.wait's predicate, which it
+    // evaluates holding mutex_.  Clearing the flag here without that mutex leaves a
+    // window where the predicate has already read running_ as true but the thread has
+    // not yet parked on cv_: the notify_all() below lands on an empty wait queue, is
+    // lost, and the thread sleeps until the next notify -- which never comes, so the
+    // join() below hangs forever.  Take mutex_ so the store cannot fall in that window.
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        running_ = false;
+    }
     cv_.notify_all();
     transmission_thread_.join();
     completion_thread_.join();
@@ -448,7 +500,21 @@ bool RoceTransmitterOp::connect()
 {
     // Connecting the QP by transitioning the state to Ready-to-Send.
     // We are doing one sided bring up for TX
-    return resource_->queue_pair_.reset_to_init(ibv_port_.get()) && resource_->queue_pair_.init_to_rtr(ibv_port_.get(), resource_->remote_gid_, resource_->remote_qp_num_, resource_->gid_index_) && resource_->queue_pair_.rtr_to_rts();
+    if (int r = resource_->queue_pair_.reset_to_init(ibv_port_.get())) {
+        HSB_LOG_ERROR("Failed to modify QP state to INIT, {}", strerror(r));
+        return false;
+    }
+    if (int r = resource_->queue_pair_.init_to_rtr(ibv_port_.get(), resource_->port_attr_,
+            resource_->host_if_name_, resource_->remote_gid_, resource_->remote_qp_num_,
+            resource_->gid_index_)) {
+        HSB_LOG_ERROR("Cannot modify queue pair to IBV_QPS_RTR, errno={} ({}).", r, strerror(r));
+        return false;
+    }
+    if (int r = resource_->queue_pair_.rtr_to_rts()) {
+        HSB_LOG_ERROR("Failed to modify QP state to RTS, {}", strerror(r));
+        return false;
+    }
+    return true;
 }
 
 bool RoceTransmitterOp::send(uint64_t id, std::shared_ptr<Buffer> buffer)
@@ -456,8 +522,8 @@ try {
     ibv::ScatterGatherElement sge(buffer->get_scatter_gather_element());
     ibv::SendWorkRequest wr(id, &sge);
 
-    if (!resource_->queue_pair_.post_send(wr)) {
-        HSB_LOG_ERROR("Failed to post SEND Request");
+    if (int err = resource_->queue_pair_.post_send(wr)) {
+        HSB_LOG_ERROR("Failed to post SEND Request, {}", strerror(err));
         return false;
     }
     return true;
@@ -466,7 +532,7 @@ try {
 }
 
 void RoceTransmitterOp::completion_thread()
-{
+try {
     while (running_) {
         // poll the completion
         std::optional<::ibv_wc> work_completion;
@@ -500,6 +566,8 @@ void RoceTransmitterOp::completion_thread()
             continue;
         }
     }
+} catch (const ibv::Error& e) {
+    THROW_ERROR(e.what());
 }
 
 void RoceTransmitterOp::transmission_thread()

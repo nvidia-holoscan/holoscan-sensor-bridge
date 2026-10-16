@@ -111,7 +111,7 @@ PYBIND11_MODULE(_sipl_capture, m)
             "fragment"_a,
             "service"_a,
             "camera_index"_a,
-            "timeout"_a = 1000000u,
+            "timeout"_a = 3000000u,
             "name"_a = "sipl_camera_output"s);
 } // PYBIND11_MODULE
 

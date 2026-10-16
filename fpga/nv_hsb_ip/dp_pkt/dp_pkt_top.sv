@@ -299,7 +299,7 @@ endgenerate
 //------------------------------------------------------------------------------------------------//
 // Status RAMs
 //------------------------------------------------------------------------------------------------//
-localparam STATUS_RAM_SIZE = 1+11+1+4+24+ADDR_BITS+16+1;
+localparam STATUS_RAM_SIZE = 1+11+1+4+24+ADDR_BITS+16;
 // Counter RAM Contents [16]:
   // [0]   : N'addr, 24'psn, 12'buf_ptr, 1'is_new, 1'is_last, 1'not_first // VIP 0
 
@@ -309,7 +309,7 @@ logic [STATUS_RAM_SIZE-1:0] sts_ram_wrdata;
 logic                       sts_ram_wren;
 logic                       sts_ram_rden;
 
-(* ram_style = "distributed" *) logic [STATUS_RAM_SIZE-1:0] sts_ram [N_INPT] = '{default:'0}/*synthesis syn_ramstyle = "distributed"*/;
+(* ram_style = "distributed" *) logic [STATUS_RAM_SIZE-1:0] sts_ram [N_INPT]/*synthesis syn_ramstyle = "distributed"*/;
 
 always @ (posedge i_pclk) begin
   if (i_prst) begin
@@ -349,7 +349,7 @@ always @ (posedge i_pclk) begin
   end
 end
 
-localparam ETH_RAM_SIZE = 48+32+16+16+1+W_USER;
+localparam ETH_RAM_SIZE = 48+32+16+16+W_USER;
 
 logic [ETH_RAM_SIZE-1:0] eth_ram_data;
 logic [W_INPT-1:0]       eth_ram_addr;
@@ -528,13 +528,13 @@ assign hif_mac_addr    = eth_ram_data[0+:48];
 assign hif_ip_addr     = eth_ram_data[48+:32];
 assign hif_udp_port    = eth_ram_data[80+:16];
 assign hif_ipv4_chksum = eth_ram_data[96+:16];
-assign hif_tuser       = eth_ram_data[113+:W_USER];
+assign hif_tuser       = eth_ram_data[112+:W_USER];
 
 assign eth_ram_wrdata[0+:48]     = sif_mac_addr;
 assign eth_ram_wrdata[48+:32]    = sif_ip_addr;
 assign eth_ram_wrdata[80+:16]    = sif_udp_port;
 assign eth_ram_wrdata[96+:16]    = (pkt_is_imm && md_disable) ? hif_ipv4_chksum : sif_ipv4_chksum; // Used for single packet mode, no Metadata packet. Prevents recalculation of IPv4 checksum.
-assign eth_ram_wrdata[113+:W_USER] = sif_tuser;
+assign eth_ram_wrdata[112+:W_USER] = sif_tuser;
 
 //------------------------------------------------------------------------------------------------//
 // Sensor ARB
@@ -593,6 +593,7 @@ logic              pkt_commit;
 logic              fsm_grant;
 logic              overlap_fsm_active;
 logic              host_sif_abort_pending;
+logic              gnt_sif_abort_pending;
 
 assign overlap_fsm_active = (roce_state == ROCE_LOAD_STS) ||
                             (roce_state == ROCE_GRANT) ||
@@ -603,16 +604,16 @@ always_ff @(posedge i_pclk) begin
     sif_data_pending_r <= '0;
   end
   else if (fsm_preempt || pkt_commit) begin
-    sif_data_pending_r[sif_gnt_idx_r] <= 1'b0;
+    sif_data_pending_r <= sif_data_pending_r & ~sif_gnt_r;
   end
   else if (fsm_grant) begin
-    sif_data_pending_r[sif_gnt_idx] <= sif_req[sif_gnt_idx];
+    sif_data_pending_r <= sif_data_pending_r | sif_gnt;
   end
   else if (overlap_fsm_active && !i_axis_tvalid[sif_gnt_idx_r]) begin
-    sif_data_pending_r[sif_gnt_idx_r] <= 1'b0;
+    sif_data_pending_r <= sif_data_pending_r & ~sif_gnt_r;
   end
   else if (overlap_fsm_active && sif_req[sif_gnt_idx_r]) begin
-    sif_data_pending_r[sif_gnt_idx_r] <= 1'b1;
+    sif_data_pending_r <= sif_data_pending_r | sif_gnt_r;
   end
 end
 
@@ -708,8 +709,7 @@ rrarb #(
   .WIDTH   ( N_INPT                      )
 ) axis_sif_arb (
   .clk     ( i_pclk                      ),
-  .rst_n   ( !i_prst                     ),
-  .rst     ( 1'b0                        ),
+  .rst     ( i_prst                      ),
   .idle    ( arb_idle                    ),
   .req     ( sif_req                     ),
   .gnt_idx ( sif_gnt_idx_arb             ),
@@ -857,7 +857,7 @@ always_ff @(posedge i_pclk) begin
           // Either Read all of Config RAM, or just enough to read + calculate the next packet
           fsm_cnt_max                       <= (is_new || is_last || pkt_is_imm) ? 5'd18 : 5'd7;
           fsm_cnt_target                    <= (is_first_run)                    ? 5'd18                                       : 
-                                               (single_pkt && md_disable)        ? (sif_gnt_unchanged ? 'd2 : DUMP_CLK_CYCLES) :
+                                               (single_pkt && md_disable && sif_gnt_unchanged) ? 'd2                           :
                                                (is_new || is_last || pkt_is_imm) ? 5'd18                                       : 
                                                                                    DUMP_CLK_CYCLES                             ;
           dma_len                           <= (pkt_is_imm) ? 'd128: (cycle_32byte) ? 'd32 : cur_pkt_len << CYCLES_TO_BYTES;
@@ -944,11 +944,15 @@ assign pkt_no_data_abort = at_commit_point && !pkt_len_en_stall && !commit_pendi
                            !pkt_is_imm && !sif_data_pending_r[sif_gnt_idx_r] && !sif_valid_d_r;
 
 assign host_sif_abort_pending = |(vp_mask[hif_gnt_idx_r][N_INPT-1:0] & (sif_eof | sif_wtlast));
+assign gnt_sif_abort_pending  = |(sif_gnt_r & (sif_eof | sif_wtlast));
 
 assign fsm_preempt = (roce_state == ROCE_LOAD_STS || roce_state == ROCE_GRANT ||
                       roce_state == ROCE_CALC) &&
-                     hif_preempt[hif_gnt_idx_r] && !pkt_is_imm &&
-                     (host_sif_abort_pending || pkt_no_data_abort);
+                     !pkt_is_imm &&
+                     ((hif_preempt[hif_gnt_idx_r] &&
+                       (host_sif_abort_pending || pkt_no_data_abort)) ||
+                      (host_sif_abort_pending &&
+                       !gnt_sif_abort_pending));
 
 assign pkt_commit = commit_pending_r && !hif_busy[hif_gnt_idx_r] && !fsm_preempt &&
                     (pkt_is_imm || sif_valid_commit_r);

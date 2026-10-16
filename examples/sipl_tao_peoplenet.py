@@ -62,7 +62,8 @@ class HoloscanApplication(holoscan.core.Application):
             json_config=self._json_config,
         )
         camera_info = sipl_service.get_camera_info()
-        assert len(camera_info) == 1, "Only single-camera configs are supported"
+        if len(camera_info) != 1:
+            raise ValueError("Only single-camera configs are supported")
 
         sipl_output = hololink_module.operators.SIPLCameraOutputOp(
             self,

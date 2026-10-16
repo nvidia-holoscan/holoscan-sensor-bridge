@@ -87,11 +87,11 @@ public:
 
     /**
      * Block until the next complete frame arrives.
-     * @returns false if timeout_ms elapses before
+     * @return false if timeout_ms elapses before
      * the complete frame is observed.
-     * @param metadata is updated with statistics
+     * @param metadata Output metadata updated with statistics
      * collected with the video frame.
-     * @param cuda_stream is the CUDA stream to use for the copy.
+     * @param cuda_stream CUDA stream to use for the copy.
      */
     bool get_next_frame(unsigned timeout_ms, LinuxCoeReceiverMetadata& metadata, CUstream cuda_stream);
 
@@ -108,7 +108,7 @@ public:
 
 protected:
     // Blocks execution until signal() is called;
-    // @returns false if timeout_ms elapses before
+    // @return false if timeout_ms elapses before
     // signal is observed.
     bool wait(unsigned timeout_ms);
 

@@ -17,7 +17,6 @@
 
 #include "native_vb1940_sensor.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -128,7 +127,10 @@ void NativeVb1940Sensor::configure(CameraMode mode)
     // Make sure this is a version we know about.
     uint32_t version = get_version();
     HSB_LOG_INFO("version={}", version);
-    assert(version == VERSION);
+    if (version != VERSION) {
+        throw std::runtime_error("Unsupported VB1940 version:" + std::to_string(version)
+            + ", expected " + std::to_string(VERSION) + ".");
+    }
 
     // Get device id
     HSB_LOG_DEBUG("##1.get device id");

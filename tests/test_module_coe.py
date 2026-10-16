@@ -50,9 +50,13 @@
 # Linux and CoE paths tolerate packet loss). ptp_synchronize() runs when --ptp
 # is given so the FPGA timestamp clock shares the host's PTP domain.
 
+import contextlib
 import ctypes
+import errno
 import logging
 import math
+import os
+import sys
 
 import hololink_module.operators
 import hololink_module.sensors.imx274 as imx274
@@ -70,6 +74,15 @@ DISCOVERY_TIMEOUT_S = 30.0
 # FUSA CoE capture-request timeout, in milliseconds (matches the fusa_coe_*
 # example players).
 COE_TIMEOUT_MS = 1500
+
+# A single empty capture request can be a routine startup hiccup. Three in a
+# row is 4.5 seconds without a frame on a 30fps sensor and is a real stall.
+COE_STALL_TIMEOUT_MS = 3 * COE_TIMEOUT_MS
+
+# Once the receiver identifies a stall it stops the graph and tears down the
+# capture stack. Keep the hard-abort watchdog behind that clean failure path,
+# while retaining it as a backstop if graph shutdown itself hangs.
+COE_STALL_CLEANUP_GRACE_S = 5
 
 # Fallback when the enumeration metadata carries no board MAC.
 DEFAULT_MAC = "00:00:00:00:00:00"
@@ -118,6 +131,48 @@ def _initial_timeout(frame_limit):
 
 def _fusa_coe_available():
     return hasattr(hololink_module.operators, "FusaCoeCaptureOp")
+
+
+# FusaCoeCaptureCore::stop() runs its control-plane teardown (channel
+# unconfigure / device stop) through guard_teardown(), which logs and swallows
+# whatever is thrown: stop() is called from GXF's noexcept codelet-stop path, so
+# letting an exception escape there calls std::terminate(). Exactly one such
+# failure is expected and comes from outside our code -- libnvfusacap's
+# closeHandler() does an unconditional close(0) on CoE handler teardown, which
+# destroys a control socket that happened to land on a stdio fd, so the next
+# control-plane sendto() fails with EBADF. Anything else swallowed there is an
+# unexpected failure the swallow would otherwise hide, so scan the run's log and
+# fail the test on it.
+_TEARDOWN_FAILURE = "during teardown failed (ignored"
+_EXPECTED_TEARDOWN_FAILURE = (f"errno={errno.EBADF}:", os.strerror(errno.EBADF))
+
+
+def _unexpected_teardown_failures(stderr):
+    return [
+        line
+        for line in stderr.splitlines()
+        if _TEARDOWN_FAILURE in line
+        and not any(known in line for known in _EXPECTED_TEARDOWN_FAILURE)
+    ]
+
+
+@contextlib.contextmanager
+def check_teardown_failures(capfd):
+    """Fail the test if teardown swallowed anything other than the known EBADF."""
+    try:
+        yield
+    finally:
+        captured = capfd.readouterr()
+        # readouterr() drains the capture buffers; write them back so the run's
+        # output still reaches pytest's report.
+        sys.stdout.write(captured.out)
+        sys.stderr.write(captured.err)
+        unexpected = _unexpected_teardown_failures(captured.err)
+    # Outside the finally: when the body itself raised, that failure is the one
+    # worth reporting, so don't displace it with this check.
+    assert (
+        not unexpected
+    ), "Unexpected exception(s) swallowed during teardown:\n" + "\n".join(unexpected)
 
 
 # Round up so the frame aligner's acceptance window is never smaller than the
@@ -170,6 +225,7 @@ def _build_leg(
             interface=app._coe_interface,
             mac_addr=_parse_mac(metadata.get("mac_id", DEFAULT_MAC)),
             timeout=COE_TIMEOUT_MS,
+            stall_timeout_ms=app._coe_stall_timeout_ms,
             device=camera,
             rename_metadata=rename_metadata,
             out_tensor_name=capture_out_tensor_name,
@@ -309,6 +365,7 @@ class MonoCaptureApplication(holoscan.core.Application):
         watchdog,
         use_coe,
         coe_interface,
+        coe_stall_timeout_ms=0,
     ):
         logging.info("__init__")
         super().__init__()
@@ -321,6 +378,8 @@ class MonoCaptureApplication(holoscan.core.Application):
         self._watchdog = watchdog
         self._use_coe = use_coe
         self._coe_interface = coe_interface
+        self._coe_stall_timeout_ms = coe_stall_timeout_ms
+        self._capture = None
         self.is_metadata_enabled = True
 
     def compose(self):
@@ -339,6 +398,7 @@ class MonoCaptureApplication(holoscan.core.Application):
             unpack_out_tensor_name="",
             affinity=[2],
         )
+        self._capture = capture
         self.add_flow(capture, unpack, {("output", "input")})
         demosaic = _build_isp(self, "mono", self._camera, unpack, "")
         visualizer = holoscan.operators.HolovizOp(
@@ -355,6 +415,15 @@ class MonoCaptureApplication(holoscan.core.Application):
         )
         self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
         self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
+
+    def capture_stall(self):
+        if (
+            not self._use_coe
+            or self._capture is None
+            or not self._capture.capture_stalled()
+        ):
+            return None
+        return self._capture.capture_stall_duration_ms()
 
 
 class StereoCaptureApplication(holoscan.core.Application):
@@ -383,6 +452,7 @@ class StereoCaptureApplication(holoscan.core.Application):
         watchdog,
         use_coe,
         coe_interface,
+        coe_stall_timeout_ms=0,
     ):
         logging.info("__init__")
         super().__init__()
@@ -398,6 +468,8 @@ class StereoCaptureApplication(holoscan.core.Application):
         self._watchdog = watchdog
         self._use_coe = use_coe
         self._coe_interface = coe_interface
+        self._coe_stall_timeout_ms = coe_stall_timeout_ms
+        self._captures = {}
         # Each leg stamps per-leg-prefixed metadata (left_/right_), so the keys
         # never collide; UPDATE merges everything the two aligned messages carry.
         self.is_metadata_enabled = True
@@ -449,6 +521,7 @@ class StereoCaptureApplication(holoscan.core.Application):
             unpack_out_tensor_name="right",
             affinity=[3],
         )
+        self._captures = {"left": capture_left, "right": capture_right}
 
         # Frame aligner. Both legs feed its single input; it pairs them by
         # tensor name ("left"/"right") and reads the per-leg timestamp metadata
@@ -504,6 +577,15 @@ class StereoCaptureApplication(holoscan.core.Application):
         self.add_flow(demosaic_right, visualizer, {("transmitter", "receivers")})
         self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
 
+    def capture_stalls(self):
+        if not self._use_coe:
+            return []
+        return [
+            (side, capture.capture_stall_duration_ms())
+            for side, capture in self._captures.items()
+            if capture.capture_stalled()
+        ]
+
 
 def _synchronize_ptp(hololink, ptp_enable):
     if not ptp_enable:
@@ -523,6 +605,7 @@ def run_mono(
     coe_interface,
     ptp_enable,
     prepare_camera,
+    coe_stall_timeout_ms=0,
 ):
     """Bring the board up and run a single-sensor capture.
 
@@ -533,31 +616,43 @@ def run_mono(
     """
     logging.info("Initializing.")
     hololink = hololink_module.HololinkInterfaceV1.get_service(metadata)
+    watchdog_timeouts = _initial_timeout(frame_limit)
+    if coe_stall_timeout_ms:
+        clean_failure_timeout_s = (
+            coe_stall_timeout_ms / 1000 + COE_STALL_CLEANUP_GRACE_S
+        )
+        watchdog_timeouts = [
+            max(timeout, clean_failure_timeout_s) for timeout in watchdog_timeouts
+        ]
     # CudaContext releases the primary context on exit even if the body raises.
     with utils.CudaContext() as cuda_context:
-        with utils.Watchdog(
-            "watchdog", initial_timeout=_initial_timeout(frame_limit)
-        ) as watchdog:
+        with utils.Watchdog("watchdog", initial_timeout=watchdog_timeouts) as watchdog:
             hololink.start()
-            try:
-                hololink.reset()
-                _synchronize_ptp(hololink, ptp_enable)
-                camera = prepare_camera()
-                application = MonoCaptureApplication(
-                    headless,
-                    cuda_context.context,
-                    cuda_context.device_ordinal,
-                    metadata,
-                    camera,
-                    frame_limit,
-                    watchdog,
-                    use_coe,
-                    coe_interface,
-                )
-                logging.info("Calling run")
-                application.run()
-            finally:
-                hololink.stop()
+            with utils.AbortHook(hololink.reset):
+                try:
+                    hololink.reset()
+                    _synchronize_ptp(hololink, ptp_enable)
+                    camera = prepare_camera()
+                    application = MonoCaptureApplication(
+                        headless,
+                        cuda_context.context,
+                        cuda_context.device_ordinal,
+                        metadata,
+                        camera,
+                        frame_limit,
+                        watchdog,
+                        use_coe,
+                        coe_interface,
+                        coe_stall_timeout_ms,
+                    )
+                    logging.info("Calling run")
+                    application.run()
+                    stalled_for_ms = application.capture_stall()
+                    assert (
+                        stalled_for_ms is None
+                    ), f"CoE capture stalled for {stalled_for_ms}ms without a frame"
+                finally:
+                    hololink.stop()
 
 
 def run_stereo(
@@ -570,6 +665,7 @@ def run_stereo(
     coe_interface,
     ptp_enable,
     prepare_cameras,
+    coe_stall_timeout_ms=0,
 ):
     """Bring the board up and run an aligned two-sensor capture.
 
@@ -581,33 +677,46 @@ def run_stereo(
     # HololinkInterface, so bring the unit up just once.
     hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
     assert hololink is hololink_module.HololinkInterfaceV1.get_service(metadata_right)
+    watchdog_timeouts = _initial_timeout(frame_limit)
+    if coe_stall_timeout_ms:
+        clean_failure_timeout_s = (
+            coe_stall_timeout_ms / 1000 + COE_STALL_CLEANUP_GRACE_S
+        )
+        watchdog_timeouts = [
+            max(timeout, clean_failure_timeout_s) for timeout in watchdog_timeouts
+        ]
     with utils.CudaContext() as cuda_context:
-        with utils.Watchdog(
-            "watchdog", initial_timeout=_initial_timeout(frame_limit)
-        ) as watchdog:
+        with utils.Watchdog("watchdog", initial_timeout=watchdog_timeouts) as watchdog:
             hololink.start()
-            try:
-                hololink.reset()
-                _synchronize_ptp(hololink, ptp_enable)
-                camera_left, camera_right = prepare_cameras()
-                application = StereoCaptureApplication(
-                    headless,
-                    cuda_context.context,
-                    cuda_context.device_ordinal,
-                    metadata_left,
-                    camera_left,
-                    metadata_right,
-                    camera_right,
-                    allowable_dt,
-                    frame_limit,
-                    watchdog,
-                    use_coe,
-                    coe_interface,
-                )
-                logging.info("Calling run")
-                application.run()
-            finally:
-                hololink.stop()
+            with utils.AbortHook(hololink.reset):
+                try:
+                    hololink.reset()
+                    _synchronize_ptp(hololink, ptp_enable)
+                    camera_left, camera_right = prepare_cameras()
+                    application = StereoCaptureApplication(
+                        headless,
+                        cuda_context.context,
+                        cuda_context.device_ordinal,
+                        metadata_left,
+                        camera_left,
+                        metadata_right,
+                        camera_right,
+                        allowable_dt,
+                        frame_limit,
+                        watchdog,
+                        use_coe,
+                        coe_interface,
+                        coe_stall_timeout_ms,
+                    )
+                    logging.info("Calling run")
+                    application.run()
+                    capture_stalls = application.capture_stalls()
+                    assert not capture_stalls, "CoE capture stalled: " + ", ".join(
+                        f"{side} for {stalled_for_ms}ms"
+                        for side, stalled_for_ms in capture_stalls
+                    )
+                finally:
+                    hololink.stop()
 
 
 # --- IMX274 sensor bring-up ------------------------------------------------
@@ -696,16 +805,15 @@ def test_imx274_mono_linux_naive(
     camera_mode, headless, frame_limit, hololink_address, module_dir, ptp_enable
 ):
     metadata = _wait_for_channel(module_dir, hololink_address)
-    with utils.PriorityScheduler():
-        run_mono(
-            headless,
-            metadata,
-            frame_limit,
-            LINUX,
-            None,
-            ptp_enable,
-            prepare_camera=lambda: _prepare_imx274_mono(metadata, camera_mode, 10),
-        )
+    run_mono(
+        headless,
+        metadata,
+        frame_limit,
+        LINUX,
+        None,
+        ptp_enable,
+        prepare_camera=lambda: _prepare_imx274_mono(metadata, camera_mode, 10),
+    )
 
 
 @pytest.mark.skip_unless_imx274
@@ -724,20 +832,19 @@ def test_imx274_stereo_linux_naive(
     ptp_enable,
 ):
     metadata_left, metadata_right = _stereo_metadata(module_dir, hololink_address)
-    with utils.PriorityScheduler():
-        run_stereo(
-            headless,
-            metadata_left,
-            metadata_right,
-            allowable_dt,
-            frame_limit,
-            LINUX,
-            None,
-            ptp_enable,
-            prepare_cameras=lambda: _prepare_imx274_stereo(
-                metadata_left, metadata_right, camera_mode
-            ),
-        )
+    run_stereo(
+        headless,
+        metadata_left,
+        metadata_right,
+        allowable_dt,
+        frame_limit,
+        LINUX,
+        None,
+        ptp_enable,
+        prepare_cameras=lambda: _prepare_imx274_stereo(
+            metadata_left, metadata_right, camera_mode
+        ),
+    )
 
 
 @pytest.mark.skip_unless_coe
@@ -756,11 +863,12 @@ def test_imx274_stereo_fusa_naive_coe(
     module_dir,
     ptp_enable,
     coe_interfaces,
+    capfd,
 ):
     if not _fusa_coe_available():
         pytest.skip("FusaCoeCaptureOp not built (needs -DHOLOLINK_BUILD_FUSA).")
     metadata_left, metadata_right = _stereo_metadata(module_dir, hololink_address)
-    with utils.PriorityScheduler():
+    with check_teardown_failures(capfd):
         run_stereo(
             headless,
             metadata_left,
@@ -790,23 +898,27 @@ def test_vb1940_mono_linux_naive(
     camera_mode, headless, frame_limit, hololink_address, module_dir, ptp_enable
 ):
     metadata = _wait_for_channel(module_dir, hololink_address)
-    with utils.PriorityScheduler():
-        run_mono(
-            headless,
-            metadata,
-            frame_limit,
-            LINUX,
-            None,
-            ptp_enable,
-            prepare_camera=lambda: _prepare_vb1940_mono(metadata, camera_mode),
-        )
+    run_mono(
+        headless,
+        metadata,
+        frame_limit,
+        LINUX,
+        None,
+        ptp_enable,
+        prepare_camera=lambda: _prepare_vb1940_mono(metadata, camera_mode),
+    )
 
 
 @pytest.mark.skip_unless_coe
 @pytest.mark.skip_unless_vb1940
+@pytest.mark.reset_hsb_before_retry
 @pytest.mark.parametrize(
     "camera_mode",  # noqa: E501
-    [VB1940_MODE],
+    [
+        # Thor RCE can intermittently lose its CoE frame-slot phase. The test
+        # turns the resulting ingress stall into a normal failure before retrying.
+        pytest.param(VB1940_MODE, marks=pytest.mark.flaky(reruns=2)),
+    ],
 )
 def test_vb1940_mono_fusa_naive_coe(
     camera_mode,
@@ -816,13 +928,14 @@ def test_vb1940_mono_fusa_naive_coe(
     module_dir,
     ptp_enable,
     coe_interfaces,
+    capfd,
 ):
     if not _fusa_coe_available():
         pytest.skip("FusaCoeCaptureOp not built (needs -DHOLOLINK_BUILD_FUSA).")
     metadata = _wait_for_channel(module_dir, hololink_address)
     adapter = hololink_module.Adapter.get_adapter()
     adapter.use_sensor(metadata, 0)
-    with utils.PriorityScheduler():
+    with check_teardown_failures(capfd):
         run_mono(
             headless,
             metadata,
@@ -831,6 +944,7 @@ def test_vb1940_mono_fusa_naive_coe(
             coe_interfaces[0],
             ptp_enable,
             prepare_camera=lambda: _prepare_vb1940_mono(metadata, camera_mode),
+            coe_stall_timeout_ms=COE_STALL_TIMEOUT_MS,
         )
 
 
@@ -850,28 +964,36 @@ def test_vb1940_stereo_linux_naive(
     ptp_enable,
 ):
     metadata_left, metadata_right = _stereo_metadata(module_dir, hololink_address)
-    with utils.PriorityScheduler():
-        run_stereo(
-            headless,
-            metadata_left,
-            metadata_right,
-            allowable_dt,
-            frame_limit,
-            LINUX,
-            None,
-            ptp_enable,
-            prepare_cameras=lambda: _prepare_vb1940_stereo(
-                metadata_left, metadata_right, camera_mode
-            ),
-        )
+    run_stereo(
+        headless,
+        metadata_left,
+        metadata_right,
+        allowable_dt,
+        frame_limit,
+        LINUX,
+        None,
+        ptp_enable,
+        prepare_cameras=lambda: _prepare_vb1940_stereo(
+            metadata_left, metadata_right, camera_mode
+        ),
+    )
 
 
 @pytest.mark.skip_unless_coe
 @pytest.mark.skip_unless_vb1940
 @pytest.mark.skip_unless_ptp
+@pytest.mark.reset_hsb_before_retry
 @pytest.mark.parametrize(
     "camera_mode, allowable_dt",  # noqa: E501
-    [(VB1940_MODE, TWO_FRAMES_AT_30FPS)],
+    [
+        # The same Thor RCE frame-slot stall can affect either CoE leg. Stop
+        # cleanly, reset the board, and retry the complete stereo test.
+        pytest.param(
+            VB1940_MODE,
+            TWO_FRAMES_AT_30FPS,
+            marks=pytest.mark.flaky(reruns=2),
+        ),
+    ],
 )
 def test_vb1940_stereo_fusa_naive_coe(
     camera_mode,
@@ -882,11 +1004,12 @@ def test_vb1940_stereo_fusa_naive_coe(
     module_dir,
     ptp_enable,
     coe_interfaces,
+    capfd,
 ):
     if not _fusa_coe_available():
         pytest.skip("FusaCoeCaptureOp not built (needs -DHOLOLINK_BUILD_FUSA).")
     metadata_left, metadata_right = _stereo_metadata(module_dir, hololink_address)
-    with utils.PriorityScheduler():
+    with check_teardown_failures(capfd):
         run_stereo(
             headless,
             metadata_left,
@@ -899,4 +1022,5 @@ def test_vb1940_stereo_fusa_naive_coe(
             prepare_cameras=lambda: _prepare_vb1940_stereo(
                 metadata_left, metadata_right, camera_mode
             ),
+            coe_stall_timeout_ms=COE_STALL_TIMEOUT_MS,
         )

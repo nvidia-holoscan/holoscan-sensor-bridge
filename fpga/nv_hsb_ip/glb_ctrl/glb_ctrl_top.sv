@@ -19,8 +19,8 @@ module glb_ctrl_top
 #(
   parameter              N_GPIO       = 16,
   parameter [N_GPIO-1:0] GPIO_RST_VAL = '0,
-  parameter              SYNC_CLK     = 0
-
+  parameter              SYNC_CLK     = 0,
+  parameter [127:0]      UUID_VAL     = '0
 )(
   // clock and reset
   input               i_pclk,
@@ -47,8 +47,16 @@ localparam  [(glb_nctrl*32)-1:0] RST_VAL = {'0,GPIO_RST_VAL,{(gpio_o_0*32){1'b0}
 // Register Map
 //------------------------------------------------------------------------------------------------//
 
+localparam glb_has_uuid = UUID_VAL != '0;
+localparam glb_nstat_with_uuid = glb_has_uuid ? glb_nstat + 4 : glb_nstat;
+
+localparam uuid_0 = stat_ofst + glb_nstat + 0;
+localparam uuid_1 = stat_ofst + glb_nstat + 1;
+localparam uuid_2 = stat_ofst + glb_nstat + 2;
+localparam uuid_3 = stat_ofst + glb_nstat + 3;
+
 logic [31:0] ctrl_reg [glb_nctrl];
-logic [31:0] stat_reg [glb_nstat];
+logic [31:0] stat_reg [glb_nstat_with_uuid];
 
 logic [255:0] gpio_i;
 
@@ -71,7 +79,7 @@ assign stat_reg[gpio_i_7-stat_ofst] = gpio_i[255:224];
 
 s_apb_reg #(
   .N_CTRL     ( glb_nctrl     ),
-  .N_STAT     ( glb_nstat     ),
+  .N_STAT     ( glb_nstat_with_uuid     ),
   .W_OFST     ( w_ofst        ),
   .RST_VAL    ( RST_VAL       ),
   .SYNC_CLK   ( SYNC_CLK      )
@@ -102,6 +110,15 @@ assign gpio_t    = {ctrl_reg[gpio_t_7], ctrl_reg[gpio_t_6],
                     ctrl_reg[gpio_t_5], ctrl_reg[gpio_t_4],
                     ctrl_reg[gpio_t_3], ctrl_reg[gpio_t_2],
                     ctrl_reg[gpio_t_1], ctrl_reg[gpio_t_0]};
+
+generate
+  if (UUID_VAL != '0) begin
+    assign stat_reg[uuid_0-stat_ofst] = UUID_VAL[ 31:  0];
+    assign stat_reg[uuid_1-stat_ofst] = UUID_VAL[ 63: 32];
+    assign stat_reg[uuid_2-stat_ofst] = UUID_VAL[ 95: 64];
+    assign stat_reg[uuid_3-stat_ofst] = UUID_VAL[127: 96];
+  end
+endgenerate
 
 genvar i;
 generate

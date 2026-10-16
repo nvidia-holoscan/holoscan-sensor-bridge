@@ -69,6 +69,10 @@ void UdpTransmitterOp::setup(holoscan::OperatorSpec& spec)
 
 void UdpTransmitterOp::start()
 {
+    // Set before the thread exists, not from inside it: stop() may run before the new
+    // thread reaches its first statement, and a running_ = true executed in the thread
+    // after stop()'s running_ = false would strand the loop below forever.
+    running_ = true;
     thread_ = std::thread([this] {
         // Create UDP socket
         socket_ = socket(AF_INET, SOCK_DGRAM, 0);
@@ -83,7 +87,6 @@ void UdpTransmitterOp::start()
         destination_address_.sin_port = htons(destination_port_.get());
         destination_address_.sin_addr.s_addr = inet_addr(destination_ip_.get().c_str());
 
-        running_ = true;
         while (true) {
             std::unique_lock<std::mutex> lock(mutex_);
             cv_.wait(lock, [this] { return !running_ || (!tensor_queue_.empty()); });
@@ -142,7 +145,17 @@ void UdpTransmitterOp::start()
 
 void UdpTransmitterOp::stop()
 {
-    running_ = false;
+    // The send loop re-checks running_ from cv_.wait's predicate, which it evaluates
+    // holding mutex_.  Clearing the flag without that mutex leaves a window where the
+    // predicate has already read running_ as true but the thread has not yet parked on
+    // cv_: the notify_all() below lands on an empty wait queue, is lost, and the thread
+    // sleeps until the next notify -- which never comes once the graph is stopping, so
+    // the join() below hangs forever.  Take mutex_ so the store cannot fall in that
+    // window.  This is the same deadlock that hung RoceTransmitterOp::stop().
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        running_ = false;
+    }
     cv_.notify_all();
     thread_.join();
 }

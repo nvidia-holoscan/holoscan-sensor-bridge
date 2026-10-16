@@ -42,9 +42,11 @@ class BootpThread;
  */
 struct LinuxDataPlaneCtxt {
     DataPlaneCtxt base;
-    // Serializes transmitter metadata updates with sends. Held for the duration of
+    // Serializes transmitter metadata updates against control plane access. Held for the duration of
     // each DataPlane::send().
     std::mutex* metadata_mutex; // we get this from the HSBEmulator ControlThread mutex
+    // serialize DataPlane::send() of GPU buffers against multithreaded sends
+    std::mutex send_mutex;
     // Serializes read/write access to base.running. DataPlane::start / stop / is_running
     // (linux variants in linux/data_plane.cpp) acquire this around their base.running
     // access. BootpThread reaches base.running indirectly via DataPlane::is_running().

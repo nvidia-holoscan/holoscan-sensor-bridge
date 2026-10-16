@@ -31,7 +31,7 @@ public:
     /**
      * Push a Holoviz instance
      *
-     * @param instance instance to push
+     * @param instance Instance to push.
      */
     explicit ScopedPushInstance(holoscan::viz::InstanceHandle instance)
         : prev_instance_(viz::GetCurrent())

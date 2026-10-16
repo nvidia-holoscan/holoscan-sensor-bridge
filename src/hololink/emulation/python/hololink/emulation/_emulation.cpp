@@ -22,11 +22,9 @@
 #include "hololink/emulation/hsb_emulator.hpp"
 #include "hololink/emulation/i2c_interface.hpp"
 #include "hololink/emulation/rocev2_data_plane.hpp"
-#include <algorithm>
 #include <cstring>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
-#include <string>
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -50,7 +48,21 @@ int64_t py_send_dltensor(DataPlane* self, py::object py_tensor)
     // called and decrefs the DLManagedTensor and releases the memory for
     // this to work, send must not propagate the DLManagedTensor to other
     // objects
-    return self->send(*tensor);
+    // objects.
+    //
+    // Release the GIL around the native send: for GPU tensors it does a
+    // synchronous device->host cudaMemcpy, plus a blocking socket send. Holding
+    // the GIL across those would freeze every other Python thread in the
+    // process -- including any timeout watchdog and the emulator's own
+    // control-plane callbacks -- so a driver/socket stall becomes an
+    // unrecoverable hang instead of something a timeout can break. `capsule`
+    // stays alive for the whole call, keeping `tensor->data` valid.
+    int64_t sent;
+    {
+        py::gil_scoped_release nogil;
+        sent = self->send(*tensor);
+    }
+    return sent;
 }
 
 // DataPlane trampoline
@@ -78,20 +90,9 @@ public:
     using I2CPeripheral::I2CPeripheral;
 
     // Trampoline (need one for each virtual function)
-    // Python gets the write as bytes and its own bytearray for the reply, which is
-    // copied back after the call. Raw pointers would arrive as just their first byte.
     I2CStatus i2c_transaction(uint16_t peripheral_address, const uint8_t* write_bytes, uint16_t write_size, uint8_t* read_bytes, uint16_t read_size) override
     {
-        py::gil_scoped_acquire gil;
-        py::function override = py::get_override(static_cast<const I2CPeripheral*>(this), "i2c_transaction");
-        if (!override) {
-            py::pybind11_fail("Tried to call pure virtual function \"I2CPeripheral::i2c_transaction\"");
-        }
-        py::bytes write(reinterpret_cast<const char*>(write_bytes), write_size);
-        py::bytearray read(std::string(read_size, '\0'));
-        auto status = override(peripheral_address, write, write_size, read, read_size).cast<I2CStatus>();
-        std::memcpy(read_bytes, PyByteArray_AsString(read.ptr()), std::min<size_t>(read.size(), read_size));
-        return status;
+        PYBIND11_OVERRIDE_PURE(I2CStatus, I2CPeripheral, i2c_transaction, peripheral_address, write_bytes, write_size, read_bytes, read_size);
     }
 
     void start() override

@@ -23,28 +23,24 @@ class HololinkInterfaceV1;
 class SequencerInterfaceV1;
 class RoceReceiverInterfaceV1;
 
-/* RoCE transport view of a per-channel DataChannelInterfaceV1. A
- * separate ConfigurableService — has-a, not is-a — whose impl holds
- * a shared_ptr to its DataChannelInterfaceV1 anchor and adds the
- * RoCE-specific transport surface (attach_receiver / detach_receiver
- * / frame_end_sequencer).
+/**
+ * @brief Configures an HSB unit for RoCE data transport.
  *
- * Cached under instance_id "serial=<serial_number>;data_channel=<n>"
- * (the same key as the anchor it wraps). The supplement's
- * construct_service for this type_id fetches the anchor through the
- * Publisher and passes it to the impl's constructor. The impl's
- * configure(metadata) drives the anchor's ensure_configured(metadata)
- * before building its own legacy backing — application code calls
- * RoceDataChannelInterfaceV1::get_service(metadata) without first
- * constructing the DataChannelInterfaceV1 itself. */
+ * This object configures and HSB device with parameters necessary to
+ * generate RoCE compatible data packets, including setting
+ * QP and RKEY values.  These values come from the
+ * RoceReceiverInterfaceV1 passed in to attach_receiver.
+ */
 class RoceDataChannelInterfaceV1
     : public ConfigurableService<RoceDataChannelInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "roce_data_channel.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* Per-channel instance_id derivation used by the metadata-form
-     * get_service. Same shape as DataChannelInterfaceV1::locator_id
-     * — both services key by (serial, data_channel). */
+     * get_service. Throws if the metadata is missing 'serial_number'
+     * or 'data_channel'. */
     static std::string locator_id(const EnumerationMetadata& metadata)
     {
         return "serial=" + metadata.get<std::string>("serial_number")
@@ -52,27 +48,45 @@ public:
     }
 
     virtual ~RoceDataChannelInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Wire up the on-device packetizer to deliver frames into the
-     * receiver-managed memory region. The channel reads the QP /
-     * frame-memory / frame-layout values it needs to program the FPGA
-     * off the receiver (get_qp_number, get_rkey, external_frame_memory,
-     * frame_size, page_size, pages); the caller must have already
-     * brought the receiver up via RoceReceiverInterfaceV1::start(...).
-     * Call once after enumeration; pair with detach_receiver() before
-     * tearing the channel down. Per-channel enumeration fields are
-     * already cached on the anchor DataChannelInterfaceV1, so no
-     * metadata parameter is needed here. */
+    /**
+     * @brief Configure the HSB device with settings necessary
+     *      for generating RoCE data packets.
+     *
+     * @param receiver has RoCE configuration parameters.
+     * @return HOLOLINK_MODULE_OK on success, or an error status.
+     * @throws std::runtime_error if `receiver` is null.
+     */
     virtual hololink_module_status_t attach_receiver(
         std::shared_ptr<RoceReceiverInterfaceV1> receiver)
         = 0;
 
-    /* Detach the on-device packetizer from any host memory. */
+    /**
+     * @brief Deconfigure the RoCE configuration.
+     *
+     * Disconnects the channel from the memory it was directed at, so the
+     * device no longer writes to it. Call this before releasing the
+     * receiver's memory. It communicates with the device, so it can
+     * fail if the device has become unreachable.
+     *
+     * @return HOLOLINK_MODULE_OK on success, or an error status.
+     */
     virtual hololink_module_status_t detach_receiver() = 0;
 
-    /* The frame-end Sequencer attached to this channel. Triggered by
-     * the packetizer when a frame completes; receivers register
-     * read-back operations here. */
+    /**
+     * @brief The sequencer that the device runs each time a frame
+     * on this channel has been completely sent.
+     *
+     * Receivers add operations to it, such as reading back frame
+     * metadata, that must happen at the end of each frame.
+     *
+     * @tparam T Service type to return; defaults to SequencerInterfaceV1.
+     * @param allow_null If `false` (the default), throws
+     *      std::runtime_error if the sequencer is not available. If
+     *      `true`, returns `nullptr` instead.
+     * @returns The sequencer for this channel.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> frame_end_sequencer(bool allow_null = false)
     {
@@ -80,11 +94,19 @@ public:
         return T::get_service(module(), instance_id.c_str(), allow_null);
     }
 
-    /* The HololinkInterface this channel belongs to — looked up via
-     * the per-board instance id helper. The corresponding
-     * DataChannelInterfaceV1 anchor's hololink() returns the same
-     * instance; kept here for callers that have a RoCE-typed
-     * shared_ptr in hand. */
+    /**
+     * @brief The device (HololinkInterfaceV1) this channel belongs to.
+     *
+     * Same device as returned by DataChannelInterfaceV1::hololink();
+     * provided so that code holding only this interface need not look
+     * up the other.
+     *
+     * @tparam T Service type to return; defaults to HololinkInterfaceV1.
+     * @param allow_null If `false` (the default), throws
+     *      std::runtime_error if the device is not available. If `true`,
+     *      returns `nullptr` instead.
+     * @returns The device.
+     */
     template <typename T = HololinkInterfaceV1>
     std::shared_ptr<T> get_hololink(bool allow_null = false)
     {
@@ -92,9 +114,11 @@ public:
         return T::get_service(module(), instance_id.c_str(), allow_null);
     }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 protected:
     virtual std::string frame_end_sequencer_instance_id() = 0;
     virtual std::string parent_hololink_instance_id() = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

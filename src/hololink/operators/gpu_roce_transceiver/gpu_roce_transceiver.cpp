@@ -29,10 +29,13 @@
 #define WRITE_ONCE_64b(x, v) (ACCESS_ONCE_64b(x) = (v))
 #endif
 
+/* Period of the monitor thread checks while the GPU kernels run */
+#define GPU_ROCE_MONITOR_POLL_MS 100
+
 namespace hololink::operators {
 
 GpuRoceTransceiver::GpuRoceTransceiver(const char* ibv_name, unsigned ibv_port,
-    unsigned tx_ibv_qp, uint32_t gpu_id,
+    std::string tx_ibv_qp, uint32_t gpu_id,
     size_t cu_frame_size, size_t cu_page_size,
     unsigned pages, const char* peer_ip,
     const bool forward, const bool rx_only, const bool tx_only)
@@ -102,16 +105,44 @@ GpuRoceTransceiver::GpuRoceTransceiver(const char* ibv_name, unsigned ibv_port,
         // Note that the rest of the code is OK if this occurs.
         HSB_LOG_ERROR("Unable to fetch rx_write_requests; ignoring.");
     }
+
+    std::stringstream ss(tx_ibv_qp_);
+    std::string item;
+
+    while (std::getline(ss, item, ',')) {
+        if (!item.empty()) {
+            size_t parsed = 0;
+            unsigned long qp_num = 0;
+            try {
+                qp_num = std::stoul(item, &parsed);
+            } catch (const std::exception&) {
+                parsed = 0;
+            }
+            // QP numbers are 24 bits
+            if (parsed == 0 || item.find_first_not_of(" \t", parsed) != std::string::npos || qp_num > 0xFFFFFF)
+                throw std::runtime_error("tx_ibv_qp=\"" + tx_ibv_qp_ + "\": \"" + item + "\" is not a valid QP number");
+            tx_ibv_qp_num_.push_back((uint32_t)qp_num);
+        }
+    }
+
+    if (tx_ibv_qp_num_.empty())
+        throw std::runtime_error("tx_ibv_qp must include at least one QP");
+
+    if (tx_ibv_qp_num_.size() > GPU_ROCE_TRANSCEIVER_MAX_QP)
+        throw std::runtime_error("Number of QPs (" + std::to_string(tx_ibv_qp_num_.size()) + ") is bigger than max allowed (" + std::to_string(GPU_ROCE_TRANSCEIVER_MAX_QP) + ")");
 }
 
 GpuRoceTransceiver::~GpuRoceTransceiver()
 {
+    // Stop the persistent kernels: they check the exit flag also while waiting for packets
     if (cpu_exit_flag)
-        cpu_exit_flag[0] = 1;
+        __atomic_store_n(&cpu_exit_flag[0], 1, __ATOMIC_RELEASE);
 
-    if (forward_ && forward_stream) {
-        cudaStreamSynchronize(forward_stream);
-        cudaStreamDestroy(forward_stream);
+    if (forward_) {
+        if (forward_stream) {
+            cudaStreamSynchronize(forward_stream);
+            cudaStreamDestroy(forward_stream);
+        }
     } else {
         if (rx_only_ && rx_only_stream) {
             cudaStreamSynchronize(rx_only_stream);
@@ -124,34 +155,41 @@ GpuRoceTransceiver::~GpuRoceTransceiver()
         }
 
 #if DOCA_SIMULATE_RX_COMPUTE_TX == 1
-        cudaStreamSynchronize(compute_stream);
-        cudaStreamDestroy(compute_stream);
+        if (compute_stream) {
+            cudaStreamSynchronize(compute_stream);
+            cudaStreamDestroy(compute_stream);
+        }
 #endif
     }
+
+    // The CPU proxy rings the doorbells for the kernels: stop it once they are done
+    if (cpu_proxy_started_) {
+        WRITE_ONCE_64b(*targs.exit_flag, 1);
+        pthread_join(cpu_proxy_thread_id, NULL);
+        cpu_proxy_started_ = false;
+    }
+    free(targs.exit_flag);
+    targs.exit_flag = nullptr;
 
     if (gpu_exit_flag)
         doca_gpu_mem_free(doca_gpu_device_, gpu_exit_flag);
 
-    if (umem_cpu) {
-        if (targs.exit_flag) {
-            WRITE_ONCE_64b(*targs.exit_flag, 1);
-            pthread_join(cpu_proxy_thread_id, NULL);
-            free(targs.exit_flag);
+    // A QP references its CQs: destroy the QPs first
+    for (const auto& qp : doca_qp_)
+        delete qp;
+    for (const auto& cq : doca_cq_rq_)
+        delete cq;
+    for (const auto& cq : doca_cq_sq_)
+        delete cq;
+
+    for (size_t x = 0; x < tx_ibv_qp_num_.size(); x++) {
+        if (uar_[x] != nullptr) {
+            doca_error_t result = doca_uar_destroy(uar_[x]);
+            if (result != DOCA_SUCCESS) {
+                HSB_LOG_ERROR("Failed to destroy UAR: {}", doca_error_get_descr(result));
+            }
+            uar_[x] = nullptr;
         }
-    }
-
-    delete doca_cq_rq;
-    delete doca_cq_sq;
-    delete doca_qp;
-
-    doca_gpu_destroy(doca_gpu_device_);
-
-    if (uar_ != nullptr) {
-        doca_error_t result = doca_uar_destroy(uar_);
-        if (result != DOCA_SUCCESS) {
-            HSB_LOG_ERROR("Failed to destroy UAR: {}", doca_error_get_descr(result));
-        }
-        uar_ = nullptr;
     }
 
     if (doca_pd_ != nullptr) {
@@ -180,11 +218,19 @@ GpuRoceTransceiver::~GpuRoceTransceiver()
         doca_device_ = nullptr;
     }
 
+    if (doca_gpu_device_ != nullptr)
+        doca_gpu_destroy(doca_gpu_device_);
+
     HSB_LOG_TRACE("DOCA resources cleaned up");
 
     pthread_cond_destroy(&ready_condition_);
     pthread_mutex_destroy(&ready_mutex_);
-    ::close(rx_write_requests_fd_);
+    if (control_r_ >= 0)
+        ::close(control_r_);
+    if (control_w_ >= 0)
+        ::close(control_w_);
+    if (rx_write_requests_fd_ >= 0)
+        ::close(rx_write_requests_fd_);
     free(ibv_name_);
     free(peer_ip_);
 }
@@ -197,7 +243,6 @@ bool GpuRoceTransceiver::start()
     struct ibv_gid_entry ib_gid_entry = { 0 };
     cudaError_t result_cuda;
     doca_error_t result;
-    struct doca_log_backend* sdk_backend;
     char gpu_bus_id[256];
     int num_devices = 0;
     int dmabuf_fd;
@@ -208,9 +253,15 @@ bool GpuRoceTransceiver::start()
     // Lock to ensure thread safety
     std::lock_guard lock(get_lock());
 
-    result = doca_log_backend_create_with_file_sdk(stderr, &sdk_backend);
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create SDK log backend: {}", doca_error_get_descr(result));
+    // DOCA keeps every log backend created: create the SDK one only once per process
+    static std::once_flag sdk_log_once;
+    static doca_error_t sdk_log_result = DOCA_SUCCESS;
+    std::call_once(sdk_log_once, []() {
+        struct doca_log_backend* sdk_backend;
+        sdk_log_result = doca_log_backend_create_with_file_sdk(stderr, &sdk_backend);
+    });
+    if (sdk_log_result != DOCA_SUCCESS) {
+        HSB_LOG_ERROR("Failed to create SDK log backend: {}", doca_error_get_descr(sdk_log_result));
         return false;
     }
 
@@ -309,62 +360,6 @@ bool GpuRoceTransceiver::start()
         return false;
     }
 
-    if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
-        result = doca_uar_create(doca_device_, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, &uar_);
-    else
-        result = doca_uar_create(doca_device_, DOCA_UAR_ALLOCATION_TYPE_NONCACHE, &uar_);
-
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create UAR: {}", doca_error_get_descr(result));
-        return false;
-    }
-
-    doca_cq_rq = new DocaCq(WQE_NUM, doca_gpu_device_, doca_device_, uar_, doca_verbs_ctx_, umem_cpu);
-    result = doca_cq_rq->create();
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create CQ RQ: {}", doca_error_get_descr(result));
-        return false;
-    }
-
-    doca_cq_sq = new DocaCq(WQE_NUM, doca_gpu_device_, doca_device_, uar_, doca_verbs_ctx_, umem_cpu);
-    result = doca_cq_sq->create();
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create CQ SQ: {}", doca_error_get_descr(result));
-        return false;
-    }
-
-    HSB_LOG_INFO("Created CQ successfully");
-
-    doca_qp = new DocaQp(WQE_NUM, doca_gpu_device_, doca_device_, uar_, doca_verbs_ctx_, doca_pd_, doca_cq_rq->get(), doca_cq_sq->get(), umem_cpu);
-
-    result = doca_qp->create(doca_verbs_ctx_, cu_frame_size_, nic_handler);
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create QP: {}", doca_error_get_descr(result));
-        return false;
-    }
-
-    // cpu_ring_buffers_: force CPU_GPU allocation for ring flags and data only,
-    // without changing CQ/QP UMEMs or TX kernel handler mode.
-    if (cpu_ring_buffers_ && !umem_cpu)
-        doca_qp->umem_cpu = true;
-
-    result = doca_qp->create_ring(cu_page_size_, pages_, ibv_pd);
-    if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create ring buffers: {}", doca_error_get_descr(result));
-        return false;
-    }
-
-    // Restore original umem_cpu so TX kernel handler uses BlueFlame on dGPU.
-    if (cpu_ring_buffers_ && !umem_cpu)
-        doca_qp->umem_cpu = false;
-
-    // Ger RX buffer rkey
-    rkey_ = doca_qp->gpu_rx_ring.addr_mr->rkey;
-    // Get QP number
-    qp_number_ = doca_verbs_qp_get_qpn(doca_qp->get());
-
-    HSB_LOG_INFO("Created QP with number: {:#x} Rx ring buffer Rkey {}", qp_number_, rkey_);
-
     // Configure remote address for RTR state
     unsigned long client_ip = 0;
     if (inet_pton(AF_INET, peer_ip_, &client_ip) != 1) {
@@ -373,6 +368,7 @@ bool GpuRoceTransceiver::start()
         return false;
     }
 
+    struct doca_verbs_gid doca_rgid; /* remote gid address */
     if (client_ip != 0) {
         uint64_t client_interface_id = client_ip;
         client_interface_id <<= 32;
@@ -383,74 +379,103 @@ bool GpuRoceTransceiver::start()
                 .interface_id = client_interface_id,
             },
         };
-        struct doca_verbs_gid doca_rgid; /* remote gid address */
         memcpy(doca_rgid.raw, remote_gid.raw, 16);
-
-        // dest_qp_num = 0x2, FPGA specific port
-        result = doca_qp->connect(doca_rgid, gid_index, tx_ibv_qp_);
-        if (result != DOCA_SUCCESS) {
-            HSB_LOG_ERROR("Failed to connect Tx QP: {}", doca_error_get_descr(result));
-            return false;
-        }
     } else {
         HSB_LOG_ERROR("Failed to get client_ip");
         return false;
     }
 
-    // Kernel to pre-post all recv
-    if (forward_)
-        GpuRoceTransceiverPrepareKernel(0, doca_qp->get_gpu_dev(), cu_frame_size_, htobe32(doca_qp->gpu_rx_ring.addr_mr->rkey), 1, WQE_NUM);
-    else if (rx_only_ == true || tx_only_ == true)
-        GpuRoceTransceiverPrepareKernel(0, doca_qp->get_gpu_dev(), cu_frame_size_, htobe32(doca_qp->gpu_tx_ring.addr_mr->rkey), 1, WQE_NUM);
-    cudaStreamSynchronize(0);
+    /* **************** multi-QP creation **************** */
+    for (int x = 0; x < tx_ibv_qp_num_.size(); x++) {
+        if (nic_handler == DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF)
+            result = doca_uar_create(doca_device_, DOCA_UAR_ALLOCATION_TYPE_BLUEFLAME, &uar_[x]);
+        else
+            result = doca_uar_create(doca_device_, DOCA_UAR_ALLOCATION_TYPE_NONCACHE, &uar_[x]);
 
-    if (forward_) {
-        result_cuda = cudaStreamCreateWithFlags(&forward_stream, cudaStreamNonBlocking);
-        if (result_cuda != cudaSuccess) {
-            HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to create UAR: {}", doca_error_get_descr(result));
             return false;
         }
 
-        GpuRoceTransceiverForwardKernel(forward_stream, nullptr, nullptr, nullptr, 0, 0, 0, cu_frame_size_, nic_handler, 1, WQE_NUM);
-    } else {
-        int leastPriority, greatestPriority;
-        result_cuda = cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
-        if (result_cuda != cudaSuccess) {
-            HSB_LOG_ERROR("Failed to get CUDA stream priorities: {}", (int)result_cuda);
+        doca_cq_rq_[x] = new DocaCq(WQE_NUM, doca_gpu_device_, doca_device_, uar_[x], doca_verbs_ctx_, umem_cpu);
+        result = doca_cq_rq_[x]->create();
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to create CQ RQ: {}", doca_error_get_descr(result));
             return false;
         }
 
-        if (rx_only_) {
-            result_cuda = cudaStreamCreateWithPriority(&rx_only_stream, cudaStreamNonBlocking, greatestPriority);
-            if (result_cuda != cudaSuccess) {
-                HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
-                return false;
-            }
-
-            // Warmup
-            GpuRoceTransceiverRxOnlyKernel(rx_only_stream, nullptr, nullptr, nullptr, 0, 0, nullptr, cu_frame_size_, 1, WQE_NUM);
-        }
-
-        if (tx_only_) {
-            result_cuda = cudaStreamCreateWithPriority(&tx_only_stream, cudaStreamNonBlocking, greatestPriority);
-            if (result_cuda != cudaSuccess) {
-                HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
-                return false;
-            }
-            // Warmup
-            GpuRoceTransceiverTxOnlyKernel(tx_only_stream, nullptr, nullptr, nullptr, 0, 0, 0, nullptr, cu_frame_size_, nic_handler, 1, WQE_NUM);
-        }
-
-#if DOCA_SIMULATE_RX_COMPUTE_TX == 1
-        result_cuda = cudaStreamCreateWithPriority(&compute_stream, cudaStreamNonBlocking, greatestPriority);
-        if (result_cuda != cudaSuccess) {
-            HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+        doca_cq_sq_[x] = new DocaCq(WQE_NUM, doca_gpu_device_, doca_device_, uar_[x], doca_verbs_ctx_, umem_cpu);
+        result = doca_cq_sq_[x]->create();
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to create CQ SQ: {}", doca_error_get_descr(result));
             return false;
         }
-        // Warmup
-        GpuRoceTransceiverComputeKernel(compute_stream, nullptr, nullptr, 0, 0, nullptr, nullptr, 0, 0, cu_frame_size_, 1, WQE_NUM);
-#endif
+
+        HSB_LOG_INFO("Created CQ successfully");
+
+        doca_qp_[x] = new DocaQp(WQE_NUM, doca_gpu_device_, doca_device_, uar_[x], doca_verbs_ctx_, doca_pd_, doca_cq_rq_[x]->get(), doca_cq_sq_[x]->get(), umem_cpu);
+
+        result = doca_qp_[x]->create(doca_verbs_ctx_, cu_frame_size_, nic_handler);
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to create QP: {}", doca_error_get_descr(result));
+            return false;
+        }
+
+        // cpu_ring_buffers_: force CPU_GPU allocation for ring flags and data only,
+        // without changing CQ/QP UMEMs or TX kernel handler mode.
+        if (cpu_ring_buffers_ && !umem_cpu)
+            doca_qp_[x]->umem_cpu = true;
+
+        result = doca_qp_[x]->create_ring(cu_page_size_, pages_, ibv_pd);
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to create ring buffers: {}", doca_error_get_descr(result));
+            return false;
+        }
+
+        // Restore original umem_cpu so TX kernel handler uses BlueFlame on dGPU.
+        if (cpu_ring_buffers_ && !umem_cpu)
+            doca_qp_[x]->umem_cpu = false;
+
+        HSB_LOG_INFO("Created QP with number: {:#x} Rx ring buffer Rkey {}", doca_verbs_qp_get_qpn(doca_qp_[x]->get()), doca_qp_[x]->gpu_rx_ring.addr_mr->rkey);
+
+        // dest_qp_num = 0x2, FPGA specific port
+        result = doca_qp_[x]->connect(doca_rgid, gid_index, tx_ibv_qp_num_[x]);
+        if (result != DOCA_SUCCESS) {
+            HSB_LOG_ERROR("Failed to connect Tx QP: {}", doca_error_get_descr(result));
+            return false;
+        }
+
+        HSB_LOG_INFO("Connected QP {} {}", x, tx_ibv_qp_num_[x]);
+
+        // Kernel to pre-post all recv
+        if (forward_)
+            GpuRoceTransceiverPrepareKernel(0, doca_qp_[x]->get_gpu_dev(), cu_frame_size_, htobe32(doca_qp_[x]->gpu_rx_ring.addr_mr->rkey), 1, WQE_NUM);
+        else if (rx_only_ == true || tx_only_ == true)
+            GpuRoceTransceiverPrepareKernel(0, doca_qp_[x]->get_gpu_dev(), cu_frame_size_, htobe32(doca_qp_[x]->gpu_tx_ring.addr_mr->rkey), 1, WQE_NUM);
+
+        HSB_LOG_INFO("GpuRoceTransceiverPrepareKernel done {} {}", x, tx_ibv_qp_num_[x]);
+
+        result_cuda = cudaStreamSynchronize(0);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("Failed to cudaStreamSynchronize for QP {} : {}", x, (int)result_cuda);
+            return false;
+        }
     }
+    /* ********************************************* */
+
+    /* **************** CUDA kernel warmup **************** */
+    struct doca_gpu_dev_verbs_qp* qp[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint8_t* ring_rx_buf[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    size_t ring_rx_buf_stride_sz[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint32_t ring_rx_buf_mkey[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint32_t ring_rx_buf_stride_num[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint64_t* ring_rx_flag[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+
+    uint8_t* ring_tx_buf[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    size_t ring_tx_buf_stride_sz[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint32_t ring_tx_buf_mkey[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint32_t ring_tx_buf_stride_num[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
+    uint64_t* ring_tx_flag[GPU_ROCE_TRANSCEIVER_MAX_QP] = { 0 };
 
     if (umem_cpu) {
         result = doca_gpu_mem_alloc(doca_gpu_device_,
@@ -473,6 +498,64 @@ bool GpuRoceTransceiver::start()
         return false;
     }
 
+    if (forward_) {
+        result_cuda = cudaStreamCreateWithFlags(&forward_stream, cudaStreamNonBlocking);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+            return false;
+        }
+
+        GpuRoceTransceiverForwardKernel(forward_stream, gpu_exit_flag,
+            qp, ring_rx_buf, ring_rx_buf_stride_sz, ring_rx_buf_mkey, ring_rx_buf_stride_num,
+            cu_frame_size_, nic_handler, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+    } else {
+        int leastPriority, greatestPriority;
+        result_cuda = cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("Failed to get CUDA stream priorities: {}", (int)result_cuda);
+            return false;
+        }
+
+        if (rx_only_) {
+            result_cuda = cudaStreamCreateWithPriority(&rx_only_stream, cudaStreamNonBlocking, greatestPriority);
+            if (result_cuda != cudaSuccess) {
+                HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+                return false;
+            }
+
+            // Warmup
+            GpuRoceTransceiverRxOnlyKernel(rx_only_stream, gpu_exit_flag,
+                qp, ring_rx_buf, ring_rx_buf_stride_sz, ring_rx_buf_stride_num, ring_rx_flag,
+                cu_frame_size_, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+        }
+
+        if (tx_only_) {
+            result_cuda = cudaStreamCreateWithPriority(&tx_only_stream, cudaStreamNonBlocking, greatestPriority);
+            if (result_cuda != cudaSuccess) {
+                HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+                return false;
+            }
+            // Warmup
+            GpuRoceTransceiverTxOnlyKernel(tx_only_stream, gpu_exit_flag,
+                qp, ring_tx_buf, ring_tx_buf_stride_sz, ring_tx_buf_stride_num, ring_tx_buf_mkey, ring_tx_flag,
+                cu_frame_size_, nic_handler, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+        }
+
+#if DOCA_SIMULATE_RX_COMPUTE_TX == 1
+        result_cuda = cudaStreamCreateWithPriority(&compute_stream, cudaStreamNonBlocking, greatestPriority);
+        if (result_cuda != cudaSuccess) {
+            HSB_LOG_ERROR("Failed to create new CUDA stream: {}", (int)result_cuda);
+            return false;
+        }
+        // Warmup
+        GpuRoceTransceiverComputeKernel(compute_stream, gpu_exit_flag,
+            ring_rx_flag, ring_rx_buf_stride_num,
+            ring_tx_flag, ring_tx_buf, ring_tx_buf_stride_sz, ring_tx_buf_stride_num,
+            cu_frame_size_, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+#endif
+    }
+    /* ********************************************* */
+
     HSB_LOG_INFO("DOCA Verbs RoCE Receiver started successfully");
 
     return true;
@@ -481,9 +564,9 @@ bool GpuRoceTransceiver::start()
 void GpuRoceTransceiver::close()
 {
     done_ = true;
-    // Tell GPU kernel to exit
+    // Tell GPU kernel to exit. Release: the monitor thread seeing the exit flag also sees done_.
     if (cpu_exit_flag) {
-        cpu_exit_flag[0] = 1;
+        __atomic_store_n(&cpu_exit_flag[0], 1, __ATOMIC_RELEASE);
     }
     // Wake any thread blocked in get_next_frame(wait-until-close)
     int status = pthread_mutex_lock(&ready_mutex_);
@@ -509,16 +592,134 @@ void* progress_cpu_proxy(void* args_)
 
     printf("Thread CPU proxy progress is running... %ld\n", ACCESS_ONCE_64b(*args->exit_flag));
 
-    while (ACCESS_ONCE_64b(*args->exit_flag) == 0)
-        doca_gpu_verbs_cpu_proxy_progress(args->qp_cpu);
+    while (ACCESS_ONCE_64b(*args->exit_flag) == 0) {
+        for (int x = 0; x < args->num_qp; x++)
+            doca_gpu_verbs_cpu_proxy_progress(args->qp_cpu[x]);
+    }
 
     return NULL;
+}
+
+bool GpuRoceTransceiver::launch_kernels()
+{
+    struct doca_gpu_dev_verbs_qp* qp[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint8_t* ring_rx_buf[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    size_t ring_rx_buf_stride_sz[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint32_t ring_rx_buf_mkey[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint32_t ring_rx_buf_stride_num[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint64_t* ring_rx_flag[GPU_ROCE_TRANSCEIVER_MAX_QP];
+
+    uint8_t* ring_tx_buf[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    size_t ring_tx_buf_stride_sz[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint32_t ring_tx_buf_mkey[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint32_t ring_tx_buf_stride_num[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    uint64_t* ring_tx_flag[GPU_ROCE_TRANSCEIVER_MAX_QP];
+    doca_error_t result = DOCA_SUCCESS;
+
+    __atomic_store_n(&cpu_exit_flag[0], 0, __ATOMIC_RELEASE);
+    for (unsigned x = 0; x < GPU_ROCE_TRANSCEIVER_MAX_QP; x++) {
+        if (x < tx_ibv_qp_num_.size()) {
+            HSB_LOG_INFO("QP {} preparation", x);
+            qp[x] = doca_qp_[x]->get_gpu_dev();
+
+            ring_rx_buf[x] = (uint8_t*)doca_qp_[x]->gpu_rx_ring.addr;
+            ring_rx_buf_stride_sz[x] = doca_qp_[x]->gpu_rx_ring.stride_sz;
+            ring_rx_buf_mkey[x] = htobe32(doca_qp_[x]->gpu_rx_ring.addr_mr->rkey);
+            ring_rx_buf_stride_num[x] = doca_qp_[x]->gpu_rx_ring.stride_num;
+            ring_rx_flag[x] = doca_qp_[x]->gpu_rx_ring.flag;
+
+            ring_tx_buf[x] = (uint8_t*)doca_qp_[x]->gpu_tx_ring.addr;
+            ring_tx_buf_stride_sz[x] = doca_qp_[x]->gpu_tx_ring.stride_sz;
+            ring_tx_buf_mkey[x] = htobe32(doca_qp_[x]->gpu_tx_ring.addr_mr->rkey);
+            ring_tx_buf_stride_num[x] = doca_qp_[x]->gpu_tx_ring.stride_num;
+            ring_tx_flag[x] = doca_qp_[x]->gpu_tx_ring.flag;
+        } else {
+            qp[x] = nullptr;
+
+            ring_rx_buf[x] = nullptr;
+            ring_rx_buf_stride_sz[x] = 0;
+            ring_rx_buf_mkey[x] = 0;
+            ring_rx_buf_stride_num[x] = 0;
+            ring_rx_flag[x] = nullptr;
+
+            ring_tx_buf[x] = nullptr;
+            ring_tx_buf_stride_sz[x] = 0;
+            ring_tx_buf_mkey[x] = 0;
+            ring_tx_buf_stride_num[x] = 0;
+            ring_tx_flag[x] = nullptr;
+        }
+    }
+
+    if (forward_) {
+        result = GpuRoceTransceiverForwardKernel(forward_stream, gpu_exit_flag,
+            qp, ring_rx_buf, ring_rx_buf_stride_sz, ring_rx_buf_mkey, ring_rx_buf_stride_num,
+            cu_frame_size_, nic_handler, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+    } else {
+        if (rx_only_) {
+            result = GpuRoceTransceiverRxOnlyKernel(rx_only_stream, gpu_exit_flag,
+                qp, ring_rx_buf, ring_rx_buf_stride_sz, ring_rx_buf_stride_num, ring_rx_flag,
+                cu_frame_size_, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+        }
+
+        if (result == DOCA_SUCCESS && tx_only_) {
+            result = GpuRoceTransceiverTxOnlyKernel(tx_only_stream, gpu_exit_flag,
+                qp, ring_tx_buf, ring_tx_buf_stride_sz, ring_tx_buf_stride_num, ring_tx_buf_mkey, ring_tx_flag,
+                cu_frame_size_, nic_handler, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+        }
+
+#if DOCA_SIMULATE_RX_COMPUTE_TX == 1
+        if (result == DOCA_SUCCESS) {
+            result = GpuRoceTransceiverComputeKernel(compute_stream, gpu_exit_flag,
+                ring_rx_flag, ring_rx_buf_stride_num,
+                ring_tx_flag, ring_tx_buf, ring_tx_buf_stride_sz, ring_tx_buf_stride_num,
+                cu_frame_size_, (uint32_t)tx_ibv_qp_num_.size(), WQE_NUM);
+        }
+#endif
+    }
+
+    if (result != DOCA_SUCCESS) {
+        HSB_LOG_ERROR("Failed to launch the GPU kernels: {}", doca_error_get_descr(result));
+        // Stop the kernels already launched
+        __atomic_store_n(&cpu_exit_flag[0], 1, __ATOMIC_RELEASE);
+        return false;
+    }
+
+    // Should it spawns 1 CPU thread per QP?
+    if (umem_cpu) {
+        for (unsigned x = 0; x < GPU_ROCE_TRANSCEIVER_MAX_QP; x++) {
+            if (x < tx_ibv_qp_num_.size())
+                targs.qp_cpu[x] = doca_qp_[x]->get_gpu();
+            else
+                targs.qp_cpu[x] = nullptr;
+        }
+
+        targs.num_qp = (uint16_t)tx_ibv_qp_num_.size();
+        targs.exit_flag = (uint64_t*)calloc(1, sizeof(uint64_t));
+        if (targs.exit_flag == nullptr) {
+            HSB_LOG_ERROR("Failed to allocate the CPU proxy exit flag");
+            __atomic_store_n(&cpu_exit_flag[0], 1, __ATOMIC_RELEASE);
+            return false;
+        }
+
+        int ret = pthread_create(&cpu_proxy_thread_id, NULL, progress_cpu_proxy, (void*)&targs);
+        if (ret != 0) {
+            HSB_LOG_ERROR("Failed to create the CPU proxy thread: {}", ret);
+            // Without the CPU proxy the kernels can't send: stop them
+            __atomic_store_n(&cpu_exit_flag[0], 1, __ATOMIC_RELEASE);
+            return false;
+        }
+        cpu_proxy_started_ = true;
+    }
+
+    doca_kernel_launched = true;
+    return true;
 }
 
 void GpuRoceTransceiver::blocking_monitor()
 {
     struct pollfd poll_fds[1];
-    int ret, timeout = 0; // no blocking poll
+    bool gpu_error_reported = false;
+    int ret;
 
     core::NvtxTrace::setThreadName("GpuRoceTransceiver::run");
     HSB_LOG_INFO("DOCA Blocking Monitor.");
@@ -532,69 +733,33 @@ void GpuRoceTransceiver::blocking_monitor()
     cudaSetDevice(gpu_id_);
     cuCtxPushCurrent(cuContext);
 
+    if (!doca_kernel_launched && !done_ && !launch_kernels()) {
+        cuCtxPopCurrent(&cuContext);
+        return;
+    }
+
+    // The kernels own the datapath: wait for close(), checking periodically if the kernels stopped on error
     while (!done_) {
-        // HSB_LOG_INFO("Polling for CQ events");
-        timeout = 0;
-        ret = poll(poll_fds, 1, timeout);
-        if (ret == -1)
+        ret = poll(poll_fds, 1, GPU_ROCE_MONITOR_POLL_MS);
+        if (ret == -1) {
+            if (errno == EINTR)
+                continue;
             throw std::runtime_error(fmt::format("poll returned ret={}, errno={}.", ret, errno));
+        }
 
-        /* Capture timestamp as close as possible to completion arrival */
-        clock_gettime(CLOCK_REALTIME, const_cast<struct timespec*>(&event_time_));
-
-        if (poll_fds[0].revents) {
+        if (ret > 0 && poll_fds[0].revents) {
             // Currently, the only activity that we see on control_r_ is a flag
             // telling us that someone closed the control_w_ side (which we do
-            // in LinuxReceiver::close).  That specific event is an indication
+            // in close()).  That specific event is an indication
             // that this loop is instructed to terminate.
             HSB_LOG_DEBUG("Closing.");
             break;
         }
 
-        if (!doca_kernel_launched) {
-            cpu_exit_flag[0] = 0;
-            if (forward_) {
-                GpuRoceTransceiverForwardKernel(forward_stream, doca_qp->get_gpu_dev(), gpu_exit_flag,
-                    (uint8_t*)doca_qp->gpu_rx_ring.addr, doca_qp->gpu_rx_ring.stride_sz,
-                    htobe32(doca_qp->gpu_rx_ring.addr_mr->rkey), doca_qp->gpu_rx_ring.stride_num,
-                    cu_frame_size_, nic_handler, 1, WQE_NUM);
-            } else {
-                if (rx_only_) {
-                    GpuRoceTransceiverRxOnlyKernel(rx_only_stream, doca_qp->get_gpu_dev(), gpu_exit_flag,
-                        (uint8_t*)doca_qp->gpu_rx_ring.addr, doca_qp->gpu_rx_ring.stride_sz,
-                        doca_qp->gpu_rx_ring.stride_num, doca_qp->gpu_rx_ring.flag,
-                        cu_frame_size_, 1, WQE_NUM);
-                }
-
-                if (tx_only_) {
-                    GpuRoceTransceiverTxOnlyKernel(tx_only_stream, doca_qp->get_gpu_dev(), gpu_exit_flag,
-                        (uint8_t*)doca_qp->gpu_tx_ring.addr, doca_qp->gpu_tx_ring.stride_sz,
-                        doca_qp->gpu_tx_ring.stride_num, htobe32(doca_qp->gpu_tx_ring.addr_mr->rkey),
-                        doca_qp->gpu_tx_ring.flag, cu_frame_size_,
-                        nic_handler, 1, WQE_NUM);
-                }
-
-#if DOCA_SIMULATE_RX_COMPUTE_TX == 1
-                GpuRoceTransceiverComputeKernel(compute_stream, gpu_exit_flag,
-                    doca_qp->gpu_rx_ring.flag, doca_qp->gpu_rx_ring.stride_sz, doca_qp->gpu_rx_ring.stride_num,
-                    doca_qp->gpu_tx_ring.flag, (uint8_t*)doca_qp->gpu_tx_ring.addr, doca_qp->gpu_tx_ring.stride_sz, doca_qp->gpu_tx_ring.stride_num,
-                    cu_frame_size_, 1, WQE_NUM);
-#endif
-            }
-
-            if (umem_cpu) {
-                targs.qp_cpu = doca_qp->get_gpu();
-                targs.exit_flag = (uint64_t*)calloc(1, sizeof(uint64_t));
-                *(targs.exit_flag) = 0;
-
-                int result = pthread_create(&cpu_proxy_thread_id, NULL, progress_cpu_proxy, (void*)&targs);
-                if (result != 0) {
-                    HSB_LOG_ERROR("Failed to create thread");
-                    break;
-                }
-            }
-
-            doca_kernel_launched = true;
+        // Unless close() set it, the exit flag is set by the kernels after an error completion
+        if (!gpu_error_reported && __atomic_load_n(&cpu_exit_flag[0], __ATOMIC_ACQUIRE) != 0 && !done_) {
+            HSB_LOG_ERROR("GPU RoCE kernels stopped after an error completion");
+            gpu_error_reported = true;
         }
     }
 
@@ -628,9 +793,19 @@ bool GpuRoceTransceiver::check_async_events()
     return true;
 }
 
-uint32_t GpuRoceTransceiver::get_qp_number() { return qp_number_; }
+uint32_t GpuRoceTransceiver::get_qp_number(unsigned sensor_id)
+{
+    if (qp_created(sensor_id))
+        return doca_verbs_qp_get_qpn(doca_qp_[sensor_id]->get());
+    return 0;
+}
 
-uint32_t GpuRoceTransceiver::get_rkey() { return rkey_; }
+uint32_t GpuRoceTransceiver::get_rkey(unsigned sensor_id)
+{
+    if (qp_created(sensor_id) && doca_qp_[sensor_id]->gpu_rx_ring.addr_mr)
+        return doca_qp_[sensor_id]->gpu_rx_ring.addr_mr->rkey;
+    return 0;
+}
 
 uint64_t GpuRoceTransceiver::external_frame_memory()
 {
@@ -638,44 +813,73 @@ uint64_t GpuRoceTransceiver::external_frame_memory()
     return 0;
 }
 
-uint8_t* GpuRoceTransceiver::get_rx_ring_data_addr()
+uint8_t* GpuRoceTransceiver::get_rx_ring_data_addr(unsigned sensor_id)
 {
-    return doca_qp->gpu_rx_ring.addr;
+    if (!qp_created(sensor_id))
+        return nullptr;
+
+    return doca_qp_[sensor_id]->gpu_rx_ring.addr;
 }
 
-size_t GpuRoceTransceiver::get_rx_ring_stride_sz()
+size_t GpuRoceTransceiver::get_rx_ring_stride_sz(unsigned sensor_id)
 {
-    return doca_qp->gpu_rx_ring.stride_sz;
+    if (!qp_created(sensor_id))
+        return 0;
+
+    return doca_qp_[sensor_id]->gpu_rx_ring.stride_sz;
 }
 
-uint32_t GpuRoceTransceiver::get_rx_ring_stride_num()
+uint32_t GpuRoceTransceiver::get_rx_ring_stride_num(unsigned sensor_id)
 {
-    return doca_qp->gpu_rx_ring.stride_num;
+    if (!qp_created(sensor_id))
+        return 0;
+
+    return doca_qp_[sensor_id]->gpu_rx_ring.stride_num;
 }
 
-uint64_t* GpuRoceTransceiver::get_rx_ring_flag_addr()
+uint64_t* GpuRoceTransceiver::get_rx_ring_flag_addr(unsigned sensor_id)
 {
-    return doca_qp->gpu_rx_ring.flag;
+    if (!qp_created(sensor_id))
+        return nullptr;
+
+    return doca_qp_[sensor_id]->gpu_rx_ring.flag;
 }
 
-uint8_t* GpuRoceTransceiver::get_tx_ring_data_addr()
+uint8_t* GpuRoceTransceiver::get_tx_ring_data_addr(unsigned sensor_id)
 {
-    return doca_qp->gpu_tx_ring.addr;
+    if (!qp_created(sensor_id))
+        return nullptr;
+
+    return doca_qp_[sensor_id]->gpu_tx_ring.addr;
 }
 
-size_t GpuRoceTransceiver::get_tx_ring_stride_sz()
+size_t GpuRoceTransceiver::get_tx_ring_stride_sz(unsigned sensor_id)
 {
-    return doca_qp->gpu_tx_ring.stride_sz;
+    if (!qp_created(sensor_id))
+        return 0;
+
+    return doca_qp_[sensor_id]->gpu_tx_ring.stride_sz;
 }
 
-uint32_t GpuRoceTransceiver::get_tx_ring_stride_num()
+uint32_t GpuRoceTransceiver::get_tx_ring_stride_num(unsigned sensor_id)
 {
-    return doca_qp->gpu_tx_ring.stride_num;
+    if (!qp_created(sensor_id))
+        return 0;
+
+    return doca_qp_[sensor_id]->gpu_tx_ring.stride_num;
 }
 
-uint64_t* GpuRoceTransceiver::get_tx_ring_flag_addr()
+uint64_t* GpuRoceTransceiver::get_tx_ring_flag_addr(unsigned sensor_id)
 {
-    return doca_qp->gpu_tx_ring.flag;
+    if (!qp_created(sensor_id))
+        return nullptr;
+
+    return doca_qp_[sensor_id]->gpu_tx_ring.flag;
+}
+
+uint32_t GpuRoceTransceiver::get_tx_ring_lkey(unsigned sensor_id)
+{
+    return doca_qp_[sensor_id]->gpu_tx_ring.addr_mr->lkey;
 }
 
 std::mutex& GpuRoceTransceiver::get_lock()

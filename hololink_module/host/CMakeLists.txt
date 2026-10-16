@@ -100,7 +100,11 @@ target_precompile_headers(hololink_module_runtime
 
 # Host-side module implementation: Adapter singleton, dlopen + ABI
 # check, host-side Module wiring, plus the host's own Logging sink,
-# Reactor poll loop, and bootp-v2 listener (all in src/). This
+# Reactor poll loop and bootp-v2 listener (all in src/). Transport-specific
+# code lives outside this library: the PCIe endpoint helpers are in
+# host/pcie (hololink::module::pcie_receiver), and discovery is bootp-only
+# for every transport (the hololink_pcie kernel driver announces PCIe
+# endpoints on the loopback interface). This
 # library deliberately links no legacy hololink::core:
 # the infrastructure it needs (logging, reactor, bootp parsing, route
 # lookup, the ReceiverMemoryDescriptor CUDA helpers) is module-owned, so

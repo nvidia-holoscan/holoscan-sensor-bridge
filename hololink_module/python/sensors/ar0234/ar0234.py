@@ -151,10 +151,12 @@ class Ar0234Cam:
 
         legacy_pixel_format = _legacy.sensors.csi.PixelFormat.RAW_10
         # Guard: both enums must share the same integer value.
-        assert (
-            csi.PixelFormat.RAW_10.value == legacy_pixel_format.value
-        ), "module and legacy RAW_10 integer values have diverged"
-        assert self._pixel_format == csi.PixelFormat.RAW_10
+        if csi.PixelFormat.RAW_10.value != legacy_pixel_format.value:
+            raise RuntimeError("module and legacy RAW_10 integer values have diverged")
+        if self._pixel_format != csi.PixelFormat.RAW_10:
+            raise RuntimeError(
+                f"Unsupported pixel format {self._pixel_format}; expected RAW_10."
+            )
 
         logging.debug(
             "configure_converter:width=%s,height=%s,bpp=%s"

@@ -20,10 +20,10 @@ A prescaler register can be configured to the desired peripheral interface frequ
 
 The SPI core has a 4-bit bi-directional signal data signal (SDIO), a chip select (CS_N)
 and clock signal (SCK) for each endpoint connected. The bi-directional data signal is
-broken up into a 4-bit input and 4-bit output signal, with an output enable (OEN) signal
-for tri-stating. This SPI core supports single SPI mode using SDIO[0] as an output
-(MOSI) and SDIO[1] as an input (MISO). Dual and Quad SPI are supported using 2 and 4
-bits of the SDIO signal respectively.
+broken up into a 4-bit input and 4-bit output signal, with 4-bit output enable (OEN)
+signal for tri-stating. This SPI core supports single SPI mode using SDIO[0] as an
+output (MOSI) and SDIO[1] as an input (MISO). Dual and Quad SPI are supported using 2
+and 4 bits of the SDIO signal respectively.
 
 The top-level input should be synchronized to "i_apb_clk" domain. The following code
 snippets demonstrate how to connect the Holoscan Sensor Bridge SPI interface to top
@@ -50,7 +50,11 @@ Dual SPI Assignment
 ```none
 assign SPI_SCK = o_spi_sck [i];
 assign SPI_CSN = o_spi_csn [i];
-assign SPI_SDIO [1:0] = o_spi_oen [i] ? o_spi_sdio[i][1:0] : 2'bz;
+generate
+  for (genvar k=0; k<2; k++) begin
+    assign SPI_SDIO [k] = o_spi_oen [i][k] ? o_spi_sdio[i][k] : 1'bz;
+  end
+endgenerate
 assign i_spi_sdio [i] = {2’b0,SPI_SDIO};
 ```
 
@@ -59,7 +63,11 @@ Quad SPI Assignment
 ```none
 assign SPI_SCK = o_spi_sck [i];
 assign SPI_CSN = o_spi_csn [i];
-assign SPI_SDIO = o_spi_oen [i] ? o_spi_sdio[i] : 4'bz;
+generate
+  for (genvar k=0; k<4; k++) begin
+    assign SPI_SDIO [k] = o_spi_oen [i][k] ? o_spi_sdio[i][k] : 1'bz;
+  end
+endgenerate
 assign i_spi_sdio [i] = SPI_SDIO;
 ```
 

@@ -9,11 +9,8 @@ ldc_set_location -site {C8} [get_ports {ETH_RXD_P}]
 ldc_set_location -site {A9} [get_ports {ETH_TXD_P}]
 ldc_set_location -site {B7} [get_ports {ETH_RXD_N}]
 ldc_set_location -site {A8} [get_ports {ETH_TXD_N}]
-# Fiber Optic Enable
-ldc_set_location -site {F9} [get_ports {SFP_TX_DIS}]
-ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {SFP_TX_DIS}]
 # MIPI
-# Camera 0 MIPI CSI-2 - matches TauroTech DA326 reference pinout
+# Camera 0 MIPI CSI-2 - matches MIPI CPNX100 reference pinout
 ldc_set_location -site {L12} [get_ports {MIPI_CAM_CLK_P[0]}]
 ldc_set_location -site {K12} [get_ports {MIPI_CAM_CLK_N[0]}]
 ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_CLK_P[0]}]
@@ -39,7 +36,7 @@ ldc_set_location -site {L16} [get_ports {MIPI_CAM_DATA_N[3]}]
 ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[3]}]
 ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[3]}]
 
-# Camera 1 MIPI CSI-2 - matches TauroTech DA326 reference pinout
+# Camera 1 MIPI CSI-2 - matches MIPI CPNX100 reference pinout
 ldc_set_location -site {L3} [get_ports {MIPI_CAM_CLK_P[1]}]
 ldc_set_location -site {L2} [get_ports {MIPI_CAM_CLK_N[1]}]
 ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_CLK_P[1]}]
@@ -65,17 +62,23 @@ ldc_set_location -site {N1} [get_ports {MIPI_CAM_DATA_N[7]}]
 ldc_set_port -iobuf {IO_TYPE=MIPI_DPHY} [get_ports {MIPI_CAM_DATA_P[7]}]
 ldc_set_port -iobuf {IO_TYPE=LVCMOS12H} [get_ports {MIPI_CAM_DATA_N[7]}]
 
-# On Board Control Bus
-ldc_set_location -site {H7}  [get_ports CTRL_I2C_SDA]
-ldc_set_location -site {H6}  [get_ports CTRL_I2C_SCL]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports CTRL_I2C_SDA]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports CTRL_I2C_SCL]
-
-# Camera I2C
-ldc_set_location -site {H9}  [get_ports {CAM_I2C_SDA[0]}]
-ldc_set_location -site {H10}  [get_ports {CAM_I2C_SCL[0]}]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CAM_I2C_SDA[0]}]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CAM_I2C_SCL[0]}]
+# I2C buses - CTRL_I2C[]
+ldc_set_location -site {H6}  [get_ports {CTRL_I2C_SCL[0]}]
+ldc_set_location -site {H7}  [get_ports {CTRL_I2C_SDA[0]}]
+ldc_set_location -site {H10} [get_ports {CTRL_I2C_SCL[1]}]
+ldc_set_location -site {H9}  [get_ports {CTRL_I2C_SDA[1]}]
+ldc_set_location -site {E15} [get_ports {CTRL_I2C_SCL[2]}]
+ldc_set_location -site {E14} [get_ports {CTRL_I2C_SDA[2]}]
+ldc_set_location -site {F13} [get_ports {CTRL_I2C_SCL[3]}]
+ldc_set_location -site {F14} [get_ports {CTRL_I2C_SDA[3]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SCL[0]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SDA[0]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SCL[1]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SDA[1]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SCL[2]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SDA[2]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SCL[3]}]
+ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports {CTRL_I2C_SDA[3]}]
 
 # FPGA Flash SPI
 ldc_set_location -site {E5} [get_ports  FLASH_SPI_MCSN]
@@ -86,21 +89,42 @@ ldc_set_location -site {C1} [get_ports {FLASH_SPI_SDIO[2]}]
 ldc_set_location -site {D4} [get_ports {FLASH_SPI_SDIO[3]}]
 
 # GPIO
-ldc_set_location -site {J3}  [get_ports {GPIO[10]}]
-ldc_set_location -site {J4}  [get_ports {GPIO[9]}]
-ldc_set_location -site {J9}  [get_ports {GPIO[8]}]
-ldc_set_location -site {E6}  [get_ports {GPIO[7]}]
-ldc_set_location -site {J8}  [get_ports {GPIO[6]}]
-ldc_set_location -site {F7}  [get_ports {GPIO[5]}]
-ldc_set_location -site {G6}  [get_ports {GPIO[4]}]
+ldc_set_location -site {F12} [get_ports {GPIO[0]}]
+ldc_set_location -site {F11} [get_ports {GPIO[1]}]
+ldc_set_location -site {F9}  [get_ports {GPIO[2]}]
 ldc_set_location -site {G5}  [get_ports {GPIO[3]}]
-ldc_set_location -site {H2}  [get_ports {GPIO[2]}]
-ldc_set_location -site {F2}  [get_ports {GPIO[1]}]
-ldc_set_location -site {F3}  [get_ports {GPIO[0]}]
+ldc_set_location -site {G6}  [get_ports {GPIO[4]}]
+ldc_set_location -site {F7}  [get_ports {GPIO[5]}]
+ldc_set_location -site {J8}  [get_ports {GPIO[6]}]
+ldc_set_location -site {E6}  [get_ports {GPIO[7]}]
+ldc_set_location -site {F6}  [get_ports {GPIO[8]}]
+ldc_set_location -site {J4}  [get_ports {GPIO[9]}]
+ldc_set_location -site {J3}  [get_ports {GPIO[10]}]
+ldc_set_location -site {E4}  [get_ports {GPIO[11]}]
+ldc_set_location -site {G4}  [get_ports {GPIO[12]}]
+ldc_set_location -site {G3}  [get_ports {GPIO[13]}]
+ldc_set_location -site {J6}  [get_ports {GPIO[14]}]
+ldc_set_location -site {J2}  [get_ports {GPIO[15]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[0]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[1]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[2]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33 PULLMODE=NONE} [get_ports {GPIO[3]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[4]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[5]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[6]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[7]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[8]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[9]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[10]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[11]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[12]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[13]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[14]}]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports {GPIO[15]}]
 
 
 ### --------------------
-### DA326 Board Specific
+### MIPI CPNX100 Board Specific
 ### --------------------
 
 # Camera power enable
@@ -110,15 +134,9 @@ ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports CAM_RST]
 ldc_set_location -site {H3}  [get_ports CAM_MCLK]
 ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports CAM_MCLK]
 
-# POC
-ldc_set_location -site {F12}  [get_ports POC_EN]
-ldc_set_location -site {F11}  [get_ports POC_INT_L]
-ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports POC_EN]
-ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports POC_INT_L]
-ldc_set_location -site {E14}  [get_ports I2C_POC_SDA]
-ldc_set_location -site {E15}  [get_ports I2C_POC_SCL]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports I2C_POC_SDA]
-ldc_set_port -iobuf {OPENDRAIN=ON} [get_ports I2C_POC_SCL]
+# Camera FSYNC 
+ldc_set_location -site {J9} [get_ports CAM_FSYNC]
+ldc_set_port -iobuf {IO_TYPE=LVCMOS33} [get_ports CAM_FSYNC]
 
 ldc_set_sysconfig {CONFIGIO_VOLTAGE_BANK0=3.3 CONFIGIO_VOLTAGE_BANK1=3.3}
 ldc_set_vcc -bank 0 3.3

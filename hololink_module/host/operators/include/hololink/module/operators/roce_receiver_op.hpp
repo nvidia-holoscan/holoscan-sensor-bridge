@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <hololink/module/operators/ingress_stall.hpp>
 #include <memory>
 #include <string>
 #include <thread>
@@ -79,6 +80,9 @@ public:
         holoscan::ExecutionContext&) override;
 
 private:
+    // Reports a run of empty polls once, so a stalled ingress names itself.
+    IngressStall ingress_stall_;
+
     // Application-supplied parameters. The data channel and
     // frame-metadata service are resolved internally from this
     // metadata; peer_ip is read from the metadata's `peer_ip`

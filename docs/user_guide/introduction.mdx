@@ -8,7 +8,7 @@ device FPGA and sent via UDP over Ethernet to the host system. In systems like
 [ConnectX SmartNIC](https://www.nvidia.com/content/dam/en-zz/Solutions/networking/ethernet-adapters/connectx-7-datasheet-Final.pdf)
 interfaces can greatly lower latency by writing that UDP data directly into GPU memory.
 Holoscan Sensor Bridge host software supports integrating received sensor data into
-[Holoscan](http://docs.nvidia.com/holoscan/sdk-user-guide) pipelines; examples are
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide) pipelines; examples are
 provided showing video processing and inference based on a Sony IMX274 camera. This
 configuration can be connected to
 [IGX](https://www.nvidia.com/en-us/edge-computing/products/igx),
@@ -28,7 +28,7 @@ systems. Additionally:
 
 ## Software
 
-[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/holoscan-core)
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/using-the-sdk/holoscan-core)
 applications are written by composing lists of operators. Connecting the output of one
 operator to the input of another operator (via the `add_flow` API) configures Holoscan's
 pipeline and specifies when individual operators can run.
@@ -81,9 +81,8 @@ do not include application-specific behavior.
 ## Host requirements
 
 Holoscan Sensor Bridge software can be run on any system that is supported by NVIDIA
-[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/holoscan-core).
-For the best performance, an
-[IGX](https://www.nvidia.com/en-us/edge-computing/products/igx) system using
+[Holoscan](https://docs.nvidia.com/holoscan/sdk-user-guide). For the best performance,
+an [IGX](https://www.nvidia.com/en-us/edge-computing/products/igx) system using
 [ConnectX SmartNICs](https://www.nvidia.com/content/dam/en-zz/Solutions/networking/ethernet-adapters/connectx-7-datasheet-Final.pdf)
 is recommended. In systems without ConnectX NICs, such as the
 [Jetson AGX Orin](https://developer.nvidia.com/embedded/learn/jetson-agx-orin-devkit-user-guide/index.html),

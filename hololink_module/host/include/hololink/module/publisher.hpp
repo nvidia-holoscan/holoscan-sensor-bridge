@@ -20,94 +20,158 @@
 
 namespace hololink::module {
 
-/* Publisher owns the local-binary registry of services published from
- * this binary. It exports the static C-ABI thunks the peer uses to
- * call into us, register_service() (called via the ServicePublisher
- * helper), callbacks() (returned to the peer at init time), and
- * self_module() (a Module that loops back into the local registry,
- * used for in-binary lookups).
+/**
+ * @brief Provide support for loadable modules that publish
+ *      a specific set of services.
  *
- * Exactly one Publisher exists per process binary. Each module .so
- * has its own private RTLD_LOCAL'd Publisher; the host process has
- * one. The base constructor enforces this by stamping `current_` and
- * throwing if a second instance is constructed in the same binary. */
+ * This support includes
+ *  - Lazy service instantiation with caching: The first time
+ *      a request for a specific resource is observed results
+ *      in a call to construct_service().  The return value is
+ *      cached and returned in subsequent calls to lookup().
+ *  - Caches of common services provided by the application layer,
+ *      including Logging and Reactor, and the Module presented
+ *      by the application.
+ *
+ * Exactly one Publisher may exist in an individual binary (shared
+ * object or application).  Each module shared object has its own,
+ * separate from the host's.
+ *
+ * Lookups are thread-safe. Lookups of the same service made
+ * concurrently do not call construct_service() more than once.
+ */
 class Publisher : public std::enable_shared_from_this<Publisher> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     Publisher(const Publisher&) = delete;
     Publisher& operator=(const Publisher&) = delete;
     virtual ~Publisher();
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Module whose get_service walks the local registry directly. Use
-     * it when in-binary code needs typed T::get_service(module, ...)
-     * lookups against locally-registered services. The returned Module
-     * keeps this Publisher alive for as long as it (or any service
-     * handle obtained through it) is held; consumers may safely retain
-     * it past the Publisher creator's lifetime. */
+    /**
+     * @brief A Module through which this Publisher's own services can be
+     * looked up.
+     *
+     * Use it when code in the same binary needs the typed
+     * `T::get_service(module, ...)` lookup for a service published here.
+     * The returned Module keeps this Publisher alive for as long as it,
+     * or any service obtained through it, is held, so it may be retained
+     * after the code that created the Publisher has finished.
+     *
+     * @returns The same Module on every call.
+     */
     std::shared_ptr<Module> self_module();
 
-    /* Module fronting the host's service registry via the
-     * hololink_module_init_t callbacks (get_service /
-     * release_service). Used by module-internal code that needs to
-     * reach host-published services (LoggingInterfaceV1, ReactorV1,
-     * etc.). Non-null after a successful setup() on a module-side
-     * Publisher; null on the host-side `HostPublisher` (which doesn't
-     * bridge a binary boundary) and on any Publisher before setup()
-     * has populated it. */
+    /**
+     * @brief A Module through which a module can look up services
+     * published by the host (for example LoggingInterfaceV1 and
+     * ReactorV1).
+     *
+     * @returns The host's Module once setup() has succeeded. Null before
+     *      then, and always null on the host's own Publisher.
+     */
     std::shared_ptr<Module> host_module() const { return host_module_; }
 
-    /* The host's logger, fetched during setup(). Same instance the
-     * HSB_LOG_* macros dispatch through — setup() wired the
-     * per-binary HSB_LOG cache. Null on the host-side Publisher and
-     * before setup() has populated it. */
+    /**
+     * @brief The host's logger.
+     *
+     * This is the logger that the `HSB_LOG_*` macros use in this binary.
+     *
+     * @returns The logger once setup() has succeeded. Null before then,
+     *      and always null on the host's own Publisher.
+     */
     std::shared_ptr<LoggingInterfaceV1> logger() const { return logger_; }
 
-    /* The host's reactor, fetched during setup(). Null on the
-     * host-side Publisher and before setup() has populated it. */
+    /**
+     * @brief The host's reactor.
+     *
+     * @returns The reactor once setup() has succeeded. Null before then,
+     *      and always null on the host's own Publisher.
+     */
     std::shared_ptr<ReactorV1> reactor() const { return reactor_; }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     /* C-ABI callback set the peer uses to call into us. */
     hololink_module_services_t callbacks() const;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Invalidate a single cached service so the next lookup reconstructs it;
-     * a service passes `this` to invalidate itself. The Publisher keeps no
-     * notion of how services relate — callers drive any cascade. Static:
-     * Publisher is accessed via the per-binary `current_`. */
+    /**
+     * @brief Discard a published service so that the next lookup
+     * creates a fresh one.
+     *
+     * Clears the instance cache for this service; a later call to lookup for
+     * this object will return a newly constructed instance.  Note that this
+     * decrements the shared_ptr reference count, so the actual instance is
+     * destructed only after the last reference is dropped.  This method does
+     * nothing if `service` is null or was not published.
+     *
+     * A service can invalidate itself by passing `this`.
+     *
+     * @param service Address of the service object, as published.
+     */
     static void invalidate(const void* service);
 
-    /* Module-side bootstrap + "module init is done" entry point.
-     * Validates `init` (non-null, matching api_version, non-null
-     * get_service/release_service callbacks) and returns a result
-     * struct with status = HOLOLINK_MODULE_INVALID_PARAMETER on
-     * validation failure — does not throw. On a valid init, builds
-     * the host Module from the init callbacks, fetches the host's
-     * LoggingInterfaceV1 (wiring this binary's HSB_LOG cache), and
-     * fetches the host's ReactorV1. All three are then reachable
-     * via host_module() / logger() / reactor(). Default body
-     * returns callbacks() once the bootstrap is done; subclasses
-     * override to perform any eager-publish work (e.g.
-     * HsbLitePublisher publishes the FrameMetadataInterfaceV1 +
-     * EnumerationInterfaceV1 singletons) before returning
-     * callbacks(). Called by every supplement's hololink_module_init. */
+    /**
+     * @brief Connect a module to the host. Called from the module's
+     * `hololink_module_init` entry point.
+     *
+     * Checks `init` and, if it is acceptable, makes the host's Module,
+     * logger and reactor available through host_module(), logger() and
+     * reactor(), and connects this binary's `HSB_LOG_*` macros to the
+     * host's logger. Subclasses may override this to publish services
+     * that must exist before any lookup; an override should call this
+     * implementation first and return its result unchanged if the
+     * status is not HOLOLINK_MODULE_OK.
+     *
+     * @param init Initialization data passed by the host to the module.
+     * @returns The services structure to return from
+     *      `hololink_module_init`. Its status is
+     *      HOLOLINK_MODULE_INVALID_PARAMETER, without throwing, if `init`
+     *      is null, was built for a different API version, or lacks its
+     *      lookup callbacks.
+     * @throws std::runtime_error if the host does not provide a logger or
+     *      reactor.
+     */
     virtual hololink_module_services_t setup(
         const hololink_module_init_t* init);
 
-    /* Override hook for binary-specific lazy construction. Invoked by
-     * lookup() on a registry miss. The override default-constructs the
-     * matching impl (cheap; no resource acquisition), publishes it
-     * under instance_id via ServicePublisher<T>, and returns true.
-     * Returning false signals "no constructor for this type_id" —
-     * the lookup then surfaces a miss to the caller. Binaries with
-     * no lazy services implement this as `return false;`. */
+    /**
+     * @brief Create a service on demand.
+     *
+     * Called when a lookup finds no cached service for the given
+     * identifiers. An implementation that can supply the service
+     * constructs it, publishes it under `instance_id` with
+     * ServicePublisher, and returns `true`. Construction should be
+     * cheap and must not acquire hardware or other resources; that
+     * belongs in the service's later configuration. An implementation
+     * that has no such service returns `false`, and the lookup then
+     * reports the service as not found.
+     *
+     * Calls are serialized with other lookups, and publishing other
+     * services within this call is permitted.
+     *
+     * @param instance_id Instance id requested by the lookup.
+     * @param type_id Type id requested by the lookup.
+     * @returns `true` if a service was published for these identifiers.
+     */
     virtual bool construct_service(
         const std::string& instance_id,
         const std::string& type_id)
         = 0;
 
-    /* Pure class-query: returns true iff `type_id` appears in T's
-     * reported set (i.e. T::for_each_type_id calls back at least once
-     * with a matching string). Static because no Publisher state is
-     * involved; callable either via instance or fully-qualified. The
-     * iteration halts on the first match. */
+    /**
+     * @brief Report whether a service class is published under a type
+     * id.
+     *
+     * A service class may support multiple type ids (e.g. it supports
+     * several versions of an interface or different, maybe unrelated interfaces).
+     * This method, for a given service class T, returns `true` if the
+     * requested type_id is in the list of those supported by T.
+     *
+     * @tparam T Service class to test.
+     * @param type_id Type id requested by a lookup.
+     * @returns `true` if `type_id` is one of the type ids of `T`.
+     */
     template <typename T>
     static bool has_type_id(const std::string& type_id)
     {
@@ -126,12 +190,24 @@ protected:
     /* The Publisher's bootstrap state (host Module + logger +
      * reactor) is populated by `setup(init)`; the constructor just
      * registers the per-binary `current_` slot. One Publisher per
-     * binary — module-side supplements construct theirs in
+     * binary — modules construct a subclass of this in
      * hololink_module_init; the host-side `HostPublisher` (in
      * `host/src/adapter.cpp`) constructs in `Adapter::Adapter()`
      * and never calls setup (it has no init to bootstrap from). */
+
+    /**
+     * @brief Construct the binary's Publisher.
+     *
+     * Intended to be called from a derived class: a module's Publisher
+     * is created in its `hololink_module_init`, the host's when it
+     * starts up.
+     *
+     * @throws std::runtime_error if a Publisher already exists in this
+     *      binary.
+     */
     Publisher();
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 private:
     class SelfModule;
     friend class SelfModule;
@@ -217,31 +293,54 @@ private:
 
     template <typename T>
     friend class ServicePublisher;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
-/* Helper used to publish services. Stamps the service's shared
- * ServiceBase::module_ with the Publisher's self_module() so child
- * accessors (e.g. HololinkInterface::get_i2c) resolve children in
- * the same binary the parent was published in.
+/**
+ * @brief Publishes service implementations into a Publisher, making them
+ * available to lookups.
  *
- * The single-arg publish walks T::for_each_type_id and registers the
- * same impl under every key the chain reports. For V1 interfaces
- * whose for_each_type_id emits just the interface's type_id, that's
- * a single register_service call; for concrete impls whose
- * for_each_type_id chains through the interface to the impl's own
- * type_id, the same call registers under each.
+ * Use it from a Publisher's own code: either to publish services eagerly
+ * (for example in Publisher::setup()) or from
+ * Publisher::construct_service() to publish the service that was just
+ * asked for.
  *
- * The two-arg overload registers under one explicit type_id (used by
- * the iteration body, and by callers who need to publish under just
- * one key without consulting the chain). */
+ * Publishing does two things. It records the implementation in the
+ * Publisher, which keeps it alive and returns it from later lookups
+ * until Publisher::invalidate() discards it. And it makes the
+ * Publisher's self_module() the service's owning Module (see
+ * ServiceBase::module()), so that the service's accessors for related
+ * services, such as a device's `get_i2c`, look them up in the same
+ * binary the service was published from.
+ *
+ * @tparam T The service class to publish. It must declare or inherit a
+ *      `release_version`.
+ */
 template <typename T>
 class ServicePublisher {
 public:
+    /**
+     * @param publisher The Publisher to publish into.
+     */
     explicit ServicePublisher(std::shared_ptr<Publisher> publisher)
         : publisher_(std::move(publisher))
     {
     }
 
+    /**
+     * @brief Publish a service under every type id that `T` provides.
+     *
+     * A service that can be used as several interfaces is made available
+     * under the type id of each, so that a lookup for any of them
+     * returns this object.
+     *
+     * @param instance_id Instance id to publish under; lookups must use
+     *      the same value.
+     * @param impl The service. Must not be null.
+     * @throws std::runtime_error if any of the (instance id, type id)
+     *      pairs is already published. Pairs published before the
+     *      collision was found remain published.
+     */
     void publish(const std::string& instance_id, std::shared_ptr<T> impl)
     {
         T::for_each_type_id([&](const char* tid) {
@@ -250,16 +349,32 @@ public:
         });
     }
 
+    /**
+     * @brief Publish a service under one type id.
+     *
+     * Use this to publish under a single type id, rather than all of the
+     * type ids that `T` provides.
+     *
+     * @param instance_id Instance id to publish under; lookups must use
+     *      the same value.
+     * @param type_id Type id to publish under.
+     * @param impl The service. Must not be null.
+     * @throws std::runtime_error if this (instance id, type id) pair is
+     *      already published.
+     */
     void publish(const std::string& instance_id,
         const char* type_id,
         std::shared_ptr<T> impl)
     {
+        check_release_version<T>();
         impl->ServiceBase::module_ = publisher_->self_module();
         publisher_->register_service(instance_id, type_id, impl);
     }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 private:
     std::shared_ptr<Publisher> publisher_;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

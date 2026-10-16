@@ -297,6 +297,7 @@ class FrameAlignerOp(holoscan.core.Operator):
         input_tensors=None,  # this is a list e.g. ["left", "right"]
         rename_metadata=None,  # this is a list: [lambda name: f"left_{name}", ...]
         outputs=None,  # this is a list, e.g. ["left", "right"]
+        output_tensors=None,  # tensor name to emit on each output (default: "")
         **kwargs,
     ):
         self._outputs = outputs
@@ -312,6 +313,14 @@ class FrameAlignerOp(holoscan.core.Operator):
         if len(outputs) != self._count:
             raise ValueError(
                 f"input_tensors has {self._count} items; outputs ({len(outputs)}) must be the same length."
+            )
+        self._output_tensors = (
+            [""] * self._count if output_tensors is None else output_tensors
+        )
+        if len(self._output_tensors) != self._count:
+            raise ValueError(
+                f"output_tensors has {len(self._output_tensors)} items; "
+                f"input_tensors ({self._count}) must be the same length."
             )
         self._timestamp_s_metadata = [
             rename("timestamp_s") for rename in rename_metadata
@@ -374,7 +383,9 @@ class FrameAlignerOp(holoscan.core.Operator):
         # So this group of frames should be forwarded.
         for index, output_name in enumerate(self._outputs):
             metadata.swap(self._metadata_cache[index])
-            op_output.emit({"": self._data_cache[index]}, output_name)
+            op_output.emit(
+                {self._output_tensors[index]: self._data_cache[index]}, output_name
+            )
             # reset
             self._data_cache[index] = None
             self._metadata_cache[index].clear()

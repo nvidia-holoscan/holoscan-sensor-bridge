@@ -94,8 +94,7 @@ else begin
     .STICKY_EN(0)
   ) rrarb_inst (
     .clk     ( i_apb_clk             ),
-    .rst_n   ( !i_apb_reset          ),
-    .rst     ( 1'b0                  ),
+    .rst     ( i_apb_reset           ),
     .idle    ( (state == IDLE)       ),
     .req     ( apb_midx_req_onehot   ),
     .gnt_idx ( apb_midx              ),

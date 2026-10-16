@@ -36,7 +36,7 @@ Options:
   --login                Log in to Fern (device-code in Docker; browser on host)
   --no-docker            Run on the host instead of the docs container
   --docker               Use the docs container (default)
-  --with-library-mdx     Generate the Emulation C++ API MDX (requires Fern auth)
+  --with-library-mdx     Generate C++ API MDX from this checkout (requires Docker)
   --skip-library-mdx     Skip C++ API generation
   --skip-fern-check      Pipeline only; skip fern check
   --publish              Publish docs to production (docs.nvidia.com)

@@ -61,9 +61,10 @@ before making their first contribution.
    git push -u origin <local-branch>:<remote-branch>
    ```
 
-1. All code submissions must be formatted according to the rules in `ci/lint.sh`. You
-   can run `ci/lint.sh --format` to automatically format all C++, Python, and Markdown
-   files-- usually that's enough to get `ci/lint.sh` to pass.
+1. All code submissions must be formatted according to the rules in
+   `scripts/lint/lint.sh`. You can run `scripts/lint/lint.sh --format` to automatically
+   format all C++, Python, and Markdown files-- usually that's enough to get
+   `scripts/lint/lint.sh` to pass.
 
 1. Once the code changes are staged on the fork and ready for review, please
    [submit](https://help.github.com/en/articles/creating-a-pull-request) a

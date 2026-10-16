@@ -291,7 +291,7 @@ bootp #(
   .i_axis_tdata         ( lsi_axis_tdata                       ),
   .i_axis_tlast         ( lsi_axis_tlast                       ),
   .i_axis_tkeep         ( lsi_axis_tkeep                       ),
-  .i_axis_tuser         ( {lsi_axis_vlan,lsi_axis_tuser}       ),
+  .i_axis_tuser         ( lsi_axis_tuser                       ),
   .o_axis_tready        ( lsi_axis_tready       [BOOTP_RX_IDX] ),
   .o_axis_tvalid        ( lso_axis_tvalid       [BOOTP_TX_IDX] ),
   .o_axis_tdata         ( lso_axis_tdata        [BOOTP_TX_IDX] ),

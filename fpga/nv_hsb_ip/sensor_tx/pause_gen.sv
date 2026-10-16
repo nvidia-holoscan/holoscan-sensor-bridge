@@ -37,6 +37,7 @@ module pause_gen
 );
 
 localparam [15:0] NUM_CLK_PER_QUANTA = ((512/AXI_DWIDTH)==0) ? 0 : (512/AXI_DWIDTH)-1;
+localparam integer QUANTA_CLK_W = (NUM_CLK_PER_QUANTA < 2) ? 1 : $clog2(NUM_CLK_PER_QUANTA + 1);
 
 localparam PAUSE_WIDTH = 144;
 
@@ -76,7 +77,8 @@ fsm               state;
 logic en_pause;
 logic start_d1;
 
-logic [15:0] clk_cnt_quanta;
+logic [QUANTA_CLK_W-1:0] clk_cnt_quanta;
+logic                    clk_cnt_zero;
 logic [15:0] cnt_quanta;
 logic        is_quanta_zero;
 
@@ -134,6 +136,7 @@ always_ff @(posedge pclk) begin
   if (rst) begin
     cnt_quanta     <= '0;
     clk_cnt_quanta <= '0;
+    clk_cnt_zero   <= 1'b1;
   end
   else begin
     if ({start_d1, i_start} == 2'b10) begin
@@ -142,11 +145,13 @@ always_ff @(posedge pclk) begin
     else begin
       if (state == LOAD) begin
         cnt_quanta     <= i_pause_time;
-        clk_cnt_quanta <= NUM_CLK_PER_QUANTA;
+        clk_cnt_quanta <= QUANTA_CLK_W'(NUM_CLK_PER_QUANTA);
+        clk_cnt_zero   <= (NUM_CLK_PER_QUANTA == 0);
       end
       else if (state == CNT_QUANTA) begin
-        if (clk_cnt_quanta == 'd0) begin
-          clk_cnt_quanta <= NUM_CLK_PER_QUANTA;
+        if (clk_cnt_zero) begin
+          clk_cnt_quanta <= QUANTA_CLK_W'(NUM_CLK_PER_QUANTA);
+          clk_cnt_zero   <= (NUM_CLK_PER_QUANTA == 0);
           if (|cnt_quanta) begin
             cnt_quanta <= cnt_quanta - 16'h1;
           end
@@ -156,6 +161,7 @@ always_ff @(posedge pclk) begin
         end
         else begin
           clk_cnt_quanta <= clk_cnt_quanta - 1'b1;
+          clk_cnt_zero   <= (clk_cnt_quanta == QUANTA_CLK_W'(1));
         end
       end
     end

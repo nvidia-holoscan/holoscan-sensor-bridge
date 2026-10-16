@@ -384,12 +384,14 @@ public:
         py::object device,
         std::function<std::string(const std::string&)> rename_metadata,
         const std::string& out_tensor_name,
-        const std::string& name)
+        const std::string& name,
+        uint32_t stall_timeout_ms)
         : FusaCoeCaptureOp(holoscan::ArgList {
             holoscan::Arg { "enumeration_metadata", std::move(enumeration_metadata) },
             holoscan::Arg { "interface", interface },
             holoscan::Arg { "mac_addr", mac_addr },
             holoscan::Arg { "timeout", timeout },
+            holoscan::Arg { "stall_timeout_ms", stall_timeout_ms },
             holoscan::Arg { "out_tensor_name", out_tensor_name },
             holoscan::Arg { "rename_metadata", std::move(rename_metadata) },
             holoscan::Arg { "device_start", std::function<void()>([this]() {
@@ -794,7 +796,8 @@ PYBIND11_MODULE(_hololink_module_operators, m)
                  py::object,
                  std::function<std::string(const std::string&)>,
                  const std::string&,
-                 const std::string&>(),
+                 const std::string&,
+                 uint32_t>(),
             "fragment"_a,
             "enumeration_metadata"_a,
             "interface"_a,
@@ -803,10 +806,15 @@ PYBIND11_MODULE(_hololink_module_operators, m)
             "device"_a,
             "rename_metadata"_a = std::function<std::string(const std::string&)> {},
             "out_tensor_name"_a = ""s,
-            "name"_a = "fusa_coe_capture"s)
+            "name"_a = "fusa_coe_capture"s,
+            "stall_timeout_ms"_a = 0U)
         .def("setup", &hololink::module::operators::FusaCoeCaptureOp::setup, "spec"_a)
         .def("start", &hololink::module::operators::FusaCoeCaptureOp::start)
         .def("stop", &hololink::module::operators::FusaCoeCaptureOp::stop)
+        .def("capture_stalled",
+            &hololink::module::operators::FusaCoeCaptureOp::capture_stalled)
+        .def("capture_stall_duration_ms",
+            &hololink::module::operators::FusaCoeCaptureOp::capture_stall_duration_ms)
         // pixel_format is taken as a plain integer (the enumerator value)
         // rather than the bound C++ enum, matching CsiToBayerOp /
         // PackedFormatConverterOp, so the pure-Python sensor drivers can pass

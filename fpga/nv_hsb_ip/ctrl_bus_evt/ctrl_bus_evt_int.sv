@@ -90,7 +90,7 @@ data_sync    #(
   .DATA_WIDTH ( W_EVENT         )
 ) data_glitch_filter (
   .clk        ( pclk            ),
-  .rst_n      ( !rst            ),
+  .rst        ( rst             ),
   .sync_in    ( w_evt_vec       ),
   .sync_out   ( evt_vec_sync    )
 );
@@ -166,7 +166,7 @@ data_sync #(
   .DATA_WIDTH ( 2 )
 ) fsm_timeout_sync_inst (
   .clk        ( pclk                              ),
-  .rst_n      ( !rst                              ),
+  .rst        ( rst                               ),
   .sync_in    ( {fsm_timeout, fsm_error}          ),
   .sync_out   ( {fsm_timeout_sync, fsm_error_sync} )
 );
@@ -252,7 +252,7 @@ data_sync #(
   .DATA_WIDTH ( 24 )
 ) timeout_sync_inst (
   .clk        ( aclk          ),
-  .rst_n      ( !arst         ),
+  .rst        ( arst          ),
   .sync_in    ( timeout       ),
   .sync_out   ( timeout_sync  )
 );
@@ -261,7 +261,7 @@ data_sync #(
   .DATA_WIDTH ( W_EVENT_IDX            )
 ) evt_vec_timeout_sync_inst (
   .clk        ( pclk                  ),
-  .rst_n      ( !rst                  ),
+  .rst        ( rst                   ),
   .sync_in    ( evt_vec_timeout       ),
   .sync_out   ( evt_vec_timeout_sync  )
 );

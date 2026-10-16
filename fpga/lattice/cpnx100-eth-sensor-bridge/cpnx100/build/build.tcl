@@ -99,8 +99,23 @@ proc addFiles { basedir pattern } {
 set src_dir "../../../"
 set hsb_dir "../../../../../../"
 
-ip_catalog_install -vlnv latticesemi.com:ip:ten_gbe_mac:1.1.0
-ip_catalog_install -vlnv latticesemi.com:ip:ten_gbe_pcs:1.3.0
+# ip_catalog_install always probes https://radiantip.latticesemi.com before it
+# uses the local catalog. That probe hangs on sim hosts with no route to the
+# public Lattice IP server. ipgen -vlnv reads ~/RadiantIPLocal directly.
+proc install_ip_if_missing {vlnv local_dir} {
+    if {[file isdirectory $local_dir]} {
+        puts "ip_catalog_install: skip $vlnv (found $local_dir)"
+        return
+    }
+    puts "ip_catalog_install: $vlnv"
+    ip_catalog_install -vlnv $vlnv
+}
+
+set ip_local_root [file join $::env(HOME) RadiantIPLocal]
+install_ip_if_missing latticesemi.com:ip:ten_gbe_mac:1.1.0 \
+    [file join $ip_local_root latticesemi.com_ip_ten_gbe_mac_1.1.0]
+install_ip_if_missing latticesemi.com:ip:ten_gbe_pcs:1.3.0 \
+    [file join $ip_local_root latticesemi.com_ip_ten_gbe_pcs_1.3.0]
 
 # IP Generation
 exec ipgen -o ../../ip/eclk_pll \

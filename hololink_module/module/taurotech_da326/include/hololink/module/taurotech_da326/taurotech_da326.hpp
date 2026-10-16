@@ -38,6 +38,7 @@ class TauroTechDa326InterfaceV1
     : public ConfigurableService<TauroTechDa326InterfaceV1> {
 public:
     static constexpr const char* type_id = "taurotech_da326.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     static std::string locator_id(const EnumerationMetadata& metadata)
     {

@@ -18,6 +18,7 @@
 #include "sipl_camera_output.hpp"
 
 #include <hololink/core/hololink.hpp>
+#include <hololink/core/logging_internal.hpp>
 
 namespace hololink::operators {
 
@@ -60,8 +61,12 @@ void SIPLCameraOutputOp::setup(holoscan::OperatorSpec& spec)
 {
     spec.output<holoscan::gxf::Entity>("output");
 
+    // How long compute() waits for the next frame of this camera before the pipeline is
+    // declared dead. A truncated sensor frame makes the capture engine skip and re-arm
+    // its requests; that recovery has been observed to take more than one second, so
+    // the default leaves room for it while still catching a stream that has stopped.
     spec.param(timeout_, "timeout", "Timeout",
-        "Timeout for capture requests, in microseconds", 1000000U);
+        "Time to wait for the next frame before failing, in microseconds", 3000000U);
 }
 
 void SIPLCameraOutputOp::start()
@@ -69,7 +74,6 @@ void SIPLCameraOutputOp::start()
     if (!service_) {
         throw std::runtime_error("SIPLCameraOutputOp requires a SIPLCaptureService");
     }
-    service_->get_camera_info();
     if (camera_index_ >= service_->camera_count()) {
         throw std::runtime_error(fmt::format(
             "camera_index {} is out of range ({} cameras)", camera_index_, service_->camera_count()));
@@ -111,6 +115,45 @@ void SIPLCameraOutputOp::compute(holoscan::InputContext& op_input,
         || frame.plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10GRBG
         || frame.plane_color_format[0] == NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG;
 
+    // Everything that can fail is done before the Entity wraps the buffer, so a throw here
+    // leaves nothing wrapped and the guard simply releases the frame.
+    if (is_metadata_enabled()) {
+        // The HSB metadata is written to the RAW image. The acquire thread copied it out of
+        // the RAW buffer after its EOF wait (and, in ISP mode, matched it to this frame by
+        // capture-start TSC), so no NvSci CPU mapping is needed here. The keys are omitted
+        // when no record was matched (after a capture drop, or for a non-HSB camera).
+        if (frame.hsb_metadata) {
+            const auto& hsb_metadata = *frame.hsb_metadata;
+            metadata()->set(output_name + "_frame_number", int64_t(hsb_metadata.frame_number));
+            metadata()->set(output_name + "_timestamp_s", int64_t(hsb_metadata.timestamp_s));
+            metadata()->set(output_name + "_timestamp_ns", int64_t(hsb_metadata.timestamp_ns));
+            metadata()->set(output_name + "_metadata_s", int64_t(hsb_metadata.metadata_s));
+            metadata()->set(output_name + "_metadata_ns", int64_t(hsb_metadata.metadata_ns));
+            metadata()->set(output_name + "_crc", int64_t(hsb_metadata.crc));
+            metadata()->set(output_name + "_bytes_written", int64_t(hsb_metadata.bytes_written));
+        } else {
+            HSB_LOG_DEBUG("No HSB metadata for {}", output_name);
+        }
+
+        // Output the SIPL ImageMetaData (e.g. frame timestamps and info), copied by value
+        // while the buffer is still held.
+        auto image_metadata = std::make_shared<holoscan::MetadataObject>();
+        image_metadata->set_value<nvsipl::INvSIPLClient::ImageMetaData>(
+            nvsipl::INvSIPLClient::ImageMetaData(nvm_buffer->GetImageData()));
+        metadata()->set(output_name + "_metadata", image_metadata);
+
+        // Output the ISP stats.
+        if (auto isp_stats = service_->isp_stats(camera_index_)) {
+            auto isp_stats_info = isp_stats->GetIspStatsInfo(nvm_buffer);
+            if (!isp_stats_info) {
+                throw std::runtime_error("Failed to get IspStatsInfo");
+            }
+            auto isp_stats_obj = std::make_shared<holoscan::MetadataObject>();
+            isp_stats_obj->set_value<nvsipl::IspStatsInfo>(nvsipl::IspStatsInfo(*isp_stats_info));
+            metadata()->set(output_name + "_isp_stats", isp_stats_obj);
+        }
+    }
+
     auto entity = holoscan::gxf::Entity::New(&context);
 
     if (is_nv12) {
@@ -141,6 +184,9 @@ void SIPLCameraOutputOp::compute(holoscan::InputContext& op_input,
             throw std::runtime_error("Failed to add GXF Tensor");
         }
 
+        // The whole RAW plane is wrapped as-is. That the image rows CameraInfo advertises to
+        // the consumer fit inside it was checked when these buffers were allocated
+        // (SIPLCaptureService::validate_raw_geometry), so nothing is re-checked per frame.
         const int raw_len = static_cast<int>(frame.plane_pitch[0] * frame.plane_height[0]);
         nvidia::gxf::Shape shape { raw_len };
         const auto element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
@@ -155,86 +201,6 @@ void SIPLCameraOutputOp::compute(holoscan::InputContext& op_input,
     } else {
         throw std::runtime_error(fmt::format("Buffer has unsupported color format: {}",
             static_cast<int>(frame.plane_color_format[0])));
-    }
-
-    if (is_metadata_enabled()) {
-        // The HSB metadata is written to the RAW image.
-        const void* raw_ptr = nullptr;
-        size_t hsb_metadata_offset = 0;
-        if (frame.buffer == frame.buffer_raw) {
-            // If we're already processing the RAW buffer, just get the pointer and offset.
-            auto err = NvSciBufObjGetConstCpuPtr(frame.buf_obj, &raw_ptr);
-            if (err != NvSciError_Success || raw_ptr == nullptr) {
-                throw std::runtime_error("Failed to map buffer for metadata");
-            }
-            hsb_metadata_offset = frame.plane_pitch[0] * frame.plane_height[0];
-        } else {
-            // If we're not already processing the RAW buffer then we need to get the
-            // buffer, attributes, and mapping required to read HSB metadata from it.
-            auto nvm_buffer_raw = dynamic_cast<nvsipl::INvSIPLClient::INvSIPLNvMBuffer*>(frame.buffer_raw);
-            if (nvm_buffer_raw == nullptr) {
-                throw std::runtime_error("Failed to get INvSIPLNvMBuffer for metadata");
-            }
-
-            NvSciBufObj buf_obj_raw = nvm_buffer_raw->GetNvSciBufImage();
-            if (buf_obj_raw == nullptr) {
-                throw std::runtime_error("Failed to get NvSciBufObj for metadata");
-            }
-
-            NvSciBufAttrList buf_attr_list_raw;
-            auto err = NvSciBufObjGetAttrList(buf_obj_raw, &buf_attr_list_raw);
-            if (err != NvSciError_Success) {
-                throw std::runtime_error("Failed to get buffer attribute list for metadata");
-            }
-
-            NvSciBufAttrKeyValuePair img_attrs_raw[] = {
-                { NvSciBufImageAttrKey_PlanePitch, NULL, 0 },
-                { NvSciBufImageAttrKey_PlaneHeight, NULL, 0 },
-            };
-            size_t num_attrs_raw = sizeof(img_attrs_raw) / sizeof(img_attrs_raw[0]);
-
-            err = NvSciBufAttrListGetAttrs(buf_attr_list_raw, img_attrs_raw, num_attrs_raw);
-            if (err != NvSciError_Success) {
-                throw std::runtime_error("Failed to get buffer attributes for metadata");
-            }
-
-            const uint32_t plane_pitch_raw = *static_cast<const uint32_t*>(img_attrs_raw[0].value);
-            const uint32_t plane_height_raw = *static_cast<const uint32_t*>(img_attrs_raw[1].value);
-
-            err = NvSciBufObjGetConstCpuPtr(buf_obj_raw, &raw_ptr);
-            if (err != NvSciError_Success || raw_ptr == nullptr) {
-                throw std::runtime_error("Failed to map buffer");
-            }
-            hsb_metadata_offset = plane_pitch_raw * plane_height_raw;
-        }
-
-        // Deserialize and output the HSB metadata.
-        auto hsb_metadata_ptr = static_cast<const uint8_t*>(raw_ptr) + hsb_metadata_offset;
-        auto hsb_metadata = Hololink::deserialize_metadata(hsb_metadata_ptr, hololink::METADATA_SIZE);
-        metadata()->set(output_name + "_frame_number", int64_t(hsb_metadata.frame_number));
-        metadata()->set(output_name + "_timestamp_s", int64_t(hsb_metadata.timestamp_s));
-        metadata()->set(output_name + "_timestamp_ns", int64_t(hsb_metadata.timestamp_ns));
-        metadata()->set(output_name + "_metadata_s", int64_t(hsb_metadata.metadata_s));
-        metadata()->set(output_name + "_metadata_ns", int64_t(hsb_metadata.metadata_ns));
-        metadata()->set(output_name + "_crc", int64_t(hsb_metadata.crc));
-        metadata()->set(output_name + "_bytes_written", int64_t(hsb_metadata.bytes_written));
-
-        // Output the SIPL ImageMetaData (e.g. frame timestamps and info).
-        auto image_metadata = std::make_shared<holoscan::MetadataObject>();
-        image_metadata->set_value<nvsipl::INvSIPLClient::ImageMetaData>(
-            nvsipl::INvSIPLClient::ImageMetaData(nvm_buffer->GetImageData()));
-        metadata()->set(output_name + "_metadata", image_metadata);
-
-        // Output the ISP stats.
-        if (auto isp_stats = service_->isp_stats(camera_index_)) {
-            auto isp_stats_info = isp_stats->GetIspStatsInfo(nvm_buffer);
-            if (!isp_stats_info) {
-                throw std::runtime_error("Failed to get IspStatsInfo");
-            }
-            auto isp_stats_obj = std::make_shared<holoscan::MetadataObject>();
-            isp_stats_obj->set_value<nvsipl::IspStatsInfo>(nvsipl::IspStatsInfo(*isp_stats_info));
-            metadata()->set(output_name + "_isp_stats", isp_stats_obj);
-        }
     }
 
     frame_guard.handoff_pending_output();

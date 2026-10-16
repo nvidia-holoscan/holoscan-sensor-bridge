@@ -89,6 +89,15 @@ class UpdateBufferLengthOperator(operators.PassThroughOperator):
             self._vp_address + hololink_module.DP_BUFFER_LENGTH, self._frame_size
         )
 
+    def compute(self, op_input, op_output, context):
+        in_message = op_input.receive("input")
+        tensor = in_message.get(self._in_tensor_name)
+        # A Tensor received from an Entity borrows its shape and stride metadata.
+        # Convert it while the Entity is alive so the object we emit owns valid
+        # metadata for downstream operators.
+        tensor = cp.asarray(tensor)
+        op_output.emit({self._out_tensor_name: tensor}, "output")
+
 
 class RuntTestApplication(holoscan.core.Application):
     def __init__(

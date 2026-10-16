@@ -22,8 +22,11 @@
 #include <pybind11/pybind11.h>
 
 #include <cstdint>
+#include <exception>
 #include <memory>
+#include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <holoscan/core/condition.hpp>
 #include <holoscan/core/fragment.hpp>
@@ -43,22 +46,63 @@ namespace py = pybind11;
 
 namespace hololink::operators {
 
+namespace {
+
+    /// A list or tuple as a list, any other object as a list of that object alone
+    py::list as_list(const py::object& object)
+    {
+        if (py::isinstance<py::list>(object) || py::isinstance<py::tuple>(object))
+            return py::list(object);
+        py::list list;
+        list.append(object);
+        return list;
+    }
+
+    std::vector<DataChannel*> as_data_channels(const py::object& hololink_channel)
+    {
+        const py::list channels = as_list(hololink_channel);
+        if (channels.empty())
+            throw std::invalid_argument("hololink_channel must include at least one DataChannel");
+        std::vector<DataChannel*> result;
+        for (const auto& channel : channels)
+            result.push_back(channel.cast<DataChannel*>());
+        return result;
+    }
+
+} // namespace
+
 class PyGpuRoceTransceiverOp : public GpuRoceTransceiverOp {
 public:
     using GpuRoceTransceiverOp::GpuRoceTransceiverOp;
 
+    // hololink_channel and device take one object, or a list with one per QP of tx_ibv_qp
+    // ("2,4,6,8") in the same order. The devices are started in order and all stopped.
     PyGpuRoceTransceiverOp(holoscan::Fragment* fragment, const py::args& args,
         py::object hololink_channel, py::object device, py::object frame_context, size_t frame_size,
-        const std::string& ibv_name, uint32_t tx_ibv_qp, uint32_t ibv_port, uint32_t gpu_id, uint32_t forward, py::object rename_metadata, const std::string& name, bool trim)
+        const std::string& ibv_name, const std::string& tx_ibv_qp, uint32_t ibv_port, uint32_t gpu_id, uint32_t forward, py::object rename_metadata, const std::string& name, bool trim)
         : GpuRoceTransceiverOp(holoscan::ArgList {
-            holoscan::Arg { "hololink_channel", py::cast<DataChannel*>(hololink_channel) },
+            // The first channel also opens the data socket
+            holoscan::Arg { "hololink_channel", as_data_channels(hololink_channel).front() },
+            holoscan::Arg { "hololink_channels", as_data_channels(hololink_channel) },
             holoscan::Arg { "device_start", std::function<void()>([this]() {
                                py::gil_scoped_acquire guard;
-                               device_.attr("start")();
+                               for (const auto& device : py_devices_)
+                                   device.attr("start")();
                            }) },
             holoscan::Arg { "device_stop", std::function<void()>([this]() {
                                py::gil_scoped_acquire guard;
-                               device_.attr("stop")();
+                               // Stop every device even if one fails, then report the first failure
+                               std::exception_ptr first_error;
+                               for (const auto& device : py_devices_) {
+                                   try {
+                                       device.attr("stop")();
+                                   } catch (...) {
+                                       if (!first_error)
+                                           first_error = std::current_exception();
+                                   }
+                               }
+                               if (first_error)
+                                   std::rethrow_exception(first_error);
                            }) },
             holoscan::Arg {
                 "frame_context", reinterpret_cast<CUcontext>(frame_context.cast<int64_t>()) },
@@ -69,7 +113,8 @@ public:
             holoscan::Arg { "gpu_id", gpu_id },
             holoscan::Arg { "forward", forward },
             holoscan::Arg { "trim", trim } })
-        , device_(device)
+        , py_hololink_channels_(as_list(hololink_channel))
+        , py_devices_(as_list(device))
     {
         // Block scheduling Conditions passed positionally; allow Resources
         for (auto it = args.begin(); it != args.end(); ++it) {
@@ -115,7 +160,9 @@ public:
     }
 
 private:
-    py::object device_;
+    // Keep the Python DataChannel and device objects alive as long as the operator uses them
+    py::list py_hololink_channels_;
+    py::list py_devices_;
 };
 
 PYBIND11_MODULE(_gpu_roce_transceiver, m)
@@ -129,9 +176,9 @@ PYBIND11_MODULE(_gpu_roce_transceiver, m)
     py::class_<GpuRoceTransceiverOp, PyGpuRoceTransceiverOp, holoscan::Operator,
         std::shared_ptr<GpuRoceTransceiverOp>>(m, "GpuRoceTransceiverOp")
         .def(py::init<holoscan::Fragment*, const py::args&, py::object, py::object, py::object,
-                 size_t, const std::string&, uint32_t, uint32_t, uint32_t, uint32_t, py::object, const std::string&, bool>(),
+                 size_t, const std::string&, const std::string&, uint32_t, uint32_t, uint32_t, py::object, const std::string&, bool>(),
             "fragment"_a, "hololink_channel"_a, "device"_a, "frame_context"_a, "frame_size"_a,
-            "ibv_name"_a = "roceP5p3s0f0", "tx_ibv_qp"_a = 2, "ibv_port"_a = 1, "gpu_id"_a = 0, "forward"_a = 0, "rename_metadata"_a = py::none(), "name"_a = "gpu_roce_transceiver"s, "trim"_a = false)
+            "ibv_name"_a = "roceP5p3s0f0", "tx_ibv_qp"_a = "2", "ibv_port"_a = 1, "gpu_id"_a = 0, "forward"_a = 0, "rename_metadata"_a = py::none(), "name"_a = "gpu_roce_transceiver"s, "trim"_a = false)
         .def("setup", &GpuRoceTransceiverOp::setup, "spec"_a)
         .def("start", &GpuRoceTransceiverOp::start)
         .def("stop", &GpuRoceTransceiverOp::stop);
