@@ -26,6 +26,7 @@
 #include <cstring>
 #include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
+#include <string>
 
 #define STRINGIFY(x) #x
 #define MACRO_STRINGIFY(x) STRINGIFY(x)
@@ -87,7 +88,7 @@ public:
             py::pybind11_fail("Tried to call pure virtual function \"I2CPeripheral::i2c_transaction\"");
         }
         py::bytes write(reinterpret_cast<const char*>(write_bytes), write_size);
-        py::bytearray read(reinterpret_cast<const char*>(read_bytes), read_size);
+        py::bytearray read(std::string(read_size, '\0'));
         auto status = override(peripheral_address, write, write_size, read, read_size).cast<I2CStatus>();
         std::memcpy(read_bytes, PyByteArray_AsString(read.ptr()), std::min<size_t>(read.size(), read_size));
         return status;

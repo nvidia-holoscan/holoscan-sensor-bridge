@@ -714,6 +714,7 @@ class _RegisterPeripheral(hemu.I2CPeripheral):
         super().__init__()
         self._i2c_address = i2c_address
         self.registers = bytearray(0x10000)
+        self.initial_read = None
         self.last_read = None
 
     def attach_to_i2c(self, i2c_controller, bus_address):
@@ -722,6 +723,7 @@ class _RegisterPeripheral(hemu.I2CPeripheral):
     def i2c_transaction(
         self, peripheral_address, write_bytes, write_size, read_bytes, read_size
     ):
+        self.initial_read = bytes(read_bytes)
         register = int.from_bytes(write_bytes[:2], "big")
         payload = write_bytes[2:write_size]
         self.registers[register : register + len(payload)] = payload
@@ -765,6 +767,7 @@ def test_python_i2c_peripheral(python_i2c_peripheral):
     assert peripheral.registers[0x3000:0x3002] == b"\x5a\xa5"
     reply = i2c.i2c_transaction(_I2C_ADDRESS, bytes([0x30, 0x00]), 2)
     assert list(reply) == [0x5A, 0xA5]
+    assert peripheral.initial_read == b"\x00\x00"
     assert peripheral.last_read == b"\x5a\xa5"
 
 
