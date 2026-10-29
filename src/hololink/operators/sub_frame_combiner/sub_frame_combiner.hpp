@@ -24,7 +24,7 @@
 namespace hololink::operators {
 
 /**
- * @brief Operator class to combine sub-frames into a single frame
+ * @brief Operator class to combine sub-frames into a single frame.
  */
 class SubFrameCombinerOp : public holoscan::Operator {
 public:

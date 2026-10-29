@@ -214,6 +214,12 @@ setuptools.setup(
                 # build roce only if the infiniband device driver & devices are present. It is not enough to check for the directory presence, e.g. AGX Thor
                 f"-DHOLOLINK_BUILD_ROCE={'ON' if os.path.isdir('/sys/class/infiniband') and any(os.scandir('/sys/class/infiniband')) else 'OFF'}",
                 f"-DHOLOLINK_ROCE_USE_GPU_VRAM={os.environ.get('HOLOLINK_ROCE_USE_GPU_VRAM', 'ON')}",
+                # The PCIe transport (hsb_pcie module, PcieReceiverOp, hololink_pcie_identity)
+                # is userspace and ships in the wheel like any other module; the kernel module
+                # is built and installed separately (scripts/deploy_pcie_kmod.sh), never from
+                # the wheel.
+                "-DHOLOLINK_BUILD_PCIE:BOOL=ON",
+                "-DHOLOLINK_BUILD_KERNEL_MODULE:BOOL=OFF",
                 # Add this to debug the code
                 # "-DCMAKE_BUILD_TYPE=Debug",
                 "-DHOLOLINK_PYTHON_INSTALL_DIR:PATH=.",

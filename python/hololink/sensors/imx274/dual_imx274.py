@@ -65,7 +65,10 @@ class Imx274Cam:
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported IMX274 version:{version}, expected {VERSION}."
+            )
 
         # configure the camera based on the mode
         self.configure_camera(imx274_mode_set)
@@ -158,9 +161,9 @@ class Imx274Cam:
             mode_list = imx274_mode.imx274_mode_1920x1080_60fps
         elif (
             imx274_mode_set.value
-            == imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value
+            == imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS.value
         ):
-            mode_list = imx274_mode.imx274_mode_3840X2160_60fps_12bits
+            mode_list = imx274_mode.imx274_mode_3840X2160_30fps_12bits
         else:
             logging.error(f"{imx274_mode_set} mode is not present.")
 

@@ -85,11 +85,21 @@ def _flash_polarfire_esb(ip_address: str, spi_path: str, traditional: bool) -> b
 
     if traditional:
 
-        def manual_enumeration(ip_address):
+        def manual_enumeration(ip_address, interface=""):
+            """Build a metadata blob for a board that never answered bootp.
+
+            `interface` names the NIC control-plane requests should leave by;
+            it is what enumeration would have recorded from the bootp reply's
+            IP_PKTINFO. The default of "" resolves to ifindex 0, which leaves
+            egress selection to the routing table -- the behavior this path
+            has always had. Pass a real NIC name when the routing table cannot
+            pick correctly, e.g. two boards on overlapping data-plane subnets.
+            """
             m = {
                 "control_port": 8192,
                 "hsb_ip_version": 0x2502,
                 "peer_ip": ip_address,
+                "interface": interface,
                 "sequence_number_checking": 0,
                 "serial_number": "100",
                 "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
@@ -117,6 +127,7 @@ def _flash_polarfire_esb(ip_address: str, spi_path: str, traditional: bool) -> b
 
             in_spi = traditional_peripherals_py.get_traditional_spi(
                 peer_ip=channel_metadata["peer_ip"],
+                peer_interface=channel_metadata["interface"],
                 control_port=channel_metadata["control_port"],
                 serial_number=channel_metadata["serial_number"],
                 spi_address=0x03000000,

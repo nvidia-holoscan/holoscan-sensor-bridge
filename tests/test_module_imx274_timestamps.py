@@ -282,20 +282,23 @@ def run_test(
         )
         hololink = hololink_module.HololinkInterfaceV1.get_service(metadata)
         hololink.start()
-        try:
-            hololink.reset()
-            logging.debug("Waiting for PTP sync.")
-            if not hololink.ptp_synchronize():
-                logging.error("Failed to synchronize PTP; ignoring.")
-            else:
-                logging.debug("PTP synchronized.")
-            camera.configure(camera_mode)
-            camera.set_digital_gain_reg(0x4)
-            camera.test_pattern(pattern)
-            logging.info("Calling run")
-            application.run()
-        finally:
-            hololink.stop()
+        # SIGABRT skips the finally block below.  Reset first so an aborted
+        # capture cannot leave HSB streaming into subsequent stress iterations.
+        with utils.AbortHook(hololink.reset):
+            try:
+                hololink.reset()
+                logging.debug("Waiting for PTP sync.")
+                if not hololink.ptp_synchronize():
+                    logging.error("Failed to synchronize PTP; ignoring.")
+                else:
+                    logging.debug("PTP synchronized.")
+                camera.configure(camera_mode)
+                camera.set_digital_gain_reg(0x4)
+                camera.test_pattern(pattern)
+                logging.info("Calling run")
+                application.run()
+            finally:
+                hololink.stop()
 
     return application._timestamps
 
@@ -432,16 +435,15 @@ def test_imx274_timestamps(
     camera = imx274.Imx274Cam(metadata)
     use_roce = True
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-        )
+    timestamps = run_test(
+        headless,
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
@@ -481,16 +483,15 @@ def test_imx274_linux_timestamps(
     camera = imx274.Imx274Cam(metadata)
     use_roce = False
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-        )
+    timestamps = run_test(
+        headless,
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
@@ -533,17 +534,16 @@ def test_imx274_timestamps_with_renamed_metadata(
     camera = imx274.Imx274Cam(metadata)
     use_roce = True
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-            rename_metadata=rename_metadata,
-        )
+    timestamps = run_test(
+        headless,
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+        rename_metadata=rename_metadata,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
@@ -837,26 +837,29 @@ def run_stereo_test(
                 metadata_right
             )
             hololink.start()
-            try:
-                hololink.reset()
-                logging.debug("Waiting for PTP sync.")
-                if not hololink.ptp_synchronize():
-                    logging.error("Failed to synchronize PTP; ignoring.")
-                else:
-                    logging.debug("PTP synchronized.")
-                # Left = pattern 10, right = pattern 11 (as in the legacy test);
-                # configure() also programs each leg's reference clock via its
-                # oscillator, so there is no separate setup_clock() call.
-                left_pattern, right_pattern = 10, 11
-                camera_left.configure(camera_mode)
-                camera_left.test_pattern(left_pattern)
-                camera_left.set_digital_gain_reg(0x4)
-                camera_right.configure(camera_mode)
-                camera_right.test_pattern(right_pattern)
-                camera_right.set_digital_gain_reg(0x4)
-                application.run()
-            finally:
-                hololink.stop()
+            # See run_test: the watchdog's hard-abort path must quiesce HSB
+            # before normal Python cleanup becomes impossible.
+            with utils.AbortHook(hololink.reset):
+                try:
+                    hololink.reset()
+                    logging.debug("Waiting for PTP sync.")
+                    if not hololink.ptp_synchronize():
+                        logging.error("Failed to synchronize PTP; ignoring.")
+                    else:
+                        logging.debug("PTP synchronized.")
+                    # Left = pattern 10, right = pattern 11 (as in the legacy test);
+                    # configure() also programs each leg's reference clock via its
+                    # oscillator, so there is no separate setup_clock() call.
+                    left_pattern, right_pattern = 10, 11
+                    camera_left.configure(camera_mode)
+                    camera_left.test_pattern(left_pattern)
+                    camera_left.set_digital_gain_reg(0x4)
+                    camera_right.configure(camera_mode)
+                    camera_right.test_pattern(right_pattern)
+                    camera_right.set_digital_gain_reg(0x4)
+                    application.run()
+                finally:
+                    hololink.stop()
 
 
 @pytest.mark.skip_unless_ptp
@@ -894,14 +897,13 @@ def test_imx274_stereo_roce_naive(
     camera_left = imx274.Imx274Cam(channel_metadata_left)
     camera_right = imx274.Imx274Cam(channel_metadata_right)
 
-    with utils.PriorityScheduler():
-        run_stereo_test(
-            headless,
-            channel_metadata_left,
-            camera_left,
-            channel_metadata_right,
-            camera_right,
-            camera_mode,
-            allowable_dt,
-            frame_limit,
-        )
+    run_stereo_test(
+        headless,
+        channel_metadata_left,
+        camera_left,
+        channel_metadata_right,
+        camera_right,
+        camera_mode,
+        allowable_dt,
+        frame_limit,
+    )

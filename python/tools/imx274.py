@@ -129,7 +129,7 @@ def main():
         "--mode",
         type=int,
         default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS.value,
-        help="IMX274 mode",
+        help="IMX274 mode: 0 = 3840x2160@60fps, 1 = 1920x1080@60fps, 2 = 3840x2160@30fps 12-bit",
     )
     sp.add_argument(
         "--start",

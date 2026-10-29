@@ -35,8 +35,30 @@ module eeprom_i2c_model #(
 //==============================================================================
 // EEPROM Memory Model (256 bytes)
 //==============================================================================
-logic [7:0] eeprom_memory [256];
+localparam int EEPROM_SIZE = 256;
+logic [7:0] eeprom_memory [EEPROM_SIZE];
 logic eeprom_initialized;
+
+//==============================================================================
+// Register Address Width
+//==============================================================================
+// eeprom_info.sv derives NUM_WR_BYTE_RD = ceil(EEPROM_REG_ADDR_BITS/8) and the
+// I2C controller writes that many address bytes, most significant first, before
+// the repeated start that begins the read. A config asking for 16-bit
+// addressing (e.g. bajoran_lite_xs) therefore sends two bytes; acknowledging
+// only one leaves the controller waiting forever and init_done never asserts.
+`ifdef EEPROM_REG_ADDR_BITS
+localparam int REG_ADDR_BITS = `EEPROM_REG_ADDR_BITS;
+`else
+localparam int REG_ADDR_BITS = 8;
+`endif
+localparam int NUM_ADDR_BYTES = (REG_ADDR_BITS + 7) / 8;
+
+// Reads outside the modelled array return 0 rather than X so a stray address
+// cannot X-propagate into the DUT's enumeration logic.
+function automatic logic [7:0] eeprom_read(input logic [15:0] addr);
+    return (addr < EEPROM_SIZE) ? eeprom_memory[addr] : 8'h00;
+endfunction
 
 // EEPROM target drives wand bus directly (like original working approach)
 logic eeprom_sda_drive;
@@ -52,8 +74,11 @@ logic i2c_start_condition, i2c_stop_condition;
 task initialize_eeprom_model();
     `TB_LOG_LOW(LOG_INFO, "Initializing EEPROM model with correct layout from eeprom_mem_model.svh");
     
+    `TB_LOG_LOW(LOG_INFO, $sformatf("EEPROM Model: %0d-bit register addressing (%0d address byte(s) per access)",
+            REG_ADDR_BITS, NUM_ADDR_BYTES));
+
     // Clear EEPROM
-    for (int i = 0; i < 256; i++)
+    for (int i = 0; i < EEPROM_SIZE; i++)
         eeprom_memory[i] = 8'h00;
     
     // Version Information (bytes 0-3) - matches eeprom_mem_model constraints
@@ -71,13 +96,6 @@ task initialize_eeprom_model();
     eeprom_memory[28] = 8'h00; eeprom_memory[29] = 8'h00; eeprom_memory[30] = 8'h2D; eeprom_memory[31] = 8'h08;
     eeprom_memory[32] = 8'h00; eeprom_memory[33] = 8'h08; eeprom_memory[34] = 8'h03; eeprom_memory[35] = 8'h01;
     eeprom_memory[36] = 8'h2D; eeprom_memory[37] = 8'h09; eeprom_memory[38] = 8'h09; eeprom_memory[39] = 8'h06;
-    
-    // FPGA IP Address (bytes 60-63) - matching original EEPROM layout
-    eeprom_memory[60] = TB_FPGA_IP[31:24];  // FPGA IP byte 3
-    eeprom_memory[61] = TB_FPGA_IP[23:16];  // FPGA IP byte 2 
-    eeprom_memory[62] = TB_FPGA_IP[15:8];   // FPGA IP byte 1
-    eeprom_memory[63] = TB_FPGA_IP[7:0];    // FPGA IP byte 0
-    eeprom_memory[64] = 8'h17;              // IP validity marker
     
     // MAC Address (bytes 68-73) - from eeprom_mem_model constraint 48'hCA_FE_C0_FF_EE_00
     eeprom_memory[68] = 8'hCA;  // MAC byte 0 (MSB)
@@ -112,8 +130,6 @@ task initialize_eeprom_model();
     `TB_LOG_LOW(LOG_INFO, $sformatf("EEPROM Model: MAC@68-73 = %02x:%02x:%02x:%02x:%02x:%02x",
             eeprom_memory[68], eeprom_memory[69], eeprom_memory[70],
             eeprom_memory[71], eeprom_memory[72], eeprom_memory[73]));
-    `TB_LOG_LOW(LOG_INFO, $sformatf("EEPROM Model: IP@60-63  = %0d.%0d.%0d.%0d",
-            eeprom_memory[60], eeprom_memory[61], eeprom_memory[62], eeprom_memory[63]));
     `TB_LOG_LOW(LOG_INFO, "EEPROM Model: Board Ver@20-39, Serial@74-80, FW@90-95,102-103");
 endtask
 
@@ -133,13 +149,21 @@ logic [7:0] i2c_rx_shift, i2c_tx_shift;
 logic [2:0] i2c_bit_cnt;
 logic [6:0] i2c_addr_received;
 logic i2c_rw_bit, i2c_addr_match;
-logic [7:0] i2c_reg_addr;
+logic [15:0] i2c_reg_addr;
+logic [1:0]  addr_byte_idx;   // Which address byte of NUM_ADDR_BYTES is next
 logic ack_phase;
 logic [2:0] data_bit_idx;
 logic prime_pending;
 logic ack_sample_pending;
 logic ack_sda_low_seen;
 logic after_bit0_fall;
+
+// Byte at the current address and at the next one, for the first bit of a read
+// and for sequential reads respectively.
+logic [7:0] eeprom_rd_cur;
+logic [7:0] eeprom_rd_next;
+assign eeprom_rd_cur  = eeprom_read(i2c_reg_addr);
+assign eeprom_rd_next = eeprom_read(i2c_reg_addr + 16'd1);
 
 // EEPROM configuration
 parameter I2C_EEPROM_ADDR = 7'h50;  // Standard EEPROM I2C address
@@ -181,7 +205,8 @@ always_ff @(posedge clk or negedge rstn) begin
         i2c_rx_shift <= 8'h0;
         i2c_tx_shift <= 8'h0;
         i2c_bit_cnt <= 3'h0;
-        i2c_reg_addr <= 8'h0;
+        i2c_reg_addr <= 16'h0;
+        addr_byte_idx <= 2'h0;
         i2c_addr_received <= 7'h0;
         i2c_rw_bit <= 1'b0;
         i2c_addr_match <= 1'b0;
@@ -236,14 +261,17 @@ always_ff @(posedge clk or negedge rstn) begin
                             ack_phase <= 1'b0;
                             if (i2c_rw_bit) begin
                                 // READ: present first data bit immediately (SCL is low here)
-                                i2c_tx_shift <= eeprom_memory[i2c_reg_addr];
+                                i2c_tx_shift <= eeprom_rd_cur;
                                 data_bit_idx <= 3'd6; // we drive bit7 below, next will be 6
-                                eeprom_sda_drive <= eeprom_memory[i2c_reg_addr][7];
+                                eeprom_sda_drive <= eeprom_rd_cur[7];
                                 i2c_state <= I2C_DATA_TX;
                             end else begin
-                                // WRITE: receive register address
+                                // WRITE: receive the register address, most significant
+                                // byte first
                                 i2c_rx_shift <= 8'h0;
                                 i2c_bit_cnt <= 3'h0;
+                                i2c_reg_addr <= 16'h0;
+                                addr_byte_idx <= 2'h0;
                                 i2c_state <= I2C_REG_ADDR_RX;
                             end
                         end
@@ -263,11 +291,13 @@ always_ff @(posedge clk or negedge rstn) begin
             end
 
             I2C_REG_ADDR_RX: begin
-                // receive 8-bit register address on SCL rising
+                // receive one register address byte on SCL rising
                 if (i2c_scl_bus && !i2c_scl_prev) begin
                     i2c_rx_shift <= {i2c_rx_shift[6:0], i2c_sda_bus};
                     if (i2c_bit_cnt == 3'h7) begin
-                        i2c_reg_addr <= {i2c_rx_shift[6:0], i2c_sda_bus};
+                        // Shift the byte in from the bottom so a multi-byte
+                        // address ends up big-endian, as sent on the wire.
+                        i2c_reg_addr <= {i2c_reg_addr[7:0], {i2c_rx_shift[6:0], i2c_sda_bus}};
                         i2c_state <= I2C_REG_ADDR_ACK;
                         ack_phase <= 1'b0;
                         i2c_bit_cnt <= 3'h0;
@@ -278,7 +308,9 @@ always_ff @(posedge clk or negedge rstn) begin
             end
 
             I2C_REG_ADDR_ACK: begin
-                // ACK the register address then finish (read-only device)
+                // ACK this address byte, then take the next one or finish. A
+                // repeated start from the controller after the last address
+                // byte re-enters I2C_ADDR_RX from IDLE with i2c_reg_addr held.
                 if (!i2c_scl_bus && i2c_scl_prev) begin
                     if (!ack_phase) begin
                         eeprom_sda_drive <= 1'b0;
@@ -286,7 +318,15 @@ always_ff @(posedge clk or negedge rstn) begin
                     end else begin
                         eeprom_sda_drive <= 1'b1;
                         ack_phase <= 1'b0;
-                        i2c_state <= I2C_IDLE;
+                        if (addr_byte_idx == (NUM_ADDR_BYTES - 1)) begin
+                            addr_byte_idx <= 2'h0;
+                            i2c_state <= I2C_IDLE;
+                        end else begin
+                            addr_byte_idx <= addr_byte_idx + 2'h1;
+                            i2c_rx_shift <= 8'h0;
+                            i2c_bit_cnt <= 3'h0;
+                            i2c_state <= I2C_REG_ADDR_RX;
+                        end
                     end
                 end
             end
@@ -327,8 +367,8 @@ always_ff @(posedge clk or negedge rstn) begin
                     if (ack_sda_low_seen) begin
                         // Controller ACK: continue with next byte
                         i2c_reg_addr <= i2c_reg_addr + 1;
-                        i2c_tx_shift <= eeprom_memory[i2c_reg_addr + 1];
-                        eeprom_sda_drive <= eeprom_memory[i2c_reg_addr + 1][7];
+                        i2c_tx_shift <= eeprom_rd_next;
+                        eeprom_sda_drive <= eeprom_rd_next[7];
                         data_bit_idx <= 3'd6;
                         i2c_state <= I2C_DATA_TX;
                     end else begin
@@ -347,6 +387,7 @@ always_ff @(posedge clk or negedge rstn) begin
                 eeprom_sda_drive <= 1'b1;
                 ack_phase <= 1'b0;
                 after_bit0_fall <= 1'b0;
+                addr_byte_idx <= 2'h0;
             end
         end
     end

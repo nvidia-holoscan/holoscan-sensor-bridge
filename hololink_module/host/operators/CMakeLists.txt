@@ -17,7 +17,7 @@ if(NOT HOLOLINK_MODULE_BUILD_OPERATORS)
 endif()
 
 # Holoscan SDK is required.
-if(NOT TARGET holoscan::core)
+if(NOT TARGET holoscan::core AND NOT holoscan_SOURCE_DIR)
     find_package(holoscan 4.0 REQUIRED CONFIG PATHS "/opt/nvidia/holoscan")
 endif()
 
@@ -54,6 +54,11 @@ endif()
 if(HOLOLINK_BUILD_FUSA)
     target_sources(hololink_operators PRIVATE fusa_coe_capture_op.cpp)
 endif()
+# PcieReceiverOp rides on the module-native PCIe receiver and the hsb_pcie
+# header target, both of which exist only with HOLOLINK_BUILD_PCIE.
+if(HOLOLINK_BUILD_PCIE)
+    target_sources(hololink_operators PRIVATE pcie_receiver_op.cpp)
+endif()
 
 # CRC operators (ComputeCrcOp / CheckCrcOp) compute a frame CRC32 via
 # nvcomp. Built when nvcomp is available; cleanly disabled otherwise so
@@ -78,6 +83,11 @@ target_include_directories(hololink_operators
 target_link_libraries(hololink_operators
     PUBLIC
         hololink::module_headers
+        # PcieReceiverOp's header names PcieDataChannelInterfaceV1 (the hsb_pcie
+        # module's data-channel service). Header-only INTERFACE target: it adds
+        # an include directory and no module .so, so hololink::operators stays
+        # free of every module and of the legacy core. Only with HOLOLINK_BUILD_PCIE.
+        $<$<BOOL:${HOLOLINK_BUILD_PCIE}>:hololink::hsb_pcie::headers>
         holoscan::core
         # hololink::core (legacy) is needed only by the FUSA operator, whose
         # header pulls in hololink/core/csi_controller.hpp. The always-built
@@ -91,7 +101,12 @@ target_link_libraries(hololink_operators
         # and drive it through the CUDA driver API.
         CUDA::cuda_driver
         CUDA::nvrtc
-        hololink::module)
+        hololink::module
+        # PcieReceiverOp names only the hsb_pcie module's service interfaces
+        # (PcieReceiverInterfaceV1 / PcieDataChannelInterfaceV1); the receiver
+        # itself lives in the module .so, reached through the locator, so this
+        # archive stays free of the legacy core.
+        $<$<BOOL:${HOLOLINK_BUILD_PCIE}>:hololink::hsb_pcie::headers>)
 set_target_properties(hololink_operators PROPERTIES
     CXX_VISIBILITY_PRESET hidden
     VISIBILITY_INLINES_HIDDEN ON

@@ -68,7 +68,6 @@ target_link_libraries(emulation_common
         # before common/). PRIVATE so consumers of emulation_common don't inherit
         # STM32 paths; only common's own .cpp files do.
         hsb_platform
-        $<$<BOOL:${ZLIB_FOUND}>:ZLIB::ZLIB>
 )
 
 set_property(TARGET emulation_common PROPERTY POSITION_INDEPENDENT_CODE ON)

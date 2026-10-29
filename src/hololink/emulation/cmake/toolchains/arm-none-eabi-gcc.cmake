@@ -55,3 +55,33 @@ set(CMAKE_CXX_FLAGS_RELEASE "-Os -g0")
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${CMAKE_C_FLAGS} -fno-rtti -fno-exceptions -fno-threadsafe-statics")
 
 set(CMAKE_EXE_LINKER_FLAGS "${TARGET_FLAGS} --specs=nano.specs -Wl,--print-memory-usage -Wl,--gc-sections")
+
+# WHOLE_ARCHIVE feature for the $<LINK_LIBRARY:...> generator expression.
+#
+# CMake only defines this feature after it identifies the linker, which happens
+# during ABI detection's link step. CMAKE_TRY_COMPILE_TARGET_TYPE is
+# STATIC_LIBRARY here (bare-metal has no linkable default), so nothing is ever
+# linked, CMAKE_<LANG>_COMPILER_LINKER_ID comes back empty, and
+# Platform/Linker/GNU.cmake is never included. Without it, src/CMakeLists.txt's
+# "$<LINK_LIBRARY:WHOLE_ARCHIVE,emulation_host,emulation_common>" fails to
+# configure twice over: the feature is reported as unsupported for the link
+# language, and -- because the OVERRIDE=DEFAULT attribute is missing -- the
+# plain occurrence of emulation_common that emulation_host propagates through
+# its PUBLIC link interface is treated as an unresolvable feature conflict.
+#
+# Setting CMAKE_<LANG>_COMPILER_LINKER_ID here would not help: CMake resolves
+# the feature through Platform/Linker/<system>-<linker>-<lang>.cmake, and it
+# ships no such module for CMAKE_SYSTEM_NAME=Generic. So replicate what
+# Platform/Linker/GNU.cmake would have set. Plain --whole-archive /
+# --no-whole-archive rather than --push-state / --pop-state so this works with
+# older arm-none-eabi binutils.
+foreach(_hsb_lang IN ITEMS C CXX ASM)
+    set(CMAKE_${_hsb_lang}_LINK_LIBRARY_USING_WHOLE_ARCHIVE
+        "LINKER:--whole-archive"
+        "<LINK_ITEM>"
+        "LINKER:--no-whole-archive")
+    set(CMAKE_${_hsb_lang}_LINK_LIBRARY_USING_WHOLE_ARCHIVE_SUPPORTED TRUE)
+    set(CMAKE_${_hsb_lang}_LINK_LIBRARY_WHOLE_ARCHIVE_ATTRIBUTES
+        LIBRARY_TYPE=STATIC DEDUPLICATION=YES OVERRIDE=DEFAULT)
+endforeach()
+unset(_hsb_lang)

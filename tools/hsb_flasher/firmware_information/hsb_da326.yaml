@@ -22,3 +22,9 @@ firmware_versions:
       - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2606/mipi_ref_design/mipi_cpnx100_v2606.bit
         md5: 8a9795297badeb886e4051e8057e4afb
         size: 1954564
+
+  - version: 0x2609
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2609/mipi_ref_design/mipi_cpnx100_v2609_GA.bit
+        md5: 53f19b29342af6ff7aa37e7816de7d11
+        size: 1953686

@@ -47,10 +47,10 @@ namespace {
      * Get a buffer from the deserializer and return it as a hex string.
      *
      * @param deserializer
-     * @param result hex string
-     * @param n length of the buffer to read
+     * @param result Hex string.
+     * @param n Length of the buffer to read.
      *
-     * @returns true if result is set; false on buffer overflow.
+     * @return true if result is set; false on buffer overflow.
      */
     static bool next_buffer_as_string(
         core::Deserializer& deserializer, std::string& result, unsigned n)
@@ -71,9 +71,9 @@ namespace {
      * Get the next 16 bytes from the deserializer and return it as a UUID-formatted string.
      *
      * @param deserializer
-     * @param result UUID formatted string
+     * @param result UUID formatted string.
      *
-     * @returns true if result is set; false on buffer overflow.
+     * @return true if result is set; false on buffer overflow.
      */
     static bool next_uuid_as_string(core::Deserializer& deserializer, std::string& result)
     {
@@ -204,6 +204,46 @@ namespace {
         metadata["serial_number"] = serial_number;
         metadata["hsb_ip_version"] = hsb_ip_version;
         metadata["fpga_crc"] = fpga_crc;
+
+        // The rest of the vendor area (offsets 41..57): four reserved bytes, the board's PTP
+        // time (BE48 seconds, BE32 nanoseconds), a BE16 announcement sequence number and a
+        // status byte -- what the Ethernet HSB firmware has always sent
+        // (docs/user_guide/ip_integration.mdx, Table 2) and the PCIe driver sends too. This
+        // part is optional: the deserializer saturates, so a record that ends at fpga_crc
+        // fails the first fetch below and simply lacks these keys. Not an error.
+        const uint8_t* reserved = nullptr;
+        uint64_t ptp_timestamp_s = 0;
+        uint32_t ptp_timestamp_ns = 0;
+        uint16_t psn = 0;
+        uint8_t status = 0;
+        if (deserializer.pointer(reserved, 4)
+            && deserializer.next_uint48_be(ptp_timestamp_s)
+            && deserializer.next_uint32_be(ptp_timestamp_ns)
+            && deserializer.next_uint16_be(psn)
+            && deserializer.next_uint8(status)) {
+            metadata["ptp_timestamp_s"] = static_cast<int64_t>(ptp_timestamp_s);
+            metadata["ptp_timestamp_ns"] = static_cast<int64_t>(ptp_timestamp_ns);
+            metadata["bootp_psn"] = static_cast<int64_t>(psn);
+            // Raw status byte; bit0: the PTP timestamp above is live, bit1: serial_number is
+            // the board's hardware serial (on PCIe, the Device Serial Number) rather than a
+            // placeholder. Published as-is so consumers key on the bits, not on derived keys.
+            metadata["bootp_status"] = static_cast<int64_t>(status);
+        }
+    }
+
+    // The bootp header's hardware type for a PCIe HSB / eHSB endpoint announced by the
+    // hololink_pcie kernel driver, and its 4-byte chaddr (the PCI function address, big-endian:
+    // domain, bus, devfn). Mirrors HL_PCIE_BOOTP_HTYPE_PCIE / HL_PCIE_BOOTP_HLEN in
+    // src/ehsb/kmod/include/hololink_pcie_bootp.h, which the core library does not include.
+    // Ethernet boards send htype 1 / hlen 6.
+    constexpr uint8_t HARDWARE_TYPE_PCIE = 0x50;
+    constexpr uint8_t HARDWARE_ADDRESS_LENGTH_PCIE = 4;
+
+    /** "dddd:bb:dd.f" for a BDF packed as (domain << 16) | (bus << 8) | devfn. */
+    static std::string bdf32_to_string(uint32_t bdf32)
+    {
+        return fmt::format("{:04x}:{:02x}:{:02x}.{}", (bdf32 >> 16) & 0xFFFFu,
+            (bdf32 >> 8) & 0xFFu, (bdf32 >> 3) & 0x1Fu, bdf32 & 0x7u);
     }
 
     static void deserialize_bootp_request(const std::vector<uint8_t>& packet, Metadata& metadata)
@@ -244,14 +284,28 @@ namespace {
             return;
         }
 
-        std::stringstream mac_id_stream;
-        for (int i = 0; i < hardware_address_length; ++i) {
-            if (i) {
-                mac_id_stream << ":";
+        // mac_id is the hardware address rendered in its htype's convention: the colon-separated
+        // MAC for Ethernet (htype 1); for a PCIe endpoint (htype 0x50) the 4-byte chaddr is the
+        // PCI function address, rendered as the textual BDF "dddd:bb:dd.f", which also becomes
+        // peer_ip (the channel key; the IPv4 source it replaces is the packed BDF that
+        // client_ip_address already carries).
+        std::string mac_id;
+        const bool pcie_endpoint = (hardware_type == HARDWARE_TYPE_PCIE)
+            && (hardware_address_length == HARDWARE_ADDRESS_LENGTH_PCIE);
+        if (pcie_endpoint) {
+            const uint32_t bdf32 = (uint32_t(hardware_address[0]) << 24) | (uint32_t(hardware_address[1]) << 16)
+                | (uint32_t(hardware_address[2]) << 8) | uint32_t(hardware_address[3]);
+            mac_id = bdf32_to_string(bdf32);
+        } else {
+            std::stringstream mac_id_stream;
+            for (int i = 0; i < hardware_address_length; ++i) {
+                if (i) {
+                    mac_id_stream << ":";
+                }
+                mac_id_stream << fmt::format("{:02X}", hardware_address[i]);
             }
-            mac_id_stream << fmt::format("{:02X}", hardware_address[i]);
+            mac_id = mac_id_stream.str();
         }
-        const std::string mac_id = mac_id_stream.str();
 
         const uint8_t* ignore = nullptr;
         deserializer.pointer(ignore, 64); // server_hostname
@@ -295,6 +349,10 @@ namespace {
         metadata["gateway_ip_address"] = std::string(inet_ntoa({ ntohl(gateway_ip_address) }));
         metadata["hardware_address"] = hardware_address;
         metadata["mac_id"] = mac_id;
+        metadata["hardware_address_text"] = mac_id;
+        if (pcie_endpoint) {
+            metadata["peer_ip"] = mac_id;
+        }
         metadata["data_plane"] = static_cast<int64_t>(data_plane);
         metadata["enum_version"] = enum_version;
 
@@ -860,10 +918,7 @@ Enumerator::ReactorEnumerator::ReactorEnumerator()
 
 Enumerator::ReactorEnumerator::~ReactorEnumerator()
 {
-    if (socket_fd_ >= 0) {
-        reactor_->remove_fd_callback(socket_fd_);
-        close(socket_fd_);
-    }
+    stop();
 }
 
 void Enumerator::ReactorEnumerator::start()
@@ -878,18 +933,29 @@ void Enumerator::ReactorEnumerator::start()
     // Configure the socket
     Enumerator::configure_socket(socket_fd.get());
 
-    // Register with reactor
-    reactor_->add_fd_callback(socket_fd.get(),
-        [this](int fd, short events) { this->fd_callback(fd, events); });
+    // The callback owns the socket: owned_fd closes it when the last copy of
+    // the callback is destroyed. The reactor copies the callback while a call
+    // is running, so the socket stays open until that returns.
+    const int fd = socket_fd.release();
+    std::shared_ptr<const int> owned_fd(new int(fd), [](const int* p) {
+        ::close(*p);
+        delete p;
+    });
 
-    socket_fd_ = socket_fd.release();
+    // Register with reactor
+    reactor_->add_fd_callback(fd,
+        [this, owned_fd](int ready_fd, short events) { this->fd_callback(ready_fd, events); });
+
+    socket_fd_ = fd;
 }
 
 void Enumerator::ReactorEnumerator::stop()
 {
     if (socket_fd_ >= 0) {
+        // Closes the socket unless a call to the callback is still running,
+        // in which case the reactor's copy closes it when that call returns.
+        // Nothing here waits, so this is safe from the reactor thread too.
         reactor_->remove_fd_callback(socket_fd_);
-        close(socket_fd_);
         socket_fd_ = -1;
     }
 }

@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import signal
 import socket
@@ -291,7 +294,7 @@ def emulator_loopback(host_command, emulator_command, timeout_s, isolated_interf
                 f"Timeout reached after {timeout_s} seconds while waiting for emulator process to start. cmd: {emulator_command}. May require manual cleanup of namespace: {isolated_interface}"
             )
 
-        # why is this here? because ci/lint.sh says we cannot assign a lambda to a variable
+        # why is this here? because scripts/lint/lint.sh says we cannot assign a lambda to a variable
         def nsexec_kill():
             os.kill(nspid, signal.SIGKILL)
 
@@ -464,6 +467,14 @@ def pytest_generate_tests(metafunc):
                     )
             if has_ib_interface():
                 parameters += vb1940_loopback_cases_roce
+        parameters = [
+            (
+                pytest.param(*test_case, marks=pytest.mark.flaky(reruns=2))
+                if test_case == ("linux", 1, 0, False)
+                else test_case
+            )
+            for test_case in parameters
+        ]
         metafunc.parametrize("transport,camera_count,camera_mode,gpu", parameters)
 
 

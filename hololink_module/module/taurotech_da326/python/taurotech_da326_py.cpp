@@ -85,4 +85,7 @@ PYBIND11_MODULE(_hololink_module_taurotech_da326, m)
             })
         .def("hololink",
             &ad::taurotech_da326::TauroTechDa326InterfaceV1::hololink);
+    py::object cls = m.attr("TauroTechDa326InterfaceV1");
+    cls.attr("type_id") = ad::taurotech_da326::TauroTechDa326InterfaceV1::type_id;
+    cls.attr("release_version") = ad::taurotech_da326::TauroTechDa326InterfaceV1::release_version;
 }

@@ -27,4 +27,4 @@ fi
 INTERFACE=$1
 shift
 
-ip netns exec ns_$INTERFACE "$@"
+ip netns exec "ns_$INTERFACE" "$@"

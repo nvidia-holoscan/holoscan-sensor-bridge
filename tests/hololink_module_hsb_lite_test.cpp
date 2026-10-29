@@ -18,8 +18,8 @@
  * suppress the announcement (no post-enrichment callback) without
  * throwing. Finally, pins the unified per-sensor addressing: enumerate
  * (update_metadata) and Adapter::use_sensor route through one formula,
- * so use_sensor recomputes hif_address per data plane and the two
- * paths agree field-for-field; out-of-range sensors are rejected.
+ * so use_sensor preserves the enumerated physical data plane and the
+ * two paths agree field-for-field; out-of-range sensors are rejected.
  */
 
 #include <gtest/gtest.h>
@@ -48,16 +48,52 @@ static std::filesystem::path test_module_dir()
 // claim this UUID, distinguished by the per-compat-id .so suffix.
 static constexpr const char* HSB_LITE_UUID = "889b7ce3-65a5-4247-8b05-4ff1904c3359";
 
-TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2603AndEnriches)
+/* Every test here drives enumeration through synthetic metadata handed
+ * straight to Adapter::enumerate — none of them send a real BOOTP
+ * packet. The Adapter constructor nevertheless opens a live listener on
+ * the default port (12267), and the CI runners have real HSB boards on
+ * the host network. wait_for_channel keeps the first announcement whose
+ * peer IP matches, so a real board that collides with a staged peer IP
+ * wins the race and the test then asserts against the board's fields
+ * instead of its own — this suite used to fake 192.168.0.2/.3, the
+ * stock HSB addresses, and read compat_id 0x2603 off real 2603 silicon
+ * where it had staged 0x2510.
+ *
+ * Two independent guards, either of which is sufficient:
+ *   - the staged peer IPs are RFC 5737 TEST-NET-1 (192.0.2.0/24),
+ *     reserved for documentation, so no board can ever claim one;
+ *   - this rebinds the listener to an ephemeral port. Real boards
+ *     broadcast to 12267, so nothing off the wire reaches this process
+ *     at all. Same stop/start idiom as hololink_module_bootp_e2e_test,
+ *     which rebinds to reach its own test port.
+ *
+ * The fixture is named for the existing test suite so the converted
+ * TEST_F cases keep their full test names.
+ */
+class HololinkAdapterHsbLite : public ::testing::Test {
+protected:
+    static void SetUpTestSuite()
+    {
+        auto& adapter = hololink::module::Adapter::get_adapter();
+        adapter.stop_bootp_listener();
+        adapter.start_bootp_listener(0);
+    }
+
+    void SetUp() override
+    {
+        hololink::module::Adapter::get_adapter().set_module_directory(
+            test_module_dir());
+    }
+};
+
+TEST_F(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2603AndEnriches)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
 
-    Adapter::get_adapter().set_module_directory(test_module_dir());
-
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
-    metadata["peer_ip"] = std::string("192.168.0.2");
+    metadata["peer_ip"] = std::string("192.0.2.2");
     metadata["serial_number"] = std::string("hsb-lite-001");
     metadata["compat_id"] = static_cast<std::int64_t>(0x2603);
     metadata["data_plane"] = static_cast<std::int64_t>(0); // bootp supplies this
@@ -67,7 +103,7 @@ TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2603AndEnriches)
         Adapter::get_adapter().enumerate(std::move(metadata));
     });
     EnumerationMetadata found = Adapter::get_adapter().wait_for_channel(
-        "192.168.0.2", std::chrono::seconds(1));
+        "192.0.2.2", std::chrono::seconds(1));
     enum_thread.join();
 
     ASSERT_TRUE(found.contains("module_name"));
@@ -82,16 +118,14 @@ TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2603AndEnriches)
     ASSERT_NE(module_handle, nullptr);
 }
 
-TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2510AndPreservesCompat)
+TEST_F(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2510AndPreservesCompat)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
 
-    Adapter::get_adapter().set_module_directory(test_module_dir());
-
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
-    metadata["peer_ip"] = std::string("192.168.0.3");
+    metadata["peer_ip"] = std::string("192.0.2.3");
     metadata["serial_number"] = std::string("hsb-lite-002");
     metadata["compat_id"] = static_cast<std::int64_t>(0x2510);
     metadata["data_plane"] = static_cast<std::int64_t>(0); // bootp supplies this
@@ -101,7 +135,7 @@ TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2510AndPreservesCompat)
         Adapter::get_adapter().enumerate(std::move(metadata));
     });
     EnumerationMetadata found = Adapter::get_adapter().wait_for_channel(
-        "192.168.0.3", std::chrono::seconds(1));
+        "192.0.2.3", std::chrono::seconds(1));
     enum_thread.join();
 
     // The 2510 supplement chooses its own module_name (it is not
@@ -118,12 +152,10 @@ TEST(HololinkAdapterHsbLite, EnumerateLoadsHsbLite2510AndPreservesCompat)
     ASSERT_NE(module_handle, nullptr);
 }
 
-TEST(HololinkAdapterHsbLite, EnumerateSkipsUnsupportedIpVersion)
+TEST_F(HololinkAdapterHsbLite, EnumerateSkipsUnsupportedIpVersion)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
-
-    Adapter::get_adapter().set_module_directory(test_module_dir());
 
     // No dedicated .so for this compat, so the loader falls through to
     // the bare hololink_<UUID>.so (module/hsb_lite_2510/). That module
@@ -132,7 +164,7 @@ TEST(HololinkAdapterHsbLite, EnumerateSkipsUnsupportedIpVersion)
     // HOLOLINK_MODULE_ENUMERATION_SKIPPED.
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
-    metadata["peer_ip"] = std::string("192.168.0.5");
+    metadata["peer_ip"] = std::string("192.0.2.5");
     metadata["serial_number"] = std::string("hsb-lite-004");
     metadata["compat_id"] = static_cast<std::int64_t>(0x2510);
     metadata["hsb_ip_version"] = static_cast<std::int64_t>(0x2700);
@@ -152,12 +184,10 @@ TEST(HololinkAdapterHsbLite, EnumerateSkipsUnsupportedIpVersion)
     Adapter::get_adapter().unregister(handle);
 }
 
-TEST(HololinkAdapterHsbLite, UseSensorRecomputesHifAddress)
+TEST_F(HololinkAdapterHsbLite, UseSensorPreservesEnumeratedHifAddress)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
-
-    Adapter::get_adapter().set_module_directory(test_module_dir());
 
     // use_sensor loads the module on demand from fpga_uuid + compat_id;
     // no prior enumerate needed.
@@ -170,31 +200,28 @@ TEST(HololinkAdapterHsbLite, UseSensorRecomputesHifAddress)
     EXPECT_EQ(metadata.get<int64_t>("hif_address"), 0x02000300);
     EXPECT_EQ(metadata.get<int64_t>("sensor_number"), 0);
 
-    // Retarget to sensor 1: HSB-Lite maps it 1:1 onto data plane 1, so
-    // hif_address MUST move with it. The pre-unification use_sensor path
-    // (legacy DataChannel::use_sensor) left hif_address stale here — this
-    // is the regression guard for that bug.
+    // Retarget to sensor 1 on the same physical data plane. Sensor selection
+    // changes the SIF/VP channel, but must not silently move the connection to
+    // a different NIC-backed data plane.
     Adapter::get_adapter().use_sensor(metadata, 1);
-    EXPECT_EQ(metadata.get<int64_t>("hif_address"), 0x02010300);
+    EXPECT_EQ(metadata.get<int64_t>("hif_address"), 0x02000300);
     EXPECT_EQ(metadata.get<int64_t>("sensor_number"), 1);
     EXPECT_EQ(metadata.get<int64_t>("sensor"), 2); // sensor_number * sifs(2)
     EXPECT_EQ(metadata.get<int64_t>("sif_address"), 0x01010000);
     EXPECT_EQ(metadata.get<int64_t>("data_channel"), 1);
 }
 
-TEST(HololinkAdapterHsbLite, EnumerateMatchesUseSensorFieldForField)
+TEST_F(HololinkAdapterHsbLite, EnumerateMatchesUseSensorFieldForField)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
-
-    Adapter::get_adapter().set_module_directory(test_module_dir());
 
     // Enumerate with bootp data_plane = 1. update_metadata delegates to
     // use_sensor(1), so the enriched metadata must equal what an explicit
     // use_sensor(1) produces — the two paths can no longer drift.
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
-    metadata["peer_ip"] = std::string("192.168.0.7");
+    metadata["peer_ip"] = std::string("192.0.2.7");
     metadata["serial_number"] = std::string("hsb-lite-006");
     metadata["compat_id"] = static_cast<std::int64_t>(0x2603);
     metadata["data_plane"] = static_cast<std::int64_t>(1);
@@ -204,13 +231,14 @@ TEST(HololinkAdapterHsbLite, EnumerateMatchesUseSensorFieldForField)
         Adapter::get_adapter().enumerate(std::move(metadata));
     });
     EnumerationMetadata enumerated = Adapter::get_adapter().wait_for_channel(
-        "192.168.0.7", std::chrono::seconds(1));
+        "192.0.2.7", std::chrono::seconds(1));
     enum_thread.join();
 
     // Independently retarget a fresh metadata to sensor 1 via use_sensor.
     EnumerationMetadata configured;
     configured["fpga_uuid"] = std::string(HSB_LITE_UUID);
     configured["compat_id"] = static_cast<std::int64_t>(0x2603);
+    configured["data_plane"] = static_cast<std::int64_t>(1);
     Adapter::get_adapter().use_sensor(configured, 1);
 
     for (const char* key : { "sensor_number", "sensor", "vp_mask",
@@ -223,12 +251,10 @@ TEST(HololinkAdapterHsbLite, EnumerateMatchesUseSensorFieldForField)
     }
 }
 
-TEST(HololinkAdapterHsbLite, UseSensorRejectsOutOfRange)
+TEST_F(HololinkAdapterHsbLite, UseSensorRejectsOutOfRange)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
-
-    Adapter::get_adapter().set_module_directory(test_module_dir());
 
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
@@ -241,17 +267,15 @@ TEST(HololinkAdapterHsbLite, UseSensorRejectsOutOfRange)
         std::runtime_error);
 }
 
-TEST(HololinkAdapterHsbLite, FrameMetadataSingletonIsReachable)
+TEST_F(HololinkAdapterHsbLite, FrameMetadataSingletonIsReachable)
 {
     using hololink::module::Adapter;
     using hololink::module::EnumerationMetadata;
     using hololink::module::FrameMetadataInterfaceV1;
 
-    Adapter::get_adapter().set_module_directory(test_module_dir());
-
     EnumerationMetadata metadata;
     metadata["fpga_uuid"] = std::string(HSB_LITE_UUID);
-    metadata["peer_ip"] = std::string("192.168.0.4");
+    metadata["peer_ip"] = std::string("192.0.2.4");
     metadata["serial_number"] = std::string("hsb-lite-003");
     metadata["compat_id"] = static_cast<std::int64_t>(0x2603);
     metadata["data_plane"] = static_cast<std::int64_t>(0); // bootp supplies this

@@ -25,10 +25,10 @@ namespace hololink {
  * Flash an HSB_Lite device with CLNX and CPNX firmware.
  * Uses the modern Hololink library connection with full verification.
  *
- * @param ip_address IP address of the device
- * @param clnx_path Path to CLNX firmware file
- * @param cpnx_path Path to CPNX firmware file
- * @return true if flash succeeded, false otherwise
+ * @param ip_address IP address of the device.
+ * @param clnx_path Path to CLNX firmware file.
+ * @param cpnx_path Path to CPNX firmware file.
+ * @return true if flash succeeded, false otherwise.
  */
 bool hsb_lite_flash_2507(const std::string& ip_address,
     const std::string& clnx_path,

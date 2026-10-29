@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -29,11 +29,13 @@
 #include <memory>
 #include <mutex>
 #include <poll.h>
+#include <sstream>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 #include <chrono>
 #include <iostream>
@@ -53,12 +55,12 @@
 #include "gpu_roce_transceiver_common.hpp"
 
 struct gpu_roce_ring_buffer {
-    uint8_t* addr;
-    size_t stride_sz;
-    uint32_t stride_num;
-    struct ibv_mr* addr_mr;
-    int dmabuf_fd;
-    uint64_t* flag;
+    uint8_t* addr = nullptr;
+    size_t stride_sz = 0;
+    uint32_t stride_num = 0;
+    struct ibv_mr* addr_mr = nullptr;
+    int dmabuf_fd = -1;
+    uint64_t* flag = nullptr;
 };
 
 // Static GPU datapath utils functions
@@ -90,12 +92,14 @@ public:
 
     ~DocaCq()
     {
+        // The CQ's DEVX object holds a reference to the umem, so the umem
+        // cannot be deregistered until the CQ itself is gone.
+        if (cq != nullptr)
+            doca_verbs_cq_destroy(cq);
         if (umem)
             doca_umem_destroy(umem);
         if (umem_dev_ptr)
             doca_gpu_mem_free(gdev, umem_dev_ptr);
-        if (cq != nullptr)
-            doca_verbs_cq_destroy(cq);
     }
 
     doca_error_t create();
@@ -110,8 +114,8 @@ public:
     struct doca_verbs_context* vctx;
     uint32_t cqe_num;
     struct doca_verbs_cq* cq = nullptr;
-    void* umem_dev_ptr;
-    struct doca_umem* umem;
+    void* umem_dev_ptr = nullptr;
+    struct doca_umem* umem = nullptr;
     bool umem_cpu;
 };
 
@@ -163,12 +167,12 @@ public:
     struct doca_verbs_pd* vpd;
     uint32_t wqe_num;
     struct doca_verbs_qp* qp = nullptr;
-    void* umem_dev_ptr;
-    struct doca_umem* umem;
-    struct doca_umem* umem_dbr;
-    void* umem_dbr_dev_ptr;
-    struct doca_gpu_verbs_qp* gpu_qp;
-    struct doca_gpu_dev_verbs_qp* gpu_dev_qp;
+    void* umem_dev_ptr = nullptr;
+    struct doca_umem* umem = nullptr;
+    struct doca_umem* umem_dbr = nullptr;
+    void* umem_dbr_dev_ptr = nullptr;
+    struct doca_gpu_verbs_qp* gpu_qp = nullptr;
+    struct doca_gpu_dev_verbs_qp* gpu_dev_qp = nullptr;
     struct doca_verbs_cq* cq_rq;
     struct doca_verbs_cq* cq_sq;
 
@@ -181,14 +185,15 @@ public:
 struct doca_verbs_context* open_ib_device(char* name);
 
 struct cpu_proxy_args {
-    struct doca_gpu_verbs_qp* qp_cpu;
-    uint64_t* exit_flag;
+    struct doca_gpu_verbs_qp* qp_cpu[GPU_ROCE_TRANSCEIVER_MAX_QP] = {};
+    uint64_t* exit_flag = nullptr;
+    uint16_t num_qp = 0;
 };
 
 class GpuRoceTransceiver {
 public:
     GpuRoceTransceiver(const char* ibv_name, unsigned ibv_port,
-        unsigned tx_ibv_qp, uint32_t gpu_id,
+        std::string tx_ibv_qp, uint32_t gpu_id,
         size_t cu_frame_size, size_t cu_page_size,
         unsigned pages, const char* peer_ip,
         const bool forward, const bool rx_only, const bool tx_only);
@@ -199,8 +204,11 @@ public:
     bool start();
     void close();
 
-    uint32_t get_qp_number();
-    uint32_t get_rkey();
+    /// Number of QPs, one per remote QP listed in tx_ibv_qp
+    size_t get_num_qps() const { return tx_ibv_qp_num_.size(); }
+    uint32_t get_qp_number(unsigned sensor_id);
+    uint32_t get_rkey(unsigned sensor_id);
+    /// Address HSB writes the frames of any QP to: each RX ring is registered at IOVA 0
     uint64_t external_frame_memory();
 
     void set_frame_ready(std::function<void()> frame_ready)
@@ -208,14 +216,24 @@ public:
         frame_ready_ = frame_ready;
     }
 
-    uint8_t* get_rx_ring_data_addr();
-    size_t get_rx_ring_stride_sz();
-    uint32_t get_rx_ring_stride_num();
-    uint64_t* get_rx_ring_flag_addr();
-    uint8_t* get_tx_ring_data_addr();
-    size_t get_tx_ring_stride_sz();
-    uint32_t get_tx_ring_stride_num();
-    uint64_t* get_tx_ring_flag_addr();
+    uint8_t* get_rx_ring_data_addr(unsigned sensor_id);
+    size_t get_rx_ring_stride_sz(unsigned sensor_id);
+    uint32_t get_rx_ring_stride_num(unsigned sensor_id);
+    uint64_t* get_rx_ring_flag_addr(unsigned sensor_id);
+    uint8_t* get_tx_ring_data_addr(unsigned sensor_id);
+    size_t get_tx_ring_stride_sz(unsigned sensor_id);
+    uint32_t get_tx_ring_stride_num(unsigned sensor_id);
+    uint64_t* get_tx_ring_flag_addr(unsigned sensor_id);
+
+    /**
+     * @brief Local key of the TX ring's memory region.
+     *
+     * For callers that post their own sends from the TX ring.  Valid after
+     * start().
+     *
+     * @return the TX ring lkey, in host byte order like get_rkey().
+     */
+    uint32_t get_tx_ring_lkey(unsigned sensor_id);
 
     /// Force CPU+GPU accessible allocation for ring flags and data only
     /// (DOCA_GPU_MEM_TYPE_CPU_GPU) even on dGPU systems.  Must be called
@@ -232,18 +250,24 @@ public:
 
     void* get_doca_gpu_dev_qp(unsigned sensor_id)
     {
-        if (sensor_id == 0)
-            return doca_qp ? doca_qp->get_gpu_dev() : nullptr;
-        else
+        if (!qp_created(sensor_id))
             return nullptr;
+        return doca_qp_[sensor_id]->get_gpu_dev();
     }
 
 private:
     bool check_async_events();
+    bool launch_kernels();
+    /// True if the QP of sensor_id is configured and created
+    bool qp_created(unsigned sensor_id) const
+    {
+        return sensor_id < tx_ibv_qp_num_.size() && doca_qp_[sensor_id] != nullptr;
+    }
 
     char* ibv_name_;
     unsigned ibv_port_;
-    unsigned tx_ibv_qp_;
+    std::string tx_ibv_qp_;
+    std::vector<uint32_t> tx_ibv_qp_num_;
     uint32_t gpu_id_;
     size_t cu_frame_size_;
     size_t cu_page_size_;
@@ -255,18 +279,18 @@ private:
     struct doca_gpu* doca_gpu_device_ = nullptr;
     struct doca_verbs_context* doca_verbs_ctx_ = nullptr;
     struct doca_verbs_pd* doca_pd_ = nullptr;
-    DocaCq* doca_cq_rq;
-    DocaCq* doca_cq_sq;
-    DocaQp* doca_qp;
-    struct doca_uar* uar_ = nullptr;
+    DocaCq* doca_cq_rq_[GPU_ROCE_TRANSCEIVER_MAX_QP] = {};
+    DocaCq* doca_cq_sq_[GPU_ROCE_TRANSCEIVER_MAX_QP] = {};
+    DocaQp* doca_qp_[GPU_ROCE_TRANSCEIVER_MAX_QP] = {};
+    struct doca_uar* uar_[GPU_ROCE_TRANSCEIVER_MAX_QP] = {};
 
     uint32_t qp_number_ = 0;
     uint32_t rkey_ = 0;
 
     pthread_mutex_t ready_mutex_;
     pthread_cond_t ready_condition_;
-    bool volatile done_;
-    int control_r_, control_w_;
+    std::atomic<bool> done_;
+    int control_r_ = -1, control_w_ = -1;
     uint64_t frame_number_;
     int rx_write_requests_fd_;
     uint64_t volatile rx_write_requests_; // over all of time
@@ -278,28 +302,29 @@ private:
     unsigned volatile received_page_;
     std::function<void()> frame_ready_;
     bool gpu_datapath_;
-    uint32_t* cpu_exit_flag;
-    uint32_t* gpu_exit_flag;
+    uint32_t* cpu_exit_flag = nullptr;
+    uint32_t* gpu_exit_flag = nullptr;
     bool doca_kernel_launched = false;
-    cudaStream_t forward_stream;
-    cudaStream_t rx_only_stream;
-    cudaStream_t tx_only_stream;
-    cudaStream_t compute_stream;
+    cudaStream_t forward_stream = nullptr;
+    cudaStream_t rx_only_stream = nullptr;
+    cudaStream_t tx_only_stream = nullptr;
+    cudaStream_t compute_stream = nullptr;
 
     bool forward_;
     bool rx_only_;
     bool tx_only_;
 
     pthread_t cpu_proxy_thread_id;
+    bool cpu_proxy_started_ = false;
     struct cpu_proxy_args targs;
     std::mutex& get_lock();
 
-    bool umem_cpu;
+    bool umem_cpu = false;
     bool cpu_ring_buffers_ = false;
 
-    CUdevice cuDevice;
-    CUcontext cuContext;
-    enum doca_gpu_dev_verbs_nic_handler nic_handler;
+    CUdevice cuDevice = 0;
+    CUcontext cuContext = nullptr;
+    enum doca_gpu_dev_verbs_nic_handler nic_handler = DOCA_GPUNETIO_VERBS_NIC_HANDLER_GPU_SM_BF;
 };
 
 extern "C" {
@@ -312,33 +337,33 @@ doca_error_t GpuRoceTransceiverPrepareKernel(cudaStream_t stream,
     uint32_t cuda_threads);
 
 doca_error_t GpuRoceTransceiverForwardKernel(cudaStream_t stream,
-    struct doca_gpu_dev_verbs_qp* qp,
     uint32_t* exit_flag,
-    uint8_t* cu_buffer,
-    size_t cu_buffer_size,
-    uint32_t cu_buffer_mkey,
-    unsigned pages,
+    struct doca_gpu_dev_verbs_qp** qp,
+    uint8_t** ring_buf,
+    size_t* ring_buf_stride_sz,
+    uint32_t* ring_buf_mkey,
+    uint32_t* ring_buf_stride_num,
     size_t frame_size,
     const enum doca_gpu_dev_verbs_nic_handler nic_handler,
     uint32_t cuda_blocks,
     uint32_t cuda_threads);
 
 doca_error_t GpuRoceTransceiverRxOnlyKernel(cudaStream_t stream,
-    struct doca_gpu_dev_verbs_qp* qp, uint32_t* exit_flag,
-    uint8_t* ring_buf, const size_t ring_buf_stride_sz,
-    const uint32_t ring_buf_stride_num, uint64_t* ring_flag,
+    uint32_t* exit_flag, struct doca_gpu_dev_verbs_qp** qp,
+    uint8_t** ring_buf, const size_t* ring_buf_stride_sz,
+    const uint32_t* ring_buf_stride_num, uint64_t** ring_flag,
     size_t frame_size, uint32_t cuda_blocks, uint32_t cuda_threads);
 
 doca_error_t GpuRoceTransceiverTxOnlyKernel(cudaStream_t stream,
-    struct doca_gpu_dev_verbs_qp* qp, uint32_t* exit_flag,
-    uint8_t* ring_buf, const size_t ring_buf_stride_sz,
-    const uint32_t ring_buf_stride_num, uint32_t ring_buf_mkey, uint64_t* ring_flag,
+    uint32_t* exit_flag, struct doca_gpu_dev_verbs_qp** qp,
+    uint8_t** ring_buf, const size_t* ring_buf_stride_sz,
+    const uint32_t* ring_buf_stride_num, uint32_t* ring_buf_mkey, uint64_t** ring_flag,
     size_t frame_size, const enum doca_gpu_dev_verbs_nic_handler nic_handler,
     uint32_t cuda_blocks, uint32_t cuda_threads);
 
 doca_error_t GpuRoceTransceiverComputeKernel(cudaStream_t stream, uint32_t* exit_flag,
-    uint64_t* ring_rx_flag, const size_t ring_rx_stride_sz, const uint32_t ring_rx_stride_num,
-    uint64_t* ring_tx_flag, uint8_t* ring_tx_addr, const size_t ring_tx_stride_sz, const uint32_t ring_tx_stride_num,
+    uint64_t** ring_rx_flag, const uint32_t* ring_rx_stride_num,
+    uint64_t** ring_tx_flag, uint8_t** ring_tx_addr, const size_t* ring_tx_stride_sz, const uint32_t* ring_tx_stride_num,
     size_t frame_size, uint32_t cuda_blocks, uint32_t cuda_threads);
 
 } // extern C

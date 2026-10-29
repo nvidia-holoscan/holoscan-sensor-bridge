@@ -25,6 +25,7 @@
 #include "hololink/module/csi_converter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/frame_metadata.hpp"
+#include "hololink/module/operators/ingress_stall.hpp"
 
 namespace hololink::module::operators {
 
@@ -65,12 +66,22 @@ public:
     void configure_converter(hololink::module::csi::CsiConverterV1& converter);
     void configure_frame_size(uint32_t frame_size_bytes);
 
+    bool capture_stalled() const { return capture_stalled_.load(); }
+    uint64_t capture_stall_duration_ms() const
+    {
+        return capture_stall_duration_ms_.load();
+    }
+
     static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
 
 private:
+    // Reports a run of empty capture waits once, so a stall names itself.
+    IngressStall ingress_stall_;
+
     holoscan::Parameter<std::string> interface_;
     holoscan::Parameter<std::vector<uint8_t>> mac_addr_;
     holoscan::Parameter<uint32_t> timeout_;
+    holoscan::Parameter<uint32_t> stall_timeout_ms_;
     holoscan::Parameter<std::string> out_tensor_name_;
     holoscan::Parameter<EnumerationMetadata> metadata_;
     holoscan::Parameter<std::function<void()>> device_start_;
@@ -109,6 +120,8 @@ private:
     std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
     std::thread monitor_thread_;
     std::atomic<bool> running_ { false };
+    std::atomic<bool> capture_stalled_ { false };
+    std::atomic<uint64_t> capture_stall_duration_ms_ { 0 };
     std::mutex handoff_mutex_;
     std::condition_variable handoff_cv_;
     bool frame_ready_ = false;

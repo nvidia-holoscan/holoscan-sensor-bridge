@@ -100,6 +100,7 @@ package hololink_tb_pkg;
     // COE header byte offsets (relative to start of COE L2 payload)
     localparam int          COE_FLAGS_BYTE_OFFSET = 27;       // Flags nibble in low 4 bits
     localparam int          COE_LAST_WORD_OFFSET  = 28;       // 4-byte word with frame_number and byte_offset
+    localparam int          COE_CHANNEL_BYTE_OFFSET = 26;     // byte holding channel_number in low 6 bits (== dest_qp[5:0])
     // COE header bitfield positions within the last 32-bit header word
     localparam int          COE_FRAME_NUM_MSB     = 29;
     localparam int          COE_FRAME_NUM_LSB     = 28;
@@ -130,7 +131,9 @@ package hololink_tb_pkg;
     localparam logic [47:0] DEFAULT_HOST_MAC = 48'h123456789ABC; // Host Ethernet MAC address
     localparam logic [47:0] DEFAULT_FPGA_MAC = 48'hCAFEC0FFEE00; // FPGA Ethernet MAC address  
     localparam logic [31:0] DEFAULT_HOST_IP  = 32'hC0A8010A;    // Host IP: 192.168.1.10
-    localparam logic [31:0] DEFAULT_FPGA_IP  = 32'hC0A8010C;    // FPGA IP: 192.168.1.12
+    // Matches bootp's IP_DEFAULT, so the reset default, the BOOTP yiaddr and the
+    // EEPROM image all name the same address. Keep them equal when changing this.
+    localparam logic [31:0] DEFAULT_FPGA_IP  = 32'hC0A80002;    // FPGA IP: 192.168.0.2
 
     //==========================================================================
     // Sensor Frame Configuration - Intelligently Calculated for All Alignments
@@ -237,7 +240,15 @@ package hololink_tb_pkg;
     localparam logic [31:0] REG_DP_ROCE_0_HOST_MAC_HI    = 32'h00001024; // Destination MAC address [47:32]
     localparam logic [31:0] REG_DP_ROCE_0_HOST_IP        = 32'h00001028; // Destination IP address
     localparam logic [31:0] REG_DP_ROCE_0_HOST_UDP_PORT  = 32'h0000102C; // Destination UDP port
+    localparam logic [31:0] REG_DP_ROCE_0_VADDR_FIXED_MSB= 32'h00001030; // Upper 31 bits of fixed VA
+    localparam logic [31:0] REG_DP_ROCE_0_PCP            = 32'h00001034; // VLAN enable + VLAN tag (pcp)
+    localparam logic [31:0] REG_DP_ROCE_0_RSVD_2         = 32'h00001038; // Reserved
     localparam logic [31:0] REG_DP_ROCE_0_PSN            = 32'h0000103C; // RoCE packet sequence number
+
+    // Per-VP RoCE block layout (roce[SIF_RX_VP_COUNT_TOTAL]): base 0x1000, stride 0x40.
+    // VP i register = REG_DP_ROCE_BASE + i*REG_DP_ROCE_STRIDE + offset.
+    localparam logic [31:0] REG_DP_ROCE_BASE   = 32'h00001000; // VP0 RoCE block base
+    localparam logic [31:0] REG_DP_ROCE_STRIDE = 32'h00000040; // Per-VP block increment
     
     // Note: Register addresses overlap because 4K and legacy modes use same hardware addresses
     // but interpret the data differently
@@ -260,6 +271,123 @@ package hololink_tb_pkg;
     localparam logic [31:0] REG_SENSOR_FRAME_RATE = 32'h01000004; // Sensor frame rate setting
     localparam logic [31:0] REG_SENSOR_RESOLUTION = 32'h01000008; // Sensor resolution setting
 
+    //=========================================================================
+    // Packetizer (sen_rx_pkt_ctrl) Register Map
+    //=========================================================================
+    // apb_intc_top routes Sensor RX CH<i> to 0x0100_0000 + i*0x1_0000, and
+    // sen_rx_pkt_ctrl is module 0 within that channel. Offsets come from
+    // regmap_pkg (pack_ram_addr=1, pack_ram_data=2, pack_ctrl=3).
+    localparam logic [31:0] REG_PACK_CTRL_STRIDE  = 32'h0001_0000; // Per-Sensor-RX increment
+    localparam logic [31:0] PACK_OFF_RAM_ADDR     = 32'h04; // {ram_num[4:0], element[3:0]}
+    localparam logic [31:0] PACK_OFF_RAM_DATA     = 32'h08; // Write here commits the RAM entry
+    localparam logic [31:0] PACK_OFF_PACK_CFG     = 32'h0C; // ld_arr/pad/dup/max_addr/latency/en
+
+    // pack_ctrl (PACK_CFG) field positions, per packetizer_top.sv
+    localparam int PACK_CFG_LD_ARR_LSB    = 0;   // [15:0]  load-new-word-per-pattern-address
+    localparam int PACK_CFG_PAD_EN_BIT    = 16;
+    localparam int PACK_CFG_DUPLICATE_BIT = 17;
+    localparam int PACK_CFG_MAX_ADDR_LSB  = 20;  // [23:20] last pattern address
+    localparam int PACK_CFG_LATENCY_LSB   = 24;  // [27:24]
+    localparam int PACK_CFG_ENABLE_BIT    = 28;  // 1 = engage pattern RAM (bypass_packetizer=0)
+
+    function automatic logic [31:0] reg_pack(int sensor_id, logic [31:0] offset);
+        return REG_PACK_CTRL_BASE + (sensor_id * REG_PACK_CTRL_STRIDE) + offset;
+    endfunction
+
+    //=========================================================================
+    // CSV Register Map Helpers for Multi-Sensor Demo Programming
+    //=========================================================================
+    // These helpers mirror the canonical CSV register model in:
+    // hw/nvcpu_dgx_fpga/dvlib/ec/modules/sensor_reg_model/gen/hololink
+    // They are used by the optional ALL_SENSORS demo mode while preserving the
+    // legacy single-sensor constants above for backward-compatible operation.
+    localparam logic [31:0] REG_ROCE_BASE          = 32'h0000_1000;
+    localparam logic [31:0] REG_ROCE_STRIDE        = 32'h0000_0040;
+    localparam logic [31:0] REG_DP_PKT_BASE_CSV    = 32'h0200_0300;
+    localparam logic [31:0] REG_DP_PKT_STRIDE      = 32'h0001_0000;
+    localparam logic [31:0] REG_INST_DEC_BASE      = 32'h0200_0000;
+    localparam logic [31:0] REG_INST_DEC_STRIDE    = 32'h0001_0000;
+
+    localparam logic [31:0] ROCE_OFF_DEST_QP       = 32'h00;
+    localparam logic [31:0] ROCE_OFF_RKEY          = 32'h04;
+    localparam logic [31:0] ROCE_OFF_BUF_ADDR_LSB  = 32'h08;
+    localparam logic [31:0] ROCE_OFF_BUF_ADDR_MSB  = 32'h0C;
+    localparam logic [31:0] ROCE_OFF_BUF_INC       = 32'h10;
+    localparam logic [31:0] ROCE_OFF_BUF_PTR       = 32'h14;
+    localparam logic [31:0] ROCE_OFF_BUF_LEN       = 32'h18;
+    localparam logic [31:0] ROCE_OFF_HOST_MAC_LO   = 32'h20;
+    localparam logic [31:0] ROCE_OFF_HOST_MAC_HI   = 32'h24;
+    localparam logic [31:0] ROCE_OFF_HOST_IP       = 32'h28;
+    localparam logic [31:0] ROCE_OFF_HOST_UDP_PORT = 32'h2C;
+    localparam logic [31:0] ROCE_OFF_VADDR_FIXED_MSB = 32'h30; // upper 31 bits of fixed VA
+    localparam logic [31:0] ROCE_OFF_PCP             = 32'h34; // vlan_en / vlan_tag (pcp)
+    localparam logic [31:0] ROCE_OFF_RSVD_2          = 32'h38; // reserved
+    localparam logic [31:0] ROCE_OFF_PSN           = 32'h3C;
+
+    localparam logic [31:0] DP_PKT_OFF_LEN           = 32'h04;
+    localparam logic [31:0] DP_PKT_OFF_FPGA_UDP_PORT = 32'h08;
+    localparam logic [31:0] DP_PKT_OFF_VIP_MASK      = 32'h0C;
+    localparam logic [31:0] INST_DEC_OFF_ECB_UDP_PORT = 32'h20;
+
+    //==========================================================================
+    // Host-to-sensor (TX) stream buffer register block (tx_strm_buff)
+    //   ECB address map: base 0x0120_0000, per-sensor stride 0x0001_0000
+    //   Register offsets from gen/hololink/tx_strm_buff.csv
+    //==========================================================================
+    localparam logic [31:0] REG_TX_STRM_BUFF_BASE   = 32'h0120_0000;
+    localparam logic [31:0] REG_TX_STRM_BUFF_STRIDE = 32'h0001_0000;
+    localparam logic [31:0] TX_STRM_OFF_CTRL        = 32'h00; // tx_strm_ctrl
+    localparam logic [31:0] TX_STRM_OFF_AFULL       = 32'h04; // almost_full_thresh
+    localparam logic [31:0] TX_STRM_OFF_AEMPTY      = 32'h08; // almost_empty_thresh
+    localparam logic [31:0] TX_STRM_OFF_PAUSE_MAP   = 32'h0C; // host_pause_map
+    localparam logic [31:0] TX_STRM_OFF_QUANTA      = 32'h10; // quanta
+
+    // tx_strm_ctrl bit encodings (see tx_strm_buff.csv)
+    //   [0] tx_output_en, [1] tx_pause_ena, [2] prog_thresh_ena
+    localparam logic [31:0] TX_STRM_CTRL_LATCH = 32'h0000_0007; // enable + pause + latch sw thresholds
+    localparam logic [31:0] TX_STRM_CTRL_RUN   = 32'h0000_0003; // enable + pause (thresholds already latched)
+
+    // UC (unreliable-connection) RoCE SEND opcodes carried in the BTH.  The host
+    // pushes data to a sensor with a SEND message; the DUT reassembles the message
+    // payload and streams it out of the matching sensor TX interface.
+    localparam logic [7:0] ROCE_OP_SEND_FIRST  = 8'h20;
+    localparam logic [7:0] ROCE_OP_SEND_MIDDLE = 8'h21;
+    localparam logic [7:0] ROCE_OP_SEND_LAST   = 8'h22;
+    localparam logic [7:0] ROCE_OP_SEND_ONLY   = 8'h24;
+
+    // BTH fixed fields for the host-to-sensor SEND path.
+    localparam logic [15:0] ROCE_BTH_PKEY   = 16'hFFFF; // partition key
+    localparam int          ROCE_BTH_BYTES  = 12;       // BTH header length (no RETH for SEND)
+    localparam int          ROCE_ICRC_BYTES = 4;        // trailing ICRC (not validated on UC path)
+
+    // One megabyte per sensor keeps each 4K-buffer pool independent.  With the
+    // default 4K configuration each sensor uses 10 buffers spaced by 96KB, so a
+    // 1MB stride avoids overlap while keeping addresses easy to identify.
+    localparam logic [31:0] ROCE_SENSOR_ADDR_STRIDE_BYTES = 32'h0010_0000;
+
+    function automatic logic [31:0] reg_roce(input int vp_id, input logic [31:0] offset);
+        return REG_ROCE_BASE + (vp_id * REG_ROCE_STRIDE) + offset;
+    endfunction
+
+    function automatic logic [31:0] reg_dp_pkt(input int host_id, input logic [31:0] offset);
+        return REG_DP_PKT_BASE_CSV + (host_id * REG_DP_PKT_STRIDE) + offset;
+    endfunction
+
+    function automatic logic [31:0] reg_inst_dec(input int host_id, input logic [31:0] offset);
+        return REG_INST_DEC_BASE + (host_id * REG_INST_DEC_STRIDE) + offset;
+    endfunction
+
+    // Absolute ECB address of a tx_strm_buff register for a given sensor TX interface.
+    function automatic logic [31:0] reg_tx_strm_buff(input int sensor_id, input logic [31:0] offset);
+        return REG_TX_STRM_BUFF_BASE + (sensor_id * REG_TX_STRM_BUFF_STRIDE) + offset;
+    endfunction
+
+    // dest_qp the DUT uses to route a host-to-sensor SEND to a sensor TX interface.
+    // Mirrors the IP-level host2sen UC test: sensor s -> QP (s+1)<<1.
+    function automatic logic [23:0] tx_dest_qp(input int sensor_id);
+        return (sensor_id + 1) << 1;
+    endfunction
+
     //==========================================================================
     // Utility Constants  
     //==========================================================================
@@ -277,6 +405,15 @@ package hololink_tb_pkg;
     // EtherType values
     localparam logic [15:0] ETHER_TYPE_IPV4  = 16'h0800;
     localparam logic [15:0] ETHER_TYPE_1722B = IEEE_1722B_ETHERTYPE;
+
+    // IEEE 802.3x MAC control (Ethernet PAUSE) frame, as emitted by pause_gen.sv:
+    //   [12:13] EtherType = 0x8808, [14:15] opcode = 0x0001, [16:17] pause quanta.
+    localparam logic [15:0] ETHER_TYPE_MAC_CTRL   = 16'h8808;
+    localparam logic [15:0] MAC_CTRL_OPCODE_PAUSE = 16'h0001;
+    localparam int          PAUSE_OPCODE_OFFSET   = 14; // == ETH_HEADER_SIZE
+    localparam int          PAUSE_QUANTA_OFFSET   = 16; // 2 bytes, big-endian
+    // One pause quanta = 512 bit-times on the host interface.
+    localparam int          PAUSE_BITTIMES_PER_QUANTA = 512;
 
     // IPv4 header (bytes)
     localparam int IP_HEADER_SIZE                = 20; // without options

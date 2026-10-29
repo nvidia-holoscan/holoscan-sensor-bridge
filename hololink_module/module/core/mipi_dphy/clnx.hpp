@@ -8,15 +8,18 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/mipi_dphy.hpp"
+#include "hololink/module/publisher.hpp"
 #include "hololink/module/service.hpp"
 #include "hololink/module/status.h"
 
 #include "clnx_spi_lmmi_access.hpp"
 #include "common.hpp"
+#include "hsb_ip_publisher.hpp"
 
 namespace hololink::module::module_core {
 
@@ -121,6 +124,24 @@ public:
 private:
     std::shared_ptr<LegacyHololinkAccess> hololink_;
 };
+
+/* Publish ClnxMipiDphyV1 on `instance_id`. The construct_board_services override of
+ * every two-FPGA board whose D-PHY lives in the CrossLink is a call to this;
+ * pair it with stamp_clnx_mipi_dphy_metadata. Same free-function rationale as
+ * construct_cpnx_mipi_dphy: the register file is reached over the CrossLink's
+ * SPI table, a property of that FPGA design rather than of the HSB IP. */
+inline bool construct_clnx_mipi_dphy(HsbIpPublisher& publisher,
+    const std::string& instance_id, const std::string& type_id)
+{
+    if (!Publisher::has_type_id<ClnxMipiDphyV1>(type_id)) {
+        return false;
+    }
+    auto hololink_impl = publisher.configured_hololink(instance_id, "MipiDphy");
+    auto impl = std::make_shared<ClnxMipiDphyV1>(hololink_impl->legacy_access());
+    ServicePublisher<ClnxMipiDphyV1>(publisher.shared_from_this())
+        .publish(instance_id, impl);
+    return true;
+}
 
 } // namespace hololink::module::module_core
 

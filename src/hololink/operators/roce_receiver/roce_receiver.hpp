@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -39,7 +39,6 @@ namespace hololink::operators {
 
 class RoceReceiverMetadata {
 public:
-    uint64_t rx_write_requests = 0; // over all of time
     uint64_t received_frame_number = 0;
     uint32_t imm_data = 0;
     uint64_t received_s = 0;
@@ -60,7 +59,7 @@ class RoceReceiverDescriptor;
 class RoceReceiver {
 public:
     /**
-     * @param ibv_name Name of infiniband verbs device name, e.g. "roceP5p3s0f0"
+     * @param ibv_name Name of infiniband verbs device name, e.g. "roceP5p3s0f0".
      */
     RoceReceiver(
         const char* ibv_name,
@@ -93,9 +92,9 @@ public:
 
     /**
      * Block until the next complete frame arrives.
-     * @returns false if timeout_ms elapses before
+     * @return false if timeout_ms elapses before
      * the complete frame is observed.
-     * @param metadata is updated with statistics
+     * @param metadata Output metadata updated with statistics
      * collected with the video frame.
      */
     bool get_next_frame(unsigned timeout_ms, RoceReceiverMetadata& metadata);
@@ -168,8 +167,10 @@ protected:
 
     bool volatile done_;
 
+    /** True after an asynchronous event makes the receive path unusable. */
+    std::atomic<bool> receive_path_failed_;
+
     int control_r_, control_w_;
-    int rx_write_requests_fd_;
 
     common::UniqueCUstream metadata_stream_;
 

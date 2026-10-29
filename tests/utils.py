@@ -211,6 +211,62 @@ def caller(n=0):
 watchdogs = 0
 watchdogs_lock = threading.Lock()
 
+# A watchdog timeout can end the process with SIGABRT, bypassing finally blocks
+# and atexit handlers.  Hardware cleanup that must happen before that abort can
+# be registered here.  Hooks are best effort: the control plane may itself be
+# unhealthy, so no hook may delay the abort indefinitely.
+abort_hooks = []
+abort_hooks_lock = threading.Lock()
+ABORT_HOOK_TIMEOUT_S = 5.0
+
+
+def register_abort_hook(hook):
+    """Register hook() to run immediately before a watchdog SIGABRT."""
+    with abort_hooks_lock:
+        abort_hooks.append(hook)
+    return hook
+
+
+def unregister_abort_hook(hook):
+    with abort_hooks_lock:
+        if hook in abort_hooks:
+            abort_hooks.remove(hook)
+
+
+class AbortHook:
+    """Register a watchdog abort hook for the duration of a context."""
+
+    def __init__(self, hook):
+        self._hook = hook
+
+    def __enter__(self):
+        register_abort_hook(self._hook)
+        return self
+
+    def __exit__(self, *args):
+        unregister_abort_hook(self._hook)
+
+
+def run_abort_hooks():
+    with abort_hooks_lock:
+        hooks = list(abort_hooks)
+    for hook in hooks:
+
+        def call(hook=hook):
+            try:
+                hook()
+            except Exception as e:
+                logging.error(f"Abort hook {hook} failed: {e}")
+
+        thread = threading.Thread(target=call, daemon=True)
+        thread.start()
+        thread.join(ABORT_HOOK_TIMEOUT_S)
+        if thread.is_alive():
+            logging.error(
+                f"Abort hook {hook} did not finish in {ABORT_HOOK_TIMEOUT_S}s; "
+                "aborting anyway."
+            )
+
 
 class Watchdog:
     """When used this way:
@@ -396,6 +452,7 @@ class Watchdog:
         os.kill(self._pid, signal.SIGUSR1)
         time.sleep(2)
         # We only get here if we weren't closed up by _sigusr1.
+        run_abort_hooks()
         logging.error("Sending SIGABRT to the local process group.")
         local_process_group = 0
         os.kill(local_process_group, signal.SIGABRT)
@@ -465,22 +522,6 @@ class MockedLinuxReceiverOperator(hololink_module.operators.LinuxReceiverOperato
         logging.error(f"Frame reception timeout, {self._count=}.")
         if self._count > 10:
             assert False
-
-
-class PriorityScheduler:
-    def __init__(self):
-        self._scheduler = os.sched_getscheduler(0)
-        self._params = os.sched_getparam(0)
-
-    def __enter__(self):
-        logging.debug("Setting scheduler.")
-        sched_priority = self._params.sched_priority + 1
-        sched_param = os.sched_param(sched_priority=sched_priority)
-        os.sched_setscheduler(0, os.SCHED_FIFO, sched_param)
-
-    def __exit__(self, *args):
-        logging.debug("Resetting scheduler.")
-        os.sched_setscheduler(0, self._scheduler, self._params)
 
 
 class CudaContext:

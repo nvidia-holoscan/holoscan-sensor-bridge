@@ -36,9 +36,9 @@ __inline__ __device__ unsigned int getBayerOffset(unsigned int x, unsigned int y
 /**
  * Apply black level correction.
  *
- * @param image [in] pointer to input image
- * @param components_per_line [in] components per input image line (width * 3 for RGB)
- * @param height [in] height of the input image
+ * @param image [in] Pointer to input image.
+ * @param components_per_line [in] Components per input image line (width * 3 for RGB).
+ * @param height [in] Height of the input image.
  */
 __global__ void applyBlackLevel(unsigned short *image,
                                 int components_per_line,
@@ -71,10 +71,10 @@ __global__ void applyBlackLevel(unsigned short *image,
  * Note, this kernel needs HISTOGRAM_THREADBLOCK_MEMORY bytes of shared
  * memory.
  *
- * @param in [in] pointer to image data
- * @param histogram [in] pointer to the histogram data (must be able to hold HISTOGRAM_BIN_COUNT values)
- * @param width [in] width of the image
- * @param height [in] height of the image
+ * @param in [in] Pointer to image data.
+ * @param histogram [in,out] Pointer to histogram data (must hold HISTOGRAM_BIN_COUNT * CHANNELS values).
+ * @param width [in] Width of the image.
+ * @param height [in] Height of the image.
  */
 __global__ void histogram(const unsigned short *in,
                           unsigned int *histogram,
@@ -135,8 +135,8 @@ __global__ void histogram(const unsigned short *in,
 /**
  * Calculate the white balance gains using the per channel histograms
  *
- * @param histogram [in] pointer to histogram data (HISTOGRAM_BIN_COUNT * CHANNELS values)
- * @param gains [in] pointer to the white balance gains (CHANNELS values)
+ * @param histogram [in] Pointer to histogram data (HISTOGRAM_BIN_COUNT * CHANNELS values).
+ * @param gains [out] Pointer to the white balance gains (CHANNELS values).
  */
 __global__ void calcWBGains(const unsigned int *histogram,
                             float *gains)
@@ -169,10 +169,10 @@ __global__ void calcWBGains(const unsigned int *histogram,
 /**
  * Apply white balance gains.
  *
- * @param in [in] pointer to image
- * @param width [in] width of the image
- * @param height [in] height of the image
- * @param gains [in] pointer to the white balance gains (CHANNELS values)
+ * @param image [in,out] Pointer to image.
+ * @param width [in] Width of the image.
+ * @param height [in] Height of the image.
+ * @param gains [in] Pointer to the white balance gains (CHANNELS values).
  */
 __global__ void applyOperations(unsigned short *image,
                              int width,

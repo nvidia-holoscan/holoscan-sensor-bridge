@@ -63,7 +63,7 @@ PYBIND11_MODULE(flash_strategies, m)
         py::arg("cpnx_path"));
 
     m.def("hsb_lite_flash_2407", &hololink::hsb_lite_flash_2407,
-        "Flash using raw UDP (blind mode for ancient versions - no verification)",
+        "Flash using raw UDP register access for older versions",
         py::arg("ip_address"),
         py::arg("clnx_path"),
         py::arg("cpnx_path"));

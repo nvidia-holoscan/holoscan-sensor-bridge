@@ -1,0 +1,66 @@
+[
+  {
+    "id": "hsb-add-sensor-001",
+    "question": "Run /hsb-add-sensor on my devkit ubuntu@hq-agx-orin9 (REMOTE_ROOT=/home/ubuntu/anishag/hololink). I want to add a new direct-MIPI sensor called imx681. The datasheet PDF is at /home/anishag/docs/imx681_datasheet.pdf and the register CSV is at /home/anishag/docs/imx681_registers.csv. The repo is at /home/ubuntu/anishag/hololink/holoscan-sensor-bridge. Build target is --igpu. The sensor uses 4 MIPI lanes and is connected to J2 on the LI I2C expander.",
+    "expected_skill": "hsb-add-sensor",
+    "ground_truth": "The agent reads the hsb-add-sensor SKILL.md, runs prerequisite checks (SSH connectivity, board ping, demo container), then presents the full 6-phase plan. It identifies the sensor as direct-MIPI (not GMSL), notes it will include li_i2c_expander.py in the Python module, records expander_configuration=1 for J2, and asks for user confirmation before starting Phase 0.",
+    "expected_behavior": [
+      "The agent reads the hsb-add-sensor SKILL.md before taking any action",
+      "The agent checks SSH connectivity to ubuntu@hq-agx-orin9 before proceeding",
+      "The agent checks that the HSB board is reachable at 192.168.0.2",
+      "The agent verifies the demo container exists on the devkit",
+      "The agent presents the full 6-phase plan (Phase 0 through Phase 6) before starting",
+      "The agent identifies this as a direct-MIPI sensor (not GMSL) and states li_i2c_expander.py will be included",
+      "The agent records expander_configuration=1 for J2",
+      "The agent does NOT ask about GMSL SerDes chips for a direct-MIPI sensor",
+      "The agent asks for user confirmation before starting Phase 0"
+    ]
+  },
+  {
+    "id": "hsb-add-sensor-002",
+    "question": "Run /hsb-add-sensor on my devkit ubuntu@hq-agx-orin9 (REMOTE_ROOT=/home/ubuntu/anishag/hololink). I want to add a new GMSL sensor called ox08d20. The datasheet PDF is at /home/anishag/docs/ox08d20_datasheet.pdf, the register CSV is at /home/anishag/docs/ox08d20_registers.csv, and I also have the MAX96716A deserializer datasheet at /home/anishag/docs/max96716a.pdf. The repo is at /home/ubuntu/anishag/hololink/holoscan-sensor-bridge. Build target is --igpu.",
+    "expected_skill": "hsb-add-sensor",
+    "ground_truth": "The agent reads the hsb-add-sensor SKILL.md, runs prerequisite checks, presents the full 6-phase plan, and identifies this as a GMSL sensor. It states it will NOT include li_i2c_expander.py, will NOT add expander_configuration to __init__, will use set_max929x_register and configure_deserializer helpers for I2C, and will consult the existing OX08D10 driver before writing any SerDes init code.",
+    "expected_behavior": [
+      "The agent reads the hsb-add-sensor SKILL.md before taking any action",
+      "The agent presents the full 6-phase plan before starting",
+      "The agent identifies the sensor as GMSL (not direct-MIPI)",
+      "The agent states it will NOT include li_i2c_expander.py and NOT add expander_configuration to __init__",
+      "The agent states it will use set_max929x_register and configure_deserializer helpers for SerDes I2C",
+      "The agent states it will search for and read the existing OX08D10 driver before writing SerDes init code",
+      "The agent does NOT ask about I2C expander jack (J1/J2) for a GMSL sensor",
+      "The agent asks for user confirmation before starting Phase 0"
+    ]
+  },
+  {
+    "id": "hsb-add-sensor-003",
+    "question": "Run /hsb-add-sensor on my devkit ubuntu@hq-agx-orin9 (REMOTE_ROOT=/home/ubuntu/anishag/hololink). I'm adding a sensor called imx577. The datasheet PDF is at /home/anishag/docs/imx577_datasheet.pdf, the register CSV is at /home/anishag/docs/imx577_registers.csv. The repo is at /home/ubuntu/anishag/hololink/holoscan-sensor-bridge. In Phase 2, the CSV has LINE_LENGTH_PCK=0x0C00 for the 4K 30fps mode, but the datasheet formula gives 0x0D40 for the same timing. Which value should I use?",
+    "expected_skill": "hsb-add-sensor",
+    "ground_truth": "The agent reads the hsb-add-sensor SKILL.md and identifies this as a Phase 2 register mismatch. It flags the discrepancy between the CSV value (0x0C00) and the datasheet-derived value (0x0D40) for LINE_LENGTH_PCK, presents both values with their sources, and requires the user to explicitly choose which value to use. It does not silently pick one value or proceed past the mismatch.",
+    "expected_behavior": [
+      "The agent reads the hsb-add-sensor SKILL.md before taking any action",
+      "The agent identifies this as a Phase 2 register mismatch situation",
+      "The agent flags the discrepancy between CSV value 0x0C00 and datasheet-derived value 0x0D40 for LINE_LENGTH_PCK",
+      "The agent presents both values with their sources (CSV vs datasheet formula)",
+      "The agent requires the user to explicitly resolve the mismatch before proceeding",
+      "The agent does NOT silently choose one value over the other",
+      "The agent does NOT proceed to Phase 3 until the user has resolved the mismatch"
+    ]
+  },
+  {
+    "id": "hsb-add-sensor-004",
+    "question": "Run /hsb-add-sensor on my devkit ubuntu@hq-agx-orin9 (REMOTE_ROOT=/home/ubuntu/anishag/hololink). I'm adding a sensor called imx334. The datasheet PDF is at /home/anishag/docs/imx334_datasheet.pdf and the register CSV is at /home/anishag/docs/imx334_registers.csv. The CSV has all the mode init registers but neither the CSV nor the datasheet has a start or stop streaming register sequence. Build target is --igpu.",
+    "expected_skill": "hsb-add-sensor",
+    "ground_truth": "The agent reads the hsb-add-sensor SKILL.md, runs prerequisites, presents the full 6-phase plan. In Phase 1 it extracts mode parameters and register tables. For the missing start and stop streaming sequences it generates TODO stubs with '# TODO: fill from datasheet start sequence' and '# TODO: fill from datasheet stop sequence' comments, never guesses register values, and reports the TODOs clearly in the Phase 1 summary.",
+    "expected_behavior": [
+      "The agent reads the hsb-add-sensor SKILL.md before taking any action",
+      "The agent presents the full 6-phase plan before starting",
+      "The agent extracts mode parameters and register tables from the datasheet and CSV in Phase 1",
+      "The agent generates TODO stub placeholders for the missing start and stop streaming sequences",
+      "The agent uses the comment '# TODO: fill from datasheet start sequence' or equivalent",
+      "The agent does NOT guess or invent register values for the missing sequences",
+      "The agent reports the missing sequences as TODOs in the Phase 1 summary",
+      "The agent asks for user confirmation before proceeding to Phase 2"
+    ]
+  }
+]

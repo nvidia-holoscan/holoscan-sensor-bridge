@@ -18,6 +18,7 @@ module axis_remove
     parameter                               AXI_DWIDTH   = 64,
     parameter                               REMOVE_OFFSET  = 16,
     parameter                               REMOVE_WIDTH   = 32,
+    parameter                               REG          = 1,
     parameter                               W_USER       = 4,
     localparam                              W_KEEP       = AXI_DWIDTH/8
 )(
@@ -94,7 +95,7 @@ logic [REMOVE_WIDTH-1:0] r_removed_data;
 logic [W_USER-1:0]       r_axis_tuser;
 logic [W_KEEP-1:0]       r_axis_tkeep;
 
-
+logic  axis_tready;
 
 //------------------------------------------------------------------------------------------------//
 // Register Pipeline
@@ -129,7 +130,7 @@ always_ff @(posedge clk) begin
       r_axis_tdata[i] <= '0;
     end
   end
-  else if (i_axis_tx_tready && i_axis_rx_tvalid) begin
+  else if (axis_tready && i_axis_rx_tvalid) begin
     r_axis_tdata[0] <= i_axis_rx_tdata;
     r_axis_tuser    <= i_axis_rx_tuser;
     r_axis_tkeep    <= i_axis_rx_tkeep;
@@ -239,7 +240,7 @@ generate
       if (rst) begin
         r_removed_data <= '0;
       end
-      else if (i_axis_tx_tready) begin
+      else if (axis_tready) begin
         if (effective_enable && is_fill_first_cycle_remove) begin
           r_removed_data <= i_axis_rx_tdata[BIT_OFFSET+:REMOVE_WIDTH];
         end else if (capture_removed_data || (REMOVE_IS_FIRST_CYCLE && REMOVE_IS_MULTI_CYCLE && data_state == S_REG && i_axis_rx_tvalid)) begin
@@ -256,7 +257,7 @@ generate
       if (rst) begin
         r_removed_data <= '0;
       end
-      else if (i_axis_tx_tready) begin
+      else if (axis_tready) begin
         if (capture_removed_data || (REMOVE_IS_FIRST_CYCLE && REMOVE_IS_MULTI_CYCLE && data_state == S_REG && i_axis_rx_tvalid)) begin
           r_removed_data <= r_axis_tdata_flat[BIT_OFFSET+:REMOVE_WIDTH];
         end
@@ -286,7 +287,7 @@ always_ff @(posedge clk) begin
     capture_removed_data <= '0;
   end
   else begin
-    if (!i_axis_tx_tready) begin
+    if (!axis_tready) begin
       data_state     <= data_state;
       d_cnt          <= d_cnt;
       r_cnt          <= r_cnt;
@@ -376,12 +377,46 @@ assign tkeep  = fill_last_pending ? (r_axis_tkeep >> TLAST_VAL_BYTES) :
                 i_axis_rx_tlast   ? tkeep_final[0+:W_KEEP] : '1;
 assign tuser  = (fill_last_pending || is_extra_cycle) ? r_axis_tuser : i_axis_rx_tuser;
 
-assign o_axis_tx_tdata  = tdata;
-assign o_axis_tx_tlast  = tlast;
-assign o_axis_tx_tvalid = tvalid;
-assign o_axis_tx_tkeep  = tkeep;
-assign o_axis_tx_tuser  = tuser;
-assign o_axis_rx_tready = i_axis_tx_tready && (effective_enable || !pending_output);
+
+generate
+  if (REG) begin
+    logic [AXI_DWIDTH-1:0] reg_tdata;
+    logic                  reg_tvalid;
+    logic                  reg_tlast;
+    logic [W_KEEP-1:0]     reg_tkeep;
+    logic [W_USER-1:0]     reg_tuser;
+
+    axis_reg #(
+      .DWIDTH                       ( AXI_DWIDTH+W_KEEP+1+W_USER                ),
+      .SKID                         ( 1                                         )
+    ) u_axis_reg (
+      .clk                          ( clk                                       ),
+      .rst                          ( rst                                       ),
+      .i_axis_rx_tvalid             ( tvalid                                    ),
+      .i_axis_rx_tdata              ( {tdata, tlast, tuser, tkeep}              ),
+      .o_axis_rx_tready             ( axis_tready                               ),
+      .o_axis_tx_tvalid             ( reg_tvalid                                ),
+      .o_axis_tx_tdata              ( {reg_tdata,reg_tlast,reg_tuser,reg_tkeep} ),
+      .i_axis_tx_tready             ( i_axis_tx_tready                          )
+    );
+
+    assign o_axis_tx_tdata  = reg_tdata;
+    assign o_axis_tx_tlast  = reg_tlast;
+    assign o_axis_tx_tvalid = reg_tvalid;
+    assign o_axis_tx_tkeep  = reg_tkeep;
+    assign o_axis_tx_tuser  = reg_tuser;
+    assign o_axis_rx_tready = axis_tready && (effective_enable || !pending_output);
+
+  end else begin
+    assign o_axis_tx_tdata  = tdata;
+    assign o_axis_tx_tlast  = tlast;
+    assign o_axis_tx_tvalid = tvalid;
+    assign o_axis_tx_tkeep  = tkeep;
+    assign o_axis_tx_tuser  = tuser;
+    assign o_axis_rx_tready = axis_tready && (effective_enable || !pending_output);
+    assign axis_tready      = i_axis_tx_tready;
+  end
+endgenerate
 
 assign o_removed_data = r_removed_data;
 assign o_gated_enable = effective_enable;

@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,6 +23,7 @@
 #include <memory>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include "gpu_roce_transceiver.hpp"
 #include "hololink/operators/base_receiver_op.hpp"
@@ -34,6 +35,11 @@ namespace hololink::operators {
  *
  * This operator uses DOCA Verbs for GPU-based CQ/QP management instead of
  * the traditional IB-based CPU management approach.
+ *
+ * A single operator can serve several sensors of the same Hololink board: tx_ibv_qp
+ * lists one remote QP per sensor ("2,4,6,8") and hololink_channels lists the
+ * DataChannel of each sensor in the same order. Each pair gets its own local QP and
+ * ring buffer. Without hololink_channels, hololink_channel is the only sensor.
  */
 class GpuRoceTransceiverOp : public BaseReceiverOp {
 public:
@@ -48,26 +54,31 @@ public:
     std::tuple<std::string, uint32_t> local_ip_and_port() override;
     bool frames_ready() override;
 
-    CUdeviceptr frame_memory();
+    CUdeviceptr frame_memory(unsigned sensor_id);
 
-    uint8_t* get_ring_addr(bool is_rx);
-    size_t get_ring_stride_sz(bool is_rx);
-    uint32_t get_ring_stride_num(bool is_rx);
-    uint64_t* get_ring_flag_addr(bool is_rx);
+    uint8_t* get_ring_addr(bool is_rx, unsigned sensor_id);
+    size_t get_ring_stride_sz(bool is_rx, unsigned sensor_id);
+    uint32_t get_ring_stride_num(bool is_rx, unsigned sensor_id);
+    uint64_t* get_ring_flag_addr(bool is_rx, unsigned sensor_id);
 
     GpuRoceTransceiverOp() = default;
     ~GpuRoceTransceiverOp() = default;
 
 private:
+    holoscan::Parameter<std::vector<DataChannel*>> hololink_channels_;
     holoscan::Parameter<std::string> ibv_name_;
     holoscan::Parameter<uint32_t> ibv_port_;
-    holoscan::Parameter<uint32_t> tx_ibv_qp_;
+    holoscan::Parameter<std::string> tx_ibv_qp_;
     holoscan::Parameter<uint32_t> gpu_id_;
     holoscan::Parameter<uint32_t> forward_;
     std::shared_ptr<GpuRoceTransceiver> gpu_roce_transceiver_;
     std::unique_ptr<std::thread> gpu_monitor_thread_;
+    // Channels whose HSB RoCE configuration has been (at least partially) written, to unconfigure on stop
+    std::vector<DataChannel*> configured_channels_;
 
     void gpu_monitor_loop();
+    // The DataChannel of each QP in tx_ibv_qp: hololink_channels, or hololink_channel alone
+    std::vector<DataChannel*> data_channels();
     static constexpr unsigned PAGES = 1024;
 };
 

@@ -19,6 +19,7 @@ import argparse
 import hashlib
 import logging
 import os
+import stat
 import time
 import zipfile
 
@@ -49,6 +50,29 @@ PFSRV_MBX_WDATA = 0x28
 SPI_CONN_ADDR = 0x03000000
 
 
+def _safe_extract(zip_ref, dest="."):
+    # The archive comes from a URL named by a YAML manifest, so treat its member
+    # names as untrusted. Validate every member up front, before anything is
+    # written to disk.
+    dest = os.path.realpath(dest)
+    prefix = dest + os.sep
+    for member in zip_ref.infolist():
+        # A symlink member could otherwise be restored first and used to
+        # redirect a later member out of dest.
+        if stat.S_ISLNK(member.external_attr >> 16):
+            raise ValueError(
+                f"Refusing to extract {member.filename!r}: archive contains a symlink"
+            )
+        # ".." components and absolute paths both land outside dest here.
+        target = os.path.realpath(os.path.join(dest, member.filename))
+        if target != dest and not target.startswith(prefix):
+            raise ValueError(
+                f"Refusing to extract {member.filename!r}: "
+                f"resolves to {target}, outside of {dest}"
+            )
+    zip_ref.extractall(dest)
+
+
 def download_extract(current_file_cfg):
     current_url = current_file_cfg.get("url", None)
     filename = current_file_cfg.get("filename", None)
@@ -61,7 +85,7 @@ def download_extract(current_file_cfg):
         with open(zipname, "wb") as f:
             f.write(r.content)
         with zipfile.ZipFile(zipname) as zip_ref:
-            zip_ref.extractall(".")
+            _safe_extract(zip_ref, ".")
     with open(filename, "rb") as file_to_check:
         data = file_to_check.read()
         md5_returned = hashlib.md5(data).hexdigest()
@@ -133,6 +157,7 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
 
         in_spi = traditional_peripherals_py.get_traditional_spi(
             peer_ip=channel_metadata["peer_ip"],
+            peer_interface=channel_metadata["interface"],
             control_port=channel_metadata["control_port"],
             serial_number=channel_metadata["serial_number"],
             spi_address=spi_con_addr,
@@ -200,11 +225,21 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
         logging.warning(f"Archive file {archive_filename} doesn't exist for cleanup")
 
 
-def manual_enumeration(args):
+def manual_enumeration(args, interface=""):
+    """Build a metadata blob for a board that never answered bootp.
+
+    `interface` names the NIC control-plane requests should leave by; it is
+    what enumeration would have recorded from the bootp reply's IP_PKTINFO.
+    The default of "" resolves to ifindex 0, which leaves egress selection to
+    the routing table -- the behavior this path has always had. Pass a real
+    NIC name when the routing table cannot pick correctly, e.g. two boards on
+    overlapping data-plane subnets.
+    """
     m = {
         "control_port": 8192,
         "hsb_ip_version": 0x2502,
         "peer_ip": args.hololink,
+        "interface": interface,
         "sequence_number_checking": 0,
         "serial_number": "100",
         "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",

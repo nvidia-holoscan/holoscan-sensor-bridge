@@ -103,9 +103,42 @@ function automatic logic is_roce_packet(logic [7:0] packet_bytes[$]);
 endfunction
 
 //==============================================================================
+// IEEE 802.3x PAUSE Frame Classification
+//   Matches the frame pause_gen.sv emits: EtherType 0x8808, opcode 0x0001.
+//==============================================================================
+function automatic logic is_pause_frame(logic [7:0] packet_bytes[$]);
+    if (packet_bytes.size() < (PAUSE_QUANTA_OFFSET + 2)) begin
+        return 0;
+    end
+    if ({packet_bytes[ETH_ETHERTYPE_OFFSET], packet_bytes[ETH_ETHERTYPE_OFFSET+1]} != ETHER_TYPE_MAC_CTRL) begin
+        return 0;
+    end
+    return ({packet_bytes[PAUSE_OPCODE_OFFSET], packet_bytes[PAUSE_OPCODE_OFFSET+1]} == MAC_CTRL_OPCODE_PAUSE);
+endfunction
+
+//==============================================================================
+// Honor a received PAUSE frame: load the host-side pause countdown so the TX
+// (host->sensor) sender stalls for quanta*(512/HOST_WIDTH) hif cycles. A
+// zero-quanta frame (XON) resumes immediately.
+//==============================================================================
+task automatic honor_host_pause(logic [7:0] packet_bytes[$]);
+    automatic logic [15:0] quanta;
+    quanta = {packet_bytes[PAUSE_QUANTA_OFFSET], packet_bytes[PAUSE_QUANTA_OFFSET+1]};
+    if (quanta == 16'h0) begin
+        pause_release_cycle = 0;
+        `TB_LOG_MED(LOG_INFO, "Host PAUSE frame (quanta=0, XON) - resuming TX immediately");
+    end
+    else begin
+        pause_release_cycle = quanta * NUM_HIF_CLK_PER_QUANTA;
+        `TB_LOG_MED(LOG_INFO, $sformatf("Host PAUSE frame received: quanta=%0d -> stall TX for %0d hif cycles",
+                 quanta, pause_release_cycle));
+    end
+endtask
+
+//==============================================================================
 // Unified Host Interface Monitor with Traffic Classification
 //==============================================================================
-task monitor_host_with_classification();
+task automatic monitor_host_with_classification(input int host_id);
     automatic logic [7:0] frame_buffer[$];
     automatic int frame_length = 0;
     automatic logic frame_active = 0;
@@ -117,7 +150,7 @@ task monitor_host_with_classification();
     forever begin
         @(posedge hif_clk);
         
-        if (o_hif_axis_tvalid[0] && i_hif_axis_tready[0]) begin
+        if (o_hif_axis_tvalid[host_id] && i_hif_axis_tready[host_id]) begin
             // Start of new frame
             if (!frame_active) begin
                 frame_buffer = {};
@@ -127,20 +160,34 @@ task monitor_host_with_classification();
             
             // Extract bytes from current word
             for (int byte_idx = 0; byte_idx < (`HOST_WIDTH/8); byte_idx++) begin
-                if (o_hif_axis_tkeep[0][byte_idx]) begin
-                    frame_buffer.push_back(o_hif_axis_tdata[0][byte_idx*8 +: 8]);
+                if (o_hif_axis_tkeep[host_id][byte_idx]) begin
+                    frame_buffer.push_back(o_hif_axis_tdata[host_id][byte_idx*8 +: 8]);
                     frame_length++;
                 end
             end
             
             // End of frame processing
-            if (o_hif_axis_tlast[0]) begin
+            if (o_hif_axis_tlast[host_id]) begin
                 frame_active = 0;
                 
                 if (frame_length > ETH_HEADER_SIZE) begin // At least Ethernet header
-                    // Port-first classification: BOOTP, then ECB
-                    if (is_bootp_packet(frame_buffer)) begin
-                        `TB_LOG_HIGH(LOG_INFO, "BOOTP packet skipped");
+                    // 802.3x PAUSE control frame (host backpressure) - honor it on
+                    // the host->sensor TX path so the sender stalls. Checked first
+                    // since it is a MAC control frame, not IPv4/UDP.
+                    if (is_pause_frame(frame_buffer)) begin
+                        if (host2sen_mode) begin
+                            honor_host_pause(frame_buffer);
+                        end
+                    end else if (is_bootp_packet(frame_buffer)) begin
+                    `ifndef ENUM_EEPROM
+                        // Only non-EEPROM builds need a BOOTP reply so the DUT gets
+                        // a device IP; pulse the event and let the responder answer.
+                        // EEPROM builds get their IP from the EEPROM, so skip it.
+                        `TB_LOG_HIGH(LOG_INFO, "BOOTP request observed - triggering responder");
+                        ->bootp_req_seen;
+                    `else
+                        `TB_LOG_HIGH(LOG_INFO, "BOOTP packet skipped (EEPROM build)");
+                    `endif
                     end else if (is_ecb_packet(frame_buffer)) begin
                         if (frame_length > UDP_PAYLOAD_OFFSET_FROM_ETH) begin
                             cmd_code = frame_buffer[UDP_PAYLOAD_OFFSET_FROM_ETH + ECB_CMD_OFFSET];
@@ -205,6 +252,8 @@ task process_coe_packet(logic [7:0] coe_frame_data[$], int frame_length);
     logic [27:0] coe_byte_offset;
     int payload_size;
     logic [7:0] coe_flags;
+    logic [5:0] coe_channel_number;
+    int coe_sensor_id;
     
     host_packets_received++;
     host_fragments_received++;
@@ -231,6 +280,7 @@ task process_coe_packet(logic [7:0] coe_frame_data[$], int frame_length);
             coe_frame_number = last_word[COE_FRAME_NUM_MSB:COE_FRAME_NUM_LSB];
             coe_byte_offset = last_word[COE_BYTE_OFFSET_MSB:COE_BYTE_OFFSET_LSB];
             coe_flags = coe_payload_array[COE_FLAGS_BYTE_OFFSET]; // Flags nibble in lower 4 bits
+            coe_channel_number = coe_payload_array[COE_CHANNEL_BYTE_OFFSET][5:0]; // == dest_qp[5:0]
             payload_size = coe_payload_array.size() - header_size;
 
             frame_id = coe_frame_number;
@@ -245,6 +295,24 @@ task process_coe_packet(logic [7:0] coe_frame_data[$], int frame_length);
             if ((coe_flags[COE_FLAGS_NIBBLE_MSB:COE_FLAGS_NIBBLE_LSB] == COE_FRAME_END) ||
                 ((coe_byte_offset + payload_size) >= FRAME_SIZE_BYTES)) begin
                 coe_frame_completed = 1;
+`ifdef SENSOR_RX_IF_INST
+                if (all_sensors_mode) begin
+                    // COE has no QP; identify the sensor from channel_number (== dest_qp[5:0])
+                    coe_sensor_id = get_sensor_id_from_coe_channel(coe_channel_number);
+                    if (coe_sensor_id < 0) begin
+                        `TB_LOG_LOW(LOG_ERR, $sformatf("[COE] channel_number 0x%02x does not map to an active sensor", coe_channel_number));
+                        errors_detected++;
+                    end else if (frame_id >= 0 && frame_id < TOTAL_TEST_FRAMES) begin
+                        if (!frame_received_by_sensor[coe_sensor_id][frame_id]) begin
+                            frame_received_by_sensor[coe_sensor_id][frame_id] = 1;
+                            frames_received_by_sensor[coe_sensor_id]++;
+                            unique_frames_received++;
+                            `TB_LOG_LOW(LOG_PASS, $sformatf("[OK] COE Frame %0d received and ANALYZED for sensor %0d (total unique frames: %0d)",
+                                     frame_id, coe_sensor_id, unique_frames_received));
+                        end
+                    end
+                end else begin
+`endif
                 if (frame_id >= 0 && frame_id < 3) begin
                     if (!frame_received[frame_id]) begin
                         frame_received[frame_id] = 1;
@@ -253,6 +321,9 @@ task process_coe_packet(logic [7:0] coe_frame_data[$], int frame_length);
                                  frame_id, unique_frames_received));
                     end
                 end
+`ifdef SENSOR_RX_IF_INST
+                end
+`endif
                 completed_sensor_frames++;
                 `TB_LOG_LOW(LOG_PASS, $sformatf("[COE] Complete sensor frame %0d reassembled and ANALYZED via header-driven logic", frame_id));
             end

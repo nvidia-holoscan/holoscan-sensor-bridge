@@ -17,7 +17,6 @@
 
 #include "traditional_peripherals.hpp"
 
-#include <cassert>
 #include <cstdint>
 
 #include <hololink/core/logging_internal.hpp>
@@ -110,7 +109,10 @@ public:
         // Hololink FPGA doesn't support resetting the SPI interface;
         // so the best we can do is see that it's not busy.
         uint32_t value = hololink_.read_uint32(reg_control_, timeout);
-        assert((value & SPI_BUSY) == 0);
+        if (value & SPI_BUSY) {
+            throw std::runtime_error(fmt::format(
+                "Unexpected SPI_BUSY bit set, reg_control={:#x}, control value={:#x}", reg_control_, value));
+        }
         // Set the configuration
         hololink_.write_uint32(reg_spi_cfg_, spi_cfg_, timeout);
         const size_t remaining = write_bytes.size();
@@ -132,7 +134,11 @@ public:
         // out at (buffer_size=288) (length checked above)
         const uint32_t num_bytes = (write_byte_count << 0) | (read_byte_count << 16);
         hololink_.write_uint32(reg_num_bytes_, num_bytes, timeout);
-        assert(turnaround_cycles_ < 16);
+        if (turnaround_cycles_ >= 16) { // available bits in num_bytes2
+            throw std::runtime_error(
+                fmt::format("Turnaround cycles \"{}\" is too large, has to be less than 16.",
+                    turnaround_cycles_));
+        }
         const uint32_t num_bytes2 = turnaround_cycles_ | (write_command_count << 8);
         hololink_.write_uint32(reg_num_bytes2_, num_bytes2, timeout);
         // start the SPI transaction.  don't retry this guy; just raise

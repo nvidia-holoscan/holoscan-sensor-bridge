@@ -15,7 +15,8 @@
 
 namespace hololink::module {
 
-ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size)
+ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t size,
+    Placement placement)
 {
     HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));
     HOLOLINK_MODULE_CUDA_CHECK(cuCtxSetCurrent(cu_context));
@@ -36,10 +37,11 @@ ReceiverMemoryDescriptor::ReceiverMemoryDescriptor(CUcontext cu_context, size_t 
     const size_t allocation_size = size + page_size;
 
     HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, device));
-    HSB_LOG_TRACE("integrated={}", integrated);
+    HSB_LOG_TRACE("integrated={} placement={}", integrated, static_cast<int>(placement));
 
-    if (integrated == 0) {
-        // Discrete GPU — cuMemAlloc / cuMemFree.
+    if (integrated == 0 || placement == Placement::Device) {
+        // Discrete GPU, or a caller that needs a device allocation regardless (dma-buf
+        // export) — cuMemAlloc / cuMemFree.
         deviceptr_.reset([allocation_size] {
             CUdeviceptr device_deviceptr;
             HOLOLINK_MODULE_CUDA_CHECK(cuMemAlloc(&device_deviceptr, allocation_size));

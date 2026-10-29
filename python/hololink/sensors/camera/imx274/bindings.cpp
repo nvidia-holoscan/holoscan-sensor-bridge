@@ -56,7 +56,7 @@ PYBIND11_MODULE(_native_imx274_camera_sensor, m)
     py::enum_<imx274_mode::Mode>(imx274_mode_module, "Imx274_Mode")
         .value("IMX274_MODE_3840X2160_60FPS", imx274_mode::IMX274_MODE_3840X2160_60FPS)
         .value("IMX274_MODE_1920X1080_60FPS", imx274_mode::IMX274_MODE_1920X1080_60FPS)
-        .value("IMX274_MODE_3840X2160_60FPS_12BITS", imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS)
+        .value("IMX274_MODE_3840X2160_30FPS_12BITS", imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS)
         .export_values();
 
     imx274_mode_module.attr("IMX274_TABLE_WAIT_MS") = imx274_mode::IMX274_TABLE_WAIT_MS;

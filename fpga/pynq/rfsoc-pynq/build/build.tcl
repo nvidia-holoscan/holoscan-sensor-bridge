@@ -234,26 +234,41 @@ set_property -dict [list \
 ] [get_runs synth_1]
 current_run -synthesis [get_runs synth_1]
 
-# Create/configure the implementation run and enable bitstream generation.
-if {[string equal [get_runs -quiet impl_1] ""]} {
-    create_run -name impl_1 \
-        -part $part_name \
-        -flow {Vivado Implementation 2024} \
-        -strategy {Vivado Implementation Defaults} \
-        -constrset constrs_1 \
-        -parent_run synth_1
+# Vivado has no placer seed. These strategies place the same synthesized
+# netlist differently and run at the same time.
+set impl_runs [list \
+    [list impl_1        {Vivado Implementation Defaults}] \
+    [list impl_explore  Performance_Explore] \
+    [list impl_extra    Performance_ExtraTimingOpt] \
+    [list impl_netdelay Performance_NetDelay_high] \
+    [list impl_refine   Performance_RefinePlacement] \
+]
+
+foreach spec $impl_runs {
+    set run_name [lindex $spec 0]
+    set run_strategy [lindex $spec 1]
+    if {[string equal [get_runs -quiet $run_name] ""]} {
+        create_run -name $run_name \
+            -part $part_name \
+            -flow {Vivado Implementation 2024} \
+            -strategy $run_strategy \
+            -constrset constrs_1 \
+            -parent_run synth_1
+    }
+    set_property strategy $run_strategy [get_runs $run_name]
+    set_property -dict [list \
+        flow {Vivado Implementation 2024} \
+        part $part_name \
+        steps.post_route_phys_opt_design.is_enabled true \
+        steps.post_route_phys_opt_design.args.directive Explore \
+        steps.write_bitstream.args.readback_file 0 \
+        steps.write_bitstream.args.verbose 0 \
+    ] [get_runs $run_name]
 }
-set_property -dict [list \
-    flow {Vivado Implementation 2024} \
-    part $part_name \
-    strategy {Vivado Implementation Defaults} \
-    steps.write_bitstream.args.readback_file 0 \
-    steps.write_bitstream.args.verbose 0 \
-] [get_runs impl_1]
 current_run -implementation [get_runs impl_1]
 
-# Use more host threads and open the BD before launching the build.
-set_param general.maxThreads 16
+# Eight threads inside each run. Five runs share the host.
+set_param general.maxThreads 8
 open_bd_design $bd_file
 
 # Run synthesis and wait for it to finish before implementation starts.
@@ -261,13 +276,43 @@ puts "Starting synthesis"
 launch_runs synth_1
 wait_on_run synth_1
 
-# Run implementation through write_bitstream and wait for the bit file.
-puts "Starting implementation and bitstream generation"
-launch_runs impl_1 -to_step write_bitstream
-wait_on_run impl_1
+set run_names {}
+foreach spec $impl_runs {
+    lappend run_names [lindex $spec 0]
+}
+
+# Run every implementation through write_bitstream. A failed run must not
+# discard bitstreams from the runs that finished.
+puts "Starting implementation and bitstream generation: $run_names"
+launch_runs {*}$run_names -to_step write_bitstream -jobs [llength $run_names]
+if {[catch {wait_on_runs {*}$run_names} wait_msg]} {
+    puts "WARNING: $wait_msg"
+}
+
+# Keep the bitstream from the run with the largest WNS.
+set best_run ""
+set best_wns ""
+foreach run_name $run_names {
+    set status [get_property STATUS [get_runs $run_name]]
+    set wns [get_property STATS.WNS [get_runs $run_name]]
+    puts "Run $run_name status=$status WNS=$wns"
+    set bit_path [file normalize "$project_dir/${project_name}.runs/${run_name}/${top_module}.bit"]
+    if {![file exists $bit_path] || $wns eq ""} {
+        puts "WARNING: $run_name produced no bitstream"
+        continue
+    }
+    if {$best_run eq "" || $wns > $best_wns} {
+        set best_run $run_name
+        set best_wns $wns
+    }
+}
+if {$best_run eq ""} {
+    error "No implementation run produced a bitstream"
+}
+puts "Best run: $best_run WNS=$best_wns"
 
 # Locate the generated bitstream in the Vivado project output directory.
-set bit_src [file normalize "$project_dir/${project_name}.runs/impl_1/${top_module}.bit"]
+set bit_src [file normalize "$project_dir/${project_name}.runs/${best_run}/${top_module}.bit"]
 set bit_src [require_file $bit_src "Generated bitstream"]
 
 # Copy the bitstream to the shared bitfile directory with a timestamped name.

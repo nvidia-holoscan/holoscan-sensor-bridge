@@ -30,6 +30,9 @@
 #include <tuple>
 #include <vector>
 
+#include <netinet/in.h>
+#include <sys/socket.h>
+
 #include "enumerator.hpp"
 #include "metadata.hpp"
 #include "named_lock.hpp"
@@ -214,7 +217,7 @@ public:
 
     /**
      * Attach a synchronizable peer to this synchronizer.
-     * @param peer The peer to attach
+     * @param peer The peer to attach.
      * @param defer_start When false (default), attaching the first peer
      *                    runs setup() AND start() so timing pulses begin
      *                    immediately. When true, only setup() runs — the
@@ -227,7 +230,7 @@ public:
 
     /**
      * Detach a synchronizable peer from this synchronizer.
-     * @param peer The peer to detach
+     * @param peer The peer to detach.
      */
     void detach(std::shared_ptr<Synchronizable> peer);
 
@@ -276,14 +279,20 @@ class Hololink {
 
 public:
     /**
-     * @brief Construct a new Hololink object
+     * @brief Construct a new Hololink object.
      *
      * @param peer_ip
      * @param control_port
      * @param serial_number
+     * @param peer_interface NIC the board was enumerated on; control-plane
+     *        requests are pinned to it via IP_PKTINFO rather than left to the
+     *        host routing table, so boards on overlapping data-plane subnets
+     *        remain individually reachable. Trailing and defaulted so that
+     *        pre-existing callers are unaffected: an empty name resolves to
+     *        ifindex 0, which leaves egress to the routing table as before.
      */
     explicit Hololink(
-        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool block_enable = true);
+        const std::string& peer_ip, uint32_t control_port, const std::string& serial_number, bool sequence_number_checking, bool skip_sequence_initialization = false, bool ptp_enable = true, bool block_enable = true, const std::string& peer_interface = std::string());
     Hololink() = delete;
 
     virtual ~Hololink();
@@ -292,7 +301,7 @@ public:
      * @brief
      *
      * @param metadata
-     * @return std::shared_ptr<Hololink>
+     * @return std::shared_ptr<Hololink>.
      */
     static std::shared_ptr<Hololink> from_enumeration_metadata(const Metadata& metadata);
 
@@ -305,35 +314,38 @@ public:
      * @brief
      *
      * @param metadata
-     * @return true
-     * @return false
+     * @return true.
+     * @return false.
      */
     static bool enumerated(const Metadata& metadata);
 
     /**
      * Initialize local resources necessary to communicate
-     * with HSB (e.g. the control plane socket).
+     * with HSB (e.g. the control plane socket).  A transport
+     * subclass (e.g. a PCIe carrier module) may override this.
      */
-    void start();
+    virtual void start();
 
     /**
-     * @brief
+     * @brief Release the resources acquired by start().  A transport
+     * subclass may override this.
      */
-    void stop();
+    virtual void stop();
 
     /**
-     * @brief
+     * @brief Reset the device and reconnect to it.  A transport
+     * subclass may override this.
      */
-    void reset();
+    virtual void reset();
 
     /**
      * @param timeout
-     * @returns the FPGA version
+     * @return the FPGA version.
      */
     uint32_t get_hsb_ip_version(const std::shared_ptr<Timeout>& timeout = std::shared_ptr<Timeout>(), bool sequence_check = true);
 
     /**
-     * @returns the FPGA date
+     * @return the FPGA date.
      */
     uint32_t get_fpga_date();
 
@@ -344,8 +356,8 @@ public:
      * @param value
      * @param in_timeout
      * @param retry
-     * @return true
-     * @return false
+     * @return true.
+     * @return false.
      */
     bool write_uint32(uint32_t address, uint32_t value,
         const std::shared_ptr<Timeout>& in_timeout, bool retry, bool sequence_check);
@@ -375,17 +387,32 @@ public:
         {
             data_.push_back({ address, value });
         }
-        size_t size()
+        size_t size() const
         {
             return data_.size();
         }
         std::string stringify();
+        /// The queued (address, value) pairs, in order. Transport subclasses overriding
+        /// write_uint32(WriteData&, ...) apply these themselves.
+        const std::vector<std::pair<uint32_t, uint32_t>>& data() const
+        {
+            return data_;
+        }
 
     protected:
         std::vector<std::pair<uint32_t, uint32_t>> data_;
     };
 
-    bool write_uint32(WriteData& data, const std::shared_ptr<Timeout> in_timeout, bool retry, bool sequence_check);
+    /**
+     * Transport seam, batched write. Every register write in this class -- the scalar
+     * write_uint32 overloads, Sequencer::write, I2c / Spi transactions, configure_hsb,
+     * configure_apb_event, and_uint32 / or_uint32 -- ends up here; the base body carries the
+     * batch as one ECB WR_BLOCK over UDP. A transport that is not UDP overrides this method
+     * together with the two read_uint32 seams below (and re-exposes the inline overloads with
+     * `using Hololink::read_uint32; using Hololink::write_uint32;`); it must apply the pairs in
+     * order and treat the batch as one unit.
+     */
+    virtual bool write_uint32(WriteData& data, const std::shared_ptr<Timeout> in_timeout, bool retry, bool sequence_check);
 
     bool write_uint32(WriteData& data, const std::shared_ptr<Timeout> in_timeout = nullptr, bool retry = true)
     {
@@ -396,11 +423,14 @@ public:
      * @brief Returns the value found at the location or calls hololink timeout if there's a
      * problem.
      *
+     * Transport seam, scalar read (see write_uint32(WriteData&, ...)): every scalar
+     * read_uint32 overload ends up here; the base body is one ECB RD_DWORD over UDP.
+     *
      * @param address
      * @param in_timeout
-     * @return uint32_t
+     * @return uint32_t.
      */
-    uint32_t read_uint32(
+    virtual uint32_t read_uint32(
         uint32_t address, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check);
 
     uint32_t read_uint32(uint32_t address, const std::shared_ptr<Timeout>& timeout)
@@ -414,10 +444,13 @@ public:
         return read_uint32(address, timeout);
     }
 
-    std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
+    /// Transport seam, contiguous block read of `count` words from `address` (see
+    /// write_uint32(WriteData&, ...)); the base body is one ECB RD_BLOCK over UDP (or one
+    /// RD_DWORD per word when block_enable is off). Returns {false, {}} on timeout.
+    virtual std::tuple<bool, std::vector<uint32_t>> read_uint32(uint32_t address, uint32_t count, const std::shared_ptr<Timeout>& in_timeout, bool sequence_check = true);
 
     /**
-     * @brief Setup the clock
+     * @brief Setup the clock.
      *
      * @param clock_profile
      */
@@ -457,9 +490,18 @@ public:
         virtual void enable() = 0;
 
         /**
+         * Queue-only counterpart of enable(): appends the writes that enable()
+         * would send (program upload and event hookup) to write_data, in order,
+         * without sending anything.  The caller sends write_data, which lets
+         * it batch them with other register writes into one packet.  Throws
+         * if this sequencer doesn't support staging.
+         */
+        virtual void stage(WriteData& write_data);
+
+        /**
          * Add a "write" command to the sequence, which
          * will write the given data to the given location.
-         * @returns the index of the data to facilitate
+         * @return the index of the data to facilitate
          * dynamic updates later.
          */
         unsigned write_uint32(uint32_t address, uint32_t data);
@@ -468,7 +510,7 @@ public:
          * Add a "read" command to the sequence, which
          * will read the memory location and store it in
          * the following sequence memory location.
-         * @returns the index of the stored memory location.
+         * @return the index of the stored memory location.
          */
         unsigned read_uint32(uint32_t address, uint32_t initial_value = 0xFFFFFFFF);
 
@@ -478,7 +520,7 @@ public:
          * anded with `mask` matches the value in `match`.  This
          * will time out if the match isn't found within the timeout
          * configured on the sequencer.
-         * @returns the index of the match value.
+         * @return the index of the match value.
          */
         unsigned poll(uint32_t address, uint32_t mask, uint32_t match);
 
@@ -512,6 +554,12 @@ public:
          */
         void write(Hololink& hololink);
 
+        /**
+         * Queue-only counterpart of write(): appends the sequence to
+         * write_data instead of sending it.
+         */
+        void queue(WriteData& write_data);
+
     protected:
         /**
          * Append the given value to the buffer;
@@ -523,7 +571,7 @@ public:
         /**
          * Update the command word with the given op;
          * perhaps adding another command word as necessary.
-         * @returns the index of the command word.
+         * @return the index of the command word.
          */
         unsigned add_command(Op op);
 
@@ -563,10 +611,10 @@ public:
         virtual ~I2c() {};
 
         /**
-         * @brief Set the i2c clock
+         * @brief Set the i2c clock.
          *
-         * @return true
-         * @return false
+         * @return true.
+         * @return false.
          */
         virtual bool set_i2c_clock() = 0;
 
@@ -577,7 +625,7 @@ public:
          * @param write_bytes
          * @param read_byte_count
          * @param in_timeout
-         * @return std::vector<uint8_t>
+         * @return std::vector<uint8_t>.
          */
         virtual std::vector<uint8_t> i2c_transaction(uint32_t peripheral_i2c_address,
             const std::vector<uint8_t>& write_bytes, uint32_t read_byte_count,
@@ -586,7 +634,7 @@ public:
             = 0;
 
         /**
-         * @returns {write_indexes, read_indexes, status_index}
+         * @return {write_indexes, read_indexes, status_index}.
          */
         virtual std::tuple<std::vector<unsigned>, std::vector<unsigned>, unsigned> encode_i2c_request(
             Sequencer& sequencer,
@@ -596,10 +644,10 @@ public:
     };
 
     /**
-     * @brief Get an I2c class instance
+     * @brief Get an I2c class instance.
      *
      * @param i2c_address
-     * @return std::shared_ptr<I2c>
+     * @return std::shared_ptr<I2c>.
      */
     std::shared_ptr<I2c> get_i2c(uint32_t i2c_bus, uint32_t i2c_address = I2C_CTRL);
 
@@ -624,7 +672,7 @@ public:
          * @param write_data_bytes
          * @param read_byte_count
          * @param in_timeout
-         * @return std::vector<uint8_t>
+         * @return std::vector<uint8_t>.
          */
         virtual std::vector<uint8_t> spi_transaction(const std::vector<uint8_t>& write_command_bytes,
             const std::vector<uint8_t>& write_data_bytes, uint32_t read_byte_count,
@@ -633,7 +681,7 @@ public:
     };
 
     /**
-     * @brief Get the spi object
+     * @brief Get the spi object.
      *
      * @param spi_address
      * @param chip_select
@@ -641,7 +689,7 @@ public:
      * @param cpol
      * @param cpha
      * @param width
-     * @return std::shared_ptr<Spi>
+     * @return std::shared_ptr<Spi>.
      */
     std::shared_ptr<Spi> get_spi(uint32_t bus_number, uint32_t chip_select,
         uint32_t clock_divisor = 0x0F, uint32_t cpol = 1, uint32_t cpha = 1, uint32_t width = 1, uint32_t spi_address = SPI_CTRL);
@@ -653,7 +701,7 @@ public:
     NamedLock& spi_lock();
 
     /**
-     * @brief UART class interface
+     * @brief UART class interface.
      */
     class Uart {
     public:
@@ -700,15 +748,15 @@ public:
     };
 
     /**
-     * @brief Get a UART object
+     * @brief Get a UART object.
      *
-     * @param port_number UART port identifier (platform-specific)
-     * @param baud_rate UART baud rate
-     * @param data_bits Number of data bits (5, 6, 7, or 8)
-     * @param parity Parity mode (0=None, 1=Odd, 2=Even)
-     * @param stop_bits Number of stop bits (1, 15 for 1.5, or 2)
-     * @param flow_control Flow control mode (0=None, 1=RTS/CTS)
-     * @return std::shared_ptr<Uart>
+     * @param port_number UART port identifier (platform-specific).
+     * @param baud_rate UART baud rate.
+     * @param data_bits Number of data bits (5, 6, 7, or 8).
+     * @param parity Parity mode (0=None, 1=Odd, 2=Even).
+     * @param stop_bits Number of stop bits (1, 15 for 1.5, or 2).
+     * @param flow_control Flow control mode (0=None, 1=RTS/CTS).
+     * @return std::shared_ptr<Uart>.
      */
     std::shared_ptr<Uart> get_uart(uint32_t port_number = 0, uint32_t baud_rate = 115200,
         uint32_t data_bits = 8, uint32_t parity = 0, uint32_t stop_bits = 1, uint32_t flow_control = 0);
@@ -752,20 +800,20 @@ public:
          * @brief Bring up the I2S audio path: SoC clock gate, APB peripheral
          * (CTRL0..CTRL7), host TX FIFO, DMIC GPIO direction.
          *
-         * @param enumeration_metadata Metadata from @ref Enumerator (used for DMIC GPIO direction)
-         * @param mclk_div MCLK divider: MCLK = REF_CLK / mclk_div (any positive integer; throws on 0)
-         * @param bclk_div_sel BCLK divider select (0..8, power-of-2 encoded: 0=/1, 1=/2, 2=/4, 3=/8, ... 8=/256; throws if > 8)
-         * @param bit_depth Sample bit depth: BD_8, BD_16, BD_24, BD_32 (8/16/24/32-bit)
-         * @param format I2S data format: I2S (standard), LJ (Left-Justified), RJ (Right-Justified)
-         * @param channel_mode Channel mode (Stereo, Mono)
-         * @param lrclk_polarity LRCLK polarity (false=left on LRCLK low, true=left on LRCLK high)
-         * @param enable_tx Enable I2S transmitter
-         * @param enable_rx Enable I2S receiver (also gates the DMIC GPIO flip)
-         * @param enable_loopback Internal loopback for testing (default false explicitly clears the FPGA reset value)
-         * @param tx_almost_full Host TX FIFO almost-full threshold
-         * @param tx_almost_empty Host TX FIFO almost-empty threshold
-         * @param pause_after Pause the host TX FIFO after bring-up
-         * @param slot_mode CTRL8 SLOT_MODE register value (default 0x1)
+         * @param enumeration_metadata Metadata from @ref Enumerator (used for DMIC GPIO direction).
+         * @param mclk_div MCLK divider: MCLK = REF_CLK / mclk_div (any positive integer; throws on 0).
+         * @param bclk_div_sel BCLK divider select (0..8, power-of-2 encoded: 0=/1, 1=/2, 2=/4, 3=/8, ... 8=/256; throws if > 8).
+         * @param bit_depth Sample bit depth: BD_8, BD_16, BD_24, BD_32 (8/16/24/32-bit).
+         * @param format I2S data format: I2S (standard), LJ (Left-Justified), RJ (Right-Justified).
+         * @param channel_mode Channel mode (Stereo, Mono).
+         * @param lrclk_polarity LRCLK polarity (false=left on LRCLK low, true=left on LRCLK high).
+         * @param enable_tx Enable I2S transmitter.
+         * @param enable_rx Enable I2S receiver (also gates the DMIC GPIO flip).
+         * @param enable_loopback Internal loopback for testing (default false explicitly clears the FPGA reset value).
+         * @param tx_almost_full Host TX FIFO almost-full threshold.
+         * @param tx_almost_empty Host TX FIFO almost-empty threshold.
+         * @param pause_after Pause the host TX FIFO after bring-up.
+         * @param slot_mode CTRL8 SLOT_MODE register value (default 0x1).
          *
          * Defaults (mclk_div=16, bclk_div_sel=3, bit_depth=BD_24) produce 48 kHz LRCLK.
          * LRCLK is derived as MCLK / (2 * bit_depth_bits * 2^bclk_div_sel).
@@ -823,7 +871,7 @@ public:
      * @see I2s::i2s_configure for the parameter details (divider math,
      *      valid ranges, defaults).
      *
-     * @return std::shared_ptr<I2s>
+     * @return std::shared_ptr<I2s>.
      */
     std::shared_ptr<I2s> get_i2s(
         Metadata& enumeration_metadata,
@@ -848,12 +896,12 @@ public:
     NamedLock& i2s_lock();
 
     /**
-     * @brief GPIO class
+     * @brief GPIO class.
      */
     class GPIO {
     public:
         /**
-         * @brief Construct a new GPIO object
+         * @brief Construct a new GPIO object.
          *
          * @param hololink
          */
@@ -887,7 +935,7 @@ public:
          * @brief
          *
          * @param pin
-         * @return Direction
+         * @return Direction.
          */
         uint32_t get_direction(uint32_t pin);
 
@@ -903,7 +951,7 @@ public:
          * @brief
          *
          * @param pin
-         * @return uint32_t
+         * @return uint32_t.
          */
         uint32_t get_value(uint32_t pin);
 
@@ -911,7 +959,7 @@ public:
          * @brief
          *
          * @param
-         * @return uint32_t
+         * @return uint32_t.
          */
         uint32_t get_supported_pin_num(void);
 
@@ -925,9 +973,9 @@ public:
     };
 
     /**
-     * @brief Get an GPIO class instance
+     * @brief Get an GPIO class instance.
      *
-     * @return std::shared_ptr<GPIO>
+     * @return std::shared_ptr<GPIO>.
      */
     std::shared_ptr<GPIO> get_gpio(Metadata& metadata);
 
@@ -984,7 +1032,7 @@ public:
 
     /**
      * Wait up to the given timeout for PTP to synchronize.
-     * @returns false if no PTP sync messages are received
+     * @return false if no PTP sync messages are received
      * within the allowed time.
      */
     bool ptp_synchronize(const std::shared_ptr<Timeout>& timeout);
@@ -995,19 +1043,20 @@ public:
     bool ptp_synchronized();
 
     /**
-     * ptp_synchronize(...) with a default timeout of 20 seconds.
+     * ptp_synchronize(...) with a default timeout of 30 seconds.
      */
     bool ptp_synchronize()
     {
-        float timeout_s = 20; // seconds
+        float timeout_s = 30; // seconds
         auto timeout = std::make_shared<Timeout>(timeout_s);
         return ptp_synchronize(timeout);
     }
 
     /**
      * Get a PTP synchronizer instance.
-     * @param frequency Optional frequency parameter (default: 60 Hz)
-     * @returns A shared pointer to a Synchronizer instance
+     * @param frequency Frequency in Hz. The first call requires a supported nonzero value;
+     *      0 reuses the previously configured frequency.
+     * @return A shared pointer to a Synchronizer instance.
      */
     std::shared_ptr<Synchronizer> ptp_pps_output(unsigned frequency = 0);
 
@@ -1023,48 +1072,48 @@ public:
      * Configure 802.1Q VLAN tagging for a sensor virtual port or the EVT channel.
      * Sets the VLAN ID, PCP, and DEI fields without changing the enable bit.
      * Call set_vlan_enable() to activate tagging after configuration.
-     * @param target SENSOR_VP or EVT
-     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
-     * @param vlan_id 12-bit VLAN identifier matching the switch and host subinterface
-     * @param pcp 3-bit IEEE 802.1p priority code point for this traffic class
+     * @param target SENSOR_VP or EVT.
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT).
+     * @param vlan_id 12-bit VLAN identifier matching the switch and host subinterface.
+     * @param pcp 3-bit IEEE 802.1p priority code point for this traffic class.
      * @param drop_eligible Drop eligible indicator bit (default 0); set to 1 to mark frames as
-     *        eligible for discard under congestion per IEEE 802.1Q
+     *        eligible for discard under congestion per IEEE 802.1Q.
      */
     void configure_vlan(VlanTarget target, uint32_t vp_index,
         uint16_t vlan_id, uint8_t pcp, uint8_t drop_eligible = 0);
 
     /**
      * Enable or disable 802.1Q VLAN tagging for a sensor virtual port or the EVT channel.
-     * @param target SENSOR_VP or EVT
-     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
-     * @param enable true to enable tagging, false to disable
+     * @param target SENSOR_VP or EVT.
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT).
+     * @param enable Use `true` to enable tagging or `false` to disable it.
      */
     void set_vlan_enable(VlanTarget target, uint32_t vp_index, bool enable);
 
     /**
      * Returns true if 802.1Q VLAN tagging is currently enabled for the given target.
-     * @param target SENSOR_VP or EVT
-     * @param vp_index Sensor virtual port index N (ignored when target is EVT)
+     * @param target SENSOR_VP or EVT.
+     * @param vp_index Sensor virtual port index N (ignored when target is EVT).
      */
     bool get_vlan_enable(VlanTarget target, uint32_t vp_index);
 
     /**
      * Configure HSB PTP profile and domain.
-     * @param profile PTP profile constant: FPGA_PTP_PROFILE_1588_E2E, FPGA_PTP_PROFILE_GPTP, or FPGA_PTP_PROFILE_1588_P2P
-     * @param domain PTP domain number matching the host PTP daemon configuration (default: 0)
+     * @param profile PTP profile constant: FPGA_PTP_PROFILE_1588_E2E, FPGA_PTP_PROFILE_GPTP, or FPGA_PTP_PROFILE_1588_P2P.
+     * @param domain PTP domain number matching the host PTP daemon configuration (default: 0).
      */
     void configure_ptp(uint32_t profile, uint32_t domain = 0);
 
     /**
      * Configure HSB PTP to IEEE 1588 E2E profile.
-     * @param domain PTP domain number matching the host ptp4l configuration (default: 0)
+     * @param domain PTP domain number matching the host ptp4l configuration (default: 0).
      */
     void configure_1588(uint32_t domain = 0);
 
     /**
      * Configure HSB PTP to gPTP (IEEE 802.1AS) profile.
      * Stop the host ptp4l service and start gptp4l before calling this.
-     * @param domain PTP domain number matching the gPTP host configuration (default: 0)
+     * @param domain PTP domain number matching the gPTP host configuration (default: 0).
      */
     void configure_gptp(uint32_t domain = 0);
 
@@ -1151,7 +1200,8 @@ public:
 
     /**
      * After `trigger_reset`, when enumeration messages are observed,
-     * call this to reconnect to HSB.
+     * call this to reconnect to HSB.  A transport subclass overriding
+     * reset() is expected to call this once the device is reachable again.
      */
     void post_reset_configuration();
 
@@ -1164,7 +1214,7 @@ public:
 
 protected:
     /**
-     * @brief Override this guy to record timing around ACKs etc
+     * @brief Override this guy to record timing around ACKs etc.
      *
      * @param request_time
      * @param request
@@ -1192,6 +1242,13 @@ protected:
      * on the current machine.  and_uint32 and or_uint32 use this.
      */
     NamedLock& lock();
+
+    /**
+     * Return the NamedLock called `name` for this board, creating it on first
+     * use.  Locks are kept per board (keyed by serial number), shared by every
+     * Hololink instance in the process that talks to that board.
+     */
+    NamedLock& device_lock(const char* name);
 
 public:
     /**
@@ -1241,11 +1298,26 @@ private:
     std::mutex async_event_listeners_mutex_;
     uint32_t null_sequence_location_;
     bool skip_sequence_initialization_; // workaround for programming antique devices
+
+protected:
+    // Set by start(), cleared by stop(); protected so a transport
+    // subclass overriding start()/stop() can maintain it.
     std::atomic<bool> started_;
+
+private:
     std::shared_ptr<PtpSynchronizer> ptp_pps_output_;
     bool ptp_enable_;
     bool block_enable_;
     uint32_t ptp_sync_stat_;
+    // Appended rather than placed next to peer_ip_ (which is what they
+    // logically belong with): adding a member mid-class shifts the offset of
+    // every member after it, so a partially-rebuilt tree -- one .so compiled
+    // against the new header, another against the old -- would silently
+    // misread all of them. Appending keeps every pre-existing offset intact,
+    // so a stale object file gets the old layout rather than a scrambled one.
+    // sizeof(Hololink) still grows, so a full rebuild is still the right move.
+    struct msghdr send_msg_ = { 0 };
+    char cmsgbuf_[CMSG_SPACE(sizeof(struct in_pktinfo))] = { 0 };
 
     bool write_uint32_block_(WriteData data, const std::shared_ptr<Timeout>& timeout,
         bool response_expected, uint16_t sequence, bool sequence_check, std::lock_guard<std::mutex>&);

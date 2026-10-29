@@ -232,7 +232,7 @@ PYBIND11_MODULE(_hololink, m)
     py::class_<Metadata, std::shared_ptr<Metadata>>(m, "Metadata")
         .def(py::init())
         /**
-         * @brief Create from Python dict
+         * @brief Create from Python dict.
          *
          * @param dict
          */
@@ -252,7 +252,7 @@ PYBIND11_MODULE(_hololink, m)
             return metadata;
         }))
         /**
-         * @returns an iterator object that can iterate over all objects in Metadata
+         * @return an iterator object that can iterate over all objects in Metadata.
          */
         .def(
             "__iter__", [](const Metadata& me) { return py::make_iterator(me.begin(), me.end()); },
@@ -275,7 +275,7 @@ PYBIND11_MODULE(_hololink, m)
             },
             "name"_a)
         /**
-         * @brief Get with default
+         * @brief Get with default.
          *
          * @param name
          * @param value
@@ -528,8 +528,10 @@ PYBIND11_MODULE(_hololink, m)
     py::register_exception<UnsupportedVersion>(m, "UnsupportedVersion", PyExc_RuntimeError);
 
     auto hololink_module = py::class_<Hololink, PyHololink, std::shared_ptr<Hololink>>(m, "Hololink")
-                               .def(py::init<const std::string&, uint32_t, const std::string&, bool>(), "peer_ip"_a,
-                                   "control_port"_a, "serial_number"_a, "sequence_number_checking"_a)
+                               .def(py::init<const std::string&, uint32_t, const std::string&, bool, bool, bool, bool, const std::string&>(),
+                                   "peer_ip"_a, "control_port"_a, "serial_number"_a, "sequence_number_checking"_a,
+                                   "skip_sequence_initialization"_a = false, "ptp_enable"_a = true, "block_enable"_a = true,
+                                   "peer_interface"_a = std::string())
                                .def_static("from_enumeration_metadata", &Hololink::from_enumeration_metadata, "metadata"_a)
                                .def_static("reset_framework", &Hololink::reset_framework)
                                .def_static("enumerated", &Hololink::enumerated, "metadata"_a)

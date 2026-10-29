@@ -13,7 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Lattice Sensor Board Example Design
+// MIPI CPNX100 Sensor Board Reference Design
 `include "HOLOLINK_def.svh"
 
 module FPGA_top
@@ -22,47 +22,37 @@ module FPGA_top
 #(
   parameter BUILD_REV = 48'h0
 )(
-  input           RESET_N,  // board reset push button
+  input         RESET_N,  // board reset push button
   // 10GbE SFP
-  input           ETH_REFCLK_P,
-  input           ETH_REFCLK_N,
-  input           ETH_RXD_P,
-  input           ETH_RXD_N,
-  output          ETH_TXD_P,
-  output          ETH_TXD_N,
-
-  // SFP Fiber Optics Disable    
-  output          SFP_TX_DIS,
+  input         ETH_REFCLK_P,
+  input         ETH_REFCLK_N,
+  input         ETH_RXD_P,
+  input         ETH_RXD_N,
+  output        ETH_TXD_P,
+  output        ETH_TXD_N,
 
   // MIPI Interface
-  inout   [1:0]   MIPI_CAM_CLK_P          ,
-  inout   [1:0]   MIPI_CAM_CLK_N          ,
-  inout   [3:0]   MIPI_CAM_DATA_P [1:0]   ,
-  inout   [3:0]   MIPI_CAM_DATA_N [1:0]   ,
+  inout  [ 1:0] MIPI_CAM_CLK_P          ,
+  inout  [ 1:0] MIPI_CAM_CLK_N          ,
+  inout  [ 3:0] MIPI_CAM_DATA_P [1:0]   ,
+  inout  [ 3:0] MIPI_CAM_DATA_N [1:0]   ,
 
   // I2C Interfaces
-  inout           CTRL_I2C_SCL,
-  inout           CTRL_I2C_SDA,
+  inout  [ 3:0] CTRL_I2C_SCL,
+  inout  [ 3:0] CTRL_I2C_SDA,
 
-  inout  [ 0:0]   CAM_I2C_SCL,
-  inout  [ 0:0]   CAM_I2C_SDA,
-
-  // SPI Flash Interfaces
-  output          FLASH_SPI_MCSN,
-  output          FLASH_SPI_MSCK,
-  inout  [ 3:0]   FLASH_SPI_SDIO,
-    
+  // QSPI Flash Interfaces
+  output        FLASH_SPI_MCSN,
+  output        FLASH_SPI_MSCK,
+  inout  [ 3:0] FLASH_SPI_SDIO,
   // GPIO
-  output [10:0] GPIO,
+  inout  [15:0] GPIO,
   // Camera power enable
   output        CAM_RST,
   // Camera clock
   output        CAM_MCLK,
-  // POC
-  output        POC_EN,
-  input         POC_INT_L,
-  inout         I2C_POC_SDA,
-  inout         I2C_POC_SCL
+  // Camera frame synchronization
+  output        CAM_FSYNC
 );
 
 //------------------------------------------------------------------------------
@@ -72,32 +62,29 @@ module FPGA_top
   logic [`SENSOR_RX_IF_INST-1:0] sw_sen_rst;
   logic                          sw_sys_rst;
 
-  logic [`HOST_IF_INST  -1:0] usr_clk;     // pcs user clock out
-  logic [`HOST_IF_INST  -1:0] usr_clk_rdy; // pcs user clock out ready
-  logic                       usr_clk_locked;
+  logic [`HOST_IF_INST     -1:0] usr_clk;     // pcs user clock out
+  logic [`HOST_IF_INST     -1:0] usr_clk_rdy; // pcs user clock out ready
+  logic                          usr_clk_locked;
   /* synthesis syn_keep=1 nomerge=""*/
-  logic                       adc_clk;     // 50MHz ADC clock
+  logic                          pcs_clk;     // 100-300 MHz PCS calibration clock
   /* synthesis syn_keep=1 nomerge=""*/
-  logic                       pcs_clk;     // 100-300 MHz PCS calibration clock
+  logic                          apb_clk;     // ctrl plane clock
   /* synthesis syn_keep=1 nomerge=""*/
-  logic                       apb_clk;     // ctrl plane clock
-  /* synthesis syn_keep=1 nomerge=""*/
-  logic                       hif_clk;     // data plane clock
-  logic                       sys_rst;     // system active high reset
-  logic                       apb_rst;     // apb active high reset
-  logic                       hif_rst;     // host interface active high reset
-  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_rst;     // sensor interface active high reset
-  logic                       pcs_rst_n;   // ethernet pcs active low reset
+  logic                          hif_clk;     // data plane clock
+  logic                          sys_rst;     // system active high reset
+  logic                          apb_rst;     // apb active high reset
+  logic                          hif_rst;     // host interface active high reset
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_rst; // sensor interface active-high reset
+  logic                          pcs_rst_n;  // Ethernet PCS active-low reset
   /* synthesis syn_keep=1 nomerge=""*/
   logic        ptp_clk;
   logic        ptp_rst;
   logic [31:0] ptp_nsec;
-  logic        vsync;
   logic [47:0] ptp_sec;
   logic        ptp_cam_clk;
   logic [7:0]  gpio_mux_en;
   logic [15:0] gpio_out;
-
+  
   assign usr_clk_locked = &usr_clk_rdy;
 
   logic        sys_pps;
@@ -116,7 +103,7 @@ module FPGA_top
     .o_ptp_clk     ( ptp_clk        ), // ptp interface clock
 
     .i_ptp_nsec    ( ptp_nsec       ),
-    .o_ptp_cam_clk ( ptp_cam_clk    ), //ptp 24MHz clock
+    .o_ptp_cam_clk ( ptp_cam_clk    ), // PTP 24 MHz clock
 
     .i_pb_rst_n    ( RESET_N        ), // asynchronous active low board reset
     .i_sw_rst      ( sw_sys_rst     ), // software controlled active high reset
@@ -130,56 +117,23 @@ module FPGA_top
 // FPGA Board Control
 //------------------------------------------------------------------------------
 
-  logic                     ptp_cam_24m_clk /* synthesis syn_keep=1 nomerge=""*/;
-
-  // Fiber Optics Disable Input Jumper
-  assign SFP_TX_DIS       = 1'b0;
-  // Deserializer IC MAX96716 power down
-  assign CAM_RST          = ~sw_sen_rst[0]; // power down active low
-  // Cameras enable 
-  assign POC_EN           = gpio_out[0];
+  // MAX96716 deserializer power-down (active low).
+  assign CAM_RST = ~sw_sen_rst[0];
 
   // MIPI clock is 27.043MHz
   ODDRX1 u_mipi_clk (
-    .D0   ( 1'b1            ),
-    .D1   ( 1'b0            ),
-    .SCLK ( mipi_clk        ), // 27.043MHz clock
-    .RST  ( !usr_clk_locked ),
-    .Q    ( CAM_MCLK        )  // 27.043MHz clock
+   .D0   ( 1'b1            ),
+   .D1   ( 1'b0            ),
+   .SCLK ( mipi_clk        ), // 27.043MHz clock
+   .RST  ( !usr_clk_locked ),
+   .Q    ( CAM_MCLK        )  // 27.043MHz clock
   );
-
-//------------------------------------------------------------------------------
-// PPS
-//------------------------------------------------------------------------------
-`ifdef SIMULATION
-  assign timer_done = timer_cnt[3];
-`else
-  assign timer_done = timer_cnt[17];
-`endif
-
-  always_ff @ (posedge ptp_clk) begin
-    if (ptp_rst) begin 
-      sys_pps_stretch <= 1'b0;
-      timer_cnt   <= '0;
-    end else begin
-      if (sys_pps) begin
-        sys_pps_stretch <= 1'b1;
-      end else if (timer_done) begin
-        timer_cnt   <= '0;
-        sys_pps_stretch <= 1'b0;
-      end else if (sys_pps_stretch) begin
-        timer_cnt   <= timer_cnt + 1'b1;
-      end
-    end
-  end
-
-  logic init_done;
 
 //------------------------------------------------------------------------------
 // APB Interface
 //------------------------------------------------------------------------------
 
-  // User Drops
+  // User-side APB signals
   logic [`REG_INST-1:0] apb_psel;
   logic                 apb_penable;
   logic [31         :0] apb_paddr;
@@ -189,14 +143,7 @@ module FPGA_top
   logic [31         :0] apb_prdata [`REG_INST-1:0];
   logic [`REG_INST-1:0] apb_pserr;
 
-  //Tie off unused REG_INST APB signals
   genvar i;
-
-  //for(i=7; i<`REG_INST; i++) begin
-  //  assign apb_pready[i] = '0;
-  //  assign apb_prdata[i] = '0;
-  //  assign apb_pserr [i] = '0;
-  //end
 
 //------------------------------------------------------------------------------
 // Lattice 10GbE Host Interface
@@ -236,10 +183,10 @@ module FPGA_top
         .i_sys_rst_n      ( ~sys_rst                  ),
         .o_usr_clk        ( usr_clk               [i] ),
         .o_usr_clk_rdy    ( usr_clk_rdy           [i] ),
-        // APB Interface, abp clk domain
+        // APB interface, APB clock domain
         .i_aclk           ( apb_clk                   ),
         .i_arst_n         (~apb_rst                   ),
-        // PCS APB Interface, abp clk domain
+        // PCS APB interface, APB clock domain
         .i_pcs_apb_psel   ( apb_psel          [0+i*2] ),
         .i_pcs_apb_penable( apb_penable               ),
         .i_pcs_apb_paddr  ( apb_paddr                 ),
@@ -248,7 +195,7 @@ module FPGA_top
         .o_pcs_apb_pready ( apb_pready        [0+i*2] ),
         .o_pcs_apb_prdata ( apb_prdata        [0+i*2] ),
         .o_pcs_apb_pserr  ( apb_pserr         [0+i*2] ),
-        // MAC APB Interface, abp clk domain
+        // MAC APB interface, APB clock domain
         .i_mac_apb_psel   ( apb_psel          [1+i*2] ),
         .i_mac_apb_penable( apb_penable               ),
         .i_mac_apb_paddr  ( apb_paddr                 ),
@@ -257,7 +204,7 @@ module FPGA_top
         .o_mac_apb_pready ( apb_pready        [1+i*2] ),
         .o_mac_apb_prdata ( apb_prdata        [1+i*2] ),
         .o_mac_apb_pserr  ( apb_pserr         [1+i*2] ),
-        // Ethernet XGMII MAC, hif_clkdomain
+        // Ethernet XGMII MAC, host-interface clock domain
         .i_pclk           ( hif_clk                   ),
         .i_prst_n         (~hif_rst                   ),
 
@@ -294,15 +241,14 @@ module FPGA_top
 
   // Adding a glitch filter, but can be removed if IO pads itself provides glitch filtering
   logic [3:0] flsh_spi_sdio_sync;
-  //logic       ctrl_spi_miso_sync;
 
   data_sync    #(
     .DATA_WIDTH ( 4                  )
   ) spi_glitch_filter (
     .clk        ( hif_clk            ),
-    .rst_n      (~hif_rst            ),
-    .sync_in    (FLASH_SPI_SDIO      ),
-    .sync_out   (flsh_spi_sdio_sync  )
+    .rst        (hif_rst             ),
+    .sync_in    ( FLASH_SPI_SDIO     ),
+    .sync_out   ( flsh_spi_sdio_sync )
   );
 
   // SPI Interface, QSPI compatible
@@ -310,39 +256,36 @@ module FPGA_top
   logic [`SPI_INST-1:0] spi_sck;
   logic [3          :0] spi_sdio_i [`SPI_INST-1:0];
   logic [3          :0] spi_sdio_o [`SPI_INST-1:0];
-  logic [`SPI_INST-1:0] spi_oen;
+  logic [3          :0] spi_oen    [`SPI_INST-1:0];
 
-  //// Regular SPI
-  //assign CTRL_SPI_MSCK = spi_sck   [0];
-  //assign CTRL_SPI_MCSN = spi_csn   [0];
-  //assign CTRL_SPI_MOSI = spi_sdio_o[0];
-  //assign spi_sdio_i[0] = {2'b0, ctrl_spi_miso_sync, 1'b0};
   // QSPI Flash
   assign FLASH_SPI_MSCK = spi_sck  [0];
   assign FLASH_SPI_MCSN = spi_csn  [0];
-  assign FLASH_SPI_SDIO = spi_oen  [0] ? spi_sdio_o[0] : 4'hz;
+//  assign FLASH_SPI_SDIO = spi_oen  [0] ? spi_sdio_o[0] : 4'hz;
   assign spi_sdio_i[0]  = flsh_spi_sdio_sync;
+
+  generate
+    for (i=0; i<4; i++) begin: spi_inst
+      assign FLASH_SPI_SDIO[i] = spi_oen[0][i] ? spi_sdio_o[0][i] : 1'bz;
+    end
+  endgenerate
+
+//------------------------------------------------------------------------------
+// I2C Interface
+//------------------------------------------------------------------------------
   // Adding a glitch filter, but can be removed if IO pads itself provides glitch filtering
-  logic                 ctrl_i2c_scl_sync;
-  logic                 ctrl_i2c_sda_sync;
-  logic [0:0]           cam_i2c_scl_sync;
-  logic [0:0]           cam_i2c_sda_sync;
-  logic                 poc_i2c_scl_sync;
-  logic                 poc_i2c_sda_sync;
+  logic [`I2C_INST-1:0] ctrl_i2c_scl_sync;
+  logic [`I2C_INST-1:0] ctrl_i2c_sda_sync;
 
   glitch_filter  #(
-    .DATA_WIDTH   ( 6                                     ),
-    .RESET_VALUE  ( 1'b1                                  ),
-    .FILTER_DEPTH ( 8                                     )
+    .DATA_WIDTH   ( `I2C_INST*2                          ),
+    .RESET_VALUE  ( 1'b1                                 ),
+    .FILTER_DEPTH ( 8                                    )
   ) i2c_glitch_filter (
-    .clk          ( hif_clk                               ),
-    .rst_n        (~hif_rst                               ),
-    .sync_in      ({CTRL_I2C_SDA, CTRL_I2C_SCL,
-                    CAM_I2C_SDA , CAM_I2C_SCL,
-                    I2C_POC_SDA , I2C_POC_SCL            }),
-    .sync_out     ({ctrl_i2c_sda_sync, ctrl_i2c_scl_sync,
-                    cam_i2c_sda_sync , cam_i2c_scl_sync,
-                    poc_i2c_sda_sync , poc_i2c_scl_sync  })
+    .clk          ( hif_clk                              ),
+    .rst          (hif_rst                               ),
+    .sync_in      ({CTRL_I2C_SDA, CTRL_I2C_SCL          }),
+    .sync_out     ({ctrl_i2c_sda_sync, ctrl_i2c_scl_sync})
   );
 
   logic [`I2C_INST-1:0] i2c_scl;
@@ -350,22 +293,14 @@ module FPGA_top
   logic [`I2C_INST-1:0] i2c_scl_en;
   logic [`I2C_INST-1:0] i2c_sda_en;
 
-  assign i2c_scl[0]   = i2c_scl_en[0] ? ctrl_i2c_scl_sync : 1'b0;
-  assign i2c_sda[0]   = i2c_sda_en[0] ? ctrl_i2c_sda_sync : 1'b0;
-  assign CTRL_I2C_SCL = i2c_scl_en[0] ? 1'bz : 1'b0;
-  assign CTRL_I2C_SDA = i2c_sda_en[0] ? 1'bz : 1'b0;
-
-  
-  assign i2c_scl[1]     = i2c_scl_en[1] ? cam_i2c_scl_sync[0] : 1'b0;
-  assign i2c_sda[1]     = i2c_sda_en[1] ? cam_i2c_sda_sync[0] : 1'b0;
-  assign CAM_I2C_SCL[0] = i2c_scl_en[1] ? 1'bz : 1'b0;
-  assign CAM_I2C_SDA[0] = i2c_sda_en[1] ? 1'bz : 1'b0;
-
-  assign i2c_scl[2]     = i2c_scl_en[2] ? poc_i2c_scl_sync : 1'b0;
-  assign i2c_sda[2]     = i2c_sda_en[2] ? poc_i2c_sda_sync : 1'b0;
-  assign I2C_POC_SCL    = i2c_scl_en[2] ? 1'bz : 1'b0;
-  assign I2C_POC_SDA    = i2c_sda_en[2] ? 1'bz : 1'b0;
-
+  generate
+    for (i=0; i<`I2C_INST; i++) begin: i2c_gen
+      assign i2c_scl[i]       = i2c_scl_en[i] ? ctrl_i2c_scl_sync [i] : 1'b0;
+      assign i2c_sda[i]       = i2c_sda_en[i] ? ctrl_i2c_sda_sync [i] : 1'b0;
+      assign CTRL_I2C_SCL [i] = i2c_scl_en[i] ? 1'bz : 1'b0;
+      assign CTRL_I2C_SDA [i] = i2c_sda_en[i] ? 1'bz : 1'b0;
+    end 
+  endgenerate
   
 //------------------------------------------------------------------------------
 // Camera LVDS Data
@@ -441,7 +376,6 @@ module FPGA_top
     end
   endgenerate
 
-
 //------------------------------------------------------------------------------
 // Apb Interconnect
 //------------------------------------------------------------------------------
@@ -478,9 +412,9 @@ apb_switch #(
   .i_apb_timeout   ( 1'b0             )
 );
 
-//------------------------------------------------------------------------------
-// APB Interface for Index 6 (VSYNC)
-//------------------------------------------------------------------------------
+//-------------------------------------------------------------------------
+// VSYNC
+//-------------------------------------------------------------------------
 
   apb_m2s vsync_apb_m2s;
   apb_s2m vsync_apb_s2m;
@@ -495,106 +429,50 @@ apb_switch #(
   assign apb_pready[6] = vsync_apb_s2m.pready;
   assign apb_pserr[6]  = vsync_apb_s2m.pserr;
 
-//-------------------------------------------------------------------------
-// VSYNC
-//-------------------------------------------------------------------------
   vsync_gen u_vsync_gen (
-    .i_clk           ( ptp_clk           ),
-    .i_rst           ( ptp_rst           ),
+    .i_clk           ( ptp_clk               ),
+    .i_rst           ( ptp_rst               ),
 
-    .i_apb_clk       ( apb_clk                    ),
-    .i_apb_rst       ( apb_rst                    ),
-    .i_apb_sel       ( vsync_apb_m2s.psel         ),  // Use switch signal (only 0x000-0x7FF)
-    .i_apb_enable    ( vsync_apb_m2s.penable      ),  // Use switch signal
-    .i_apb_addr      ( vsync_apb_m2s.paddr        ),  // Use switch signal
-    .i_apb_wdata     ( vsync_apb_m2s.pwdata       ),  // Use switch signal
-    .i_apb_write     ( vsync_apb_m2s.pwrite       ),  // Use switch signal
-    .o_apb_ready     ( vsync_apb_s2m.pready       ),  // Connect to switch response
-    .o_apb_rdata     ( vsync_apb_s2m.prdata       ),  // Connect to switch response
-    .o_apb_serr      ( vsync_apb_s2m.pserr        ),  // Connect to switch response
+    .i_apb_clk       ( apb_clk               ),
+    .i_apb_rst       ( apb_rst               ),
+    .i_apb_sel       ( vsync_apb_m2s.psel    ),  // Use switch signal (only 0x000-0x7FF)
+    .i_apb_enable    ( vsync_apb_m2s.penable ),  // Use switch signal
+    .i_apb_addr      ( vsync_apb_m2s.paddr   ),  // Use switch signal
+    .i_apb_wdata     ( vsync_apb_m2s.pwdata  ),  // Use switch signal
+    .i_apb_write     ( vsync_apb_m2s.pwrite  ),  // Use switch signal
+    .o_apb_ready     ( vsync_apb_s2m.pready  ),  // Connect to switch response
+    .o_apb_rdata     ( vsync_apb_s2m.prdata  ),  // Connect to switch response
+    .o_apb_serr      ( vsync_apb_s2m.pserr   ),  // Connect to switch response
 
-    .i_pps           ( sys_pps           ),
-    .i_ptp_nanosec   ( ptp_nsec          ),
+    .i_pps           ( sys_pps               ),
+    .i_ptp_nanosec   ( ptp_nsec              ),
 
-    .o_vsync_strb    ( vsync             ),
-    .o_gpio_mux_en   ( gpio_mux_en       )
+    .o_vsync_strb    ( CAM_FSYNC             ),
+    .o_gpio_mux_en   ( gpio_mux_en           )
   );
 
-  logic [1:0] synth_lock_sync;
-  always_ff @ (posedge hif_clk) begin
-    if (hif_rst) begin
-      synth_lock_sync <= 'd0;
-    end else begin
-      synth_lock_sync[0] <= '0;
-      synth_lock_sync[1] <= synth_lock_sync[0];
-    end
-  end 
-
-  logic poc_int_l_sync;
-  data_sync #(
-    .DATA_WIDTH  ( 1    ),
-    .RESET_VALUE ( 1'b1 )
-  ) poc_int_l_synchronizer (
-    .clk         ( hif_clk        ),
-    .rst_n       (~hif_rst        ),
-    .sync_in     ( POC_INT_L      ),
-    .sync_out    ( poc_int_l_sync )
-  );
-
-  ///////////////////////////////////////
-  //MUX DEBUG SIGNALS INTO GPIO
-  ///////////////////////////////////////
+  //-------------------------------------------------------------------------
+  // GPIO
+  //-------------------------------------------------------------------------
   logic [15:0] gpio_in;    // Input read values
   logic [15:0] gpio_dir;   // 0=output, 1=input
   logic [15:0] gpio_tri;
 
   // Read inputs (separate from driving logic)
-  assign gpio_in[0]     = gpio_out[0];
-  assign gpio_in[1]     = poc_int_l_sync;
-  assign gpio_in[15:2]  = '0;
+  assign gpio_in = GPIO;
 
   // Generate blocks for pass-through assignments
   generate
-    for (i=0; i<4; i++) begin: gpio_passthru_1
+    for (i=0; i<`GPIO_INST; i++) begin: gpio_gen
       assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
     end
   endgenerate
 
-  generate
-    for (i=4; i<8; i++) begin: gpio_passthru_2
-      assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
-    end
-  endgenerate
-
-  generate
-    for (i=9; i<11; i++) begin: gpio_passthru_3
-      assign gpio_tri[i] = gpio_dir[i] ? 1'bz : gpio_out[i];
-    end
-  endgenerate
-
-  // Special function pins with mux
-  assign gpio_tri[8]  = gpio_dir[8]  ? 1'bz : (gpio_mux_en[4] ? vsync              : gpio_out[8]);
-  assign gpio_tri[13] = gpio_dir[13] ? 1'bz : (gpio_mux_en[2] ? synth_lock_sync[1] : gpio_out[13]);
-  assign gpio_tri[14] = gpio_dir[14] ? 1'bz : (gpio_mux_en[1] ? vsync              : gpio_out[14]);
-  assign gpio_tri[15] = gpio_dir[15] ? 1'bz : (gpio_mux_en[0] ? sys_pps_stretch    : gpio_out[15]);
-
-  assign GPIO = gpio_tri[10:0];
-
+  assign GPIO = gpio_tri;
 
 //------------------------------------------------------------------------------
 // HOLOLINK Top Instantiation
 //------------------------------------------------------------------------------
-
-  /*
-  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tvalid;
-  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tlast;
-  logic [`DATAPATH_WIDTH-1:0] sif_tx_axis_tdata [`SENSOR_TX_IF_INST];
-  logic [`DATAKEEP_WIDTH-1:0] sif_tx_axis_tkeep [`SENSOR_TX_IF_INST];
-  logic [`DATAUSER_WIDTH-1:0] sif_tx_axis_tuser [`SENSOR_TX_IF_INST];
-  logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tready;
-  */
-
-  logic [3:0] dummy;
 
   HOLOLINK_top #(
     .BUILD_REV         ( BUILD_REV          )
@@ -618,11 +496,6 @@ apb_switch #(
   //------------------------------------------------------------------------------
   // User Auto Initialization Interface
   //------------------------------------------------------------------------------
-`ifndef ENUM_EEPROM
-    .i_mac_addr        ( '{`MAC_ADDR}       ),
-    .i_board_sn        ( '{`BOARD_SN}       ),
-    .i_enum_vld        ( 1'b1               ),
-`endif
     .o_init_done       ( init_done          ),
   //------------------------------------------------------------------------------
   // Sensor IF

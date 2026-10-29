@@ -1,6 +1,10 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 @PACKAGE_INIT@
 
 include(CMakeFindDependencyMacro)
+find_dependency(ZLIB)
 
 # Hololink config: provides imported targets under the hololink:: namespace
 

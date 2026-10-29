@@ -116,8 +116,8 @@ localparam NUM_CLK_DLY_ASYMM_PTP = PTP_IS_LOWER_FREQ ? 2 +             (50/AXIS_
 //                                                   |                          RX PARSER                   |                          PTP                      |
 //                                                   |               AXIS_BUFFER               | IPV4 CHECK |           AXIS_DROP                | AXIS_BUFFER  |
 ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-localparam NUM_CLK_DLY_ASYMM_HIF = PTP_IS_LOWER_FREQ ? (64/AXIS_BYTE) + RX_PARSER_AXIS_BUF_MOD  +      8     + (14/AXIS_BYTE) + PTP_AXIS_DROP_MOD + 2 
-                                                      : (64/AXIS_BYTE) + RX_PARSER_AXIS_BUF_MOD +      8     + (64/AXIS_BYTE)+ RX_PARSER_AXIS_BUF_MOD;
+localparam NUM_CLK_DLY_ASYMM_HIF = PTP_IS_LOWER_FREQ ? (64/AXIS_BYTE) + RX_PARSER_AXIS_BUF_MOD  +      8   + (14/AXIS_BYTE) + PTP_AXIS_DROP_MOD + 2 
+                                                      : (64/AXIS_BYTE) + RX_PARSER_AXIS_BUF_MOD +      8   + (64/AXIS_BYTE)+ RX_PARSER_AXIS_BUF_MOD;
 
 localparam W_DLY_ASYMM_PTP = $clog2(NUM_CLK_DLY_ASYMM_PTP+1);
 localparam W_DLY_ASYMM_HIF = $clog2(NUM_CLK_DLY_ASYMM_HIF+1);

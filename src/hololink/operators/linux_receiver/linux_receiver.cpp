@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -196,13 +196,13 @@ void LinuxReceiver::run()
         }
 
         if (received_bytes <= 0) {
+            // Closing the data socket wakes recv() with EBADF.  That is an
+            // expected part of shutdown once close() has requested exit.
+            if (exit_) {
+                break;
+            }
             // check if there is a timeout
             if ((recv_errno == EAGAIN) || (recv_errno == EWOULDBLOCK) || (recv_errno == EINTR)) {
-                // should we exit?
-                if (exit_) {
-                    break;
-                }
-                // if not, continue
                 continue;
             }
             HSB_LOG_ERROR("recv returned received_bytes={}, recv_errno={}", received_bytes, recv_errno);

@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION &
-# AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -215,7 +214,10 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
 
     def _create_alsa_pcm(self):
         """Open the playback PCM handle."""
-        assert self._alsaaudio is not None
+        if self._alsaaudio is None:
+            raise RuntimeError(
+                "alsaaudio is unavailable; cannot open the playback device."
+            )
         fmt = (
             self._alsaaudio.PCM_FORMAT_S32_LE
             if self._alsa_endianness == "LE"

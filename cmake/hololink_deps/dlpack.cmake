@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # dlpack dependency setup (header-only).
 #
 # Ensures the dlpack::dlpack target is available by either finding a pre-installed

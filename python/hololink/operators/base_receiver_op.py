@@ -40,7 +40,7 @@ class BaseReceiverOp(holoscan.core.Operator):
         self._device = device
         self._frame_context = frame_context
         self._trim = trim
-        self._ok = False
+        self._ok = True  # start True so the FIRST ingress timeout is logged too
         self._count = 0
         self._frame_size = frame_size
         aligned_frame_size = hololink_module.round_up(
@@ -57,8 +57,14 @@ class BaseReceiverOp(holoscan.core.Operator):
             self.fragment, name="frame_ready_condition"
         )
         self.add_arg(self._frame_ready_condition)
+        # EVENT_WAITING (not WAIT): with WAIT the scheduler ticks this operator
+        # once at graph start, before any frame exists; that compute blocks in
+        # _get_next_frame, times out, and silently consumes one CountCondition
+        # count -- every "run N frames" app then processes fewer than N frames.
+        # The frame-arrived-during-start() race is covered by the frames_ready()
+        # check in start().  This mirrors BaseReceiverOp::setup() in C++.
         self._frame_ready_condition.event_state = (
-            holoscan.conditions.AsynchronousEventState.WAIT
+            holoscan.conditions.AsynchronousEventState.EVENT_WAITING
         )
 
     def setup(self, spec):
@@ -88,6 +94,18 @@ class BaseReceiverOp(holoscan.core.Operator):
             distal_memory_address_start, self._frame_size, page_size, pages, local_port
         )
         self._device.start()
+        # (Re)arm here, at activation time: the event state set in __init__ does
+        # not survive condition initialization -- it comes back as READY -- and
+        # without this the scheduler ticks this operator once before any frame
+        # exists, silently consuming a CountCondition count.
+        self._frame_ready_condition.event_state = (
+            holoscan.conditions.AsynchronousEventState.EVENT_WAITING
+        )
+        if self.frames_ready():
+            # Don't wait if we have data ready.
+            self._frame_ready_condition.event_state = (
+                holoscan.conditions.AsynchronousEventState.EVENT_DONE
+            )
 
     def received_address_offset(self):
         # This address is added to the address received from HSB;

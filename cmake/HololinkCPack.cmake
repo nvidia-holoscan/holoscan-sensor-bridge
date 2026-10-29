@@ -63,4 +63,5 @@ cpack_add_component(hololink-python_libs GROUP dev)
 cpack_add_component(hololink-python_tools GROUP dev)
 
 # Add the components for hsb-roce
+cpack_add_component(hololink-roce-transport GROUP roce)
 cpack_add_component(hololink-roce-operators GROUP roce)

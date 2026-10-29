@@ -30,6 +30,7 @@ int stream_validation_errors = 0;
 bit stream_reported_missing_expected = 0;
 bit stream_in_progress = 0;
 int  current_frame_index = 0;
+int  stream_expected_sensor_id = 0;
 
 //==============================================================================
 // RoCE Header parsing function (based on UVM ethernet package)
@@ -62,11 +63,13 @@ function automatic void parse_roce_headers(
                  packet_data[bth_start+8], packet_data[bth_start+9], packet_data[bth_start+10], packet_data[bth_start+11]));
     end)
     
-    // Bytes 4-6: Destination QP (24 bits, network byte order)
-    dest_qp = {packet_data[bth_start+4], packet_data[bth_start+5], packet_data[bth_start+6]};
+    // RTL hdr_roce packs BTH as:
+    //   opcode, se_m_pad_tver, pkey[15:0], 8'h0, dest_qp[23:0], 8'h0, psn[23:0]
+    // so byte 4 is the reserved byte before Destination QP.
+    dest_qp = {packet_data[bth_start+5], packet_data[bth_start+6], packet_data[bth_start+7]};
     
-    // Bytes 8-10: PSN (24 bits, network byte order)  
-    psn = {packet_data[bth_start+8], packet_data[bth_start+9], packet_data[bth_start+10]};
+    // Byte 8 is reserved before PSN; bytes 9-11 carry PSN.
+    psn = {packet_data[bth_start+9], packet_data[bth_start+10], packet_data[bth_start+11]};
     
     // Display RoCE opcode information  
     case (opcode)
@@ -135,6 +138,9 @@ function automatic logic process_roce_fragment(
     int          bytes_per_word;
     logic [`DATAPATH_WIDTH-1:0] expected_word;
     logic [`DATAPATH_WIDTH-1:0] received_word;
+    int          expected_sensor_id;
+    int          expected_sensor_frame_id;
+    logic [31:0] expected_rkey;
 
     // Stream validation: compare bytes directly against expected_sensor_data (data opcodes only)
     fragment_mismatches = 0;
@@ -162,9 +168,47 @@ function automatic logic process_roce_fragment(
     host_fragments_received++;
     frame_id = completed_sensor_frames; // default; may capture to current_frame_index below
 
+    expected_sensor_id = 0;
+    expected_sensor_frame_id = current_frame_index;
+    expected_rkey = TB_ROCE_RKEY;
+`ifdef SENSOR_RX_IF_INST
+    if (all_sensors_mode) begin
+        expected_sensor_id = get_sensor_id_from_qp(dest_qp);
+        if (expected_sensor_id < 0) begin
+            errors_detected++;
+            `TB_LOG_LOW(LOG_ERR, $sformatf("RoCE dest_qp 0x%06x does not map to active sensors [0x%06x..0x%06x] opcode=0x%02x rkey=0x%08x vaddr=0x%016x",
+                     dest_qp, TB_ROCE_DEST_QP, TB_ROCE_DEST_QP + (`SENSOR_RX_IF_INST - 1), opcode, rkey, vaddr));
+            `TB_LOG_LOW(LOG_ERR, $sformatf("BTH bytes: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
+                     packet_data[udp_start+0], packet_data[udp_start+1], packet_data[udp_start+2], packet_data[udp_start+3],
+                     packet_data[udp_start+4], packet_data[udp_start+5], packet_data[udp_start+6], packet_data[udp_start+7],
+                     packet_data[udp_start+8], packet_data[udp_start+9], packet_data[udp_start+10], packet_data[udp_start+11]));
+            return 0;
+        end
+        expected_sensor_frame_id = frames_received_by_sensor[expected_sensor_id];
+        expected_rkey = dp_roce_rkey_by_sensor[expected_sensor_id];
+        if (rkey !== expected_rkey) begin
+            errors_detected++;
+            `TB_LOG_LOW(LOG_ERR, $sformatf("RKEY mismatch for sensor %0d: expected=0x%08x received=0x%08x",
+                     expected_sensor_id, expected_rkey, rkey));
+        end else begin
+            `TB_LOG_MED(LOG_PASS, $sformatf("RKEY matched for sensor %0d: 0x%08x", expected_sensor_id, rkey));
+        end
+    end
+`endif
+
     // On first data fragment of a frame, capture frame index and mark in-progress
     if ((opcode == ROCE_OPCODE_RDMA_WRITE_ONLY || opcode == ROCE_OPCODE_RDMA_WRITE_FIRST) && (stream_bytes_received == 0) && !stream_in_progress) begin
+`ifdef SENSOR_RX_IF_INST
+        if (all_sensors_mode) begin
+            stream_expected_sensor_id = expected_sensor_id;
+            current_frame_index = get_all_sensor_global_frame_id(expected_sensor_id, expected_sensor_frame_id);
+        end else begin
+            stream_expected_sensor_id = 0;
+            current_frame_index = completed_sensor_frames;
+        end
+`else
         current_frame_index = completed_sensor_frames;
+`endif
         stream_in_progress = 1;
     end
 
@@ -172,14 +216,22 @@ function automatic logic process_roce_fragment(
     // Use dp_roce0_vaddr_cfg_bytes[buffer_index] captured when registers were written
     // Only check VA on first data fragment of a frame
     if ((opcode == ROCE_OPCODE_RDMA_WRITE_ONLY || opcode == ROCE_OPCODE_RDMA_WRITE_FIRST) && (stream_bytes_received == 0)) begin
+`ifdef SENSOR_RX_IF_INST
+        if (all_sensors_mode) begin
+            expected_vaddr = dp_roce_vaddr_cfg_bytes_by_sensor[expected_sensor_id][expected_sensor_frame_id % 4];
+        end else begin
+            expected_vaddr = dp_roce0_vaddr_cfg_bytes[current_frame_index % 4];
+        end
+`else
         expected_vaddr = dp_roce0_vaddr_cfg_bytes[current_frame_index % 4];
+`endif
         if (vaddr !== expected_vaddr) begin
             stream_validation_errors++;
-            `TB_LOG_LOW(LOG_ERR, $sformatf("VA mismatch: expected(frame %0d buf %0d)=0x%016x, received=0x%016x",
-                     current_frame_index, (current_frame_index % 4), expected_vaddr, vaddr));
+            `TB_LOG_LOW(LOG_ERR, $sformatf("VA mismatch: expected(sensor %0d frame %0d buf %0d)=0x%016x, received=0x%016x",
+                     stream_expected_sensor_id, expected_sensor_frame_id, (expected_sensor_frame_id % 4), expected_vaddr, vaddr));
         end else begin
-            `TB_LOG_LOW(LOG_PASS, $sformatf("VA matched: frame %0d buf %0d address=0x%016x",
-                     current_frame_index, (current_frame_index % 4), vaddr));
+            `TB_LOG_LOW(LOG_PASS, $sformatf("VA matched: sensor %0d frame %0d buf %0d address=0x%016x",
+                     stream_expected_sensor_id, expected_sensor_frame_id, (expected_sensor_frame_id % 4), vaddr));
         end
     end
     
@@ -263,20 +315,36 @@ function automatic logic process_roce_fragment(
     // Frame completion conditions: size reached OR meta packet (only if in-progress)
     if ((opcode == ROCE_OPCODE_RDMA_WRITE_ONLY_IMMDT && stream_in_progress) || stream_bytes_received >= FRAME_SIZE_BYTES) begin
         // Mark coverage for frames 0..2
-        if (current_frame_index >= 0 && current_frame_index < 3) begin
-            if (!frame_received[current_frame_index]) begin
-                frame_received[current_frame_index] = 1;
-                unique_frames_received++;
+`ifdef SENSOR_RX_IF_INST
+        if (all_sensors_mode) begin
+            expected_sensor_frame_id = frames_received_by_sensor[stream_expected_sensor_id];
+            if (stream_expected_sensor_id >= 0 && stream_expected_sensor_id < `SENSOR_RX_IF_INST &&
+                expected_sensor_frame_id >= 0 && expected_sensor_frame_id < TOTAL_TEST_FRAMES) begin
+                if (!frame_received_by_sensor[stream_expected_sensor_id][expected_sensor_frame_id]) begin
+                    frame_received_by_sensor[stream_expected_sensor_id][expected_sensor_frame_id] = 1;
+                    frames_received_by_sensor[stream_expected_sensor_id]++;
+                    unique_frames_received++;
+                end
             end
+        end else begin
+`endif
+            if (current_frame_index >= 0 && current_frame_index < 3) begin
+                if (!frame_received[current_frame_index]) begin
+                    frame_received[current_frame_index] = 1;
+                    unique_frames_received++;
+                end
+            end
+`ifdef SENSOR_RX_IF_INST
         end
+`endif
 
         if (stream_validation_errors == 0) begin
-            `TB_LOG_LOW(LOG_PASS, $sformatf("Frame %0d validation PASSED (%0d bytes, %0d fragments)",
-                     current_frame_index, stream_bytes_received, stream_fragment_count));
+            `TB_LOG_LOW(LOG_PASS, $sformatf("Frame %0d validation PASSED (sensor %0d, %0d bytes, %0d fragments)",
+                     current_frame_index, stream_expected_sensor_id, stream_bytes_received, stream_fragment_count));
         end else begin
             errors_detected += stream_validation_errors;
-            `TB_LOG_LOW(LOG_FAIL, $sformatf("Frame %0d validation FAILED (%0d errors, %0d bytes, %0d fragments)",
-                     current_frame_index, stream_validation_errors, stream_bytes_received, stream_fragment_count));
+            `TB_LOG_LOW(LOG_FAIL, $sformatf("Frame %0d validation FAILED (sensor %0d, %0d errors, %0d bytes, %0d fragments)",
+                     current_frame_index, stream_expected_sensor_id, stream_validation_errors, stream_bytes_received, stream_fragment_count));
         end
 
         completed_sensor_frames++;

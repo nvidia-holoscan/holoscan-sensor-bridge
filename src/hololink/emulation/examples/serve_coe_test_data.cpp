@@ -34,7 +34,7 @@
  *
  * Default values:
  * - frame-limit: 0 (infinite)
- * - gpu: false (serve data from CPU)
+ * - gpu: false (serve data from CPU).
  */
 
 using namespace hololink::emulation;

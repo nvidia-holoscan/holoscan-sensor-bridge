@@ -13,6 +13,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+// data, byte_len, and tuser are sampled on the rising edge of trigger.
 module vec_to_axis_dyn_len
 #(
     parameter                               AXI_DWIDTH   = 64,
@@ -25,7 +26,7 @@ module vec_to_axis_dyn_len
 
     input                                   trigger,
     input   [DATA_WIDTH-1:0]                data,
-    input   [$clog2(DATA_WIDTH/8)-1:0]      byte_len,
+    input   [$clog2(DATA_WIDTH/8+1)-1:0]    byte_len,
     input   [W_USER-1:0]                    tuser,
     output                                  is_busy,
   //AXIS Interface
@@ -55,8 +56,12 @@ logic                           r_busy;
 logic                           r_is_busy;
 logic [$clog2(D_CYCLES+1)-1:0]  r_d_cycles;
 logic [AXI_DWIDTH/8-1:0]        r_tkeep_val;
+logic [W_USER-1:0]              r_tuser;
+logic                           r_partial_last;
 logic                           extra_cycle;
-assign extra_cycle = AXI_TKEEP>1 ? byte_len[AXI_TKEEP_WIDTH-1:0]!='d0 : 1'b0;
+logic [AXI_TKEEP_WIDTH-1:0]     byte_len_rem;
+assign byte_len_rem = AXI_TKEEP_WIDTH'(byte_len);
+assign extra_cycle = AXI_TKEEP>1 ? byte_len_rem != '0 : 1'b0;
 
 always_ff @(posedge clk) begin
   if (rst) begin
@@ -68,6 +73,8 @@ always_ff @(posedge clk) begin
     r_busy                  <= '0;
     r_is_busy               <= '0;
     r_tkeep_val             <= '1;
+    r_tuser                 <= '0;
+    r_partial_last          <= 1'b0;
   end
   else begin
     r_trigger <= trigger;
@@ -75,11 +82,14 @@ always_ff @(posedge clk) begin
     case(vec_state)
       AXI_IDLE:   begin
         cnt                     <= '0;
-        r_data                  <= {'0,data};
-        r_d_cycles              <= byte_len <= AXI_TKEEP ? 1 : (byte_len>>$clog2(AXI_TKEEP)) + extra_cycle;
         if ({r_trigger,trigger} == 2'b01) begin
-          vec_state           <=  (r_d_cycles == 1) ? AXI_LAST : AXI_SEND;
-          r_tkeep_val         <= ~('1 << (byte_len[AXI_TKEEP_WIDTH-1:0]));
+          r_data              <= {'0,data};
+          r_d_cycles          <= byte_len <= AXI_TKEEP ? 1 :
+                                 (byte_len >> $clog2(AXI_TKEEP)) + extra_cycle;
+          r_tuser             <= tuser;
+          r_partial_last      <= extra_cycle;
+          vec_state           <= (byte_len <= AXI_TKEEP) ? AXI_LAST : AXI_SEND;
+          r_tkeep_val         <= ~('1 << byte_len_rem);
           r_busy              <= '1;
         end
       end
@@ -103,9 +113,8 @@ end
 assign o_axis_tx_tdata  = (vec_state == AXI_IDLE) ? '0 : {r_data[AXI_DWIDTH*cnt+:AXI_DWIDTH]};
 assign o_axis_tx_tlast  = (vec_state == AXI_LAST);
 assign o_axis_tx_tvalid = (vec_state != AXI_IDLE);
-assign o_axis_tx_tkeep  = o_axis_tx_tlast ? (byte_len[AXI_TKEEP_WIDTH-1:0]!='d0) ? r_tkeep_val : '1
-                                          : '1;
-assign o_axis_tx_tuser  = (vec_state != AXI_IDLE) ? tuser : '0;
+assign o_axis_tx_tkeep  = o_axis_tx_tlast && r_partial_last ? r_tkeep_val : '1;
+assign o_axis_tx_tuser  = (vec_state != AXI_IDLE) ? r_tuser : '0;
 assign is_busy          = r_is_busy;
 
 endmodule

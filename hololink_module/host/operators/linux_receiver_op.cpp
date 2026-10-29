@@ -237,6 +237,10 @@ void LinuxReceiverOp::start()
     }
     configured_ = true;
 
+    // Drop any timeout/frame counters left over from a prior run, so a reused
+    // operator instance doesn't report a stall carried over from before.
+    ingress_stall_.reset();
+
     running_ = true;
     // Register the frame-ready callback before the monitor thread starts
     // so no frame slips through before the condition is armed.
@@ -349,7 +353,16 @@ void LinuxReceiverOp::compute(holoscan::InputContext& /*op_input*/,
     if (!receiver_->get_next_frame(GET_NEXT_FRAME_TIMEOUT_MS, frame_info,
             reinterpret_cast<void*>(cuda_stream))) {
         // Timeout: produce no output; the scheduler will revisit us.
+        if (ingress_stall_.on_timeout(GET_NEXT_FRAME_TIMEOUT_MS)) {
+            HSB_LOG_WARN("Ingress stalled: no frame for {} consecutive {}ms polls "
+                         "after {} received frames",
+                ingress_stall_.consecutive_timeouts(), GET_NEXT_FRAME_TIMEOUT_MS,
+                ingress_stall_.frames_received());
+        }
         return;
+    }
+    if (const uint64_t stalled_polls = ingress_stall_.on_frame()) {
+        HSB_LOG_WARN("Ingress resumed after {} empty polls", stalled_polls);
     }
 
     if (frame_ready_condition_) {

@@ -135,6 +135,9 @@ void FusaCoeCaptureOp::setup(holoscan::OperatorSpec& spec)
     spec.param(interface_, "interface", "Interface", "Interface for the CoE device.");
     spec.param(mac_addr_, "mac_addr", "MACAddr", "MAC Address for the CoE device.");
     spec.param(timeout_, "timeout", "Timeout", "Timeout for capture requests, in milliseconds");
+    spec.param(stall_timeout_ms_, "stall_timeout_ms", "StallTimeoutMs",
+        "Stop the graph after this long without a captured frame; zero disables the check",
+        0U);
     spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
         "Name of the output tensor", std::string(""));
     spec.param(metadata_, "enumeration_metadata", "EnumerationMetadata",
@@ -202,6 +205,9 @@ void FusaCoeCaptureOp::start()
         frame_ready_ = false;
         frame_consumed_ = true;
     }
+    ingress_stall_.reset();
+    capture_stalled_ = false;
+    capture_stall_duration_ms_ = 0;
     running_ = true;
     monitor_thread_ = std::thread([this]() { monitor(); });
 
@@ -242,7 +248,43 @@ void FusaCoeCaptureOp::monitor()
             if (!running_.load()) {
                 break;
             }
+            // An occasional empty wait is routine; a run of them means capture
+            // has stopped, which downstream sees only as a pipeline that went
+            // quiet. Say so once, so a stalled run names the capture as the
+            // cause instead of leaving it to a core dump.
+            if (ingress_stall_.on_timeout(timeout_.get())) {
+                HSB_LOG_WARN("CoE capture stalled on \"{}\": no frame for {} "
+                             "consecutive {}ms capture requests after {} received frames",
+                    out_tensor_name_.get(), ingress_stall_.consecutive_timeouts(),
+                    timeout_.get(), ingress_stall_.frames_received());
+            }
+            const uint64_t stall_timeout_ms = stall_timeout_ms_.get();
+            if (stall_timeout_ms != 0
+                && ingress_stall_.consecutive_timeout_ms() >= stall_timeout_ms) {
+                const uint64_t stalled_for_ms = ingress_stall_.consecutive_timeout_ms();
+                HSB_LOG_ERROR("CoE capture stalled on \"{}\": failing after {}ms "
+                              "without a frame ({} capture requests, {} received frames)",
+                    out_tensor_name_.get(), stalled_for_ms,
+                    ingress_stall_.consecutive_timeouts(), ingress_stall_.frames_received());
+                capture_stall_duration_ms_ = stalled_for_ms;
+                capture_stalled_ = true;
+                running_ = false;
+                // stop_execution() only changes scheduling conditions and can
+                // leave a graph with asynchronous operators waiting for an
+                // event. Interrupt the executor so run() returns immediately
+                // and normal graph teardown invokes every operator's stop().
+                if (!fragment()->executor().interrupt()) {
+                    HSB_LOG_WARN("CoE capture stalled on \"{}\", but the graph "
+                                 "was already stopped",
+                        out_tensor_name_.get());
+                }
+                break;
+            }
             continue;
+        }
+        if (const uint64_t stalled_requests = ingress_stall_.on_frame()) {
+            HSB_LOG_WARN("CoE capture on \"{}\" resumed after {} timed-out requests",
+                out_tensor_name_.get(), stalled_requests);
         }
 
         // received_s/ns is the host-side reception time: the CLOCK_REALTIME

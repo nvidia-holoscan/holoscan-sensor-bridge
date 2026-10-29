@@ -5,12 +5,31 @@
 # Loads the HSB-Lite module .so by UUID through the Python-facing
 # Adapter, then reads the enriched metadata back across the binding.
 
+import os
 import threading
 import time
+from pathlib import Path
+
+import pytest
 
 import hololink_module
 
 HSB_LITE_UUID = "889b7ce3-65a5-4247-8b05-4ff1904c3359"
+
+
+@pytest.fixture
+def module_dir():
+    env = os.environ.get("HOLOLINK_MODULE_TEST_MODULE_DIR")
+    if env:
+        path = Path(env).expanduser().resolve()
+        if not path.is_dir():
+            pytest.fail(f"Invalid HOLOLINK_MODULE_TEST_MODULE_DIR: {path}")
+        return str(path)
+    package_dir = Path(hololink_module.__file__).resolve().parent
+    path = package_dir.parent.joinpath("lib", "hololink", "modules")
+    if not path.is_dir():
+        pytest.fail(f"Default module directory not found: {path}")
+    return str(path)
 
 
 def test_python_adapter_drives_hsb_lite_module(module_dir):

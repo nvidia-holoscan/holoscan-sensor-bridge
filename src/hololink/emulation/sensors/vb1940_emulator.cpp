@@ -20,10 +20,11 @@
 #include "vb1940_emulator.hpp"
 #include "../hsb_emulator.hpp"
 #include "../i2c_interface.hpp"
+#include "../utils.hpp"
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <cstring>
+#include <sstream>
 
 #define CAM_I2C_ADDRESS 0x10
 #define VCL_PWM_I2C_ADDRESS 0x21
@@ -291,6 +292,21 @@ bool Vb1940Emulator::is_streaming() const
     return memory_[SYSTEM_FSM_STATE_REG] == SystemFsmState::STREAMING;
 }
 
+// Configured frame rate (fps), decoded from the frame-length register
+// (VB1940_FRAME_LENGTH, 0xB8E) that the driver's mode sequence programs: 0x68
+// -> 30 fps, 0xCC -> 60 fps, anything else (mode not fully configured) -> 0.
+uint16_t Vb1940Emulator::get_fps() const
+{
+    switch (memory_[VB1940_FRAME_LENGTH]) {
+    case 0x68:
+        return 30;
+    case 0xCC:
+        return 60;
+    default:
+        return 0;
+    }
+}
+
 // returns 0 if unset or the number of bits per pixel
 uint16_t Vb1940Emulator::get_pixel_width() const
 {
@@ -318,7 +334,17 @@ uint8_t Vb1940Emulator::get_pixel_bits() const
 uint16_t Vb1940Emulator::get_bytes_per_line() const
 {
     uint32_t line_width_bits = get_pixel_width() * get_pixel_bits();
-    assert(line_width_bits <= 8u * UINT16_MAX - 56);
+    if (line_width_bits > 8u * UINT16_MAX - 56) {
+        // the requested mode parameters will not yield a byte line width of an appropriate size
+        uint64_t line_width_bytes = (line_width_bits + 63) / 64 * 8;
+        std::ostringstream error_message;
+        error_message << "requested mode parameters - pixel width: "
+                      << get_pixel_width() << ", pixel bits: " << get_pixel_bits()
+                      << ", line_width_bits: " << line_width_bits << ", line_width_bytes: "
+                      << line_width_bytes
+                      << " - will not yield a byte line width that fits inside uint16_t";
+        Error_Handler(error_message.str().c_str());
+    }
     // convert to bytes and pad to 8 bytes
     uint16_t line_width_bytes = (line_width_bits + 63) / 64 * 8;
 

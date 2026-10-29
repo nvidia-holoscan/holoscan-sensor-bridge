@@ -30,8 +30,9 @@ module dp_pkt_ts # (
   output [79:0]            o_ptp
 );
 
-localparam W_PTP  = 64;
-localparam W_FIFO = W_PTP+N_INPT;
+localparam W_PTP      = 64;
+localparam W_FIFO     = W_PTP+N_INPT;
+localparam FIFO_DEPTH = (N_INPT <= 1) ? 2 : N_INPT;
 
 //------------------------------------------------------------------------------------------------//
 // Request FIFO
@@ -48,7 +49,7 @@ logic              fifo_active;
 
 reg_fifo #(
   .DATA_WIDTH ( W_FIFO                   ),
-  .DEPTH      ( N_INPT                   )
+  .DEPTH      ( FIFO_DEPTH               )
 ) u_reg_fifo (
   .clk        ( i_pclk                   ),
   .rst        ( i_prst                   ),
@@ -119,7 +120,6 @@ priority_arb #(
   .WIDTH      ( N_INPT                        )
 ) u_priority_arb (
   .clk        ( i_pclk                        ),
-  .rst_n      ( '1                            ),
   .rst        ( i_prst                        ),
   .idle       ( '1                            ),
   .req        ( arb_req                       ),

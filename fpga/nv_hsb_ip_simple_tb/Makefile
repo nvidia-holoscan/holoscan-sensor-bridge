@@ -18,8 +18,33 @@
 # Supports both VCS and XCELIUM simulators
 #==============================================================================
 
+# For direct Make usage, run "source setup_env.csh" once to load environments
+
 # Simulator selection (VCS or XCELIUM)
 SIMULATOR ?= VCS
+
+# Runtime test selection (single source of truth - no per-mode targets):
+#   TEST_MODE   = SINGLE_SENSOR (legacy sensor0->host0),
+#                 ALL_SENSORS   (all sensor RX -> one host), or
+#                 HOST2SEN      (host -> sensors UC RoCE SEND / TX push path)
+#   TARGET_HOST = host interface programmed in ALL_SENSORS mode
+#   DUMP        = 1 to enable FSDB waveform dumping on any run/coe (VCS only)
+#   SKIP_COMPILE= 1 to reuse an existing $(TB_TOP).simv instead of rebuilding
+#                 it (VCS only; 'run'/'coe' otherwise always recompile)
+# Examples:
+#   make run  TEST_MODE=SINGLE_SENSOR
+#   make run  TEST_MODE=ALL_SENSORS TARGET_HOST=0
+#   make run  TEST_MODE=HOST2SEN
+#   make coe  TEST_MODE=ALL_SENSORS TARGET_HOST=0 DUMP=1
+# To run several tests off one compile, build once and then invoke each with
+# SKIP_COMPILE=1 from its own directory, passing SIM_EXEC as the absolute path
+# to the built binary. Separate directories keep the fixed-name outputs
+# (run.log, ucli.key, waves.fsdb) from colliding; run_parallel_configs.py in
+# this directory does exactly that.
+TEST_MODE ?= SINGLE_SENSOR
+TARGET_HOST ?= 0
+DUMP ?= 0
+EXTRA_SIM_ARGS ?=
 
 # Validate simulator choice
 ifneq ($(SIMULATOR),VCS)
@@ -108,7 +133,7 @@ $(error HOLOLINK_PATH is not set. Please set it to the path of the hololink RTL 
 endif
 
 ifndef HOLOLINK_DEF_INCLUDE
-$(error HOLOLINK_DEF_INCLUDE is not set. Please set it to the path of the  HOLOLINK_def.svh file directory)
+$(error HOLOLINK_DEF_INCLUDE is not set. Please set it to the directory that contains HOLOLINK_def.svh)
 endif
 INCLUDE_OPTS = +incdir+.
 INCLUDE_OPTS += +incdir+$(HOLOLINK_DEF_INCLUDE)
@@ -177,6 +202,7 @@ PKG_OPTS += $(HOLOLINK_PATH)/lib_apb/apb_pkg.sv
 PKG_OPTS += $(HOLOLINK_PATH)/rx_parser/rx_parser_pkg.sv
 PKG_OPTS += $(HOLOLINK_PATH)/lib_axis/axis_pkg.sv
 PKG_OPTS += $(HOLOLINK_PATH)/reg_map/regmap_pkg.sv
+PKG_OPTS += $(HOLOLINK_PATH)/packetizer/packetizer_pkg.sv
 
 # Testbench library includes (included via `include directives in source files):
 # - tb_lib/hololink_ecb_tasks.svh     (ECB read/write tasks)
@@ -184,11 +210,35 @@ PKG_OPTS += $(HOLOLINK_PATH)/reg_map/regmap_pkg.sv
 # - tb_lib/hololink_monitors.svh      (unified host monitoring)
 # - tb_lib/hololink_roce_helpers.svh  (RoCE protocol support)
 # - tb_lib/hololink_coe_helpers.svh   (COE/IEEE 1722B support)
+# - tb_lib/hololink_host2sen_stim.svh (host->sensor UC RoCE SEND stimulus; +HOST2SEN)
+# - tb_lib/hololink_host2sen_scbd.svh (host->sensor streaming byte scoreboard)
 
 # Source files - packages first, then testbench modules
 SRC_OPTS = $(PKG_OPTS)
 SRC_OPTS += $(SV_FILES)
 SRC_OPTS += +libext+.v+.sv+.svp+.vt+.gv+.vlib+.bvrl+
+
+# All runtime plusargs are bundled here so every run/coe path honors TEST_MODE
+# and (optionally) FSDB waveform dumping. Dumping is VCS-only and DUMP=0 leaves
+# this empty (no-op). 'make verdi'/'make gui' remain available for interactive debug.
+TEST_PLUSARGS = +TEST_MODE=$(TEST_MODE) +TARGET_HOST=$(TARGET_HOST) $(EXTRA_SIM_ARGS)
+ifeq ($(TEST_MODE),ALL_SENSORS)
+    TEST_PLUSARGS += +ALL_SENSORS
+endif
+# HOST2SEN selects the host->sensor (TX) UC RoCE SEND push path instead of the
+# default sensor->host (RX) frame generation. Requires a build with SENSOR_TX_IF_INST.
+ifeq ($(TEST_MODE),HOST2SEN)
+    TEST_PLUSARGS += +HOST2SEN
+endif
+ifeq ($(DUMP),1)
+ifeq ($(SIMULATOR),VCS)
+    # +FSDB_DUMP triggers the $fsdbDump* calls in the TB top (writes waves.fsdb,
+    # override name with +FSDB_FILE=<name>). Open with Verdi to debug.
+    # +fsdb+mda=on is the runtime companion to the compile-time +fsdb+mda=on so
+    # multi-dimensional arrays (memories) are actually recorded, not just enabled.
+    TEST_PLUSARGS += +FSDB_DUMP +fsdb+mda=on
+endif
+endif
 
 # Default target
 all: env_check compile run
@@ -238,22 +288,29 @@ endif
 run:
 	@echo "Running $(SIMULATOR) simulation..."
 ifeq ($(SIMULATOR),VCS)
+# 'compile' is .PHONY with no prerequisites, so it rebuilds every time and a
+# plain 'make run' always pays for a full vcs compile. SKIP_COMPILE=1 lets a
+# caller that has already built reuse $(TB_TOP).simv - several runs off one
+# compile, and safe concurrent runs, which sharing one build directory
+# otherwise is not. Unset (the default) keeps the always-recompile behaviour.
+ifneq ($(SKIP_COMPILE),1)
 	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
+endif
 	@if [ "$(VERBOSITY)" = "HIGH" ]; then \
-		$(SIM_EXEC) $(WAVE_OPTS) +VERBOSITY=HIGH -l $(RUN_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +VERBOSITY=HIGH -l $(RUN_LOG); \
 	elif [ "$(VERBOSITY)" = "MEDIUM" ]; then \
-		$(SIM_EXEC) $(WAVE_OPTS) +VERBOSITY=MEDIUM -l $(RUN_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +VERBOSITY=MEDIUM -l $(RUN_LOG); \
 	else \
-		$(SIM_EXEC) $(WAVE_OPTS) +VERBOSITY=LOW -l $(RUN_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +VERBOSITY=LOW -l $(RUN_LOG); \
 	fi
 	@echo "VCS simulation complete. Log: $(RUN_LOG)"
 else ifeq ($(SIMULATOR),XCELIUM)
 	@if [ "$(VERBOSITY)" = "HIGH" ]; then \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +VERBOSITY=HIGH -l $(RUN_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +VERBOSITY=HIGH -l $(RUN_LOG); \
 	elif [ "$(VERBOSITY)" = "MEDIUM" ]; then \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +VERBOSITY=MEDIUM -l $(RUN_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +VERBOSITY=MEDIUM -l $(RUN_LOG); \
 	else \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +VERBOSITY=LOW -l $(RUN_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +VERBOSITY=LOW -l $(RUN_LOG); \
 	fi
 	@echo "XCELIUM simulation complete. Log: $(RUN_LOG)"
 endif
@@ -262,22 +319,25 @@ endif
 coe:
 	@echo "Running $(SIMULATOR) COE (Camera over Ethernet) simulation..."
 ifeq ($(SIMULATOR),VCS)
+# See the note on SKIP_COMPILE in the 'run' target above.
+ifneq ($(SKIP_COMPILE),1)
 	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
+endif
 	@if [ "$(VERBOSITY)" = "HIGH" ]; then \
-		$(SIM_EXEC) $(WAVE_OPTS) +ENABLE_COE +VERBOSITY=HIGH -l $(COE_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=HIGH -l $(COE_LOG); \
 	elif [ "$(VERBOSITY)" = "MEDIUM" ]; then \
-		$(SIM_EXEC) $(WAVE_OPTS) +ENABLE_COE +VERBOSITY=MEDIUM -l $(COE_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=MEDIUM -l $(COE_LOG); \
 	else \
-		$(SIM_EXEC) $(WAVE_OPTS) +ENABLE_COE +VERBOSITY=LOW -l $(COE_LOG); \
+		$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=LOW -l $(COE_LOG); \
 	fi
 	@echo "VCS COE simulation complete. Log: $(COE_LOG)"
 else ifeq ($(SIMULATOR),XCELIUM)
 	@if [ "$(VERBOSITY)" = "HIGH" ]; then \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +ENABLE_COE +VERBOSITY=HIGH -l $(COE_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=HIGH -l $(COE_LOG); \
 	elif [ "$(VERBOSITY)" = "MEDIUM" ]; then \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +ENABLE_COE +VERBOSITY=MEDIUM -l $(COE_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=MEDIUM -l $(COE_LOG); \
 	else \
-		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +ENABLE_COE +VERBOSITY=LOW -l $(COE_LOG); \
+		$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=LOW -l $(COE_LOG); \
 	fi
 	@echo "XCELIUM COE simulation complete. Log: $(COE_LOG)"
 endif
@@ -287,10 +347,10 @@ gui:
 	@echo "Running $(SIMULATOR) simulation with GUI..."
 ifeq ($(SIMULATOR),VCS)
 	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
-	$(SIM_EXEC) -gui -i dvr_run.tcl
+	$(SIM_EXEC) -gui $(TEST_PLUSARGS) -i dvr_run.tcl
 	@echo "VCS DVE GUI launched."
 else ifeq ($(SIMULATOR),XCELIUM)
-	$(SIM_CMD) -gui $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +VERBOSITY=HIGH
+	$(SIM_CMD) -gui $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +VERBOSITY=HIGH
 	@echo "XCELIUM SimVision GUI launched."
 endif
 
@@ -299,10 +359,10 @@ coe-gui:
 	@echo "Running $(SIMULATOR) COE (Camera over Ethernet) simulation with GUI..."
 ifeq ($(SIMULATOR),VCS)
 	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
-	$(SIM_EXEC) -gui +ENABLE_COE +VERBOSITY=HIGH
+	$(SIM_EXEC) -gui $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=HIGH
 	@echo "VCS DVE GUI launched (COE mode)."
 else ifeq ($(SIMULATOR),XCELIUM)
-	$(SIM_CMD) -gui $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +ENABLE_COE +VERBOSITY=HIGH
+	$(SIM_CMD) -gui $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) $(TEST_PLUSARGS) +ENABLE_COE +VERBOSITY=HIGH
 	@echo "XCELIUM SimVision GUI launched (COE mode)."
 endif
 
@@ -311,23 +371,11 @@ verdi:
 ifeq ($(SIMULATOR),VCS)
 	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
 	@echo "Running VCS simulation with Verdi..."
-	$(SIM_EXEC) $(WAVE_OPTS) -verdi +VERBOSITY=LOW
+	$(SIM_EXEC) $(WAVE_OPTS) $(TEST_PLUSARGS) -verdi +VERBOSITY=LOW
 else
 	@echo "ERROR: Verdi target is only available with VCS simulator."
 	@echo "Use 'make gui' for XCELIUM SimVision GUI instead."
 	@exit 1
-endif
-
-# Debug run with VCD dumps (most compatible)
-debug:
-	@echo "Running $(SIMULATOR) simulation with VCD dumps for debugging..."
-ifeq ($(SIMULATOR),VCS)
-	@$(MAKE) compile SIMULATOR=$(SIMULATOR)
-	$(SIM_EXEC) $(VCD_OPTS) +VERBOSITY=HIGH
-	@echo "VCS VCD file generated: waves.vcd"
-else ifeq ($(SIMULATOR),XCELIUM)
-	$(SIM_CMD) $(COMP_OPTS) $(INCLUDE_OPTS) $(LIB_OPTS) $(SRC_OPTS) +VERBOSITY=HIGH
-	@echo "XCELIUM simulation complete. Check $(RUN_LOG) for results."
 endif
 
 # Clean build artifacts
@@ -362,22 +410,25 @@ help:
 	@echo "  all       - Check environment, compile and run simulation (default)"
 	@echo "  env_check - Check simulator environment setup"
 	@echo "  compile   - Compile the testbench"
-	@echo "  run       - Run the simulation (RoCE mode)"
-	@echo "  coe       - Run COE (Camera over Ethernet) simulation"
+	@echo "  run       - Run the simulation (RoCE mode); select mode via TEST_MODE"
+	@echo "  coe       - Run COE (Camera over Ethernet) simulation; select mode via TEST_MODE"
 	@echo "  gui       - Run simulation with GUI (RoCE mode)"
 	@echo "  coe-gui   - Run COE simulation with GUI"
 	@echo "  verdi     - Run with Verdi (VCS only)"
-	@echo "  debug     - Run with VCD dumps for debugging"
 	@echo "  clean     - Clean build artifacts for all simulators"
 	@echo "  help      - Show this help"
 	@echo ""
 	@echo "Required Variables:"
-	@echo "  HOLOLINK_PATH    - Path to hololink RTL directory (REQUIRED)"
-	@echo "  HOLOLINK_DEF_INCLUDE  - Path to  HOLOLINK_def.svh file directory (REQUIRED)"
+	@echo "  HOLOLINK_PATH        - Path to hololink RTL directory (REQUIRED)"
+	@echo "  HOLOLINK_DEF_INCLUDE - Directory that contains HOLOLINK_def.svh (REQUIRED)"
 	@echo ""
 	@echo "Optional Variables:"
 	@echo "  SIMULATOR - Simulator to use: VCS (default) or XCELIUM"
 	@echo "  VERBOSITY - Debug level: LOW (default), MEDIUM, HIGH"
+	@echo "  TEST_MODE - SINGLE_SENSOR (default), ALL_SENSORS, or HOST2SEN (host->sensor TX)"
+	@echo "  TARGET_HOST - Host interface for ALL_SENSORS mode (default: 0)"
+	@echo "  DUMP - 1 to enable FSDB waveform dumping (VCS; default: 0)"
+	@echo "  EXTRA_SIM_ARGS - Additional simulator plusargs"
 	@echo ""
 	@echo "Simulator Selection:"
 	@echo "  VCS (default):"
@@ -397,13 +448,25 @@ help:
 	@echo ""
 	@echo "Usage Examples:"
 	@echo "  # VCS simulation (default)"
-	@echo "  make run HOLOLINK_PATH=/path/to/hololink HOLOLINK_DEF_INCLUDE=/path/to/ HOLOLINK_def.svh file directory"
+	@echo "  make run HOLOLINK_PATH=/path/to/hololink HOLOLINK_DEF_INCLUDE=/path/to/def_include_dir"
 	@echo ""
 	@echo "  # XCELIUM simulation"
 	@echo "  make SIMULATOR=XCELIUM run HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
 	@echo ""
 	@echo "  # High verbosity with XCELIUM"
 	@echo "  make SIMULATOR=XCELIUM VERBOSITY=HIGH coe HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
+	@echo ""
+	@echo "  # Single sensor -> host 0 (legacy default)"
+	@echo "  make run TEST_MODE=SINGLE_SENSOR HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
+	@echo ""
+	@echo "  # All Sensor RX interfaces to host 0"
+	@echo "  make run TEST_MODE=ALL_SENSORS TARGET_HOST=0 HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
+	@echo ""
+	@echo "  # All Sensor RX interfaces to host 0 with FSDB waves"
+	@echo "  make run TEST_MODE=ALL_SENSORS TARGET_HOST=0 DUMP=1 HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
+	@echo ""
+	@echo "  # Host -> sensors (TX) UC RoCE SEND push path"
+	@echo "  make run TEST_MODE=HOST2SEN HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
 	@echo ""
 	@echo "  # VCS with GUI"
 	@echo "  make gui HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
@@ -412,4 +475,4 @@ help:
 	@echo "  make SIMULATOR=XCELIUM gui HOLOLINK_PATH=... HOLOLINK_DEF_INCLUDE=..."
 	@echo "================================================================================"
 
-.PHONY: all env_check compile run coe gui coe-gui verdi debug clean help
+.PHONY: all env_check compile run coe gui coe-gui verdi clean help

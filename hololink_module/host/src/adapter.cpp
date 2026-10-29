@@ -11,6 +11,7 @@
 #include <unistd.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <chrono>
 #include <climits>
@@ -41,6 +42,15 @@
 #include "bootp.hpp"
 
 namespace hololink::module {
+
+// Registrations created by the Adapter::register_* calls implement this.
+// Applications hold only an EnumerationCallbackHandle, so neither this nor
+// the filtering subclasses below belong to the public interface.
+class EnumerationCallback {
+public:
+    virtual ~EnumerationCallback() = default;
+    virtual void handle_metadata(const EnumerationMetadata& metadata) = 0;
+};
 
 // Registration that fires only when the announced peer_ip matches.
 class PeerIpEnumerationCallback : public EnumerationCallback {
@@ -236,6 +246,7 @@ static std::shared_ptr<Module> load_so(
 
 // Defined in logging_impl.cpp / reactor_impl.cpp.
 std::shared_ptr<LoggingInterfaceV1> make_logging_impl();
+extern std::atomic<LogLevel> logging_impl_level;
 std::shared_ptr<ReactorV1> make_reactor_impl();
 // Stops and joins the reactor's poll thread (the reactor object itself is a
 // leaked singleton and is never destructed).
@@ -286,6 +297,11 @@ Adapter& Adapter::get_adapter()
 {
     static Adapter instance;
     return instance;
+}
+
+void Adapter::set_log_level(LogLevel level)
+{
+    logging_impl_level = level;
 }
 
 std::shared_ptr<Module> Adapter::load_module(const std::filesystem::path& so_path)
@@ -472,11 +488,6 @@ Adapter::ResolvedModule Adapter::load_module_for(
         }
     }
     return {};
-}
-
-void Adapter::enumerate(EnumerationMetadata metadata)
-{
-    enumerate(std::move(metadata), nullptr, 0);
 }
 
 // The bootp deserializer always writes a 16-byte "hardware_address"
@@ -743,9 +754,21 @@ void Adapter::start_bootp_listener(uint32_t port)
             "While starting the bootp listener: configure_bootp_socket failed");
     }
 
+    // The callback owns the socket: owned_fd closes it when the last
+    // reference to the callback is dropped. The reactor holds a reference
+    // while a call is running, so the socket stays open until that returns.
+    std::shared_ptr<const int> owned_fd(new int(fd), [](const int* p) {
+        ::close(*p);
+        delete p;
+    });
+    auto callback = std::make_shared<ReactorV1::FdCallback>(
+        [owned_fd](int ready_fd, short events) { on_bootp_fd_event(ready_fd, events); });
+    // When the callback is removed, e.g. at shutdown, it drops a reference to owned_fd;
+    // if that was the only reference then it'll close the bootp listener socket.  As long
+    // as bootp_callback_ points to callback, then owned_fd will still have a reference.
+    reactor->add_fd_callback(fd, callback, POLLIN);
     bootp_socket_fd_ = fd;
-    bootp_callback_ = std::make_shared<ReactorV1::FdCallback>(&Adapter::on_bootp_fd_event);
-    reactor->add_fd_callback(fd, bootp_callback_, POLLIN);
+    bootp_callback_ = std::move(callback);
 }
 
 void Adapter::stop_bootp_listener()
@@ -759,8 +782,11 @@ void Adapter::stop_bootp_listener()
     if (reactor) {
         reactor->remove_fd_callback(bootp_socket_fd_);
     }
-    ::close(bootp_socket_fd_);
     bootp_socket_fd_ = -1;
+    // Closes the socket unless a call to the callback is still running,
+    // in which case the reactor's reference closes it when that call
+    // returns. Nothing here waits, so this is safe from any thread,
+    // including from an enumeration subscriber running on the reactor.
     bootp_callback_.reset();
 }
 

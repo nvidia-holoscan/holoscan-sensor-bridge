@@ -94,9 +94,9 @@ struct ControlMessage;
 class HSBEmulator;
 
 /**
- * @brief callback function type for control plane callback
+ * @brief callback function type for control plane callback.
  * @param ctxt The context to pass to the callback.
- * @param addr_val The address and value to pass to the callback. may be a C style array
+ * @param addr_val The address and value to pass to the callback. May be a C-style array.
  * @param count The number of address and value pairs passed to the callback.
  * @return > 0 for the number of address and successfully processed value pairs. <= 0 for an error. Note 0 is a valid number of consumed pairs but will be treated as an error.
  */
@@ -182,7 +182,7 @@ struct HSBEmulatorCtxt {
 };
 
 /**
- * @brief class that manages virtual I2C peripherals from the host. This is mostly for the linux emulator where the use case is for virtual sensors
+ * @brief class that manages virtual I2C peripherals from the host. This is mostly for the linux emulator where the use case is for virtual sensors.
  * @note This should not be instantiated directly by user code. Use HSBEmulator::get_i2c() instead. The default and primary I2CController is at address hololink::I2C_CTRL.
  */
 class I2CController {
@@ -288,7 +288,7 @@ public:
     void start();
 
     /**
-     * @brief Stop the emulator. This will shut down the control message thread, all BootP broadcasts in DataPlane objects. Data transmission is still possible until HSBEmulator object is destroyed
+     * @brief Stop the emulator. This will shut down the control message thread, all BootP broadcasts in DataPlane objects. Data transmission is still possible until HSBEmulator object is destroyed.
      *
      * @note It is safe to call this function multiple times
      */
@@ -301,7 +301,7 @@ public:
      * the ctxt_ and i2c_controller_ are wired up. Platform-specific callback registrations
      * (GPIO/SPI on STM32; Linux peripheral attach) remain in the platform constructor.
      *
-     * Future: a default reset callback is applied that will call this, but that callback can be overridden
+     * Future: a default reset callback is applied that will call this, but that callback can be overridden.
      */
     void reset();
 
@@ -358,7 +358,7 @@ public:
     int register_write_callback(uint32_t start_address, uint32_t end_address, ControlPlaneCallback_f callback, void* ctxt = nullptr);
 
     /**
-     * @brief method to explicitly handle pending control messages to the HSBEmulator client. This method is required for MCU targets, but optional for linux targets
+     * @brief method to explicitly handle pending control messages to the HSBEmulator client. This method is required for MCU targets, but optional for linux targets.
      */
     int handle_msgs();
 
@@ -378,14 +378,14 @@ public:
 private:
     // utilities for use by friend DataPlane
     /**
-     * @brief Add a data plane to the emulator for start()/stop()/is_running() management
+     * @brief Add a data plane to the emulator for start()/stop()/is_running() management.
      * @param data_plane The data plane to add.
      * @return 0 on success, 1 on failure.
      */
     int add_data_plane(DataPlane& data_plane);
 
     /**
-     * @return The register map of the emulated fpga
+     * @return The register map of the emulated fpga.
      */
     AddressMemory& get_memory();
 

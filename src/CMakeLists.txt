@@ -14,3 +14,7 @@
 # limitations under the License.
 
 add_subdirectory(hololink)
+# Embedded-HSB device side: the hololink_pcie kernel module (kbuild via CMake).
+if(HOLOLINK_BUILD_PCIE)
+  add_subdirectory(ehsb/kmod)
+endif()

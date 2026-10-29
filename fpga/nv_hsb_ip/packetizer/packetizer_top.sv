@@ -29,8 +29,11 @@ module packetizer_top
     parameter  DYNAMIC_VP        = 1,
     parameter  MIXED_VP_SIZE     = 1,
     parameter  MTU               = 1500,
+    // 0: bypass, 1: programmable packetizer, 2: fixed-pattern packetizer.
     parameter  PACKETIZER_ENABLE = 0,
     parameter  W_USER            = 1,
+    // Optional pruning of the generated static pattern catalog.
+    parameter logic [63:0] PATTERN_MASK = {64{1'b1}},
     localparam DKEEP_WIDTH       = DIN_WIDTH/8,
     localparam DOUT_KWIDTH       = DOUT_WIDTH/8
     ) (
@@ -101,9 +104,13 @@ logic [15:0] wr_addr;
 logic [15:0] wr_addr_q;
 logic [31:0] wr_data;
 logic [15:0] ld_arr;
+logic [15:0] reg_ld_arr;
 logic [3:0]  max_addr;
+logic [3:0]  reg_max_addr;
 logic        pad_enable;
 logic [3:0]  latency;
+logic [3:0]  reg_latency;
+logic [7:0]  static_pattern_index;
 
 logic [CNT_WIDTH:0]  cnt;
 logic [CNT_WIDTH:0]  cnt_nxt;
@@ -120,14 +127,30 @@ logic        duplicate;
 
 assign wr_addr           = ctrl_reg[pack_ram_addr][15:0];
 assign wr_data           = ctrl_reg[pack_ram_data][31:0];
-assign ld_arr            = ctrl_reg[pack_ctrl][15:0];
+assign reg_ld_arr        = ctrl_reg[pack_ctrl][15:0];
 assign pad_enable        = ctrl_reg[pack_ctrl][16];
 assign duplicate         = ctrl_reg[pack_ctrl][17];
-assign max_addr          = ctrl_reg[pack_ctrl][23:20];
-assign latency           = ctrl_reg[pack_ctrl][27:24];
+assign reg_max_addr      = ctrl_reg[pack_ctrl][23:20];
+assign reg_latency       = ctrl_reg[pack_ctrl][27:24];
 assign bypass_packetizer = !ctrl_reg[pack_ctrl][28];
+// Static mode uses the low byte of pack_scratch. Bits [5:0] select the
+// generated pattern catalog entry; bits [7:6] are reserved.
+assign static_pattern_index = ctrl_reg[pack_scratch][7:0];
 // Successful Write to wr_data
 assign wr_en   = i_apb_m2s.psel & i_apb_m2s.penable & i_apb_m2s.pwrite & (i_apb_m2s.paddr[7:0] == 8'h08) && (o_apb_s2m.pready);
+
+// Register wr_en in the i_aclk domain before crossing into i_sclk so the
+// synchronizer input is not a raw combinational AND of the APB signals
+// (avoids sampling a glitch).
+logic wr_en_r;
+always_ff @(posedge i_aclk) begin
+  if (i_arst) begin
+    wr_en_r <= 1'b0;
+  end
+  else begin
+    wr_en_r <= wr_en;
+  end
+end
 
 data_sync #(
   .DATA_WIDTH     (1             ),
@@ -135,8 +158,8 @@ data_sync #(
   .SYNC_DEPTH     (3             )
 ) u_wr_en_sync (
   .clk            ( i_sclk       ),
-  .rst_n          ( !i_srst      ),
-  .sync_in        ( wr_en        ),
+  .rst            ( i_srst       ),
+  .sync_in        ( wr_en_r      ),
   .sync_out       ( wr_en_sync   )
 );
 
@@ -229,23 +252,81 @@ localparam W_PCK_USER = (W_USER <= 1) ? 2 : W_USER;
 
 logic [W_PCK_USER-1:0] buf_tuser;
 logic                  buf_bypass;
+logic                  buf_rd_val;
 logic [W_PCK_USER-1:0] inp_tuser;
-
+logic [5:0]            static_pattern_select;
+logic [5:0]            active_static_pattern_select;
+logic                  static_pattern_supported;
+logic [15:0]           static_pattern_ld_arr;
+logic [3:0]            static_pattern_max_addr;
+logic [3:0]            static_pattern_latency;
 
 assign buf_tuser = (inp_tuser | {'0,bypass_packetizer});
-assign buf_bypass = buf_tuser[0];
+assign buf_bypass = buf_tuser[0] ||
+                    ((PACKETIZER_ENABLE == 2) && !static_pattern_supported);
 assign inp_tuser = (W_USER<2) ? {1'b0,i_axis_tuser} : i_axis_tuser;
+
+generate
+  if (PACKETIZER_ENABLE == 2) begin: gen_static_schedule
+    // Capture schedule metadata from the incoming pattern ID while idle,
+    // then hold it for the complete line/pattern transaction.
+    logic [15:0] active_pattern_ld_arr;
+    logic [3:0]  active_pattern_max_addr;
+    logic [3:0]  active_pattern_latency;
+    logic [15:0] sched_ld_arr;
+    logic [3:0]  sched_max_addr;
+    logic [3:0]  sched_latency;
+
+    // ID 0 and any pattern this instance pruned bypass the sorter, and the
+    // catalog has no schedule for them.  Those lines consume one input beat
+    // per row, so present a load-every-row schedule.  Leaving LD_ARR at zero
+    // would hold pack_stall through PACK_PAD and replay the last beat instead
+    // of shifting in the zeroed pack_din.
+    assign sched_ld_arr   = static_pattern_supported ? static_pattern_ld_arr   : {16{1'b1}};
+    assign sched_max_addr = static_pattern_supported ? static_pattern_max_addr : '0;
+    assign sched_latency  = static_pattern_supported ? static_pattern_latency  : '0;
+
+    always_ff @(posedge i_sclk) begin
+      if (i_srst) begin
+        active_static_pattern_select <= '0;
+        active_pattern_ld_arr   <= {16{1'b1}};
+        active_pattern_max_addr <= '0;
+        active_pattern_latency  <= '0;
+      end
+      else if ((state == PACK_IDLE) && buf_rd_val) begin
+        active_static_pattern_select <= static_pattern_index[5:0];
+        active_pattern_ld_arr   <= sched_ld_arr;
+        active_pattern_max_addr <= sched_max_addr;
+        active_pattern_latency  <= sched_latency;
+      end
+    end
+
+    // Hold the selected catalog entry from the first buffered beat through the
+    // transaction; register updates take effect on the next idle transaction.
+    assign static_pattern_select =
+        (state == PACK_IDLE) ? static_pattern_index[5:0] :
+                               active_static_pattern_select;
+    assign ld_arr   = (state == PACK_IDLE) ? sched_ld_arr   : active_pattern_ld_arr;
+    assign max_addr = (state == PACK_IDLE) ? sched_max_addr : active_pattern_max_addr;
+    assign latency  = (state == PACK_IDLE) ? sched_latency  : active_pattern_latency;
+  end
+  else begin: gen_sw_schedule
+    assign static_pattern_select = '0;
+    assign ld_arr   = reg_ld_arr;
+    assign max_addr = reg_max_addr;
+    assign latency  = reg_latency;
+  end
+endgenerate
 
 //------------------------------------------------------------------------------------------------//
 // Packetizer Pattern Address
 //------------------------------------------------------------------------------------------------//
 
-logic                       buf_rd_val;
 logic                       buf_rd_req;
 logic [DIN_WIDTH-1:0]       pack_din;
 logic                       pack_tlast;
 logic                       pack_dvalid;
-logic [W_USER-1:0]          pack_tuser;
+logic [W_PCK_USER-1:0]      pack_tuser;
 logic                       pack_wait;
 logic [3:0]                 ram_rd_addr;
 logic                       pack_stall;
@@ -396,7 +477,44 @@ genvar j;
 localparam SORT_ENABLE_INT = (SORT_RESOLUTION == DIN_WIDTH) ? 0 : SORT_ENABLE;
 
 generate
-  if (PACKETIZER_ENABLE) begin: gen_pack_inst
+  if (PACKETIZER_ENABLE == 2) begin: gen_static_pack_inst
+    // SORT_RESOLUTION/VP_SIZE/NUM_CYCLES are programmable-packetizer geometry.
+    // The static datapath derives all three from the pattern catalog.
+    packetizer_static #(
+      .DIN_WIDTH       ( DIN_WIDTH       ),
+      .VP_COUNT        ( VP_COUNT        ),
+      .DOUT_WIDTH      ( DOUT_WIDTH      ),
+      .PATTERN_MASK    ( PATTERN_MASK    ),
+      .MTU             ( MTU             )
+    ) packetizer_static_inst (
+      .i_sclk          ( i_sclk                              ),
+      .i_srst          ( i_srst                              ),
+      .i_pclk          ( i_pclk                              ),
+      .i_prst          ( i_prst                              ),
+      .pattern_cycle   ( ram_rd_addr                         ),
+      .pattern_select  ( static_pattern_select               ),
+      .pattern_supported ( static_pattern_supported          ),
+      .pattern_ld_arr  ( static_pattern_ld_arr               ),
+      .pattern_max_addr( static_pattern_max_addr              ),
+      .pattern_latency ( static_pattern_latency               ),
+      .din             ( pack_din                            ),
+      .din_valid       ( pack_dvalid                         ),
+      .din_bypass      ( pack_tuser[0]                       ),
+      .duplicate       ( duplicate                           ),
+      .din_wait        ( pack_wait                           ),
+      .din_stall       ( pack_stall                          ),
+      .din_tlast       ( pack_tlast && (state == PACK_IDLE)  ),
+      .vp_is_empty     ( w_vp_is_empty                       ),
+      .vp_almost_full  ( w_vp_almost_full                    ),
+      .o_axis_tvalid   ( o_axis_tvalid                       ),
+      .o_axis_tlast    ( o_axis_tlast                        ),
+      .o_axis_tdata    ( o_axis_tdata                        ),
+      .o_axis_tkeep    ( o_axis_tkeep                        ),
+      .o_axis_tuser    ( o_axis_tuser                        ),
+      .i_axis_tready   ( i_axis_tready                       )
+    );
+  end
+  else if (PACKETIZER_ENABLE) begin: gen_pack_inst
     packetizer # (
       .DIN_WIDTH        ( DIN_WIDTH       ),
       .SORT_ENABLE      ( SORT_ENABLE_INT ),
@@ -420,7 +538,7 @@ generate
       .ram_wr_data      ( wr_data                                ),
       .din              ( pack_din                               ),
       .din_valid        ( pack_dvalid                            ),
-      .din_tuser        ( pack_tuser                             ),
+      .din_tuser        ( pack_tuser[W_USER-1:0]                 ),
       .duplicate        ( duplicate                              ),
       .din_wait         ( pack_wait                              ),
       .din_stall        ( pack_stall                             ),

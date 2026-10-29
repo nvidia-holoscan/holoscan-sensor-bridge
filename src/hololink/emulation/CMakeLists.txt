@@ -13,7 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.17)
+cmake_minimum_required(VERSION 3.24)
 
 # command line options
 option(HSB_EMULATOR_BUILD_PYTHON "When building standalone HSB Emulator, including building the python environment." ON)

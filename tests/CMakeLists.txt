@@ -60,8 +60,6 @@ function(ConfigureTest)
 
 endfunction()
 
-# ##################################################################################################
-# * core tests ----------------------------------------------------------------------------------
 if (HOLOLINK_BUILD_ROCE)
   ConfigureTest(
       hololink_iq_encoder_decoder_test
@@ -90,6 +88,93 @@ if (HOLOLINK_BUILD_ROCE)
   set_tests_properties(hololink_roce_transmitter_test PROPERTIES
     SKIP_REGULAR_EXPRESSION "Failed to find GID with IP based RoCE V2|No RoCE-capable InfiniBand device available"
   )
+
+  ConfigureTest(
+      hololink_cpu_roce_transceiver_op_test
+    SOURCES
+      cpu_roce_transceiver_op_test.cpp
+    LINK_LIBRARIES
+      hololink::operators::cpu_roce_transceiver
+  )
+
+  ConfigureTest(
+      hololink_cpu_roce_frame_receiver_test
+    SOURCES
+      cpu_roce_frame_receiver_test.cpp
+    LINK_LIBRARIES
+      hololink::operators::cpu_roce_frame_receiver
+      hololink::core
+  )
+
+  # Slot transitions only. The internal header has no verbs and no CUDA.
+  ConfigureTest(
+      hololink_cpu_roce_frame_transmitter_slot_test
+    SOURCES
+      cpu_roce_frame_transmitter_slot_test.cpp
+  )
+  find_program(HOLOLINK_NM_EXECUTABLE nm)
+  if(HOLOLINK_NM_EXECUTABLE)
+    add_test(
+      NAME hololink_core_deserialize_metadata_symbol
+      COMMAND ${HOLOLINK_NM_EXECUTABLE} -C $<TARGET_FILE:hololink_core>
+    )
+    # Require a defined symbol. `nm -C` also prints undefined references, and
+    # those have no address, so a name-only match would still pass if the
+    # archive stopped defining Hololink::deserialize_metadata.
+    set_tests_properties(hololink_core_deserialize_metadata_symbol PROPERTIES
+      PASS_REGULAR_EXPRESSION "[0-9a-fA-F]+ [Tt] hololink::Hololink::deserialize_metadata"
+    )
+  endif()
+
+  # Compiles cpu_roce_frame_receiver.cpp itself and must not reach hololink::core
+  # through the hololink convenience library. ConfigureTest always links that
+  # library, so this executable is linked directly.
+  add_executable(hololink_cpu_roce_frame_receiver_gpu_test
+    cpu_roce_frame_receiver_gpu_test.cpp)
+  set_target_properties(hololink_cpu_roce_frame_receiver_gpu_test PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "$<BUILD_INTERFACE:${hololink_BINARY_DIR}/gtests>")
+  target_link_libraries(hololink_cpu_roce_frame_receiver_gpu_test
+    PRIVATE
+      GTest::gtest_main
+      hololink::transport::roce
+      ibverbs::ibverbs
+      CUDA::cuda_driver
+      Threads::Threads)
+  target_include_directories(hololink_cpu_roce_frame_receiver_gpu_test PRIVATE
+    ${hololink_SOURCE_DIR}/src)
+  add_test(NAME hololink_cpu_roce_frame_receiver_gpu_test
+    COMMAND hololink_cpu_roce_frame_receiver_gpu_test
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR})
+  set_property(TEST hololink_cpu_roce_frame_receiver_gpu_test PROPERTY ENVIRONMENT
+    "LD_LIBRARY_PATH=${hololink_BINARY_DIR}/lib:$ENV{LD_LIBRARY_PATH}")
+
+  if(HOLOLINK_BUILD_GPUNETIO_ROCE)
+    ConfigureTest(
+        hololink_gpu_roce_transceiver_teardown_test
+      SOURCES
+        gpu_roce_transceiver_teardown_test.cpp
+      LINK_LIBRARIES
+        hololink::operators::gpu_roce_transceiver
+        hololink::operators::roce_transmitter
+    )
+    target_include_directories(hololink_gpu_roce_transceiver_teardown_test PRIVATE
+      ${hololink_SOURCE_DIR}/src
+    )
+    set_tests_properties(hololink_gpu_roce_transceiver_teardown_test PROPERTIES
+      SKIP_REGULAR_EXPRESSION "No RoCE-capable InfiniBand device available|GpuRoceTransceiver could not start"
+      TIMEOUT 120
+    )
+
+    ConfigureTest(
+        hololink_gpu_roce_transceiver_op_test
+      SOURCES
+        gpu_roce_transceiver_op_test.cpp
+      LINK_LIBRARIES
+        hololink::operators::gpu_roce_transceiver
+    )
+  endif() # HOLOLINK_BUILD_GPUNETIO_ROCE
+
+  include("${CMAKE_CURRENT_LIST_DIR}/cpu_roce_transport_tests.cmake")
 
   if(HOLOLINK_BUILD_PYTHON)
     add_test(
@@ -154,6 +239,16 @@ add_dependencies(hololink_module_framework_test
 set_property(TEST hololink_module_framework_test APPEND PROPERTY ENVIRONMENT
   "HOLOLINK_MODULE_TEST_MODULE_DIR=$<TARGET_FILE_DIR:hololink_module_stub_module>")
 
+# IngressStall is header-only and has no dependencies beyond <cstdint>, so this
+# needs the include path rather than a link.
+ConfigureTest(
+    hololink_ingress_stall_test
+  SOURCES
+    ingress_stall_test.cpp
+)
+target_include_directories(hololink_ingress_stall_test PRIVATE
+  ${hololink_SOURCE_DIR}/hololink_module/host/operators/include)
+
 # ##################################################################################################
 # * hololink_module Reactor + Logging singletons --------------------------------------------------
 
@@ -175,7 +270,6 @@ ConfigureTest(
     hololink_module_singletons_test.cpp
   LINK_LIBRARIES
     hololink::module
-    hololink::core
 )
 target_compile_features(hololink_module_singletons_test PRIVATE cxx_std_17)
 add_dependencies(hololink_module_singletons_test
@@ -225,6 +319,102 @@ ConfigureTest(
 )
 target_compile_features(hololink_module_core_test PRIVATE cxx_std_17)
 
+if(HOLOLINK_BUILD_PCIE)
+# ##################################################################################################
+# * hsb_pcie module core (address policy / software sequencer) -------------------------------------
+
+# Hardware-free: dispatches register accesses through the AddressPolicy onto
+# the in-memory LoopbackPcieEndpoint and asserts the BAR0 / shadow side
+# effects, plus the software APB sequencer it drives.
+ConfigureTest(
+    hololink_module_hsb_pcie_policy_test
+  SOURCES
+    hololink_module_hsb_pcie_policy_test.cpp
+  LINK_LIBRARIES
+    hololink::hsb_pcie::core
+)
+target_compile_features(hololink_module_hsb_pcie_policy_test PRIVATE cxx_std_17)
+
+# PcieHololink (hololink::Hololink with its read_uint32 / write_uint32 seam
+# dispatched onto BAR0) driven against the loopback endpoint: start() without
+# sockets, configure_hsb, scalar / batched / block access and their batch
+# semantics, the sequencer trigger contract, and_uint32 / or_uint32, reset()
+# re-identification.
+ConfigureTest(
+    hololink_module_hsb_pcie_hololink_test
+  SOURCES
+    hololink_module_hsb_pcie_hololink_test.cpp
+  LINK_LIBRARIES
+    hololink::hsb_pcie::core
+    hololink::module_core
+)
+target_compile_features(hololink_module_hsb_pcie_hololink_test PRIVATE cxx_std_17)
+
+# PcieHololink against a real, bound endpoint through the hololink_pcie driver.
+# Opt-in: skips unless HOLOLINK names the board (BDF or /dev/hololink_pcieN,
+# as the players' --hololink does; a non-PCIe value such as an IP also skips):
+#   HOLOLINK=0004:06:00.0 ctest --test-dir build -R hsb_pcie_hardware -V
+# start() identifies the design and its I2C timing reads back, GLB_SCRATCH
+# round-trips through every access shape, concurrent callers are serialized,
+# and one I2C transaction (IMX258 model ID) runs the software-sequencer path
+# on the board. Never resets the design.
+ConfigureTest(
+    hololink_module_hsb_pcie_hardware_test
+  SOURCES
+    hololink_module_hsb_pcie_hardware_test.cpp
+  LINK_LIBRARIES
+    hololink::hsb_pcie::core
+    hololink::module_core
+    hololink::module::sensors::imx258
+)
+target_compile_features(hololink_module_hsb_pcie_hardware_test PRIVATE cxx_std_17)
+set_tests_properties(hololink_module_hsb_pcie_hardware_test PROPERTIES
+  LABELS hardware
+  RUN_SERIAL TRUE
+  # Reported as "Not Run (Skipped)" by ctest when no PCIe board is named.
+  SKIP_REGULAR_EXPRESSION "HOLOLINK is not set|is not a PCIe endpoint")
+
+# ##################################################################################################
+# * hsb_pcie module end-to-end ---------------------------------------------------------------------
+
+# Loads hololink_58c1419b-1e7a-4120-95fd-4efc156187c1.so through
+# Adapter::enumerate with a synthetic PCIe-shaped blob (pcie_backend=loopback),
+# so no /dev/hololink_pcie* node is needed.
+ConfigureTest(
+    hololink_module_hsb_pcie_test
+  SOURCES
+    hololink_module_hsb_pcie_test.cpp
+  LINK_LIBRARIES
+    hololink::module
+    hololink::hsb_pcie::headers
+    hololink::hsb_pcie::abi_headers
+)
+target_compile_features(hololink_module_hsb_pcie_test PRIVATE cxx_std_17)
+add_dependencies(hololink_module_hsb_pcie_test hsb_pcie)
+set_property(TEST hololink_module_hsb_pcie_test APPEND PROPERTY ENVIRONMENT
+  "HOLOLINK_MODULE_TEST_MODULE_DIR=$<TARGET_FILE_DIR:hsb_pcie>")
+
+# ##################################################################################################
+# * hololink_pcie kernel driver bootp announcement --------------------------------------------------
+
+# Hardware- and kernel-free: builds the driver's 300-byte announcement with the inline filler
+# from the mirrored hololink_pcie_bootp.h, sends it to the Adapter's listener over loopback as
+# the driver's netif_rx() frame arrives, and checks the parser's output raw and, through the
+# real hsb_pcie .so, that wait_for_channel(<bdf>) resolves on the restored peer_ip.
+ConfigureTest(
+    hololink_module_pcie_bootp_test
+  SOURCES
+    hololink_module_pcie_bootp_test.cpp
+  LINK_LIBRARIES
+    hololink::module
+    hololink::hsb_pcie::abi_headers
+)
+target_compile_features(hololink_module_pcie_bootp_test PRIVATE cxx_std_17)
+add_dependencies(hololink_module_pcie_bootp_test hsb_pcie)
+set_property(TEST hololink_module_pcie_bootp_test APPEND PROPERTY ENVIRONMENT
+  "HOLOLINK_MODULE_TEST_MODULE_DIR=$<TARGET_FILE_DIR:hsb_pcie>")
+endif() # HOLOLINK_BUILD_PCIE
+
 # ##################################################################################################
 # * HSB-Lite module end-to-end ---------------------------------------------------------------------
 
@@ -241,6 +431,26 @@ target_compile_features(hololink_module_hsb_lite_test PRIVATE cxx_std_17)
 add_dependencies(hololink_module_hsb_lite_test hsb_lite hsb_lite_2510)
 set_property(TEST hololink_module_hsb_lite_test APPEND PROPERTY ENVIRONMENT
   "HOLOLINK_MODULE_TEST_MODULE_DIR=$<TARGET_FILE_DIR:hsb_lite>")
+
+# ##################################################################################################
+# * Leopard VB1940 module end-to-end ---------------------------------------------------------------
+
+# Both Leopard VB1940 modules claim one UUID: module/leopard_vb1940/
+# ships the compat-suffixed .so for the 2603 FPGA, and
+# module/leopard_vb1940_2510/ the bare-UUID one that catches the 2510
+# board (which reports compat_id 0) and anything else.
+ConfigureTest(
+    hololink_module_leopard_vb1940_test
+  SOURCES
+    hololink_module_leopard_vb1940_test.cpp
+  LINK_LIBRARIES
+    hololink::module
+)
+target_compile_features(hololink_module_leopard_vb1940_test PRIVATE cxx_std_17)
+add_dependencies(hololink_module_leopard_vb1940_test
+    leopard_vb1940 leopard_vb1940_2510)
+set_property(TEST hololink_module_leopard_vb1940_test APPEND PROPERTY ENVIRONMENT
+  "HOLOLINK_MODULE_TEST_MODULE_DIR=$<TARGET_FILE_DIR:leopard_vb1940>")
 
 # ##################################################################################################
 # * Adapter bootp listener -------------------------------------------------------------------------
@@ -288,7 +498,7 @@ if(HOLOLINK_BUILD_PYTHON)
     # The smoke test imports the in-build hololink_module package and
     # drives Adapter.enumerate against the hsb_lite .so.
     add_test(NAME hololink_module_python_smoke_test
-        COMMAND python3 -m pytest -v
+        COMMAND python3 -m pytest -v --noconftest
             --rootdir=${CMAKE_BINARY_DIR}/python
             ${CMAKE_CURRENT_SOURCE_DIR}/test_hololink_module_python.py)
     set_tests_properties(hololink_module_python_smoke_test PROPERTIES
@@ -347,7 +557,7 @@ if(HOLOLINK_BUILD_ROCE AND HOLOLINK_MODULE_BUILD_OPERATORS)
                 ${CMAKE_CURRENT_SOURCE_DIR}/test_hololink_module_operators_python.py)
         set_tests_properties(hololink_module_operators_python_smoke_test PROPERTIES
             ENVIRONMENT
-                "PYTHONPATH=${CMAKE_BINARY_DIR}/python")
+                "PYTHONPATH=${CMAKE_BINARY_DIR}/python:${CMAKE_BINARY_DIR}/python/lib:$ENV{PYTHONPATH}")
     endif()
 endif()
 
@@ -521,3 +731,76 @@ if(HOLOLINK_BUILD_EMULATOR)
       hololink::emulation
   )
 endif() # HOLOLINK_BUILD_EMULATOR
+
+if(HOLOLINK_BUILD_PCIE)
+# ##################################################################################################
+# * IMX258 module sensor driver --------------------------------------------------------------------
+
+# Hardware-free: pins the IMX258 register-table invariants (streaming-off
+# first, no trailing streaming-on, PDAF disabled, 60 fps EXPERIMENTAL table
+# differs only at 0x0307), the frame-format table, and the CSI-converter
+# geometry (start byte 640, 2400-byte RAW10 lines) against a stub
+# CsiConverterV1. No I2C: the driver's get_i2c goes through the module
+# registry, which this test never populates.
+ConfigureTest(
+    hololink_module_imx258_test
+  SOURCES
+    hololink_module_imx258_test.cpp
+  LINK_LIBRARIES
+    hololink::module::sensors::imx258
+    hololink::module
+)
+target_compile_features(hololink_module_imx258_test PRIVATE cxx_std_17)
+
+# ##################################################################################################
+# * PCIe identity tool's sysfs scan (hololink_module/tools/pcie_device_info.cpp) ------------------
+
+# Hardware-free: UUID text round trips, the section-F metadata key table
+# from a hand-built PcieDeviceInfo, and scan_pcie_devices() against a fake
+# /sys/class/hololink_pcie tree in a temp dir (no /dev node, so the ioctl
+# path is skipped and the sysfs-attribute fallback is exercised). The code
+# under test is private to hololink_pcie_identity, so its source file is
+# compiled into the test directly.
+ConfigureTest(
+    hololink_module_pcie_enumerator_test
+  SOURCES
+    hololink_module_pcie_enumerator_test.cpp
+    ${CMAKE_SOURCE_DIR}/hololink_module/tools/pcie_device_info.cpp
+  LINK_LIBRARIES
+    hololink::module
+    hololink::hsb_pcie::abi_headers
+)
+target_include_directories(hololink_module_pcie_enumerator_test
+  PRIVATE ${CMAKE_SOURCE_DIR}/hololink_module/tools)
+target_compile_features(hololink_module_pcie_enumerator_test PRIVATE cxx_std_17)
+
+# ##################################################################################################
+# * PCIe receive path (module/hsb_pcie's PcieReceiver backing + PcieReceiverOp) -------------------
+
+# Hardware-free: geometry parity with the reference ring arithmetic, ring-layout and
+# buffer limits, both metadata layouts, the peer_ip -> device node resolution, and the
+# module's backing PcieReceiver against a fake PcieDeviceAccessInterface -- start
+# (mapping, MSI-X routing, baseline; no register access), the
+# PcieReceiverAttachmentV1 values the hsb_pcie channel programs from, slot
+# accounting / dropped frames / frame-number extension. Links the module's core
+# archive directly (the backing is not reachable through the .so without a
+# device). The channel's register sequence is covered module-side in
+# hololink_module_hsb_pcie_test. The PcieReceiverOp construct + compose_graph
+# smoke test and the missing-peer_ip start() failure are compiled in only when
+# the Holoscan operators are built (same gate as
+# hololink_module_roce_receiver_op_test).
+ConfigureTest(
+    hololink_module_pcie_receiver_test
+  SOURCES
+    hololink_module_pcie_receiver_test.cpp
+  LINK_LIBRARIES
+    hololink::hsb_pcie::core
+    hololink::module
+    $<$<BOOL:${HOLOLINK_MODULE_BUILD_OPERATORS}>:hololink::operators>
+)
+target_compile_features(hololink_module_pcie_receiver_test PRIVATE cxx_std_17)
+if(HOLOLINK_MODULE_BUILD_OPERATORS)
+    target_compile_definitions(hololink_module_pcie_receiver_test
+        PRIVATE HOLOLINK_MODULE_PCIE_RECEIVER_OP_TEST)
+endif()
+endif() # HOLOLINK_BUILD_PCIE

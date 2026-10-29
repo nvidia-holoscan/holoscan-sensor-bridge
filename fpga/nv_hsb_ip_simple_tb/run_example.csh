@@ -16,20 +16,39 @@
 
 
 #==============================================================================
-# Example script to run the Hololink Simple Testbench
+# Example script to run the NV HSB IP Simple Testbench
 # This demonstrates how to run the basic simulation
 #==============================================================================
+
+set SCRIPT_DIR = `dirname "$0"`
+cd "$SCRIPT_DIR"
+setenv HOLOLINK_TB_DIR "$cwd"
+source ./setup_env.csh
 
 echo "=== NV HSB IP Simple Testbench Example ==="
 echo ""
 
-# Set environment variables for VCS
-echo "Setting up VCS environment..."
-setenv VCS_HOME "/home/tools/vcs/2023.03-SP2-8"
-setenv PATH ${PATH}:${VCS_HOME}/bin
-setenv DESIGNWARE_HOME /home/tools/synopsys/designware_home/
-setenv VERDI_HOME /home/tools/debussy/verdi3_2023.03-SP2-8
+set TEST_MODE_ARG = "SINGLE_SENSOR"
+if ($#argv >= 1) then
+    set TEST_MODE_ARG = "$argv[1]"
+endif
 
+set TARGET_HOST_ARG = "0"
+if ($#argv >= 2) then
+    set TARGET_HOST_ARG = "$argv[2]"
+endif
+
+echo "Selected TEST_MODE: $TEST_MODE_ARG"
+echo "Selected TARGET_HOST: $TARGET_HOST_ARG"
+echo "Usage examples:"
+echo "  ./run_example.csh SINGLE_SENSOR"
+echo "  ./run_example.csh ALL_SENSORS 0"
+echo ""
+
+echo "Using environment from setup_env.csh..."
+echo "SIMULATOR: $SIMULATOR"
+echo "HOLOLINK_PATH: $HOLOLINK_PATH"
+echo "HOLOLINK_DEF_INCLUDE: $HOLOLINK_DEF_INCLUDE"
 echo "VCS_HOME: $VCS_HOME"
 echo "DESIGNWARE_HOME: $DESIGNWARE_HOME" 
 echo "VERDI_HOME: $VERDI_HOME"
@@ -40,11 +59,11 @@ ls -la
 echo ""
 
 echo "=== Step 1: Clean any previous builds ==="
-make clean
+make clean SIMULATOR=$SIMULATOR
 echo ""
 
 echo "=== Step 2: Compile the testbench ==="
-make compile
+make compile SIMULATOR=$SIMULATOR
 if ($status != 0) then
     echo "ERROR: Compilation failed!"
     exit 1
@@ -53,7 +72,7 @@ echo "Compilation successful!"
 echo ""
 
 echo "=== Step 3: Run the simulation ==="
-make run
+make run SIMULATOR=$SIMULATOR TEST_MODE=$TEST_MODE_ARG TARGET_HOST=$TARGET_HOST_ARG
 if ($status != 0) then
     echo "ERROR: Simulation failed!"
     exit 1
@@ -77,6 +96,9 @@ echo "  make gui"
 echo ""
 echo "To run with custom options:"
 echo "  ./nv_hsb_ip_simple_tb.simv +fsdbfile+custom.fsdb"
+echo ""
+echo "To run all Sensor RX interfaces into host 0:"
+echo "  ./run_example.csh ALL_SENSORS 0"
 echo ""
 echo "To modify the test:"
 echo "  1. Edit nv_hsb_ip_simple_tb.sv for test sequence changes"

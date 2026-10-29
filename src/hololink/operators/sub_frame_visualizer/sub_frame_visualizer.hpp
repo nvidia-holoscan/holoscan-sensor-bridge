@@ -27,7 +27,7 @@
 namespace hololink::operators {
 
 /**
- * @brief Operator class to accumulate and visualize sub-frames as a complete frame
+ * @brief Operator class to accumulate and visualize sub-frames as a complete frame.
  */
 class SubFrameVisualizerOp : public holoscan::Operator {
 public:

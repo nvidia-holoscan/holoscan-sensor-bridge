@@ -1,0 +1,200 @@
+[
+  {
+    "id": "hsb-port-app-001",
+    "question": "Port imx274_frame_validation.py to FuSa CoE.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: imx274, receiver: FuSa CoE, pipeline: frame_validation), finds the best camera+receiver reference (e.g. fusa_coe_imx274_player.py or closest FuSa CoE imx274 app) and the best pipeline reference (imx274_frame_validation.py itself), identifies the CSI layout seam (imx274 has no get_csi_frame_layout so a compute_imx274_csi_layout helper is needed), synthesizes fusa_coe_imx274_frame_validation.py, runs the static sanity checks, and tells the user the file is ready and to use /hsb-app to run it.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to discover existing apps before writing any code",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent decomposes the target: camera=imx274, receiver=FuSa CoE, pipeline=frame_validation",
+      "The agent reads at least two reference files: one for the FuSa CoE receiver wiring and one for the frame_validation pipeline",
+      "The agent uses FusaCoeCaptureOp (not RoceReceiverOp or LinuxReceiverOperator)",
+      "The agent writes a compute_imx274_csi_layout() helper (imx274 has no get_csi_frame_layout method)",
+      "The agent includes PackedFormatConverterOp between capture and downstream operators",
+      "The agent runs grep sanity checks for FusaCoeCaptureOp and compute_imx274_csi_layout on the new file",
+      "The agent names the output file fusa_coe_imx274_frame_validation.py",
+      "The agent shows the user the content of the new file and tells them to use /hsb-app to run it on hardware"
+    ]
+  },
+  {
+    "id": "hsb-port-app-002",
+    "question": "Make a Linux version of the vb1940 PVA CRC validation app.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: vb1940, receiver: Linux, pipeline: pva_crc_validation), finds the best receiver reference (a linux_ vb1940 player app or closest linux camera app) and pipeline reference (a vb1940 or imx274 pva_crc_validation app), identifies the CSI layout seam (vb1940 exposes get_csi_frame_layout so the layout is read from the camera object), synthesizes linux_vb1940_pva_crc_validation.py using LinuxReceiverOperator, runs sanity checks, and directs the user to /hsb-app.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to build a live map of existing apps",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent decomposes the target: camera=vb1940, receiver=Linux, pipeline=pva_crc_validation",
+      "The agent reads at least two reference files: one for Linux receiver wiring and one for the pva_crc_validation pipeline",
+      "The agent uses LinuxReceiverOperator (not RoceReceiverOp or FusaCoeCaptureOp)",
+      "The agent uses camera.get_csi_frame_layout() to resolve the CSI layout (vb1940 supports this)",
+      "The agent does not include ibv_name or ibv_port args (Linux receiver does not use them)",
+      "The agent includes hololink.reset() and camera.setup_clock() in the reset sequence",
+      "The agent names the output file linux_vb1940_pva_crc_validation.py",
+      "The agent shows the user the new file content and runs grep sanity checks confirming LinuxReceiverOperator and get_csi_frame_layout are present"
+    ]
+  },
+  {
+    "id": "hsb-port-app-003",
+    "question": "Create an imx274 FuSa CoE nvcomp CRC validation app.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: imx274, receiver: FuSa CoE, pipeline: nvcomp_crc_validation), identifies this as a multi-concern target (nvcomp + CRC + FuSa CoE), finds separate references for the FuSa CoE+imx274 receiver setup and the nvcomp_crc_validation pipeline, writes compute_imx274_csi_layout() since imx274 lacks get_csi_frame_layout, includes FullFrameAccessOp for CRC access, synthesizes fusa_coe_imx274_nvcomp_crc_validation.py, and runs sanity checks.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to discover existing apps before writing any code",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent decomposes the target into three concerns: receiver=FuSa CoE, camera=imx274, pipeline=nvcomp_crc_validation",
+      "The agent reads at least two reference files covering the FuSa CoE receiver and the nvcomp_crc_validation pipeline separately",
+      "The agent uses FusaCoeCaptureOp with interface, mac_addr, hololink_channel, timeout, and device args",
+      "The agent includes FullFrameAccessOp in the pipeline (required for CRC buffer access)",
+      "The agent writes a compute_imx274_csi_layout() helper function",
+      "The agent names the output file fusa_coe_imx274_nvcomp_crc_validation.py",
+      "The agent runs grep sanity checks for FusaCoeCaptureOp, FullFrameAccessOp, and compute_imx274_csi_layout",
+      "The agent does not include ibv_name or ibv_port (FuSa CoE does not use RoCE args)"
+    ]
+  },
+  {
+    "id": "hsb-port-app-004",
+    "question": "Create a vb1940 FuSa CoE player app.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: vb1940, receiver: FuSa CoE, pipeline: player), finds fusa_coe_vb1940_player.py as an exact match (priority 1). Since an exact match exists, the agent reads it as the single reference, confirms it uses FusaCoeCaptureOp and get_csi_frame_layout(), and notes that PackedFormatConverterOp is required for this video pipeline. Since the target already exists, the agent reports this and asks whether to create a new variant or use the existing file.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob and identifies fusa_coe_vb1940_player.py as an exact priority-1 match",
+      "The agent decomposes the target: camera=vb1940, receiver=FuSa CoE, pipeline=player",
+      "The agent uses FusaCoeCaptureOp (not RoceReceiverOp or LinuxReceiverOperator)",
+      "The agent notes that vb1940 supports get_csi_frame_layout() so no compute_ helper is needed",
+      "The agent includes PackedFormatConverterOp between capture and downstream (required for FuSa CoE video)",
+      "The agent does not include ibv_name or ibv_port (FuSa CoE does not use RoCE args)",
+      "The agent does not execute Python scripts or docker commands during synthesis"
+    ]
+  },
+  {
+    "id": "hsb-port-app-005",
+    "question": "Port the imx274 RoCE player app to GPU RoCE.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: imx274, receiver: GPU RoCE, pipeline: player), finds imx274_player.py as the camera+receiver reference (same camera, closest receiver), and the same file as the pipeline reference. The agent replaces RoceReceiverOp with GpuRoceTransceiverOp, removes ibv_name/ibv_port args which are replaced by the GPU RoCE equivalent, synthesizes gpu_roce_imx274_player.py, and runs sanity checks confirming GpuRoceTransceiverOp is present and ibv_name/ibv_port are absent.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to discover existing apps",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent decomposes the target: camera=imx274, receiver=GPU RoCE, pipeline=player",
+      "The agent uses GpuRoceTransceiverOp (not RoceReceiverOp, LinuxReceiverOperator, or FusaCoeCaptureOp)",
+      "The agent removes ibv_name and ibv_port from the source app (GPU RoCE uses different transport args)",
+      "The agent names the output file gpu_roce_imx274_player.py",
+      "The agent runs grep sanity checks confirming GpuRoceTransceiverOp is present and ibv_name/ibv_port are absent",
+      "The agent does not execute Python scripts or docker commands during synthesis",
+      "The agent shows the user the new file content and the path examples/gpu_roce_imx274_player.py"
+    ]
+  },
+  {
+    "id": "hsb-port-app-006",
+    "question": "Create an imx477 Linux latency app.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: imx477, receiver: Linux, pipeline: latency). It finds linux_imx477_player.py as the camera+receiver reference (same camera + same receiver, priority 1 at simplest pipeline), and linux_imx274_latency.py or imx477_latency.py as the pipeline reference. It reads both, replaces camera-specific sizes/formats from the imx274 reference with imx477 values, uses LinuxReceiverOperator, includes hololink.reset() + camera.setup_clock() in the reset sequence, synthesizes linux_imx477_latency.py, and runs sanity checks.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to build a live map",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent decomposes the target: camera=imx477, receiver=Linux, pipeline=latency",
+      "The agent reads two reference files: linux_imx477_player.py for receiver wiring and a latency reference for the pipeline",
+      "The agent uses LinuxReceiverOperator (not RoceReceiverOp or FusaCoeCaptureOp)",
+      "The agent does not include ibv_name or ibv_port (Linux receiver does not use them)",
+      "The agent includes hololink.reset() and camera.setup_clock() in the reset sequence",
+      "The agent names the output file linux_imx477_latency.py",
+      "The agent runs grep sanity checks confirming LinuxReceiverOperator is present and ibv_name/ibv_port are absent",
+      "The agent shows the user the new file path and content"
+    ]
+  },
+  {
+    "id": "hsb-port-app-007",
+    "question": "Port imx274_player.py to Linux.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, uses Glob to discover existing apps, decomposes the target as (camera: imx274, receiver: Linux, pipeline: player). It finds linux_imx274_player.py as a priority-1 exact match for camera+receiver+player \u2014 since the exact target app already exists, the agent asks the user whether to use the existing file or create a variant. If the user wants the existing file, the agent outputs its path. If the user wants a copy, the agent copies and renames it rather than running full decomposition.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent discovers existing apps using Glob or ls",
+      "The agent decomposes the target: camera=imx274, receiver=Linux, pipeline=player",
+      "The agent identifies linux_imx274_player.py as a priority-1 exact match",
+      "The agent asks the user whether to use the existing file or create a variant",
+      "The agent does NOT run full decomposition flow if user chooses the existing file",
+      "The agent uses LinuxReceiverOperator (not RoceReceiverOp or FusaCoeCaptureOp)",
+      "The agent does not include ibv_name or ibv_port (Linux receiver does not use them)"
+    ]
+  },
+  {
+    "id": "hsb-port-app-008",
+    "question": "Create an imx274 RoCE player app from scratch.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent reads the hsb-port-app SKILL.md, discovers existing apps, decomposes the target as (camera: imx274, receiver: RoCE, pipeline: player). It finds imx274_player.py as a priority-1 exact match \u2014 since the target already exists, it asks the user. If the user wants a new variant, the agent uses imx274_player.py as the camera+receiver reference and pipeline reference, copies __init__, compose(), and main() from it, skips the stale-value grep (same camera as source), skips PackedFormatConverterOp (RoCE, not FuSa CoE), and resolves the seam (imx274 has no get_csi_frame_layout \u2014 only needed for CRC, not player). Output: a copy with a different filename per user request.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent decomposes the target: camera=imx274, receiver=RoCE, pipeline=player",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent identifies imx274_player.py as a priority-1 exact match and asks the user",
+      "The agent uses RoceReceiverOp and retains ibv_name and ibv_port (RoCE requires them)",
+      "The agent does NOT insert PackedFormatConverterOp (RoCE player, not FuSa CoE video)",
+      "The agent does NOT write a compute_imx274_csi_layout helper (player pipeline has no CRC)",
+      "The agent names the output file per user request and shows its content",
+      "The agent presents a diff summary confirming no receiver class change was needed"
+    ]
+  },
+  {
+    "id": "hsb-port-app-009",
+    "question": "Port the vb1940 nvcomp CRC validation app to FuSa CoE with imx274.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent discovers existing apps, decomposes the target as (camera: imx274, receiver: FuSa CoE, pipeline: nvcomp+CRC \u2014 multi-concern). It selects one camera+receiver reference (fusa_coe_imx274_player.py or closest) and two pipeline references independently: one for nvcomp concern and one for CRC concern (likely vb1940_fusa_nvcomp_crc_validation.py covering both). It restates the target before writing. It uses FusaCoeCaptureOp, inserts PackedFormatConverterOp (FuSa CoE video), merges operator sets with CRC > nvcomp priority, writes compute_imx274_csi_layout() since imx274 has no get_csi_frame_layout, and names the output fusa_coe_imx274_nvcomp_crc_validation.py.",
+    "expected_behavior": [
+      "The agent discovers existing apps using Glob before writing any code",
+      "The agent restates the target (camera, receiver, pipeline) explicitly before synthesizing the new file",
+      "The agent restates the target (camera=imx274, receiver=FuSa CoE, pipeline=nvcomp+CRC) before synthesizing",
+      "The agent identifies this as a multi-concern target (two pipeline concerns)",
+      "The agent selects one camera+receiver reference and runs pipeline selection independently for each concern",
+      "The agent uses FusaCoeCaptureOp with interface, mac_addr, hololink_channel, timeout, device args",
+      "The agent inserts PackedFormatConverterOp (FuSa CoE video pipeline)",
+      "The agent merges operator sets from both pipeline concerns, deduplicating shared operators",
+      "The agent writes a compute_imx274_csi_layout() helper (imx274 has no get_csi_frame_layout)",
+      "The agent includes FullFrameAccessOp in the pipeline (required for CRC buffer access)",
+      "The agent names the output file fusa_coe_imx274_nvcomp_crc_validation.py",
+      "The agent does not include ibv_name or ibv_port (FuSa CoE does not use RoCE args)"
+    ]
+  },
+  {
+    "id": "hsb-port-app-010",
+    "question": "Create a Linux vb1940 player app.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent discovers existing apps using Glob, decomposes the target as (camera: vb1940, receiver: Linux, pipeline: player). It finds linux_vb1940_player.py as a priority-1 exact match. Since the exact target exists, the agent asks the user whether to use the existing file or create a variant. This tests that reference selection correctly identifies the highest-priority match for Linux+vb1940.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to build a live map of existing apps",
+      "The agent restates the target (camera=vb1940, receiver=Linux, pipeline=player) before any synthesis",
+      "The agent decomposes the target: camera=vb1940, receiver=Linux, pipeline=player",
+      "The agent identifies linux_vb1940_player.py as a priority-1 exact match (same camera + same receiver + player)",
+      "The agent asks the user whether to use the existing file or create a variant",
+      "The agent uses LinuxReceiverOperator if synthesizing (not RoceReceiverOp or FusaCoeCaptureOp)",
+      "The agent does not include ibv_name or ibv_port (Linux receiver does not use them)"
+    ]
+  },
+  {
+    "id": "hsb-port-app-011",
+    "question": "Port the imx274 RoCE player to Linux.",
+    "expected_skill": "hsb-port-app",
+    "ground_truth": "The agent discovers existing apps using Glob, decomposes the target as (camera: imx274, receiver: Linux, pipeline: player). It finds linux_imx274_player.py as a priority-1 exact match. The agent asks whether to use the existing file or create a variant. If variant: it uses linux_imx274_player.py as the camera+receiver reference, replaces RoceReceiverOp with LinuxReceiverOperator, removes ibv_name/ibv_port, adds hololink.reset() and camera.setup_clock() reset sequence, skips PackedFormatConverterOp (Linux player is not FuSa CoE video), and runs sanity checks.",
+    "expected_behavior": [
+      "The agent reads the hsb-port-app SKILL.md before taking any action",
+      "The agent uses Glob to discover existing apps",
+      "The agent restates the target (camera=imx274, receiver=Linux, pipeline=player) before synthesizing",
+      "The agent decomposes the target: camera=imx274, receiver=Linux, pipeline=player",
+      "The agent identifies linux_imx274_player.py as a priority-1 exact match",
+      "The agent asks the user whether to use the existing file or create a variant",
+      "The agent uses LinuxReceiverOperator (not RoceReceiverOp or FusaCoeCaptureOp)",
+      "The agent removes ibv_name and ibv_port (stale from RoCE source)",
+      "The agent includes hololink.reset() and camera.setup_clock() in the reset sequence",
+      "The agent does not include PackedFormatConverterOp (Linux player, not FuSa CoE video)",
+      "The agent does not execute Python scripts or run any Holoscan commands during synthesis"
+    ]
+  }
+]

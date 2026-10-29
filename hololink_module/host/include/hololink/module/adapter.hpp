@@ -19,206 +19,336 @@
 #include <vector>
 
 #include "enumeration_metadata.hpp"
+#include "logging.hpp"
 #include "module.hpp"
 #include "publisher.hpp"
 #include "reactor.hpp"
 
 namespace hololink::module {
 
-/* Abstract registration object returned by Adapter::register_ip /
- * register_all. Applications hold the handle only long enough to
- * pass it to Adapter::unregister — the registration's actual filter
- * behavior (per-peer match vs match-all) lives in private
- * subclasses in adapter.cpp. enumerate() invokes handle_metadata on
- * every registration; each subclass decides whether to actually
- * call through to its wrapped function.
- *
- * Callbacks observe metadata; they do not mutate it. The const
- * reference is the type-level guarantee: a raw subscriber cannot
- * accidentally bleed mutations into the enrichment path, and a
- * post-enrichment subscriber cannot rewrite the announcement
- * other subscribers also receive. */
-class EnumerationCallback {
-public:
-    virtual ~EnumerationCallback() = default;
-    virtual void handle_metadata(const EnumerationMetadata& metadata) = 0;
-};
+// An opaque registration. Applications hold only the handle below.
+class EnumerationCallback;
+
+/**
+ * @brief Identifies a registration made by one of the Adapter::register_*
+ * calls; pass it to Adapter::unregister to cancel that registration.
+ */
 using EnumerationCallbackHandle = std::shared_ptr<EnumerationCallback>;
 
-/* Process-wide singleton owning the host-side module state.
+/**
+ * @brief Process-wide entry point to the module system.
  *
- * Loads and caches modules by .so path, forwards the host->module
- * init handshake (including the ABI check), and owns the long-lived
- * host publisher Module that exposes host-provided services to loaded
- * modules. */
+ * Discovers devices on the network, resolves each to the module that drives
+ * it, and hands the application the Module from which it resolves that
+ * device's versioned service interfaces. One singleton instance serves the
+ * process.
+ *
+ * Use @ref Adapter::get_adapter to get a reference to this singleton object.
+ */
 class Adapter {
 public:
+    /**
+     * @brief Return the process-wide Adapter singleton.
+     * @return The Adapter, valid for the lifetime of the process.
+     */
     static Adapter& get_adapter();
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     Adapter(const Adapter&) = delete;
     Adapter& operator=(const Adapter&) = delete;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Load a module .so by path. Performs the ABI check, calls
-     * hololink_module_init, and caches the resulting Module by path.
-     * Subsequent calls with the same path return the cached Module.
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Load the Module contained in a named shared object.
      *
-     * Throws std::runtime_error on dlopen failure, missing required
-     * symbols, ABI mismatch, or non-OK status from
-     * hololink_module_init. */
+     * This method loads up the given shared object and returns the Module
+     * instance associated with it.  Module instances are cached, so subsequent
+     * calls with the same so_path always return the same Module instance.
+     *
+     * Normally applications fetch Module instances by calling get_module.
+     *
+     * @param so_path Path to the module's shared object.
+     * @return The module it contains.
+     * @throws std::runtime_error if the shared object cannot be loaded, does
+     * not contain a module, was built against an incompatible ABI, or fails
+     * to initialize.
+     */
     std::shared_ptr<Module> load_module(const std::filesystem::path& so_path);
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* The single host-side Publisher. Host-provided services (Reactor,
-     * Logging, etc.) register themselves here; loaded modules reach
-     * those services via a Module wrapping this Publisher's callbacks.
+    /**
+     * @brief Set the threshold for log messages from the host and every loaded module.
+     *
+     * Overrides the level chosen at startup from the `HOLOLINK_LOG_LEVEL` /
+     * `HOLOSCAN_LOG_LEVEL` environment variables (default Info). Takes effect
+     * immediately and may be called from any thread.
+     *
+     * @param level Messages below this level are discarded.
+     */
+    void set_log_level(LogLevel level);
+
+    /**
+     * @brief The Publisher through which the host offers services.
+     *
+     * Services which are instantiated by the host application include
+     *
+     * - ReactorV1 provides a runtime environment for callback execution execution
+     * - LoggingInterfaceV1 allows loaded modules to forward their log messages to the application
+     * - Module provides get_service access for these application level services
+     *
+     * @return The host publisher.
      */
     std::shared_ptr<Publisher> host_publisher() const { return host_publisher_; }
 
-    /* Feed an EnumerationMetadata blob through the discovery pipeline.
-     * The caller fills in the bootp-decoded fields ("fpga_uuid",
-     * optional "compat_id", "peer_ip", …); enumerate() loads the
-     * matching module .so by UUID/compat, calls the module's
-     * EnumerationInterfaceV1::update_metadata to enrich it, and stores
-     * the result in a per-peer-IP slot that subsequent
-     * wait_for_channel() calls consume.
+    /**
+     * @brief Application specific device announcement to the discovery pipeline.
      *
-     * The raw_packet form passes the original bootp bytes through to
-     * the module's update_metadata override — modules that need to
-     * inspect vendor-specific bytes use it. The single-arg form
-     * passes nullptr / 0.
+     * Ordinarily, applications use Adapter::register_* in order to enumerate
+     * devices; as those devices are discovered (e.g. via received bootp
+     * messages), EnumerationMetadata is built and used to load up the driver
+     * module.  If your application enumerates a device in a different way, you
+     * can create your own EnumerationMetadata instance and pass it in to this
+     * method in order to trigger loading of the appropriate driver module.  A
+     * call here results in execution of the ordinary enumeration callbacks
+     * registered by the application.  In other words, you can supply your own
+     * EnumerationMetadata if the ordinary bootp-based process doesn't work.
      *
-     * Unknown UUIDs are not an error: when no module .so matches, the
-     * unenriched metadata is stored as-is so applications can still
-     * receive the announcement via wait_for_channel. A matching module
-     * may also return HOLOLINK_MODULE_ENUMERATION_SKIPPED to decline a
-     * device it recognizes but cannot drive (e.g. an unsupported FPGA
-     * version); the announcement is then suppressed (post-enrichment
-     * subscribers are not notified) without throwing. Throws
-     * std::runtime_error only on malformed input (missing "fpga_uuid")
-     * or when a matching module's update_metadata returns any other
-     * non-OK status. */
-    void enumerate(EnumerationMetadata metadata);
+     * Note that applications do not normally call this - devices are announced
+     * as their bootp packets arrive; this API is appropriate for special
+     * devices and test fixtures.
+     *
+     * @param metadata The device to announce.
+     * @param raw_packet The bootp packet `metadata` was decoded from, handed
+     * on to the claiming module: one whose devices carry vendor-specific
+     * bytes needs it to complete the metadata. Omit it, or pass in nullptr, when the announcement
+     * did not come from a packet.
+     * @param raw_packet_len Length of `raw_packet`, in bytes.
+     * @throws std::runtime_error if `metadata` carries no "fpga_uuid", or if
+     * the claiming module rejects it for any reason other than declining the
+     * device.
+     */
     void enumerate(EnumerationMetadata metadata,
-        const uint8_t* raw_packet, size_t raw_packet_len);
+        const uint8_t* raw_packet = nullptr, size_t raw_packet_len = 0);
 
-    /* Open a UDP socket on the bootp request port and attach it to
-     * the host ReactorV1; each arriving bootp packet is parsed,
-     * converted to an EnumerationMetadata, and fed through enumerate()
-     * automatically. The default port (12267) matches the legacy
-     * enumerator's bootp_request_port.
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Start listening for BOOTP messages.
      *
-     * The Adapter calls this from its constructor with the default
-     * port; the underlying socket has SO_REUSEADDR / SO_REUSEPORT set
-     * so the call coexists with other module-using processes on the
-     * host. Application code does not need to invoke it. Tests or
-     * tools that need a non-default port call stop_bootp_listener()
-     * first and then start_bootp_listener(custom_port).
+     * This call enables the framework that listens for bootp messages and
+     * passes them to enumerate.  This call is executed automatically when
+     * the application first fetches an Adapter instance.
      *
-     * Idempotent — a second call while the listener is already
-     * running is a no-op. */
+     * Calling this while the listener is already running has no effect.
+     *
+     * @param port UDP port to listen on. The default is the port devices
+     * announce to.
+     */
     void start_bootp_listener(uint32_t port = 12267);
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Detach the bootp listener from the reactor and close the socket.
-     * Called from the destructor at process exit; application code
-     * does not need to invoke it. Used by tests / tools that want to
-     * rebind on a custom port. */
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Stop listening for BOOTP messages.
+     *
+     * Applications do not need to call this; it is for callers that want to
+     * listen on a different port. Devices announced through enumerate()
+     * directly are unaffected.
+     *
+     * This does not wait for an announcement that is being handled, so it
+     * may be called from an enumeration callback. The socket is closed once
+     * that handling finishes, which can be after this call returns.
+     */
     void stop_bootp_listener();
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Block until enumerate() observes an announcement for `peer_ip`
-     * *after* this call has started waiting, and return the
-     * (enriched-if-known-UUID) metadata. Built on top of
-     * register_ip — any announcement that fired before this call
-     * doesn't count. Throws std::runtime_error when the timeout
-     * elapses without an announcement. */
+    /**
+     * @brief Wait for a device to announce itself, and return its enumeration metadata.
+     *
+     * @param peer_ip Address of the device to wait for.
+     * @param timeout How long to wait before giving up.
+     * @return The device's metadata (possibly supplemented by its driver module).
+     * @throws std::runtime_error if the timeout elapses first.
+     */
     EnumerationMetadata wait_for_channel(
         const std::string& peer_ip,
         std::chrono::milliseconds timeout);
 
-    /* Register a callback that fires when enumerate() observes an
-     * announcement matching the registration. The callback runs on
-     * whatever thread invoked enumerate() (the bootp listener's
-     * Reactor thread for the bootp-driven path; the caller's thread
-     * for manual enumerate). Returns an opaque handle the caller
-     * later passes to unregister(); the Adapter holds its own
-     * reference to the registration so a dropped handle on the
-     * caller side does not deregister the callback.
+    /**
+     * @brief Subscribe to announcements from one device.
      *
-     * register_ip / register_all fire AFTER enumerate() has loaded
-     * the matching module and run its update_metadata enrichment —
-     * the callback sees the enriched metadata (with module_name,
-     * supplement-stamped fields, etc.). register_raw_ip /
-     * register_raw_all fire BEFORE module loading, with only the
-     * fields the bootp deserializer wrote; module .so files are not
-     * loaded for a raw-only subscriber. Both pairs may coexist; the
-     * raw callbacks always fire first. */
+     * The callback is given each announcement from `peer_ip` after the
+     * claiming module has completed it, so it sees what wait_for_channel()
+     * would return. It observes the announcement — a subscriber cannot change
+     * what other subscribers, or wait_for_channel(), are given.  The callback
+     * is invoked on the Reactor thread, so any blocking behavior in that
+     * callback will delay any other callbacks scheduled there.
+     *
+     * Call unregister with the handle returned here to release the reference
+     * to your callback function.
+     *
+     * @param peer_ip Address of the device to subscribe to.
+     * @param callback Invoked with each completed announcement, executed within the Reactor thread.
+     * @return Handle identifying the registration to unregister().
+     */
     EnumerationCallbackHandle register_ip(
         std::string peer_ip,
         std::function<void(const EnumerationMetadata&)> callback);
+
+    /**
+     * @brief Subscribe to announcements from every device.
+     *
+     * As register_ip(), but without the address filter: the callback is given
+     * every announcement, each one completed by the module that claims it.
+     *
+     * @param callback Invoked with each completed announcement, executed within the Reactor thread.
+     * @return Handle identifying the registration to unregister().
+     */
     EnumerationCallbackHandle register_all(
         std::function<void(const EnumerationMetadata&)> callback);
+
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Subscribe to announcements from one device, before any module
+     * completes them.
+     *
+     * The callback is given only the fields decoded from the device's bootp
+     * announcement; no module is consulted, and none is loaded on a raw
+     * subscriber's behalf. Where a device has both raw and completed
+     * subscribers, the raw ones are called first.
+     *
+     * @param peer_ip Address of the device to subscribe to.
+     * @param callback Invoked with each raw announcement.
+     * @return Handle identifying the registration to unregister().
+     */
     EnumerationCallbackHandle register_raw_ip(
         std::string peer_ip,
         std::function<void(const EnumerationMetadata&)> callback);
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
+
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Subscribe to announcements from every device, before any module
+     * completes them.
+     *
+     * As register_raw_ip(), but without the address filter.
+     *
+     * @param callback Invoked with each received announcement.
+     * @return Handle identifying the registration to unregister().
+     */
     EnumerationCallbackHandle register_raw_all(
         std::function<void(const EnumerationMetadata&)> callback);
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
+
+    /**
+     * @brief Cancel a registration.
+     *
+     * No announcement observed after this returns is delivered to the
+     * registration. A callback already running is not interrupted.
+     *
+     * @param handle A handle returned by any of the register_* calls.
+     * Cancelling a registration that is not currently registered has no
+     * effect.
+     */
     void unregister(const EnumerationCallbackHandle& handle);
 
-    /* Resolve and return the Module that serves the given enumeration
-     * metadata. Reads "fpga_uuid" and (optionally) "compat_id" from
-     * the metadata and performs the same lookup as enumerate(): tries
-     * the compat-suffixed `hololink_<uuid>_<hex>.so` first, falls
-     * back to the bare `hololink_<uuid>.so` (or uses the bare path
-     * directly when no `compat_id` is present). Returns the same
-     * cached Module a prior enumerate() call has already loaded.
+    /**
+     * @brief Return the Module that provides services for an announced device.
      *
-     * Applications that drove discovery through bootp + wait_for_channel
-     * call this to obtain the Module handle for service lookups
-     * (FrameMetadataInterface, HololinkInterface, HsbLiteInterface,
-     * etc.) without composing the `.so` path themselves.
+     * The device is identified by the "fpga_uuid" and, where present,
+     * "compat_id" fields of its announcement.
      *
-     * Throws std::runtime_error when the metadata is missing
-     * "fpga_uuid" or no matching `.so` exists under the configured
-     * module directory. */
+     * @param metadata An announcement, e.g. returned from wait_for_channel().
+     * @return The module that claims the device.
+     * @throws std::runtime_error if `metadata` carries no "fpga_uuid", or if
+     * no installed module claims the device.
+     */
     std::shared_ptr<Module> get_module(const EnumerationMetadata& metadata);
 
-    /* Apply the supplement-owned per-sensor stamping to `metadata`.
-     * Resolves the module the metadata identifies, fetches its
-     * ChannelConfigurationInterfaceV1 singleton, and dispatches —
-     * the supplement edits whichever per-board fields move when
-     * sensor_number changes (typically data_plane plus the SIF / VP /
-     * HIF / frame_end address fields). Applications call this once
-     * per sensor on a multi-camera board (instead of stamping the
-     * fields themselves) before constructing per-channel services
-     * against the resulting metadata. */
+    /**
+     * @brief Select which sensor of a device to use.
+     *
+     * Enumeration provides information about a data path available with
+     * a device, and by default, that data path is usually associated
+     * with a specific sensor on that device.  This API allows the application
+     * to indicate that it wants that data path to connect with a different
+     * sensor.
+     *
+     * @code
+     *  // Ordinary data-plane discovery.
+     *  auto& adapter = hololink::module::Adapter::get_adapter();
+     *  std::string hololink_ip = "192.168.0.2";
+     *  std::chrono::seconds discovery_timeout(30);
+     *  hololink::module::EnumerationMetadata metadata =
+     *      adapter.wait_for_channel(hololink_ip, discovery_timeout);
+     *  // Use this specific sensor port on the device.
+     *  int64_t sensor_number = 1;
+     *  adapter.use_sensor(metadata, sensor_number);
+     *  // Now use this configured metadata with e.g. RoceReceiver
+     *  // or sensor objects
+     *  // ...
+     * @endcode
+     *
+     * @param[in,out] metadata Announcement to rewrite in place.
+     * @param sensor_number Zero-based index of the sensor to describe.
+     * @throws std::runtime_error if no installed module claims the device,
+     *  the module does not support selecting a sensor, or if the sensor_number
+     *  value is invalid.
+     */
     void use_sensor(EnumerationMetadata& metadata, int64_t sensor_number);
 
-    /* Apply the supplement-owned MTU stamping to `metadata`. Resolves
-     * the same module the metadata identifies and dispatches to its
-     * ChannelConfigurationInterfaceV1. Applications call this when
-     * they want a non-default MTU on the RoCE data plane; the
-     * per-channel constructors read the stamped value when sizing
-     * packets. */
+    /**
+     * @brief Set the data-plane MTU.
+     *
+     * Similar to use_sensor, this setting configures the MTU to be used in
+     * data-plane packets transmitted by HSB.  Note that setting a value larger
+     * than what can be supported through all links in the network will likely
+     * result in dropped packets and that the host system likely needs to have
+     * a larger MTU configured in the receiver network interface.
+     *
+     * @param[in,out] metadata Announcement to rewrite in place.
+     * @param mtu Data-plane MTU, in bytes.
+     * @throws std::runtime_error if no installed module claims the device, or
+     * if the module does not support setting the MTU.
+     */
     void use_mtu(EnumerationMetadata& metadata, uint32_t mtu);
 
-    /* Apply the supplement-owned multicast stamping to `metadata`.
-     * Resolves the same module the metadata identifies and dispatches
-     * to its ChannelConfigurationInterfaceV1. Applications call this
-     * when they want the RoCE data plane to target a multicast group
-     * (address + port) instead of a unicast peer; the per-channel
-     * constructors program the FPGA from the stamped values. */
+    /**
+     * @brief Configure the data-plane to transmit to a multicast IP destination address.
+     *
+     * This setting directs the data plane to transmit to the given destination
+     * address; this also enables the host data-plane receiver with calls to
+     * IP_ADD_MEMBERSHIP.
+     *
+     * Note that for ROCE RDMA traffic, QP and RKEY mismatches will cause
+     * received RDMA traffic to be rejected; so multicast is only expected to
+     * work for a single RDMA host.  Non-RDMA hosts (e.g. LinuxReceiver)
+     * currently do not check QP or RKEY values, so any number of LinuxReceiver
+     * hosts can receive traffic sent this way.
+     *
+     * @param[in,out] metadata Announcement to rewrite in place.
+     * @param address Multicast group address.
+     * @param port UDP port of the multicast group.
+     * @throws std::runtime_error if no installed module claims the device, or
+     * if the module does not support multicast.
+     */
     void use_multicast(
         EnumerationMetadata& metadata, std::string address, uint16_t port);
 
-    /* Override the module search directory used by enumerate(). When
-     * unset, enumerate() reads the HOLOLINK_MODULE_DIR environment
-     * variable, then falls back to two auto-discovered candidates:
-     * `<host-adapter-.so dir>/../lib/hololink/modules` (covers the
-     * pip-wheel install where the host module ships inside the
-     * Python package) and `<exe_dir>/../lib/hololink/modules` (covers
-     * installed C++ tools). Both are tried in order so a single
-     * `cmake --install` and a `pip3 install ./python/` both Just
-     * Work without configuration. */
+    /**
+     * @brief Configure the directory where hololink_module shared objects are located.
+     *
+     * Applies to every lookup that follows, so call it before the device is
+     * announced — in practice, before wait_for_channel(). With no directory
+     * set, HOLOLINK_MODULE_DIR names one; failing that, the modules installed
+     * alongside the host are used, so an application running against an
+     * installed build needs neither.
+     *
+     * @param dir Directory holding the modules to load.
+     */
     void set_module_directory(std::filesystem::path dir);
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 private:
     Adapter();
     ~Adapter();
@@ -264,12 +394,14 @@ private:
     std::vector<EnumerationCallbackHandle> raw_registrations_;
     std::vector<EnumerationCallbackHandle> registrations_;
 
-    // Bootp listener state. The Reactor holds the FdCallback's
-    // shared_ptr until remove_fd_callback completes, which is what
-    // stop_bootp_listener calls before closing the socket.
+    // Bootp listener state. The FdCallback owns the socket and closes it
+    // when the last reference to the callback is dropped; the Reactor holds
+    // a reference while a call to the callback is running.
+    // bootp_socket_fd_ is only the fd number for remove_fd_callback.
     std::mutex bootp_mutex_;
     int bootp_socket_fd_ = -1;
     std::shared_ptr<ReactorV1::FdCallback> bootp_callback_;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

@@ -25,16 +25,20 @@ if [ $# -lt 1 ] ; then
 	exit 1
 fi
 
-INTERFACE=$1
+INTERFACE="$1"
 IPV4=
 if [ $# -lt 2 ] ; then
-	IPV4=`ip addr sh $INTERFACE | grep 'inet ' | awk '{print $2}'`
+	IPV4=$(ip addr sh "$INTERFACE" | grep 'inet ' | awk '{print $2}')
 else
-	IPV4=$2
+	IPV4="$2"
 fi
 
-ip netns add ns_$INTERFACE
+NAMESPACE="ns_$INTERFACE"
 
-ip link set $INTERFACE netns ns_$INTERFACE
-ip netns exec ns_$INTERFACE ip addr add dev $INTERFACE $IPV4 brd +
-ip netns exec ns_$INTERFACE sh -c "ip link set dev $INTERFACE down && ip link set dev $INTERFACE up"
+ip netns add "$NAMESPACE"
+
+ip link set "$INTERFACE" netns "$NAMESPACE"
+ip netns exec "$NAMESPACE" ip addr add dev "$INTERFACE" "$IPV4" brd +
+# The interface name reaches the inner shell as a positional argument, so it's
+# never reinterpreted as shell syntax.
+ip netns exec "$NAMESPACE" sh -c 'ip link set dev "$1" down && ip link set dev "$1" up' sh "$INTERFACE"

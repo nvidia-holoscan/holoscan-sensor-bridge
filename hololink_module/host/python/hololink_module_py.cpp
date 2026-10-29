@@ -461,6 +461,16 @@ static py::object enumeration_value_to_py(
         v);
 }
 
+// Opaque handle for register_ip / register_all. Python code holds the
+// returned object, passes it to unregister(), and doesn't inspect anything
+// inside. The handle is wrapped in a distinct type because pybind's
+// shared_ptr caster resolves to the pointee, which would require
+// EnumerationCallback to be a complete, registered type; the wrapper keeps
+// it opaque in adapter.hpp.
+struct EnumerationRegistration {
+    ad::EnumerationCallbackHandle handle;
+};
+
 static void bind_enumeration_metadata(py::module_& m)
 {
     py::class_<ad::EnumerationMetadata>(m, "EnumerationMetadata")
@@ -572,6 +582,8 @@ static void bind_csi_converter(py::module_& m)
             py::arg("line_bytes"))
         .def("transmitted_line_bytes", &ad::csi::CsiConverterV1::transmitted_line_bytes,
             py::arg("pixel_format"), py::arg("pixel_width"));
+    py::object cls = m.attr("CsiConverterV1");
+    cls.attr("release_version") = ad::csi::CsiConverterV1::release_version;
 }
 
 static void bind_frame_metadata(py::module_& m)
@@ -594,7 +606,8 @@ static void bind_frame_metadata(py::module_& m)
             &ad::FrameMetadataInterfaceV1::FrameMetadata::metadata_ns);
 
     py::class_<ad::FrameMetadataInterfaceV1,
-        std::shared_ptr<ad::FrameMetadataInterfaceV1>>(m, "FrameMetadataInterfaceV1")
+        std::shared_ptr<ad::FrameMetadataInterfaceV1>>(
+        m, "FrameMetadataInterfaceV1")
         .def_static(
             "get_service",
             [](std::shared_ptr<ad::Module> module, bool allow_null) {
@@ -622,6 +635,9 @@ static void bind_frame_metadata(py::module_& m)
                 return out;
             },
             py::arg("host_memory"));
+    py::object cls = m.attr("FrameMetadataInterfaceV1");
+    cls.attr("type_id") = ad::FrameMetadataInterfaceV1::type_id;
+    cls.attr("release_version") = ad::FrameMetadataInterfaceV1::release_version;
 }
 
 static void bind_i2c_lock(py::module_& m)
@@ -631,6 +647,8 @@ static void bind_i2c_lock(py::module_& m)
         .def("lock", &ad::I2cLockV1::lock)
         .def("unlock", &ad::I2cLockV1::unlock)
         .def("try_lock", &ad::I2cLockV1::try_lock);
+    py::object cls = m.attr("I2cLockV1");
+    cls.attr("release_version") = ad::I2cLockV1::release_version;
 }
 
 static void bind_i2c_interface(py::module_& m)
@@ -688,6 +706,9 @@ static void bind_i2c_interface(py::module_& m)
             },
             py::arg("sequencer"), py::arg("peripheral_i2c_address"),
             py::arg("write_bytes"), py::arg("read_byte_count"));
+    py::object cls = m.attr("I2cInterfaceV1");
+    cls.attr("type_id") = ad::I2cInterfaceV1::type_id;
+    cls.attr("release_version") = ad::I2cInterfaceV1::release_version;
 }
 
 static void bind_sequencer(py::module_& m)
@@ -712,6 +733,9 @@ static void bind_sequencer(py::module_& m)
             py::arg("address"), py::arg("mask"), py::arg("match"))
         .def("enable", &ad::SequencerInterfaceV1::enable)
         .def("location", &ad::SequencerInterfaceV1::location);
+    py::object cls = m.attr("SequencerInterfaceV1");
+    cls.attr("type_id") = ad::SequencerInterfaceV1::type_id;
+    cls.attr("release_version") = ad::SequencerInterfaceV1::release_version;
 }
 
 // Opaque RoceReceiverInterfaceV1 binding. No methods are exposed —
@@ -745,12 +769,16 @@ static void bind_oscillator(py::module_& m)
             py::arg("clocks_per_second"))
         .def("get_caps", &ad::OscillatorInterfaceV1::get_caps)
         .def("set_caps", &ad::OscillatorInterfaceV1::set_caps, py::arg("caps"));
+    py::object cls = m.attr("OscillatorInterfaceV1");
+    cls.attr("type_id") = ad::OscillatorInterfaceV1::type_id;
+    cls.attr("release_version") = ad::OscillatorInterfaceV1::release_version;
 }
 
 static void bind_roce_receiver(py::module_& m)
 {
     py::class_<ad::RoceReceiverInterfaceV1,
-        std::shared_ptr<ad::RoceReceiverInterfaceV1>>(m, "RoceReceiverInterfaceV1")
+        std::shared_ptr<ad::RoceReceiverInterfaceV1>>(
+        m, "RoceReceiverInterfaceV1")
         .def_static(
             "get_service",
             [](std::shared_ptr<ad::Module> module, const std::string& instance_id,
@@ -766,6 +794,9 @@ static void bind_roce_receiver(py::module_& m)
                 return ad::RoceReceiverInterfaceV1::get_service(metadata, allow_null);
             },
             py::arg("metadata"), py::arg("allow_null") = false);
+    py::object cls = m.attr("RoceReceiverInterfaceV1");
+    cls.attr("type_id") = ad::RoceReceiverInterfaceV1::type_id;
+    cls.attr("release_version") = ad::RoceReceiverInterfaceV1::release_version;
 }
 
 static void bind_data_channel(py::module_& m)
@@ -798,6 +829,9 @@ static void bind_data_channel(py::module_& m)
         .def("device_lost", &ad::DataChannelInterfaceV1::device_lost,
             "Channel-level entry point for HololinkInterfaceV1.device_lost, to "
             "invalidate a lost device through a data channel already held.");
+    py::object cls = m.attr("DataChannelInterfaceV1");
+    cls.attr("type_id") = ad::DataChannelInterfaceV1::type_id;
+    cls.attr("release_version") = ad::DataChannelInterfaceV1::release_version;
 }
 
 static void bind_roce_data_channel(py::module_& m)
@@ -808,7 +842,8 @@ static void bind_roce_data_channel(py::module_& m)
     // DataChannelInterfaceV1.get_service when they need its metadata
     // or hololink.
     py::class_<ad::RoceDataChannelInterfaceV1, PyRoceDataChannel,
-        std::shared_ptr<ad::RoceDataChannelInterfaceV1>>(m, "RoceDataChannelInterfaceV1")
+        std::shared_ptr<ad::RoceDataChannelInterfaceV1>>(
+        m, "RoceDataChannelInterfaceV1")
         .def(py::init<>())
         .def_static(
             "get_service",
@@ -840,6 +875,9 @@ static void bind_roce_data_channel(py::module_& m)
                 return self.get_hololink<>(allow_null);
             },
             py::arg("allow_null") = false);
+    py::object cls = m.attr("RoceDataChannelInterfaceV1");
+    cls.attr("type_id") = ad::RoceDataChannelInterfaceV1::type_id;
+    cls.attr("release_version") = ad::RoceDataChannelInterfaceV1::release_version;
 }
 
 // Vsync — abstract consumer-facing base. Bound as a polymorphic
@@ -848,7 +886,8 @@ static void bind_roce_data_channel(py::module_& m)
 // Vb1940Cam's `vsync=` keyword in its per-module pybind extension).
 static void bind_vsync(py::module_& m)
 {
-    py::class_<ad::VsyncInterfaceV1, std::shared_ptr<ad::VsyncInterfaceV1>>(m, "VsyncInterfaceV1")
+    py::class_<ad::VsyncInterfaceV1, std::shared_ptr<ad::VsyncInterfaceV1>>(
+        m, "VsyncInterfaceV1")
         .def_static(
             "get_service",
             [](std::shared_ptr<ad::Module> module, const std::string& instance_id,
@@ -861,6 +900,9 @@ static void bind_vsync(py::module_& m)
         .def("is_enabled", &ad::VsyncInterfaceV1::is_enabled)
         .def("start", &ad::VsyncInterfaceV1::start)
         .def("stop", &ad::VsyncInterfaceV1::stop);
+    py::object cls = m.attr("VsyncInterfaceV1");
+    cls.attr("type_id") = ad::VsyncInterfaceV1::type_id;
+    cls.attr("release_version") = ad::VsyncInterfaceV1::release_version;
 }
 
 // PtpPpsOutput — the PTP-PPS-driven concrete Vsync source. The
@@ -869,7 +911,8 @@ static void bind_vsync(py::module_& m)
 static void bind_ptp_pps_output(py::module_& m)
 {
     py::class_<ad::PtpPpsOutputInterfaceV1, ad::VsyncInterfaceV1,
-        std::shared_ptr<ad::PtpPpsOutputInterfaceV1>>(m, "PtpPpsOutputInterfaceV1")
+        std::shared_ptr<ad::PtpPpsOutputInterfaceV1>>(
+        m, "PtpPpsOutputInterfaceV1")
         .def_static(
             "get_service",
             [](std::shared_ptr<ad::Module> module, const std::string& instance_id,
@@ -887,6 +930,9 @@ static void bind_ptp_pps_output(py::module_& m)
             py::arg("metadata"), py::arg("allow_null") = false)
         .def("enable", &ad::PtpPpsOutputInterfaceV1::enable, py::arg("frequency_hz"))
         .def("disable", &ad::PtpPpsOutputInterfaceV1::disable);
+    py::object cls = m.attr("PtpPpsOutputInterfaceV1");
+    cls.attr("type_id") = ad::PtpPpsOutputInterfaceV1::type_id;
+    cls.attr("release_version") = ad::PtpPpsOutputInterfaceV1::release_version;
 }
 
 static void bind_hololink_interface(py::module_& m)
@@ -1030,6 +1076,9 @@ static void bind_hololink_interface(py::module_& m)
                 return self.null_vsync<>(allow_null);
             },
             py::arg("allow_null") = false);
+    py::object cls = m.attr("HololinkInterfaceV1");
+    cls.attr("type_id") = ad::HololinkInterfaceV1::type_id;
+    cls.attr("release_version") = ad::HololinkInterfaceV1::release_version;
 }
 
 static void bind_enumeration_interface(py::module_& m)
@@ -1072,6 +1121,9 @@ static void bind_enumeration_interface(py::module_& m)
                 }
             },
             py::arg("metadata"), py::arg("raw_packet") = py::none());
+    py::object cls = m.attr("EnumerationInterfaceV1");
+    cls.attr("type_id") = ad::EnumerationInterfaceV1::type_id;
+    cls.attr("release_version") = ad::EnumerationInterfaceV1::release_version;
 }
 
 static void bind_logging_interface(py::module_& m)
@@ -1104,6 +1156,9 @@ static void bind_logging_interface(py::module_& m)
             },
             py::arg("level"), py::arg("file"), py::arg("line"),
             py::arg("function"), py::arg("message"));
+    py::object cls = m.attr("LoggingInterfaceV1");
+    cls.attr("type_id") = ad::LoggingInterfaceV1::type_id;
+    cls.attr("release_version") = ad::LoggingInterfaceV1::release_version;
 }
 
 // Wrap a Python callable in a Reactor::Callback whose held py::object
@@ -1163,15 +1218,14 @@ static void bind_reactor(py::module_& m)
             py::arg("seconds"), py::arg("callback"))
         .def("cancel_alarm", &ad::ReactorV1::cancel_alarm, py::arg("handle"))
         .def("is_current_thread", &ad::ReactorV1::is_current_thread);
+    py::object cls = m.attr("ReactorV1");
+    cls.attr("type_id") = ad::ReactorV1::type_id;
+    cls.attr("release_version") = ad::ReactorV1::release_version;
 }
 
 static void bind_adapter(py::module_& m)
 {
-    // Opaque handle for register_ip / register_all. Python code
-    // holds the returned object, passes it to unregister(), and
-    // doesn't inspect anything inside.
-    py::class_<ad::EnumerationCallback,
-        std::shared_ptr<ad::EnumerationCallback>>(m, "EnumerationCallbackHandle");
+    py::class_<EnumerationRegistration>(m, "EnumerationCallbackHandle");
 
     py::class_<ad::Adapter, std::unique_ptr<ad::Adapter, py::nodelete>>(m, "Adapter")
         .def_static(
@@ -1222,7 +1276,9 @@ static void bind_adapter(py::module_& m)
             "register_ip",
             [](ad::Adapter& self, const std::string& peer_ip,
                 std::function<void(const ad::EnumerationMetadata&)> callback) {
-                return self.register_ip(peer_ip, std::move(callback));
+                return EnumerationRegistration {
+                    self.register_ip(peer_ip, std::move(callback))
+                };
             },
             py::arg("peer_ip"), py::arg("callback"),
             "Register a callback that fires for every enumeration "
@@ -1232,13 +1288,20 @@ static void bind_adapter(py::module_& m)
             "register_all",
             [](ad::Adapter& self,
                 std::function<void(const ad::EnumerationMetadata&)> callback) {
-                return self.register_all(std::move(callback));
+                return EnumerationRegistration {
+                    self.register_all(std::move(callback))
+                };
             },
             py::arg("callback"),
             "Register a callback that fires for every enumeration "
             "announcement, regardless of peer_ip. Returns an opaque "
             "handle to pass to unregister().")
-        .def("unregister", &ad::Adapter::unregister, py::arg("handle"))
+        .def(
+            "unregister",
+            [](ad::Adapter& self, const EnumerationRegistration& registration) {
+                self.unregister(registration.handle);
+            },
+            py::arg("handle"))
         .def(
             "use_sensor",
             [](ad::Adapter& self, ad::EnumerationMetadata& metadata,
@@ -1364,12 +1427,16 @@ PYBIND11_MODULE(_hololink_py_module, m)
     // calls it in a non-RoCE build.
     m.def(
         "ibv_device_for_peer",
-        [](const std::string& peer_ip) {
-            return ad::ibv_device_for_peer(peer_ip);
+        [](const std::string& peer_ip, const std::string& interface) {
+            return ad::ibv_device_for_peer(peer_ip, interface);
         },
         py::arg("peer_ip"),
+        py::arg("interface") = std::string(),
         "Return (ibv_name, ibv_port) for the IB device whose underlying "
-        "kernel netdev is the route-resolved local interface for peer_ip. "
+        "kernel netdev is `interface` -- the NIC the board enumerated on, as "
+        "carried in the enumeration metadata. Falls back to the route-resolved "
+        "local interface for peer_ip when `interface` is empty, which is "
+        "ambiguous if two boards share a data-plane subnet. "
         "Raises RuntimeError if no matching device is found.");
 
     // infiniband_devices enumerates IB devices via ibverbs; like

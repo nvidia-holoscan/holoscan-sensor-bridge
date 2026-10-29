@@ -46,7 +46,9 @@
  *
  * for details of other parameters, see the help message below or running
  *
+ * @code{.sh}
  * /path/to/serve_linux_file --help
+ * @endcode
  *
  */
 

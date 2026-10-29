@@ -46,6 +46,7 @@
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/operators/roce_receiver_op.hpp"
 #include "hololink/module/ptp_pps_output.hpp"
 #include "hololink/module/vsync.hpp"
@@ -241,7 +242,7 @@ int main(int argc, char** argv)
     uint32_t window_width = 3840 / 3;
     std::string window_title;
     std::chrono::seconds discovery_timeout(30);
-    holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
+    holoscan::LogLevel log_level = hololink::module::operators::default_log_level();
     // Synchronized-shutter mode (PTP-PPS-driven VSYNC) is enabled by
     // default — that is the canonical stereo configuration. --no-sync
     // leaves both cameras in free-run mode and skips the
@@ -333,7 +334,7 @@ int main(int argc, char** argv)
                       << "  --window-width <int>       Display window width (default 1280)\n"
                       << "  --title <text>             Window title (default 'Holoviz - <ip>')\n"
                       << "  --discovery-timeout <s>    Seconds to wait for the bootp announcement (default 30)\n"
-                      << "  --log-level <level>        Holoscan log level\n"
+                      << "  --log-level <level>        Holoscan log level (default $HOLOLINK_LOG_LEVEL, else INFO)\n"
                       << "  --no-sync                  Run cameras in free-run; skip PTP-PPS VSYNC (default: sync on)\n"
                       << "  --sync-frequency <hz>      VSYNC pulse rate when sync is on (default 30; valid: 1, 10, 30, 60, 90, 120)\n";
             return EXIT_SUCCESS;
@@ -342,7 +343,7 @@ int main(int argc, char** argv)
         }
     }
 
-    holoscan::set_log_level(log_level);
+    hololink::module::operators::set_log_level(log_level);
     if (window_title.empty()) {
         window_title = "Holoviz - " + hololink_ip;
     }

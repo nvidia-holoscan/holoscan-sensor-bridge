@@ -26,12 +26,20 @@ option(HOLOLINK_MODULE_BUILD_OPERATORS
 # (hololink::hsb_lite::headers, hololink::leopard_vb1940::headers) exist
 # by the time the per-sensor camera drivers link against them. host/
 # itself stays first because it defines hololink::module_headers,
-# which everything below depends on.
+# which everything below depends on. The PCIe transport is entirely
+# module-owned (module/hsb_pcie: the receiver service, its device access
+# and the kernel ABI mirrors included); host/ carries no transport
+# directory, PcieReceiverOp in host/operators reaches the receiver
+# through the service locator like RoceReceiverOp does.
 add_subdirectory(host)
 add_subdirectory(module/core)
+if(HOLOLINK_BUILD_PCIE)
+  add_subdirectory(module/hsb_pcie)
+endif()
 add_subdirectory(module/hsb_lite)
 add_subdirectory(module/hsb_lite_2510)
 add_subdirectory(module/leopard_vb1940)
+add_subdirectory(module/leopard_vb1940_2510)
 add_subdirectory(module/taurotech_da326)
 add_subdirectory(module/tutorial)
 add_subdirectory(host/operators)

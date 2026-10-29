@@ -21,13 +21,14 @@
 
 ARG CONTAINER_TYPE=invalid
 ARG HSDK_VERSION=4.4.0
+ARG NVCOMP_VERSION=invalid
 ARG DRIVER_CUDA_VERSION_MAJOR=invalid
-ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked"
 
 # dgpu (IGX Orin) specific configuration goes here.
 # NOTE: if using -runtime- container instead of -devel-, libcufft-dev, libcurand-dev, cuda-cudart-dev, and cuda-driver-dev should also be installed
 FROM nvcr.io/nvidia/cuda:12.6.3-runtime-ubuntu22.04 AS build_cuda12_dgpu
+ARG CONTAINER_TYPE
+ARG TARGETARCH
 ARG L4T_VERSION=invalid
 ARG HSDK_VERSION=invalid
 ENV CUDA_VERSION="${CUDA_VERSION:-12.6.3}"
@@ -39,7 +40,12 @@ ENV L4T_MIN_VER="${L4T_MIN_PATCH_VER%%.*}"
 
 # Since we use CTK 12.6, the l4t repo versions must be 36.4.1 (IGX 1.1+) to pull compatible dev packages \
 # the l4t dgpu repository does not match the L4T version in IGX 1.2+; pinned at 36.4.1
-RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99-keep-downloaded-packages \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl \
     && echo "deb https://repo.download.nvidia.com/jetson/dgpu-rm r36.4.1 main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list \
     && curl -Os --output-dir /etc/apt/trusted.gpg.d/ https://repo.download.nvidia.com/jetson/jetson-ota-public.asc
 
@@ -51,6 +57,7 @@ COPY --from=l4t-libs \
 
 # l4t igpu (AGX Orin, Nano, NX, IGX Orin igpu) jetpack 6 specific configuration goes here.
 FROM nvcr.io/nvidia/l4t-cuda:12.6.11-runtime AS build_cuda12_igpu
+ARG CONTAINER_TYPE
 ARG L4T_VERSION=invalid
 ARG TARGETARCH
 ARG HSDK_VERSION=invalid
@@ -61,7 +68,12 @@ ENV L4T_MAJ_VER="${L4T_VERSION%%.*}"
 ENV L4T_MIN_PATCH_VER="${L4T_VERSION#*.}"
 ENV L4T_MIN_VER="${L4T_MIN_PATCH_VER%%.*}"
 
-RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99-keep-downloaded-packages \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl \
     # Since we use CTK 12.6, the l4t repo versions must be 36.4 (JP 6.1+) or 36.5 (JP 6.2.2+) to pull compatible dev packages. \
     && echo "deb https://repo.download.nvidia.com/jetson/common r${L4T_MAJ_VER}.${L4T_MIN_VER} main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list \
     && echo "deb https://repo.download.nvidia.com/jetson/t234 r${L4T_MAJ_VER}.${L4T_MIN_VER} main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list \
@@ -69,15 +81,31 @@ RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive apt-get 
     && curl -Os --output-dir /etc/apt/trusted.gpg.d/ https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
     && apt-get update \
     # EGL and libGLESv2 is needed by Argus api otherwise the library throws error \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libgles2-mesa-dev \
     # we do not have the permission to ./mm-api/DEBIAN/postinst \
     # to just install nvidia-l4t-jetson-multimedia-api via apt install \
-    && apt-get download nvidia-l4t-jetson-multimedia-api \
-    && dpkg-deb -R ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api \
+    # This repository is selected by L4T major/minor and can publish a newer patch package than the host. \
+    && rm -f /var/cache/apt/archives/nvidia-l4t-jetson-multimedia-api_*_${TARGETARCH}.deb \
+    && MM_API_VERSION="$(apt-cache policy nvidia-l4t-jetson-multimedia-api | awk '/Candidate:/ { print $2; exit }')" \
+    && if [ -z "$MM_API_VERSION" ] || [ "$MM_API_VERSION" = "(none)" ]; then \
+        echo "No nvidia-l4t-jetson-multimedia-api package is available from the configured APT repositories for host L4T ${L4T_VERSION}."; \
+        echo "Available versions:"; \
+        apt-cache madison nvidia-l4t-jetson-multimedia-api; \
+        exit 1; \
+    fi \
+    && echo "Using nvidia-l4t-jetson-multimedia-api ${MM_API_VERSION} from r${L4T_MAJ_VER}.${L4T_MIN_VER} for host L4T ${L4T_VERSION}." \
+    && apt-get install --download-only -y --no-install-recommends "nvidia-l4t-jetson-multimedia-api=${MM_API_VERSION}" \
+    && MM_API_DEB="$(find /var/cache/apt/archives -maxdepth 1 -type f -name "nvidia-l4t-jetson-multimedia-api_${MM_API_VERSION}_${TARGETARCH}.deb" | sort)" \
+    && if [ "$(printf '%s\n' "$MM_API_DEB" | sed '/^$/d' | wc -l)" -ne 1 ]; then \
+        echo "Expected exactly one nvidia-l4t-jetson-multimedia-api ${MM_API_VERSION} ${TARGETARCH} package in /var/cache/apt/archives, found:"; \
+        printf '%s\n' "$MM_API_DEB"; \
+        exit 1; \
+    fi \
+    && dpkg-deb -R "$MM_API_DEB" ./mm-api \
     && cp -r ./mm-api/usr/src/jetson_multimedia_api /usr/src/jetson_multimedia_api \
     && sed -i 's/sudo//' ./mm-api/DEBIAN/postinst \
     && ./mm-api/DEBIAN/postinst \
-    && rm -rf ./nvidia-l4t-jetson-multimedia-api_*_arm64.deb ./mm-api
+    && rm -rf ./mm-api
 
 COPY --from=l4t-libs \
     libnvargus.so \
@@ -92,6 +120,7 @@ ENV LD_LIBRARY_PATH=/usr/lib/aarch64-linux-gnu/nvidia:$LD_LIBRARY_PATH
 # DGX Spark and Base for AGX/IGX Thor configurations go here
 # NOTE: if using -runtime- container instead of -devel-, libcufft-dev, libcurand-dev, cuda-cudart-dev, and cuda-driver-dev should also be installed
 FROM nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04 AS build_cuda13
+ARG CONTAINER_TYPE
 ARG TARGETARCH
 ARG HSDK_VERSION=invalid
 ENV CUDA_VERSION="${CUDA_VERSION:-13.0.0}"
@@ -99,8 +128,12 @@ ENV CUDA_VERSION_MAJOR="${CUDA_VERSION%%.*}"
 ENV HSDK_PKG_NAME="holoscan-cuda-${CUDA_VERSION_MAJOR}"
 # install holoscan dev dependencies so that holoscan-cuda-13=4.* doesn't pull the incompatible CTK 13.2 components
 # Holds on toolkit config packages (including *-13-2-*) so holoscan/HSDK apt deps cannot switch /usr/local/cuda to CTK 13.2.
-RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive \
-    apt-get install -y \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99-keep-downloaded-packages \
+    && apt-get update && DEBIAN_FRONTEND=noninteractive \
+    apt-get install -y --no-install-recommends \
     cuda-cudart-dev-13-0 \
     cuda-driver-dev-13-0 \
     cuda-nvcc-13-0 \
@@ -124,10 +157,13 @@ FROM build_cuda13_l4t AS build_cuda13_igpu
 ARG L4T_VERSION=invalid
 
 # EGL and libGLESv2 are needed by Argus api otherwise the library throws error.
-RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl \
     && curl -Os --output-dir /etc/apt/trusted.gpg.d/ https://repo.download.nvidia.com/jetson/jetson-ota-public.asc \
     && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q libgles2-mesa-dev
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends libgles2-mesa-dev
 
 COPY --from=l4t-src jetson_multimedia_api* /usr/src/jetson_multimedia_api
 RUN if [ ! -d "/usr/src/jetson_multimedia_api" ]; then \
@@ -156,12 +192,15 @@ ENV COE_OFFLOAD=1
 # Copy the Jetson SIPL API from the host (fall back to download if not installed on the host).
 # cmake and python for Jetson Multimedia API and SIPL API build.
 COPY --from=l4t-src jetson_sipl_api* /usr/src/jetson_sipl_api
-RUN ${APT_CACHE_MOUNT} apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y curl \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends curl \
     && echo "deb https://repo.download.nvidia.com/jetson/common r${L4T_MAJ_VER}.${L4T_MIN_VER} main" > /etc/apt/sources.list.d/nvidia-l4t-apt-source.list \
     && echo "deb https://repo.download.nvidia.com/jetson/som r${L4T_MAJ_VER}.${L4T_MIN_VER} main" >> /etc/apt/sources.list.d/nvidia-l4t-apt-source.list \
     && if [ ! -d "/usr/src/jetson_sipl_api" ]; then \
         apt-get update \
-        && DEBIAN_FRONTEND=noninteractive apt-get install -y -q python3 cmake \
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends python3 cmake \
         && curl -L -O https://developer.nvidia.com/downloads/embedded/L4T/r${L4T_MAJ_VER}_Release_v${L4T_MIN_PATCH_VER}/release/Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2 \
         && tar xjf Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2 -C / \
         && rm Jetson_SIPL_API_R${L4T_VERSION}_aarch64.tbz2 \
@@ -206,7 +245,9 @@ COPY --from=l4t-libs \
 FROM build_${CONTAINER_TYPE}
 
 # ARGs must be redeclared after FROM to be available in this build stage
+ARG CONTAINER_TYPE
 ARG HSDK_VERSION=invalid
+ARG NVCOMP_VERSION=5.2.0
 ARG L4T_VERSION=invalid
 ARG IBV_DEVICES=
 ARG TARGETARCH
@@ -229,7 +270,9 @@ ENV CUDA_PATH=/usr/local/cuda
 ENV PATH="/usr/src/tensorrt/bin:$PATH"
 
 # Install dependencies for APT setup
-RUN ${APT_CACHE_MOUNT} apt-get update \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
     curl \
     gnupg
@@ -238,7 +281,9 @@ WORKDIR /opt
 
 # Configure the DOCA APT repository
 
-RUN if [ -n "$IBV_DEVICES" ] ; then \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    if [ -n "$IBV_DEVICES" ] ; then \
         if [ "${TARGETARCH}" = "amd64" ]; then \
             DOCA_ARCH="amd64"; \
         elif [ "${TARGETARCH}" = "arm64" ]; then \
@@ -256,7 +301,8 @@ RUN if [ -n "$IBV_DEVICES" ] ; then \
     ; fi
 
 # Set up CMake PPA for CMake 3.31
-RUN ${APT_CACHE_MOUNT} \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
     . /etc/os-release \
     && KW_KEYRING="/usr/share/keyrings/kitware-archive-keyring.gpg" \
     && curl -fsSL "https://apt.kitware.com/keys/kitware-archive-latest.asc" \
@@ -273,20 +319,22 @@ RUN ${APT_CACHE_MOUNT} \
 # For Holoviz: vulkan-tools, glslang-tools, vulkan-validationlayers, libvulkan-dev
 #
 # Pin to CMake 3.31.11 to work around 3.31.12 installation error (CMake Issue#27775).
-RUN ${APT_CACHE_MOUNT} apt-get update \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update \
     && . /etc/os-release \
     && UBUNTU_VERSION=$(echo $VERSION_ID | sed 's/\.//g') \
-    && curl -fsSL -O https://developer.download.nvidia.com/compute/nvcomp/5.2.0/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_${TARGETARCH}.deb \
-    && dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_${TARGETARCH}.deb \
-    && cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0/nvcomp-*-keyring.gpg /usr/share/keyrings/ \
+    && curl -fsSL -O https://developer.download.nvidia.com/compute/nvcomp/${NVCOMP_VERSION}/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}_${NVCOMP_VERSION}-1_${TARGETARCH}.deb \
+    && dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}_${NVCOMP_VERSION}-1_${TARGETARCH}.deb \
+    && cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}/nvcomp-*-keyring.gpg /usr/share/keyrings/ \
     # the pinning file needs to come alphanumerically before any other pinning files where the package matches. On IGX Orin, the cuda-repository-pin-600 file is present with a "Package: *" and otherwise takes precedence over this
     && printf 'Package: *\nPin: origin ""\nPin-Priority: 1001\n' > /etc/apt/preferences.d/00-nv-local-repo \
     && apt-get update \
-    && DEB_DEPENDENCIES="libnvcomp5-cuda-${CUDA_VERSION_MAJOR} libnvcomp5-dev-cuda-${CUDA_VERSION_MAJOR} libnvcomp5-static-cuda-${CUDA_VERSION_MAJOR} nvcomp-cuda-${CUDA_VERSION_MAJOR}" \
+    && DEB_DEPENDENCIES="libnvcomp5-cuda-${CUDA_VERSION_MAJOR}=${NVCOMP_VERSION}* libnvcomp5-dev-cuda-${CUDA_VERSION_MAJOR}=${NVCOMP_VERSION}* nvcomp-cuda-${CUDA_VERSION_MAJOR}=${NVCOMP_VERSION}*" \
     && if [ -n "$IBV_DEVICES" ] ; then \
         DEB_DEPENDENCIES="$DEB_DEPENDENCIES libibverbs-dev libdoca-sdk-gpunetio-dev libdoca-sdk-verbs-dev mlnx-ofed-kernel-utils ibverbs-utils" \
     ; fi \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y -q --no-install-recommends \
     # Container tools
     git \
     curl \
@@ -348,12 +396,14 @@ RUN curl -fS -# -L -o /tmp/sccache.tar.gz \
 # python package dependencies
 # holoscan has a minimum pip version requirement that cannot be satisfied by the debian package
 # bootstrap it, upgrade, then install holoscan and dependencies
-RUN curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py && rm -f get-pip.py \
-    && python3 -m pip install --no-cache-dir --upgrade pip \
-    && pip3 install --no-cache-dir meson ninja pyelftools numpy \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-pip,target=/root/.cache/pip \
+    curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && python3 get-pip.py && rm -f get-pip.py \
+    && python3 -m pip install --upgrade pip \
+    && pip3 install meson ninja pyelftools numpy \
     && pip3 install holoscan-cu${CUDA_VERSION_MAJOR}==${HSDK_VERSION}
 
-RUN ${APT_CACHE_MOUNT} \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
     apt-get update \
     ; if ! apt list --installed 2>/dev/null | grep -qi ${HSDK_PKG_NAME} ; then \
         echo "installing ${HSDK_PKG_NAME}=${HSDK_VERSION}*" \
@@ -398,4 +448,3 @@ RUN --mount=type=bind,from=pva-sdk,source=.,target=/tmp/pva-sdk-2.9 \
 ARG CONTAINER_TYPE=invalid
 ARG HSDK_VERSION=invalid
 ARG L4T_VERSION=invalid
-

@@ -58,7 +58,7 @@ public:
 
     /**
      * @brief Sorts entries by key.start and checks for overlapping ranges.
-     * @return 0 on success, -1 if overlapping ranges detected
+     * @return 0 on success, -1 if overlapping ranges detected.
      */
     int build()
     {
@@ -109,8 +109,8 @@ public:
      * Searches for an entry where the input address falls within the range
      * [key.start, key.end). Uses binary search on the sorted array.
      *
-     * @param addr The address to look up
-     * @return Const pointer to the value if found, NULL otherwise
+     * @param addr The address to look up.
+     * @return Const pointer to the value if found, NULL otherwise.
      */
     const T* get(uint32_t addr) const
     {
@@ -125,8 +125,8 @@ public:
     /**
      * @brief Sets a value by address lookup using range comparison. If the range is not already present, adds a new entry. If the range is already present, updates the value, but the range must match the existing entry exactly.
      * @param key The address range to set the value for. The start address must be less than the end address.
-     * @param value The value to set
-     * @return 0 on success, -1 if a new element cannot be added, -2 if the range exists and input does not match
+     * @param value The value to set.
+     * @return 0 on success, -1 if a new element cannot be added, -2 if the range exists and input does not match.
      */
     int set(const AddressRange& key, const T& value)
     {
@@ -183,7 +183,7 @@ public:
 
     /**
      * @brief Sorts entries by key.start and checks for overlapping ranges.
-     * @return 0 on success, -1 if overlapping ranges detected
+     * @return 0 on success, -1 if overlapping ranges detected.
      */
     int build()
     {
@@ -234,8 +234,8 @@ public:
      * Searches for an entry where the input address falls within the range
      * [key.start, key.end). Uses binary search on the sorted array.
      *
-     * @param addr The address to look up
-     * @return Const pointer to the value if found, NULL otherwise
+     * @param addr The address to look up.
+     * @return Const pointer to the value if found, NULL otherwise.
      */
     const T* get(uint32_t addr) const
     {
@@ -250,8 +250,8 @@ public:
     /**
      * @brief Sets a value by address lookup using range comparison. If the range is not already present, adds a new entry (growing the underlying vector). If the range is already present, updates the value, but the range must match the existing entry exactly.
      * @param key The address range to set the value for. The start address must be less than the end address.
-     * @param value The value to set
-     * @return 0 on success, -2 if the range exists and input does not match
+     * @param value The value to set.
+     * @return 0 on success, -2 if the range exists and input does not match.
      */
     int set(const AddressRange& key, const T& value)
     {

@@ -78,6 +78,7 @@ class StereoApplication(holoscan.core.Application):
         left_isp_factory,
         right_isp_factory,
         watchdog,
+        aligner_allowable_dt=None,
     ):
         logging.info("__init__")
         super().__init__()
@@ -99,6 +100,7 @@ class StereoApplication(holoscan.core.Application):
         self._left_isp_factory = left_isp_factory
         self._right_isp_factory = right_isp_factory
         self._watchdog = watchdog
+        self._aligner_allowable_dt = aligner_allowable_dt
         #
         self.enable_metadata(True)
         # always use the most recently added frame.
@@ -258,6 +260,20 @@ class StereoApplication(holoscan.core.Application):
             name="watchdog",
             watchdog=self._watchdog,
         )
+        frame_aligner = None
+        if self._aligner_allowable_dt is not None:
+            frame_aligner = operators.FrameAlignerOp(
+                self,
+                name="frame_aligner",
+                allowable_dt=self._aligner_allowable_dt,
+                input_tensors=["left", "right"],
+                rename_metadata=[
+                    lambda name: f"left_{name}",
+                    lambda name: f"right_{name}",
+                ],
+                outputs=["output_left", "output_right"],
+                output_tensors=["left", "right"],
+            )
         #
         self.add_flow(receiver_operator_left, check_left, {("output", "input")})
         self.add_flow(receiver_operator_right, check_right, {("output", "input")})
@@ -275,8 +291,16 @@ class StereoApplication(holoscan.core.Application):
         self.add_flow(
             csi_to_bayer_operator_right, isp_right_in, {("output", isp_right_in_name)}
         )
-        self.add_flow(isp_left_out, visualizer, {(isp_left_out_name, "receivers")})
-        self.add_flow(isp_right_out, visualizer, {(isp_right_out_name, "receivers")})
+        if frame_aligner is None:
+            self.add_flow(isp_left_out, visualizer, {(isp_left_out_name, "receivers")})
+            self.add_flow(
+                isp_right_out, visualizer, {(isp_right_out_name, "receivers")}
+            )
+        else:
+            self.add_flow(isp_left_out, frame_aligner, {(isp_left_out_name, "input")})
+            self.add_flow(isp_right_out, frame_aligner, {(isp_right_out_name, "input")})
+            self.add_flow(frame_aligner, visualizer, {("output_left", "receivers")})
+            self.add_flow(frame_aligner, visualizer, {("output_right", "receivers")})
         #
         self.add_flow(visualizer, check_metadata, {("camera_pose_output", "input")})
         self.add_flow(visualizer, watchdog, {("camera_pose_output", "input")})
@@ -329,6 +353,7 @@ class StereoTest:
         left_camera_factory,
         right_camera_factory,
         ptp_enable,
+        aligner_allowable_dt=None,
     ):
         self._camera_mode = camera_mode
         self._headless = headless
@@ -341,6 +366,7 @@ class StereoTest:
         self._left_camera_factory = left_camera_factory
         self._right_camera_factory = right_camera_factory
         self._ptp_enable = ptp_enable
+        self._aligner_allowable_dt = aligner_allowable_dt
 
     def execute(self):
         # Get a handle to the GPU using context manager
@@ -402,6 +428,7 @@ class StereoTest:
                         left_isp_factory=self._left_isp_factory,
                         right_isp_factory=self._right_isp_factory,
                         watchdog=watchdog,
+                        aligner_allowable_dt=self._aligner_allowable_dt,
                     )
 
                     # Run it.

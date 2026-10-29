@@ -60,8 +60,9 @@ localparam PAD_IDX = 3;
   logic dphy_rstn;
   logic dphy_rstn_sync;
   logic mipi_en_sync;
+  logic soft_rstn_sync;
 
-assign dphy_rstn = soft_rstn & mipi_en_sync & rst_n;
+assign dphy_rstn = soft_rstn_sync & mipi_en_sync & rst_n;
 
 
 reset_sync mipi_u_rst (
@@ -99,7 +100,7 @@ reset_sync mipi_sft_rst (
 
 reset_sync lvds_u_rst (
     .i_clk     ( clk_25             ),
-    .i_arst_n  ( (rst_n & soft_rstn)),
+    .i_arst_n  ( rst_n              ),
     .i_srst    ( 1'b0               ),
     .i_locked  ( pll_locked         ),
     .o_arst    (                    ),
@@ -108,22 +109,33 @@ reset_sync lvds_u_rst (
     .o_srst_n  (                    ) 
 );
 
+
+
 reset_sync lvds_sclk_u_rst (
     .i_clk     ( sclk_o             ),
     .i_arst_n  ( rst_n              ),
     .i_srst    ( 1'b0               ),
     .i_locked  ( lvds_ready         ),
-    .o_arst    ( lvds_sclk_rst      ),
+    .o_arst    (                    ),
     .o_arst_n  (                    ),
-    .o_srst    (                    ), 
-    .o_srst_n  ( lvds_sclk_rst_n    ) 
+    .o_srst    ( lvds_sclk_rst      ), 
+    .o_srst_n  (                    ) 
+);
+
+data_sync #(
+    .DATA_WIDTH ( 1              )  
+) soft_rstn_sync_inst (
+    .clk        ( mipi_sync_clk  ),
+    .rst        ( !rst_n         ),
+    .sync_in    ( soft_rstn      ),
+    .sync_out   ( soft_rstn_sync )
 );
 
 data_sync #(
     .DATA_WIDTH ( 1              )  
 ) mipi_en_sync_inst (
     .clk        ( mipi_sync_clk  ),
-    .rst_n      ( rst_n          ),
+    .rst        ( !rst_n         ),
     .sync_in    ( mipi_en        ),
     .sync_out   ( mipi_en_sync   )
 );
@@ -132,7 +144,7 @@ data_sync #(
     .DATA_WIDTH ( 1              )  
 ) mipi_en_hs_sync_inst (
     .clk        ( clk_byte_hs_o  ),
-    .rst_n      ( rst_n          ),
+    .rst        ( !rst_n         ),
     .sync_in    ( mipi_en        ),
     .sync_out   ( mipi_en_hs_sync)
 );
@@ -142,7 +154,7 @@ data_sync #(
     .DATA_WIDTH ( 2                )  
 ) lvds_sync (
     .clk        ( sclk_o           ),
-    .rst_n      ( lvds_sclk_rst_n  ),
+    .rst        ( lvds_sclk_rst    ),
     .sync_in    ( {lvds_rdy_i   , lvds_ready}    ),
     .sync_out   ( {lvds_rdy_sync, lvds_ready_sync}    )
 );

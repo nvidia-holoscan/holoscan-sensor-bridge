@@ -496,7 +496,10 @@ class HoloscanApplication(holoscan.core.Application):
         self._camera_right.configure_converter(csi_to_bayer_operator_right)
 
         frame_size = csi_to_bayer_operator_left.get_csi_length()
-        assert frame_size == csi_to_bayer_operator_right.get_csi_length()
+        if frame_size != csi_to_bayer_operator_right.get_csi_length():
+            raise RuntimeError(
+                "Left and right cameras produce different CSI frame sizes."
+            )
         logging.info(f"{frame_size=}")
 
         frame_context = self._cuda_context
@@ -573,9 +576,11 @@ class HoloscanApplication(holoscan.core.Application):
         )
 
         bayer_format = self._camera_left.bayer_format()
-        assert bayer_format == self._camera_right.bayer_format()
+        if bayer_format != self._camera_right.bayer_format():
+            raise RuntimeError("Left and right cameras report different Bayer formats.")
         pixel_format = self._camera_left.pixel_format()
-        assert pixel_format == self._camera_right.pixel_format()
+        if pixel_format != self._camera_right.pixel_format():
+            raise RuntimeError("Left and right cameras report different pixel formats.")
         image_processor_left = hololink_module.operators.ImageProcessorOp(
             self,
             name="image_processor_left",
@@ -976,12 +981,15 @@ def main():
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
     # Get a handle to data sources
     channel_metadata_left = hololink_module.Enumerator.find_channel(
         channel_ip=args.hololink_left
@@ -1039,7 +1047,8 @@ def main():
     application.config(args.configuration)
     # Run it.
     hololink = hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
+    if hololink is not hololink_channel_right.hololink():
+        raise RuntimeError("Data channels are on different HSB devices.")
     hololink.start()
     if not args.skip_reset:
         hololink.reset()
@@ -1070,7 +1079,8 @@ def main():
     hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
     # Report CRC validation results (if enabled)
     if args.crc_frame_check > 0:

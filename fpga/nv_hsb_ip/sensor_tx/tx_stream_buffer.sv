@@ -138,7 +138,7 @@ data_sync #
   .SYNC_DEPTH                 ( 2                     )
 ) u_afull_seen_sync (
   .clk                        ( i_sif_clk             ),
-  .rst_n                      ( !i_sif_rst            ),
+  .rst                        ( i_sif_rst             ),
   .sync_in                    ( afull_seen            ),
   .sync_out                   ( afull_seen_sync       )
 );
@@ -329,7 +329,7 @@ data_sync #(
   .DATA_WIDTH     ( 1                   )
 ) u_dbg_en_sync (
   .clk            ( i_sif_clk           ),
-  .rst_n          ( !i_sif_rst          ),
+  .rst            ( i_sif_rst           ),
   .sync_in        ( dbg_ena_output      ),
   .sync_out       ( dbg_ena_output_sync )
 );

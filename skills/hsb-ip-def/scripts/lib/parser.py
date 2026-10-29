@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Parser for HOLOLINK_def.svh files.
 
 Public entry point: parse_file(path) -> ParsedDef

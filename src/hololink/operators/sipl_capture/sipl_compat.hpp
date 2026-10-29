@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -161,6 +161,20 @@ inline uint32_t get_sensor_id(const ModuleConfig& mod)
     return get_first_coe_sensor(mod).id;
 #else
     return mod.sensorInfo.id;
+#endif
+}
+
+inline bool is_sensor_group_secondary(const ModuleConfig& mod)
+{
+#if SIPL_V2
+    if (!is_coe_module(mod)) {
+        return false;
+    }
+    const auto& sensor = get_first_coe_sensor(mod);
+    return (sensor.sensorGroup > 0U) && (sensor.deviceIndex != 0U);
+#else
+    (void)mod;
+    return false;
 #endif
 }
 

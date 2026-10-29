@@ -41,8 +41,8 @@ namespace hololink::operators {
  * Uses the CRC-32/JAMCRC algorithm (bit-inverted CRC32) which matches the format
  * recorded from HSB.
  *
- * @param cuda_device_ordinal, the CUDA device to use (default: 0)
- * @param frame_size, Upper bound for data size; used to tune CRC algorithm.  The
+ * @param cuda_device_ordinal The CUDA device to use (default: 0).
+ * @param frame_size Upper bound for data size; used to tune CRC algorithm.  The
  *      actual CRC block size is always taken from the received tensor.
  *
  * @code{.py}
@@ -113,8 +113,8 @@ protected:
  * the computed value in the pipeline metadata under the name "computed_crc"
  * (or by any name you pass in with the `computed_crc_metadata_name' parameter).
  *
- * @param compute_crc_op points to the ComputeCrcOp that computed the CRC
- * @param computed_crc_metadata_name provides the metadata key for storing computed CRC
+ * @param compute_crc_op Points to the ComputeCrcOp that computed the CRC.
+ * @param computed_crc_metadata_name Provides the metadata key for storing computed CRC
  *   (default: "computed_crc").  This value is ignored when a subclass overrides
  *  the check_crc method.
  *

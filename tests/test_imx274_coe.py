@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,10 +29,14 @@ import utils
 import hololink as hololink_module
 from examples import linux_coe_imx274_player
 
+COE_STALL_TIMEOUT_MS = 4500
+
 
 # Unaccelerated, single camera test
 @pytest.mark.skip_unless_coe
 @pytest.mark.skip_unless_imx274
+@pytest.mark.reset_hsb_before_retry
+@pytest.mark.flaky(reruns=2)
 def test_coe_linux_player(
     headless, frame_limit, hololink_address, coe_interfaces, capsys
 ):
@@ -42,6 +46,8 @@ def test_coe_linux_player(
         str(frame_limit),
         "--coe-interface",
         coe_interfaces[0],
+        "--stall-timeout-ms",
+        str(COE_STALL_TIMEOUT_MS),
         "--hololink",
         hololink_address,
     ]

@@ -17,6 +17,7 @@ import argparse
 import ctypes
 import logging
 import os
+import threading
 
 import cuda.bindings.driver as cuda
 import hololink_module.operators
@@ -124,8 +125,27 @@ class HoloscanApplication(holoscan.core.Application):
         self._window_height = window_height
         self._window_width = window_width
         self._window_titles = window_titles
+        # Keep the shared Hawk running until both receivers stop.
+        self._camera_lifecycle_lock = threading.Lock()
+        self._camera_users = 0
         self.is_metadata_enabled = True
         self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
+
+    def _start_camera(self):
+        with self._camera_lifecycle_lock:
+            if self._camera_users == 0:
+                self._camera.start()
+            self._camera_users += 1
+
+    def _stop_camera(self):
+        with self._camera_lifecycle_lock:
+            if self._camera_users == 0:
+                return
+            if self._camera_users > 1:
+                self._camera_users -= 1
+                return
+            self._camera.stop()
+            self._camera_users = 0
 
     def compose(self):
         self._camera.set_mode(self._camera_mode)
@@ -169,8 +189,8 @@ class HoloscanApplication(holoscan.core.Application):
             enumeration_metadata=sif_metadata,
             frame_context=self._cuda_context,
             frame_size=csi_to_bayer_operator.get_csi_length(),
-            device_start=self._camera.start,
-            device_stop=self._camera.stop,
+            device_start=self._start_camera,
+            device_stop=self._stop_camera,
         )
 
         pixel_format = self._camera.pixel_format()
@@ -271,12 +291,15 @@ def main():
     hololink_legacy.logging_level(args.log_level)
 
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     adapter = hololink_module.Adapter.get_adapter()
     metadata = adapter.wait_for_channel(args.hololink, 30.0)
@@ -409,7 +432,8 @@ def main():
         logging.info("Stereo skew: %s", skew_state.summary())
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
 
 if __name__ == "__main__":

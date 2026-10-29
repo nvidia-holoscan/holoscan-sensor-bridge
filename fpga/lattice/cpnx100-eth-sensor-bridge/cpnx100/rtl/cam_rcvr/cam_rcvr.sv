@@ -78,6 +78,8 @@ module cam_rcvr (
   logic        cal_done;
   logic [15:0] cal_wait;
   logic [31:0] cal_fail;
+  logic [2:0]  cal_settle;
+  logic [3:0]  cal_match;
 
   logic        rx_dclk;
   logic [87:0] rx_data;
@@ -116,35 +118,64 @@ assign o_phy_err_det = '0;
   );
 
   localparam logic [87:0] cal_pattern = 88'h005A55FEDCBA9876543210;
+  localparam logic [2:0]  CAL_SETTLE_CYCLES = 3'd4;
+  localparam logic [3:0]  CAL_MATCH_CYCLES  = 4'd8;
   
   always_ff @ (posedge rx_dclk or posedge rx_drst) begin
     if (rx_drst) begin
-      cal_rst         <= 0;
-      cal_wait        <= 1;
-      cal_align       <= 0;
-      cal_fail        <= 0;
-      cal_done        <= 0;
+      cal_rst    <= '0;
+      cal_wait   <= 'd1;
+      cal_align  <= '0;
+      cal_fail   <= '0;
+      cal_done   <= '0;
+      cal_settle <= '0;
+      cal_match  <= '0;
     end else begin
-      cal_rst         <= 0;
-      cal_wait        <= 1;
-      cal_align       <= 0;
-      cal_fail        <= 0;
-      cal_done        <= 0;
+      cal_rst   <= '0;
+      cal_align <= '0;
+
       if (rx_ready) begin
-        cal_rst       <= cal_fail[31];
-        cal_wait      <= 1;
-        cal_align     <= 0;
-        cal_fail      <= 0;
-        cal_done      <= cal_done;
+        cal_rst <= cal_fail[31];
+
         if (!cal_done) begin
-          cal_wait    <= {cal_wait[14:0], cal_wait[15]};
-          cal_fail    <= cal_fail;
-          cal_done    <= rx_data == cal_pattern;
-          if (rx_data != cal_pattern && cal_wait[15] && |rx_data) begin
-            cal_align <= ~cal_align;
-            cal_fail  <= {cal_fail[30:0], 1'b1};
-	        end
+          // ALIGNWD is consumed by ECLKDIV/IDDRX on this edge. Do not also
+          // accept the pre-slip rx_data value as a successful calibration.
+          if (cal_align) begin
+            cal_wait   <= 'd1;
+            cal_settle <= CAL_SETTLE_CYCLES;
+            cal_match  <= '0;
+          end
+          else if (cal_settle != '0) begin
+            cal_wait   <= 'd1;
+            cal_settle <= cal_settle - 1'b1;
+            cal_match  <= '0;
+          end
+          else if (rx_data == cal_pattern) begin
+            cal_wait <= 'd1;
+            if (cal_match == (CAL_MATCH_CYCLES - 1'b1)) begin
+              cal_done  <= 1'b1;
+              cal_match <= cal_match;
+            end
+            else begin
+              cal_match <= cal_match + 1'b1;
+            end
+          end
+          else begin
+            cal_wait  <= {cal_wait[14:0], cal_wait[15]};
+            cal_match <= '0;
+            if (cal_wait[15] && |rx_data) begin
+              cal_align <= 1'b1;
+              cal_fail  <= {cal_fail[30:0], 1'b1};
+            end
+          end
         end
+      end
+      else begin
+        cal_wait   <= 'd1;
+        cal_fail   <= '0;
+        cal_done   <= '0;
+        cal_settle <= '0;
+        cal_match  <= '0;
       end
     end
   end

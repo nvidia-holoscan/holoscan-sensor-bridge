@@ -3,14 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Out-of-line definition of HsbLitePublisher::construct_roce_receiver.
+// Out-of-line definition of HsbIpPublisher::construct_roce_receiver.
 // The publisher header declares it (and the construct_service chain
 // always calls it); only the body here varies with the build's RoCE
-// capability. Defining it requires the full HsbLitePublisher class,
-// which transitively includes a board supplement header, so this TU is
-// listed in each per-board module's SOURCES (which carries that include
-// path) rather than compiled into hololink::module. HOLOLINK_BUILD_ROCE
-// reaches it as a PUBLIC define inherited from hololink::module.
+// capability. This TU is listed in each per-board module's SOURCES
+// rather than compiled into hololink::module_core, so a board can pair
+// it with its own version-specific override TU. HOLOLINK_BUILD_ROCE
+// reaches it as a PUBLIC define inherited from hololink::module_core.
 //
 // With HOLOLINK_BUILD_ROCE the body publishes the functional
 // RoceReceiverV1 (this TU is then the place that names the ibverbs
@@ -18,7 +17,7 @@
 // publishes nothing, so a consumer asking for the RoCE receiver gets a
 // clean get_service miss rather than a do-nothing stub.
 
-#include "hsb_lite_publisher.hpp"
+#include "hsb_ip_publisher.hpp"
 
 #ifdef HOLOLINK_BUILD_ROCE
 #include <memory>
@@ -28,7 +27,7 @@
 
 namespace hololink::module::module_core {
 
-bool HsbLitePublisher::construct_roce_receiver(
+bool HsbIpPublisher::construct_roce_receiver(
     const std::string& instance_id, const std::string& type_id)
 {
 #ifdef HOLOLINK_BUILD_ROCE

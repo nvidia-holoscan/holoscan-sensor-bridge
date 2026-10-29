@@ -25,7 +25,9 @@ host system, run `sh docs/make_docs.sh --preview`, then use your browser to look
   applications and for `hololink_module` device drivers.  See the user guide pages
   "Hololink Module Applications" and "Hololink Module Devices" for details.  Examples
   using this new approach are available in the examples directory: look for those with
-  the word "module" in the filename.
+  the word "module" in the filename.  The versioned application interfaces published by
+  this release are frozen: their definitions will not change, and new capabilities will
+  arrive as new interface versions.  See `hololink_module/INTERFACES.md` for the list.
 - **Emulator** Unified Linux/MCU emulators under single emulator HAL for application
   development and include templated targets for extending to other MCU hardware.
   Vb1940Emulator now supports calibration data storage via simulated I2C EEPROM.

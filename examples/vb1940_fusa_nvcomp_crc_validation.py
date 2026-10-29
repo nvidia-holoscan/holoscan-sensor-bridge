@@ -675,12 +675,15 @@ def main():
 
     # CUDA primary context for operators and Cupy
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     logging.info(f"Hololink channel: {channel_metadata}")
@@ -732,7 +735,8 @@ def main():
     hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
     # Skip startup/shutdown frames when scoring CRC agreement (warmup / teardown artifacts)
     SKIP_INITIAL_FRAMES = 10

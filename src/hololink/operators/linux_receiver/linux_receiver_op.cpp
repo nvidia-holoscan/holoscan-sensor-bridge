@@ -176,8 +176,8 @@ void LinuxReceiverOp::run()
 void LinuxReceiverOp::stop_receiver()
 {
     hololink_channel_->unconfigure();
-    data_socket_.reset();
     receiver_->close();
+    data_socket_.reset();
     receiver_thread_->join();
     receiver_thread_.reset();
     frame_memory_.reset();

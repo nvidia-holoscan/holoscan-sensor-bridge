@@ -38,6 +38,12 @@ option(HOLOLINK_BUILD_EXPORT "Install Hololink targets" ON)
 # set, because its default is probed via find_package(ibverbs).
 option(HOLOLINK_BUILD_GPUNETIO_ROCE "Build DOCA GPUNetIO RoCE transceiver (requires DOCA gpunetio/verbs)" ON)
 option(HOLOLINK_BUILD_SOCKET "Build Hololink with Linux Socket support" ON)
+# Everything PCIe: the hsb_pcie module, the module-native PcieReceiver /
+# PcieReceiverOp, the hololink_pcie_identity tool, the IMX258 driver (the
+# sensor on the CertusPro-NX Versa PCIe board), the hololink_pcie kernel
+# module and their tests and examples. Off by default: it needs a bound
+# PCIe endpoint (or its kernel headers) to be of any use.
+option(HOLOLINK_BUILD_PCIE "Build the PCIe transport (hsb_pcie module, PcieReceiver, kernel module, tools, tests, examples)" OFF)
 option(HOLOLINK_ROCE_USE_GPU_VRAM "Prefer GPU VRAM for RoCE receiver frame buffers (requires GPUDirect RDMA). When OFF, always use pinned host memory, which avoids IOMMU write-access faults at the cost of an extra PCIe hop for GPU access." ON)
 
 if (HOLOLINK_BUILD_PYTHON AND NOT HOLOLINK_BUILD_EMULATOR)

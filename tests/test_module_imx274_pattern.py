@@ -31,6 +31,7 @@
 
 import ctypes
 import dataclasses
+import gc
 import logging
 import math
 import weakref
@@ -67,12 +68,24 @@ class LeftMetadataRecord:
 
 
 @dataclasses.dataclass
+class LeftRoceMetadataRecord(LeftMetadataRecord):
+    left_flags: int
+    left_frame_number: int
+
+
+@dataclasses.dataclass
 class RightMetadataRecord:
     right_crc: int
     check_crc_right: int
     bayer_crc_right: int
     right_imm_data: int
     right_bytes_written: int
+
+
+@dataclasses.dataclass
+class RightRoceMetadataRecord(RightMetadataRecord):
+    right_flags: int
+    right_frame_number: int
 
 
 class CameraWrapper(imx274.Imx274Cam):
@@ -249,6 +262,7 @@ class PatternTestApplication(holoscan.core.Application):
 
         #
         frame_size = csi_to_bayer_operator_left.get_csi_length()
+        self._frame_size_left = frame_size
         logging.info(f"left {frame_size=}")
         receiver_operator_left = self._make_receiver(
             self._condition_left,
@@ -263,6 +277,7 @@ class PatternTestApplication(holoscan.core.Application):
 
         #
         frame_size = csi_to_bayer_operator_right.get_csi_length()
+        self._frame_size_right = frame_size
         logging.info(f"right {frame_size=}")
         receiver_operator_right = self._make_receiver(
             self._condition_right,
@@ -411,12 +426,16 @@ class PatternTestApplication(holoscan.core.Application):
         self._record_metadata_left = operators.RecordMetadataOp(
             self,
             name="record_metadata_left",
-            metadata_class=LeftMetadataRecord,
+            metadata_class=(
+                LeftRoceMetadataRecord if self._use_roce else LeftMetadataRecord
+            ),
         )
         self._record_metadata_right = operators.RecordMetadataOp(
             self,
             name="record_metadata_right",
-            metadata_class=RightMetadataRecord,
+            metadata_class=(
+                RightRoceMetadataRecord if self._use_roce else RightMetadataRecord
+            ),
         )
 
         # the tensor name directs which pane on the visualizer is updated
@@ -477,22 +496,23 @@ class PatternTestApplication(holoscan.core.Application):
             stop_conditions=[self._condition_left, self._condition_right],
         )
 
-        # Frame aligner is the first hop: both receivers feed its single
-        # input, and it fans out paired frames to each leg's CRC stage.
-        self.add_flow(
-            receiver_operator_left, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(
-            receiver_operator_right, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(self._frame_aligner, compute_crc_left, {("output_left", "input")})
-        self.add_flow(
-            self._frame_aligner, compute_crc_right, {("output_right", "input")}
-        )
-
-        # Add CRC checking to the pipeline
+        # Compute and capture each raw-frame CRC before FrameAligner can retain
+        # the receiver-backed tensor while its DMA page is reused.
+        self.add_flow(receiver_operator_left, compute_crc_left, {("output", "input")})
         self.add_flow(compute_crc_left, check_crc_left, {("output", "input")})
-        self.add_flow(check_crc_left, csi_to_bayer_operator_left, {("output", "input")})
+        self.add_flow(check_crc_left, self._frame_aligner, {("output", "input")})
+
+        self.add_flow(receiver_operator_right, compute_crc_right, {("output", "input")})
+        self.add_flow(compute_crc_right, check_crc_right, {("output", "input")})
+        self.add_flow(check_crc_right, self._frame_aligner, {("output", "input")})
+
+        # The aligner still pairs the two legs by their original receiver
+        # timestamps and forwards the CRC metadata added above.
+        self.add_flow(
+            self._frame_aligner,
+            csi_to_bayer_operator_left,
+            {("output_left", "input")},
+        )
         self.add_flow(
             csi_to_bayer_operator_left, demosaic_left, {("output", "receiver")}
         )
@@ -506,9 +526,10 @@ class PatternTestApplication(holoscan.core.Application):
         )
         self.add_flow(rename_left_tensor, visualizer, {("output", "receivers")})
 
-        self.add_flow(compute_crc_right, check_crc_right, {("output", "input")})
         self.add_flow(
-            check_crc_right, csi_to_bayer_operator_right, {("output", "input")}
+            self._frame_aligner,
+            csi_to_bayer_operator_right,
+            {("output_right", "input")},
         )
         self.add_flow(
             csi_to_bayer_operator_right, demosaic_right, {("output", "receiver")}
@@ -529,8 +550,25 @@ class PatternTestApplication(holoscan.core.Application):
 # A board that hosts a stereo pair exposes the two sensors as two data
 # planes that share one control-plane HololinkInterface; bring that unit
 # up once.
+@pytest.fixture(scope="module")
+def cuda_primary_context():
+    """Keep one primary-context retain across all parametrized cases."""
+    (cu_result,) = cuda.cuInit(0)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    cu_device_ordinal = 0
+    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    yield cu_device_ordinal, cu_context
+    gc.collect()
+    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
+    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+
+
 def run_test(
     headless,
+    cuda_primary_context,
     module_dir,
     metadata_left,
     metadata_right,
@@ -546,15 +584,17 @@ def run_test(
 ):
     #
     logging.info("Initializing.")
-    #
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    cu_device_ordinal, cu_context = cuda_primary_context
+
+    application = None
+    app_scheduler = None
+
+    def cleanup_application():
+        nonlocal application, app_scheduler
+        app_scheduler = None
+        application = None
+        gc.collect()
+
     #
     # The two sensors share the board's expander; select output 0 for the
     # left sensor and output 1 for the right one (the metadata-based
@@ -568,141 +608,186 @@ def run_test(
     initial_timeout = utils.timeout_sequence(
         [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
     )
-    with utils.Watchdog(
-        "watchdog",
-        initial_timeout=initial_timeout,
-    ) as watchdog:
-        # Set up the application
-        application = PatternTestApplication(
-            headless,
-            cu_context,
-            cu_device_ordinal,
-            metadata_left,
-            camera_left,
-            camera_mode_left,
-            metadata_right,
-            camera_right,
-            camera_mode_right,
-            use_roce,
-            allowable_dt,
-            watchdog,
-            frame_limit=frame_limit,
-        )
-        # Both sensors on a stereo board share the same control-plane
-        # HololinkInterface, so bring the unit up just once.
-        hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
-        assert hololink is hololink_module.HololinkInterfaceV1.get_service(
-            metadata_right
-        )
-        hololink.start()
-        try:
-            assert camera_left._reset_callbacks == 0
-            assert camera_right._reset_callbacks == 0
-            hololink.reset()
-            assert camera_left._reset_callbacks == 1
-            assert camera_right._reset_callbacks == 1
-            camera_left.configure(camera_mode_left)
-            camera_left.test_pattern(pattern_left)
-            camera_right.configure(camera_mode_right)
-            camera_right.test_pattern(pattern_right)
-
-            # For testing, make sure we call the get_register method.
-            STANDBY = 0x3000
-            camera_left.get_register(STANDBY)
-            # Configure scheduler.
-            if scheduler == "event":
-                app_scheduler = holoscan.schedulers.EventBasedScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="event_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "multithread":
-                app_scheduler = holoscan.schedulers.MultiThreadScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="multithread_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "greedy":
-                app_scheduler = holoscan.schedulers.GreedyScheduler(
-                    application,
-                    name="greedy_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "default":
-                # Use the default one.
-                pass
-            else:
-                raise Exception(f"Unexpected {scheduler=}")
-            #
-            application.run()
-        finally:
-            hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-    # Verify CRCs match. Only the RoCE path delivers a lossless frame
-    # whose CRC we can trust; the Linux-socket path expects packet loss,
-    # so its image data is not evaluated.
-    skip_frames = SKIP_INITIAL_FRAMES
-    left_bad_crcs = 0
-    left_bad_color_crcs = 0
-    right_bad_crcs = 0
-    right_bad_color_crcs = 0
-    if use_roce:
-        crcs_left = application._record_metadata_left.get_record()
-        logging.info(f"Left camera captured {len(crcs_left)} frames")
-        for frame_idx, record in enumerate(crcs_left):
-            logging.trace(
-                f"{record.left_crc=:#x} {record.check_crc_left=:#x} {record.bayer_crc_left=:#x} {record.left_imm_data=:#x} {record.left_bytes_written=:#x}"
+    try:
+        with utils.Watchdog(
+            "watchdog",
+            initial_timeout=initial_timeout,
+        ) as watchdog:
+            # Set up the application
+            application = PatternTestApplication(
+                headless,
+                cu_context,
+                cu_device_ordinal,
+                metadata_left,
+                camera_left,
+                camera_mode_left,
+                metadata_right,
+                camera_right,
+                camera_mode_right,
+                use_roce,
+                allowable_dt,
+                watchdog,
+                frame_limit=frame_limit,
             )
-            # Skip validation for first N frames (initialization artifacts)
-            if frame_idx < skip_frames:
-                continue
-            # Don't include the last frame, when the pipeline is shutting down.
-            if frame_idx >= (frame_limit - 1):
-                continue
-            if record.left_crc != record.check_crc_left:
-                logging.error(
-                    f"Left CRC mismatch at frame {frame_idx}: "
-                    f"received={record.left_crc:#x}, computed={record.check_crc_left:#x}"
-                )
-                left_bad_crcs += 1
-            if record.bayer_crc_left != expected_left:
-                left_bad_color_crcs += 1
-        if left_bad_crcs == 0:
-            logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
-
-        crcs_right = application._record_metadata_right.get_record()
-        logging.info(f"Right camera captured {len(crcs_right)} frames")
-        for frame_idx, record in enumerate(crcs_right):
-            logging.trace(
-                f"{record.right_crc=:#x} {record.check_crc_right=:#x} {record.bayer_crc_right=:#x} {record.right_imm_data=:#x} {record.right_bytes_written=:#x}"
+            # Both sensors on a stereo board share the same control-plane
+            # HololinkInterface, so bring the unit up just once.
+            hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
+            assert hololink is hololink_module.HololinkInterfaceV1.get_service(
+                metadata_right
             )
-            # Skip validation for first N frames (initialization artifacts)
-            if frame_idx < skip_frames:
-                continue
-            # Don't include the last frame, when the pipeline is shutting down.
-            if frame_idx >= (frame_limit - 1):
-                continue
-            if record.right_crc != record.check_crc_right:
-                logging.error(
-                    f"Right CRC mismatch at frame {frame_idx}: "
-                    f"received={record.right_crc:#x}, computed={record.check_crc_right:#x}"
+            hololink.start()
+            with utils.AbortHook(hololink.reset):
+                try:
+                    assert camera_left._reset_callbacks == 0
+                    assert camera_right._reset_callbacks == 0
+                    hololink.reset()
+                    assert camera_left._reset_callbacks == 1
+                    assert camera_right._reset_callbacks == 1
+                    camera_left.configure(camera_mode_left)
+                    camera_left.test_pattern(pattern_left)
+                    camera_right.configure(camera_mode_right)
+                    camera_right.test_pattern(pattern_right)
+
+                    # For testing, make sure we call the get_register method.
+                    STANDBY = 0x3000
+                    camera_left.get_register(STANDBY)
+                    # Configure scheduler.
+                    if scheduler == "event":
+                        app_scheduler = holoscan.schedulers.EventBasedScheduler(
+                            application,
+                            worker_thread_number=4,
+                            name="event_scheduler",
+                        )
+                        application.scheduler(app_scheduler)
+                    elif scheduler == "multithread":
+                        app_scheduler = holoscan.schedulers.MultiThreadScheduler(
+                            application,
+                            worker_thread_number=4,
+                            name="multithread_scheduler",
+                        )
+                        application.scheduler(app_scheduler)
+                    elif scheduler == "greedy":
+                        app_scheduler = holoscan.schedulers.GreedyScheduler(
+                            application,
+                            name="greedy_scheduler",
+                        )
+                        application.scheduler(app_scheduler)
+                    elif scheduler == "default":
+                        # Use the default one.
+                        pass
+                    else:
+                        raise Exception(f"Unexpected {scheduler=}")
+                    #
+                    application.run()
+                finally:
+                    hololink.stop()
+
+        # Verify CRCs match. Only the RoCE path delivers a lossless frame
+        # whose CRC we can trust; the Linux-socket path expects packet loss,
+        # so its image data is not evaluated.
+        skip_frames = SKIP_INITIAL_FRAMES
+        left_bad_crcs = 0
+        left_bad_color_crcs = 0
+        left_short_frames = 0
+        right_bad_crcs = 0
+        right_bad_color_crcs = 0
+        right_short_frames = 0
+        if use_roce:
+            crcs_left = application._record_metadata_left.get_record()
+            logging.info(f"Left camera captured {len(crcs_left)} frames")
+            for frame_idx, record in enumerate(crcs_left):
+                logging.trace(
+                    f"{record.left_flags=:#x} "
+                    f"{record.left_crc=:#x} {record.left_frame_number=:#x} "
+                    f"{record.check_crc_left=:#x} {record.bayer_crc_left=:#x} "
+                    f"{record.left_imm_data=:#x} {record.left_bytes_written=:#x}"
                 )
-                right_bad_crcs += 1
-            if record.bayer_crc_right != expected_right:
-                right_bad_color_crcs += 1
-        if right_bad_crcs == 0:
-            logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")
+                # Skip validation for first N frames (initialization artifacts)
+                if frame_idx < skip_frames:
+                    continue
+                # Don't include the last frame, when the pipeline is shutting down.
+                if frame_idx >= (frame_limit - 1):
+                    continue
+                if record.left_bytes_written != application._frame_size_left:
+                    missing_bytes = (
+                        application._frame_size_left - record.left_bytes_written
+                    )
+                    logging.error(
+                        f"Left short CSI frame at frame {frame_idx}: "
+                        f"frame_number={record.left_frame_number:#x}, "
+                        f"flags={record.left_flags:#x}, "
+                        f"bytes_written={record.left_bytes_written:#x}, "
+                        f"expected={application._frame_size_left:#x}, "
+                        f"missing_bytes={missing_bytes}"
+                    )
+                    left_short_frames += 1
+                if record.left_crc != record.check_crc_left:
+                    logging.error(
+                        f"Left CRC mismatch at frame {frame_idx}: "
+                        f"received={record.left_crc:#x}, "
+                        f"computed={record.check_crc_left:#x}"
+                    )
+                    left_bad_crcs += 1
+                if record.bayer_crc_left != expected_left:
+                    left_bad_color_crcs += 1
+            if left_bad_crcs == 0:
+                logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
+
+            crcs_right = application._record_metadata_right.get_record()
+            logging.info(f"Right camera captured {len(crcs_right)} frames")
+            for frame_idx, record in enumerate(crcs_right):
+                logging.trace(
+                    f"{record.right_flags=:#x} "
+                    f"{record.right_crc=:#x} {record.right_frame_number=:#x} "
+                    f"{record.check_crc_right=:#x} {record.bayer_crc_right=:#x} "
+                    f"{record.right_imm_data=:#x} {record.right_bytes_written=:#x}"
+                )
+                # Skip validation for first N frames (initialization artifacts)
+                if frame_idx < skip_frames:
+                    continue
+                # Don't include the last frame, when the pipeline is shutting down.
+                if frame_idx >= (frame_limit - 1):
+                    continue
+                if record.right_bytes_written != application._frame_size_right:
+                    missing_bytes = (
+                        application._frame_size_right - record.right_bytes_written
+                    )
+                    logging.error(
+                        f"Right short CSI frame at frame {frame_idx}: "
+                        f"frame_number={record.right_frame_number:#x}, "
+                        f"flags={record.right_flags:#x}, "
+                        f"bytes_written={record.right_bytes_written:#x}, "
+                        f"expected={application._frame_size_right:#x}, "
+                        f"missing_bytes={missing_bytes}"
+                    )
+                    right_short_frames += 1
+                if record.right_crc != record.check_crc_right:
+                    logging.error(
+                        f"Right CRC mismatch at frame {frame_idx}: "
+                        f"received={record.right_crc:#x}, "
+                        f"computed={record.check_crc_right:#x}"
+                    )
+                    right_bad_crcs += 1
+                if record.bayer_crc_right != expected_right:
+                    right_bad_color_crcs += 1
+            if right_bad_crcs == 0:
+                logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")
+
+    finally:
+        # Destroy the graph, including allocator-owned tensors left in queues,
+        # while the module-scoped primary-context retain is still valid. Native
+        # CUDA/GXF teardown may outlive Python collection briefly, so the fixture
+        # keeps that context alive across the following parametrized case.
+        cleanup_application()
+
+    assert (left_short_frames + right_short_frames) == 0, (
+        f"Captured {left_short_frames} short left CSI frames and "
+        f"{right_short_frames} short right CSI frames"
+    )
     assert (left_bad_crcs + right_bad_crcs) == 0
     # Make sure the colors are as expected.
-    if expected_left is not None:
-        assert left_bad_color_crcs == 0
-    if expected_right is not None:
-        assert right_bad_color_crcs == 0
+    assert left_bad_color_crcs == 0
+    assert right_bad_color_crcs == 0
 
 
 def _wait_for_channel(module_dir, peer_ip):
@@ -776,8 +861,29 @@ expected_1080p_results = [
     ),
 ]
 
+# RAW12 exercises Imx274Cam.configure_converter's 210-byte (175 + 35) embedded
+# data offset and the packed12bitTo16bit kernel; a wrong start byte shifts the
+# image and changes the bayer CRC.
+#
+# The expected CRCs were captured on hardware with the 210-byte offset in place.
+expected_4k_12bit_results = [
+    (
+        # left
+        imx274.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS,
+        10,
+        0x9D48B11B,
+        # right
+        imx274.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS,
+        11,
+        0x42559C42,
+        # allowable_dt
+        ONE_FRAME_AT_60FPS,
+    ),
+]
+
 expected_results = []
 expected_results.extend(expected_4k_results)
+expected_results.extend(expected_4k_12bit_results)
 expected_results.extend(expected_1080p_results)
 
 mtus = [
@@ -786,6 +892,26 @@ mtus = [
     330,  # produces a 2-page, 256 byte payload.
     4096,
 ]
+
+full_mtu_pairs = [(mtu_left, mtu_right) for mtu_left in mtus for mtu_right in mtus]
+reduced_mtu_pairs = [
+    (None, None),
+    (hololink_module.DEFAULT_MTU, hololink_module.DEFAULT_MTU),
+    (330, 330),
+    (4096, 4096),
+    (330, 4096),
+    (4096, 330),
+]
+
+
+def pytest_generate_tests(metafunc):
+    if "mtu_left" in metafunc.fixturenames and "mtu_right" in metafunc.fixturenames:
+        mtu_pairs = (
+            reduced_mtu_pairs
+            if metafunc.config.getoption("--reduced-mtu-matrix")
+            else full_mtu_pairs
+        )
+        metafunc.parametrize("mtu_left,mtu_right", mtu_pairs)
 
 
 @pytest.mark.skip_unless_imx274
@@ -803,6 +929,7 @@ def test_imx274_pattern(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
     scheduler,
     module_dir,
@@ -815,6 +942,7 @@ def test_imx274_pattern(
     channel_metadata_right = _wait_for_channel(module_dir, hololink_right)
     run_test(
         headless,
+        cuda_primary_context,
         module_dir,
         channel_metadata_left,
         channel_metadata_right,
@@ -836,14 +964,6 @@ def test_imx274_pattern(
     "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right, allowable_dt",  # noqa: E501
     [expected_4k_results[0]],  # No need to do lots of these
 )
-@pytest.mark.parametrize(
-    "mtu_left",
-    mtus,
-)
-@pytest.mark.parametrize(
-    "mtu_right",
-    mtus,
-)
 def test_imx274_pattern_with_various_mtus(
     camera_mode_left,
     pattern_left,
@@ -853,6 +973,7 @@ def test_imx274_pattern_with_various_mtus(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
     module_dir,
     mtu_left,
@@ -871,6 +992,7 @@ def test_imx274_pattern_with_various_mtus(
         adapter.use_mtu(channel_metadata_right, mtu_right)
     run_test(
         headless,
+        cuda_primary_context,
         module_dir,
         channel_metadata_left,
         channel_metadata_right,
@@ -907,6 +1029,7 @@ def test_imx274_multicast(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
     scheduler,
     module_dir,
@@ -929,6 +1052,7 @@ def test_imx274_multicast(
     adapter.use_multicast(channel_metadata_right, multicast_right, multicast_right_port)
     run_test(
         headless,
+        cuda_primary_context,
         module_dir,
         channel_metadata_left,
         channel_metadata_right,
@@ -967,6 +1091,7 @@ def test_imx274_stereo_single_interface(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     scheduler,
     channel_ips,
     module_dir,
@@ -992,6 +1117,7 @@ def test_imx274_stereo_single_interface(
     #
     run_test(
         headless,
+        cuda_primary_context,
         module_dir,
         channel_metadata_left,
         channel_metadata_right,
@@ -1023,6 +1149,7 @@ def test_linux_imx274_stereo_single_interface(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     scheduler,
     channel_ip,
     module_dir,
@@ -1041,16 +1168,17 @@ def test_linux_imx274_stereo_single_interface(
     #
     run_test(
         headless,
+        cuda_primary_context,
         module_dir,
         channel_metadata_left,
         channel_metadata_right,
         False,  # use_roce -> Linux sockets; image data not evaluated
         camera_mode_left,
         pattern_left,
-        None,  # expected_left
+        expected_left,  # unused: image data not evaluated over Linux sockets
         camera_mode_right,
         pattern_right,
-        None,  # expected_right
+        expected_right,  # unused: image data not evaluated over Linux sockets
         allowable_dt,
         scheduler,
     )

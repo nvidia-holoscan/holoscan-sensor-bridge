@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -104,6 +104,75 @@ __device__ inline uint32_t receive(struct doca_gpu_dev_verbs_cq* cq_rq, uint8_t*
     return doca_gpu_dev_verbs_bswap32((*cqe64)->imm_inval_pkey) & 0xFFF;
 }
 
+/*
+ * Wait for the receive CQE at out_ticket, checking the exit flag while waiting: unlike receive(), a persistent
+ * kernel can terminate even if no more packets arrive.
+ * Returns 0 with the page index in *stride on a valid CQE, GPU_ROCE_RECV_EXIT if the exit flag was set while
+ * waiting, a negative value on an error CQE.
+ */
+__device__ inline int receive_or_exit(struct doca_gpu_dev_verbs_cq* cq_rq, uint8_t* cqe, const uint32_t cqe_mask,
+    const doca_gpu_dev_verbs_ticket_t out_ticket, const uint32_t* exit_flag, uint32_t* stride)
+{
+    struct mlx5_cqe64* cqe64;
+    uint32_t polls = 0;
+    int status;
+
+    while ((status = doca_gpu_dev_verbs_poll_one_cq_at<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_GPU,
+                DOCA_GPUNETIO_VERBS_QP_RQ>(cq_rq, out_ticket))
+        == EBUSY) {
+        // The exit flag is in host-visible memory: read it only once every GPU_ROCE_EXIT_POLL_INTERVAL polls
+        if ((++polls % GPU_ROCE_EXIT_POLL_INTERVAL) == 0 && DOCA_GPUNETIO_VERBS_VOLATILE(*exit_flag) != 0)
+            return GPU_ROCE_RECV_EXIT;
+    }
+    if (status != 0)
+        return status;
+
+    cqe64 = (struct mlx5_cqe64*)(cqe + ((out_ticket & cqe_mask) * DOCA_GPUNETIO_VERBS_CQE_SIZE));
+    *stride = doca_gpu_dev_verbs_bswap32(cqe64->imm_inval_pkey) & 0xFFF;
+    return 0;
+}
+
+/*
+ * The threads of a block post their sends in WQE index order: doca_gpu_dev_verbs_mark_wqes_ready() waits until
+ * all the previous WQEs are ready. Do that wait here first, checking the exit flag, so a thread never waits
+ * forever for a thread that already left the kernel. Returns false if the exit flag was set while waiting.
+ */
+__device__ inline bool wait_sq_turn_or_exit(struct doca_gpu_dev_verbs_qp* qp, uint64_t wqe_idx, const uint32_t* exit_flag)
+{
+    cuda::atomic_ref<uint64_t, cuda::thread_scope_block> ready_index(qp->sq_ready_index);
+    uint32_t polls = 0;
+
+    while (ready_index.load(cuda::memory_order_relaxed) != wqe_idx) {
+        if ((++polls % GPU_ROCE_EXIT_POLL_INTERVAL) == 0 && DOCA_GPUNETIO_VERBS_VOLATILE(*exit_flag) != 0)
+            return false;
+    }
+    return true;
+}
+
+/*
+ * Ring flags hand frames over between the network kernels and the application, possibly running on the CPU
+ * (set_cpu_ring_buffers()): use system scope fences.
+ * Load a ring flag: if not 0, the frame data written before the flag is set are visible to this thread.
+ */
+__device__ inline uint64_t ring_flag_load_acquire(uint64_t* flag)
+{
+    uint64_t value = DOCA_GPUNETIO_VERBS_VOLATILE(*flag);
+
+    if (value != 0)
+        doca_gpu_dev_verbs_fence_acquire<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
+    return value;
+}
+
+/*
+ * Store a ring flag: the frame data written or read by this thread before are visible, or done, to the thread
+ * that loads the flag.
+ */
+__device__ inline void ring_flag_store_release(uint64_t* flag, uint64_t value)
+{
+    doca_gpu_dev_verbs_fence_release<DOCA_GPUNETIO_VERBS_SYNC_SCOPE_SYS>();
+    DOCA_GPUNETIO_VERBS_VOLATILE(*flag) = value;
+}
+
 template <enum gpu_roce_max_frame_size max_frame_size = GPU_ROCE_MAX_FRAME_SIZE_0B>
 __device__ inline void send(struct doca_gpu_dev_verbs_qp* qp, uint64_t wqe_idx, uint64_t buffer)
 {
@@ -192,6 +261,43 @@ __device__ inline void send_bf(struct doca_gpu_dev_verbs_qp* qp, struct doca_gpu
     doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, wqe_idx, wqe_idx);
 
 // Trigger send
+#if DOCA_UNRELIABLE_BF == 1
+    doca_gpu_dev_verbs_submit_bf<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU, DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_BF_UNRELIABLE>(qp, wqe_idx + 1, &(wqe_ptr_sh[threadIdx.x]));
+#else
+    doca_gpu_dev_verbs_submit_bf<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU>(qp, wqe_idx + 1, &(wqe_ptr_sh[threadIdx.x]));
+#endif
+}
+
+/*
+ * Post a NOP in place of a send at wqe_idx, when a receive has no frame to send (invalid page index or error
+ * CQE): the next WQE indexes can't be posted until this one is ready. Only the opcode changes: the NIC ignores
+ * the data segments of a NOP, and the next send() at this index restores the SEND opcode.
+ */
+__device__ inline void send_nop(struct doca_gpu_dev_verbs_qp* qp, uint64_t wqe_idx)
+{
+    uint16_t wqe_idx_ = wqe_idx;
+    struct doca_gpu_dev_verbs_wqe* wqe_ptr = doca_gpu_dev_verbs_get_wqe_ptr(qp, wqe_idx);
+
+    wqe_ptr->snd_cseg.opmod_idx_opcode = doca_gpu_dev_verbs_bswap32(((uint32_t)wqe_idx_ << DOCA_GPUNETIO_VERBS_WQE_IDX_SHIFT) | DOCA_GPUNETIO_MLX5_OPCODE_NOP);
+
+    doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, wqe_idx, wqe_idx);
+
+    doca_gpu_dev_verbs_submit<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
+        DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU,
+        DOCA_GPUNETIO_VERBS_NIC_HANDLER_AUTO>(qp, wqe_idx + 1);
+}
+
+/* Same as send_nop() with the BlueFlame WQE copy in shared memory used by send_bf() */
+__device__ inline void send_bf_nop(struct doca_gpu_dev_verbs_qp* qp, struct doca_gpu_dev_verbs_wqe* wqe_ptr_sh, uint64_t wqe_idx)
+{
+    uint16_t wqe_idx_ = wqe_idx;
+
+    wqe_ptr_sh[threadIdx.x].snd_cseg.opmod_idx_opcode = doca_gpu_dev_verbs_bswap32(((uint32_t)wqe_idx_ << DOCA_GPUNETIO_VERBS_WQE_IDX_SHIFT) | DOCA_GPUNETIO_MLX5_OPCODE_NOP);
+
+    doca_gpu_dev_verbs_mark_wqes_ready<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA>(qp, wqe_idx, wqe_idx);
+
 #if DOCA_UNRELIABLE_BF == 1
     doca_gpu_dev_verbs_submit_bf<DOCA_GPUNETIO_VERBS_RESOURCE_SHARING_MODE_CTA,
         DOCA_GPUNETIO_VERBS_SYNC_SCOPE_GPU, DOCA_GPUNETIO_VERBS_GPU_CODE_OPT_BF_UNRELIABLE>(qp, wqe_idx + 1, &(wqe_ptr_sh[threadIdx.x]));

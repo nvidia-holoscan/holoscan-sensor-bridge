@@ -23,6 +23,8 @@ import pytest
 import hololink as hololink_module
 from examples import linux_hwisp_player
 
+pytest.importorskip("hololink.operators.argus_isp")
+
 
 @pytest.mark.skip_unless_igpu
 @pytest.mark.skip_unless_imx274

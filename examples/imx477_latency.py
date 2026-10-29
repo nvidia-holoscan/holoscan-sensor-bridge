@@ -366,12 +366,15 @@ def main():
     logging.info("Initializing.")
     # Get a handle to the GPU
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
@@ -425,7 +428,8 @@ def main():
         hololink.stop()
 
     (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
     # Report stats at the end of the application
     frame_time_dts = []
@@ -435,7 +439,10 @@ def main():
     overall_time_dts = []
 
     settled_timestamps = recorder_queue[5:-5]
-    assert len(settled_timestamps) >= 100
+    if len(settled_timestamps) < 100:
+        raise RuntimeError(
+            f"Only {len(settled_timestamps)} settled timestamps; need at least 100."
+        )
     for (
         now,
         frame_start_s,

@@ -23,11 +23,13 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <vector>
 
 #include <hololink/core/csi_controller.hpp>
+#include <hololink/core/hololink.hpp>
 #include <holoscan/holoscan.hpp>
 
 #include <INvSIPLISPStatCustomInterface.hpp>
@@ -96,6 +98,11 @@ public:
         nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_raw = nullptr;
         nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_isp = nullptr;
         NvSciBufObj buf_obj = nullptr;
+        /// HSB frame record copied out of the RAW buffer by the acquire thread (after its EOF
+        /// wait) and, in ISP mode, matched to this frame by capture-start TSC. Absent when no
+        /// record was found. buffer_raw is nullptr in ISP mode: the RAW capture slot was
+        /// released as soon as its record was copied.
+        std::optional<Hololink::FrameMetadata> hsb_metadata;
         void* cuda_ptr = nullptr;
         uint64_t buffer_size = 0;
         uint32_t plane_count = 0;
@@ -112,7 +119,6 @@ public:
 
     const std::string& output_name(uint32_t camera_index) const;
     nvsipl::INvSIPLISPStatCustomInterface* isp_stats(uint32_t camera_index) const;
-    NvSciSyncCpuWaitContext cpu_wait_context() const { return cpu_wait_context_; }
     uint32_t default_timeout_us() const { return timeout_us_; }
     bool raw_output() const { return raw_output_; }
 
@@ -132,6 +138,9 @@ private:
         std::vector<NvSciBufObj> sci_bufs_icp_;
         std::vector<NvSciBufObj> sci_bufs_isp0_;
         NvSciSyncObj sci_sync_isp0_;
+        // Used only by this camera's acquire thread; NvSciSyncCpuWaitContext is a
+        // single-owner wait primitive and must not be shared across threads.
+        NvSciSyncCpuWaitContext cpu_wait_context_ = nullptr;
 
         std::thread acquire_thread_;
         std::unique_ptr<std::atomic<bool>> stop_thread_;
@@ -139,6 +148,10 @@ private:
         std::unique_ptr<std::condition_variable> buffer_available_;
         nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_raw_;
         nvsipl::INvSIPLClient::INvSIPLBuffer* buffer_isp_;
+        // HSB record for the published frame; handed to acquire_frame() with the buffers.
+        std::optional<Hololink::FrameMetadata> hsb_metadata_;
+        // Acquire-thread only: NvSci API failures while reading the HSB trailer (rate-limited WARN).
+        uint64_t hsb_metadata_read_failures_ = 0;
     };
 
     struct CudaBufferMapping {
@@ -151,6 +164,12 @@ private:
     void init_nvsci();
     void fill_camera_info();
     void allocate_buffers(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, std::vector<NvSciBufObj>& bufs);
+    /// Check that the image rows CameraInfo advertises for this camera lie inside the RAW
+    /// plane described by the reconciled attributes its capture buffers are allocated from.
+    /// SIPLCameraOutputOp wraps that plane as-is and its consumer indexes it by CameraInfo
+    /// without checking, so this is verified once here and nowhere per frame.
+    void validate_raw_geometry(uint32_t camera_index, NvSciBufAttrList reconciled_attr_list) const;
+    void register_buffers(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, const std::vector<NvSciBufObj>& bufs);
     void free_buffers(std::vector<NvSciBufObj>& bufs);
     void allocate_sync(uint32_t camera_index, nvsipl::INvSIPLClient::ConsumerDesc::OutputType output_type, NvSciSyncObj& sync);
     void register_autocontrol(uint32_t camera_index);
@@ -163,6 +182,14 @@ private:
     void ensure_streaming_started();
     nvidia::gxf::Expected<void> on_pending_output_released(void* pointer);
     void acquire_buffer_thread_func(PerCameraState* camera_state);
+    /// Wait for the buffer's EOF fence on this camera's wait context. A missing fence is
+    /// treated as "already complete" unless fence_required (ISP0 has a registered EOF sync).
+    bool wait_for_eof(nvsipl::INvSIPLClient::INvSIPLBuffer* buffer, PerCameraState& state,
+        bool fence_required = false);
+    /// Read the HSB metadata trailer out of a RAW (ICP) buffer; nullopt when absent/invalid.
+    /// NvSci API failures are counted on the camera state and reported at WARN, rate-limited.
+    std::optional<Hololink::FrameMetadata> read_hsb_metadata(nvsipl::INvSIPLClient::INvSIPLBuffer* buffer,
+        PerCameraState& state);
     void* map_buffer_to_cuda(NvSciBufObj buf_obj, uint64_t size);
 
     std::string camera_config_;
@@ -178,7 +205,6 @@ private:
 
     NvSciBufModule sci_buf_module_ = nullptr;
     NvSciSyncModule sci_sync_module_ = nullptr;
-    NvSciSyncCpuWaitContext cpu_wait_context_ = nullptr;
 
     std::vector<PerCameraState> per_camera_state_;
     std::vector<CameraInfo> camera_info_;

@@ -5,6 +5,7 @@
 
 #include "hololink/module/logging.hpp"
 
+#include <atomic>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -92,6 +93,10 @@ static float log_timestamp_s()
     return ts - start_time;
 }
 
+// The process has exactly one logger, so its level is process-wide state:
+// Adapter::set_log_level adjusts it after the Logging service was published.
+std::atomic<LogLevel> logging_impl_level { LogLevel::Info };
+
 /* Host-side Logging implementation. Implements the latest
  * `LoggingInterfaceV_n` and (once V2 lands) is published under every
  * prior version's type_id by inheritance. Owns the process-wide log
@@ -100,13 +105,13 @@ static float log_timestamp_s()
 class Logging : public LoggingInterfaceV1 {
 public:
     Logging()
-        : level_(resolve_level_from_env())
     {
+        logging_impl_level = resolve_level_from_env();
     }
 
     LogLevel level() const override
     {
-        return level_;
+        return logging_impl_level;
     }
 
     void log(LogLevel level,
@@ -123,9 +128,6 @@ public:
             level_name(level), ts, basename, line, function, thread_id, message);
         std::fprintf(stderr, "%s\n", msg.c_str());
     }
-
-private:
-    LogLevel level_;
 };
 
 std::shared_ptr<LoggingInterfaceV1> make_logging_impl()

@@ -118,12 +118,15 @@ class HoloscanApplication(holoscan.core.Application):
 def main():
     # CUDA bring-up
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     # Find the board via bootp enumeration and get its metadata.
     adapter = hololink_module.Adapter.get_adapter()
@@ -151,7 +154,10 @@ def main():
         # Stop streaming data and close up sockets.
         hololink.stop()
         (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    # Checked out here so that a teardown failure doesn't displace an exception
+    # coming out of app.run().
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
 
 
 if __name__ == "__main__":

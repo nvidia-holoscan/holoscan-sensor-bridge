@@ -29,7 +29,7 @@ namespace imx274_mode {
     enum Mode {
         IMX274_MODE_3840X2160_60FPS = 0,
         IMX274_MODE_1920X1080_60FPS = 1,
-        IMX274_MODE_3840X2160_60FPS_12BITS = 2,
+        IMX274_MODE_3840X2160_30FPS_12BITS = 2,
         IMX274_MODE_COUNT = 3,
     };
 
@@ -57,7 +57,7 @@ namespace imx274_mode {
     constexpr size_t STOP_SEQUENCE_SIZE = 2;
     constexpr size_t MODE_3840X2160_60FPS_SEQUENCE_SIZE = 83;
     constexpr size_t MODE_1920X1080_60FPS_SEQUENCE_SIZE = 84;
-    constexpr size_t MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE = 83;
+    constexpr size_t MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE = 83;
 
     // clang-format off
     // Declare the arrays
@@ -261,9 +261,9 @@ namespace imx274_mode {
         { 0x306B, 0x05 },
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
     }};
-    constexpr std::array<std::pair<uint16_t, uint8_t>, MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE>
-        IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE = {{
-        // Mode: 3840x2160 60fps RAW12
+    constexpr std::array<std::pair<uint16_t, uint8_t>, MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE>
+        IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE = {{
+        // Mode: 3840x2160 30fps RAW12
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
         { 0x3000, 0x12 },
         { 0x3120, 0xF0 },
@@ -351,7 +351,7 @@ namespace imx274_mode {
         { 0x306B, 0x07 },
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
     }};
-    static_assert(IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE.size() == MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE, "IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE size mismatch");
+    static_assert(IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE.size() == MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE, "IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE size mismatch");
     // clang-format on
 } // namespace imx274_mode
 

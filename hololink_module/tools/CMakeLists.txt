@@ -21,3 +21,26 @@ target_link_libraries(adapter_enumerator
 install(TARGETS adapter_enumerator
     DESTINATION ${CMAKE_INSTALL_BINDIR}
     COMPONENT hololink-module-tools)
+
+# Read-only PCIe endpoint identity tool: shows the board identity the
+# hololink_pcie kernel driver reports (BDF, UUID, HSB version/date,
+# responding or not) and offers raw BAR0 peek/poke for bring-up. The
+# board UUID is read-only in the FPGA, so nothing here writes it.
+# Part of the PCIe transport (HOLOLINK_BUILD_PCIE). The sysfs / ioctl reads
+# it drives (PcieDeviceInfo, pcie_device_info.{hpp,cpp}) are private to this
+# tool -- discovery on the application path is the driver's bootp announcement
+# -- and compile straight into it; the test reuses the same source file.
+if(HOLOLINK_BUILD_PCIE)
+add_executable(hololink_pcie_identity
+    hololink_pcie_identity.cpp
+    pcie_device_info.cpp)
+target_link_libraries(hololink_pcie_identity
+    PRIVATE
+        hololink::module
+        hololink::hsb_pcie::abi_headers
+)
+
+install(TARGETS hololink_pcie_identity
+    DESTINATION ${CMAKE_INSTALL_BINDIR}
+    COMPONENT hololink-module-tools)
+endif() # HOLOLINK_BUILD_PCIE

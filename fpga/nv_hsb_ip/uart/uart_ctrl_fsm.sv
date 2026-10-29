@@ -58,9 +58,8 @@ apb_m2s      data_apb_m2s;
 apb_s2m      data_apb_s2m;
 
 // Clock and reset mapping
-logic clk, rst_n;
+logic clk;
 assign clk = i_aclk;
-assign rst_n = !i_arst;
 
 // s_apb_reg for control and status registers
 s_apb_reg #(
@@ -263,7 +262,7 @@ sc_fifo #(
   .MEM_STYLE    ( "BLOCK"      )
 ) tx_fifo (
   .clk    ( clk                     ),
-  .rst    ( !rst_n || tx_fifo_reset ),
+  .rst    ( i_arst || tx_fifo_reset ),
   .wr     ( tx_fifo_wr_safe         ),
   .din    ( tx_fifo_din             ),
   .full   ( tx_fifo_full            ),
@@ -280,7 +279,7 @@ sc_fifo #(
 
 // TX FIFO level counter
 always_ff @(posedge clk) begin
-  if (!rst_n || tx_fifo_reset) begin
+  if (i_arst || tx_fifo_reset) begin
     tx_fifo_level <= 0;
   end
   else begin
@@ -318,7 +317,7 @@ sc_fifo #(
   .MEM_STYLE    ( "BLOCK"      )
 ) rx_fifo (
   .clk    ( clk                     ),
-  .rst    ( !rst_n || rx_fifo_reset ),
+  .rst    ( i_arst || rx_fifo_reset ),
   .wr     ( rx_fifo_wr_safe         ),
   .din    ( rx_fifo_din             ),
   .full   ( rx_fifo_full            ),
@@ -335,7 +334,7 @@ sc_fifo #(
 
 // RX FIFO level counter
 always_ff @(posedge clk) begin
-  if (!rst_n || rx_fifo_reset) begin
+  if (i_arst || rx_fifo_reset) begin
     rx_fifo_level <= 0;
   end
   else begin
@@ -367,7 +366,7 @@ uart #(
   .DATA_WIDTH                ( 8                         )
 ) uart_core (
   .clk                       ( clk                       ),
-  .rst_n                     ( rst_n                     ),
+  .rst                       ( i_arst                    ),
   .baud_div                  ( baud_div                  ),
   .tx_en                     ( tx_enable && uart_enable  ),
   .rx_en                     ( rx_enable && uart_enable  ),
@@ -439,7 +438,7 @@ assign clear_rx_glitch_error_sticky = ctrl_reg[3][7];
 
 // Sticky overflow, parity error, and frame error interrupts
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (i_arst) begin
     tx_fifo_empty_sticky     <= 1'b0;
     tx_fifo_afull_sticky     <= 1'b0;
     tx_fifo_aempty_sticky    <= 1'b0;
@@ -529,7 +528,7 @@ logic        apb_data_edge;
 
 // Detect rising edge of APB data transaction
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (i_arst) begin
     apb_data_active_reg <= 1'b0;
   end
   else begin
@@ -539,7 +538,7 @@ end
 
 // Last RX byte capture logic
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (i_arst) begin
     last_rx_byte  <= 8'h00;
     last_rx_valid <= 1'b0;
   end
@@ -560,7 +559,7 @@ end
 assign apb_data_edge = (data_apb_m2s.psel && data_apb_m2s.penable) && !apb_data_active_reg;
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (i_arst) begin
     data_read_data  <= 32'h0;
     tx_fifo_wr_reg  <= 1'b0;
     rx_fifo_rd_reg  <= 1'b0;

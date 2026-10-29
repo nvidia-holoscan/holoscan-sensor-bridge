@@ -270,6 +270,15 @@ int64_t COETransmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size_t 
         goto cleanup;
     }
 
+    // send_packet() consumes payload_size bytes per packet, so a zero would spin in the
+    // loop below forever.  enable_1722b and payload_size come from the same
+    // update_metadata() snapshot and the host writes DP_PACKET_SIZE before the DP_QP
+    // word that carries enable_1722b, so this is belt and braces -- but see the matching
+    // check in RoCEv2Transmitter::send(), where the two do come from different instants.
+    if (!coe_ctxt->payload_size) {
+        goto cleanup;
+    }
+
     if (!COECtxt_is_in_use(coe_ctxt)) {
         update_packet_headers(coe_ctxt);
         // if we have frame_metadata and it is the default internal frame_metadata, update it
@@ -283,6 +292,13 @@ int64_t COETransmitter::send(DataPlaneCtxt* ctxt, const uint8_t* buffer, size_t 
 
         int32_t sent_bytes = send_packet(coe_ctxt, buffer, buffer_size, &frame_metadata);
         if (sent_bytes < 0) {
+            n_bytes_sent = -1;
+            goto cleanup;
+        }
+        if ((sent_bytes == 0) && buffer_size) {
+            // Only reachable with payload_size == 0, which the check above rules out.
+            // Fail loudly rather than spinning here forever.
+            Error_Handler("COETransmitter::send() made no forward progress");
             n_bytes_sent = -1;
             goto cleanup;
         }

@@ -1,3 +1,6 @@
+-- SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+-- SPDX-License-Identifier: Apache-2.0
+
 -- Wireshark dissector for HSB ECB packets.
 
 hsb_proto = Proto("hsb", "Holoscan Sensor Bridge")

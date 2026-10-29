@@ -91,7 +91,13 @@ void BaseReceiverOp::setup(holoscan::OperatorSpec& spec)
         auto frag = fragment();
         frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>("frame_ready_condition");
         add_arg(frame_ready_condition_);
-        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::WAIT);
+        // EVENT_WAITING (not WAIT): with WAIT the scheduler ticks this operator once
+        // at graph start, before any frame exists; that compute blocks in
+        // get_next_frame, times out, and silently consumes one CountCondition
+        // count - every "run N frames" app then processes N-1 frames and
+        // deadlocks waiting for the last one. The frame-arrived-during-start()
+        // race is covered by the frames_ready() check in start().
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
     }
 
     frame_count_ = 0;
@@ -109,9 +115,17 @@ void BaseReceiverOp::start()
     running_ = true;
     start_receiver();
     device_start_.get()();
-    if (frame_ready_condition_ && frames_ready()) {
-        // Don't wait if we have data ready.
-        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+    if (frame_ready_condition_) {
+        // (Re)arm here, at activation time: the EVENT_WAITING set during setup()
+        // does not survive condition initialization, and without it the scheduler
+        // ticks this operator once before any frame exists - that compute blocks
+        // in get_next_frame, times out, and silently consumes one CountCondition
+        // count ("run N frames" apps then process N-1 and hang on the last).
+        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
+        if (frames_ready()) {
+            // Don't wait if we have data ready.
+            frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+        }
     }
 }
 

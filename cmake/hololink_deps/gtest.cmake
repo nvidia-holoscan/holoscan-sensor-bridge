@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # GoogleTest dependency setup.
 #
 # Ensures the GTest::gtest target is available by either finding a pre-installed

@@ -19,13 +19,31 @@
 libraries:
   hololink-emulation:
     input:
-      git: https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
-      subpath: src/hololink/emulation
+      path: ../../../src/hololink/emulation
     output:
       path: ./generated/api-reference/cpp/emulation
     lang: cpp
     config:
       doxyfile: ./emulation.Doxyfile
+
+  # The versioned service interfaces an application resolves through the
+  # service locator (`HololinkInterfaceV1`, `I2cInterfaceV1`, ...). Scope is
+  # restricted to the public include tree by `module.Doxyfile`, so the module
+  # implementations and the host runtime are not parsed.
+  #
+  # Same key-naming rule as above: `hololink-module` deliberately does not
+  # equal the top-level C++ namespace (`hololink`), so Fern emits only the
+  # per-compound pages and writes them nested under
+  # `hololink/namespaces/module/{classes,functions,...}` beneath `output.path`.
+  # `index.yml` points its `folder:` entry at that deep subtree.
+  hololink-module:
+    input:
+      path: ../../../hololink_module/host/include/hololink/module
+    output:
+      path: ./generated/api-reference/cpp/module
+    lang: cpp
+    config:
+      doxyfile: ./module.Doxyfile
 
 instances:
   - url: nvidia-holoscan.docs.buildwithfern.com/holoscan/sensor-bridge
@@ -91,6 +109,11 @@ logo:
 
 favicon: assets/NVIDIA_symbol.svg
 
+# Send unmatched paths to the docs homepage instead of Fern's 404 page.
+# Prefer explicit `redirects` below for known Sphinx → Fern page moves.
+settings:
+  hide-404-page: true
+
 js:
   - url: https://assets.adobedtm.com/5d4962a43b79/c1061d2c5e7b/launch-191c2462b890.min.js
     strategy: beforeInteractive
@@ -101,11 +124,17 @@ css:
   - dist/output.css
 
 redirects:
+  # Paths are relative to the site root; subpath prefix matches instances + custom-domain.
+  # Legacy Sphinx used .../latest/<page>.html; Fern uses section/page slugs.
   - source: "/holoscan/sensor-bridge/latest/index.html"
     destination: "/holoscan/sensor-bridge"
   - source: "/holoscan/sensor-bridge/latest"
     destination: "/holoscan/sensor-bridge"
   - source: "/holoscan/sensor-bridge/index.html"
+    destination: "/holoscan/sensor-bridge/getting-started/introduction"
+  - source: "/holoscan/sensor-bridge/latest/introduction.html"
+    destination: "/holoscan/sensor-bridge/getting-started/introduction"
+  - source: "/holoscan/sensor-bridge/introduction.html"
     destination: "/holoscan/sensor-bridge/getting-started/introduction"
   - source: "/holoscan/sensor-bridge/introduction"
     destination: "/holoscan/sensor-bridge/getting-started/introduction"

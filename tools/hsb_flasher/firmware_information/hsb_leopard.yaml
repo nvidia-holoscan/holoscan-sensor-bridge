@@ -40,3 +40,9 @@ firmware_versions:
       - location: https://www.dropbox.com/scl/fi/eqzvz0nsh5qf5no27fk0n/LI-CERTUS-BRG-V1.0-V6.bit?rlkey=b24jdtdco7mcman59q0pl9dr7&dl=1
         md5: f13f63ab4bc5301b368a25e761a05ab2
         size: 1954402
+
+  - version: 0x2609
+    cpnx:
+      - location: https://www.dropbox.com/scl/fi/csr9uxma76ygge2m7gjmi/LI-CERTUS-BRG-V1.0-V7.bit?rlkey=713j6o4coa463f7bm8438kare&dl=1
+        md5: b3e4a995e688f793090c4fbfdda60d8b
+        size: 1954402

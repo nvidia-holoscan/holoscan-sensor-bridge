@@ -18,8 +18,15 @@ install(FILES
         hsb-ptp.conf
         generate_manifest.py
         manifest.yaml
-        manifest-2603.yaml
         manifest_leopard_cpnx100.yaml
-        manifest_leopard_cpnx100-2603.yaml
         DESTINATION scripts
         COMPONENT hololink-scripts)
+
+# Installs/reloads the hololink_pcie kernel driver (locally or over ssh) and makes it
+# load at boot; see src/ehsb/kmod/README.md. Part of the PCIe transport.
+if(HOLOLINK_BUILD_PCIE)
+  install(PROGRAMS
+          deploy_pcie_kmod.sh
+          DESTINATION scripts
+          COMPONENT hololink-scripts)
+endif()

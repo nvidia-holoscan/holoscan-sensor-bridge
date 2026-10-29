@@ -267,15 +267,15 @@ class Vb1940Cam(hololink_module.Synchronizable):
             "set_eeprom_page(page_num=%d(0x%X), page_offset=%d(0x%X), data_len=%d)"
             % (page_num, page_num, page_offset, page_offset, len(data_buffer))
         )
-        assert (
-            page_num < EEPROM_MAX_PAGE_NUM
-        ), "The number of page should be in a range from 0 to 255."
-        assert (
-            page_offset + len(data_buffer) <= EEPROM_PAGE_SIZE
-        ), "page_offset(%d) + data_len(%d) should not be greater than 64." % (
-            page_offset,
-            len(data_buffer),
-        )
+        if page_num < 0 or page_num >= EEPROM_MAX_PAGE_NUM:
+            raise ValueError("The number of page should be in a range from 0 to 255.")
+        if page_offset < 0:
+            raise ValueError("page_offset(%d) should not be negative." % page_offset)
+        if page_offset + len(data_buffer) > EEPROM_PAGE_SIZE:
+            raise ValueError(
+                "page_offset(%d) + data_len(%d) should not be greater than 64."
+                % (page_offset, len(data_buffer))
+            )
         register = (page_num << 6) + page_offset
         write_bytes = bytearray(66)
         serializer = hololink_module.Serializer(write_bytes)
@@ -306,12 +306,15 @@ class Vb1940Cam(hololink_module.Synchronizable):
         return r
 
     def get_eeprom_page(self, page_num=0, page_offset=0, data_len=64):
-        assert (
-            page_num < EEPROM_MAX_PAGE_NUM
-        ), "The number of page should be in a range from 0 to 255."
-        assert (
-            page_offset + data_len
-        ) <= EEPROM_PAGE_SIZE, f"{page_offset=} + {data_len=} should not be greater than {EEPROM_PAGE_SIZE=}."
+        if page_num < 0 or page_num >= EEPROM_MAX_PAGE_NUM:
+            raise ValueError("The number of page should be in a range from 0 to 255.")
+        if page_offset < 0 or data_len < 0:
+            raise ValueError(f"{page_offset=} and {data_len=} should not be negative.")
+        if (page_offset + data_len) > EEPROM_PAGE_SIZE:
+            raise ValueError(
+                f"{page_offset=} + {data_len=} should not be greater "
+                f"than {EEPROM_PAGE_SIZE=}."
+            )
         register = (page_num << 6) + page_offset
         write_bytes = bytearray(100)
         serializer = hololink_module.Serializer(write_bytes)
@@ -322,7 +325,8 @@ class Vb1940Cam(hololink_module.Synchronizable):
         )
         deserializer = hololink_module.Deserializer(reply)
         r = deserializer.next_buffer(read_byte_count)
-        assert len(r) == read_byte_count, "read %d != %d" % (len(r), read_byte_count)
+        if len(r) != read_byte_count:
+            raise RuntimeError("read %d != %d" % (len(r), read_byte_count))
         logging.debug(
             "get_eeprom_page(register=%d(0x%X),buffer=%s)"
             % (register, register, bytearray(r))
@@ -339,9 +343,10 @@ class Vb1940Cam(hololink_module.Synchronizable):
             time.sleep(10 / 1000)
             ret = self.get_register(SYSTEM_FSM_STATE_REG)
             count += 1
-            assert count < 30, (
-                "Incorrect system fsm state:0x%X. Please reconnect camera" % ret
-            )
+            if count >= 30:
+                raise RuntimeError(
+                    "Incorrect system fsm state:0x%X. Please reconnect camera" % ret
+                )
             logging.debug("system fsm state:0x%X" % ret)
             if ret == system_fsm_state.SYSTEM_UP.value:
                 break
@@ -531,7 +536,10 @@ class Vb1940Cam(hololink_module.Synchronizable):
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported VB1940 version:{version}, expected {VERSION}."
+            )
 
         # get device id
         logging.debug("##1.get device id")

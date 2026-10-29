@@ -151,7 +151,7 @@ public:
         info.imm_data = legacy.imm_data;
         info.received_s = legacy.received_s;
         info.received_ns = legacy.received_ns;
-        info.rx_write_requests = legacy.rx_write_requests;
+        info.rx_write_requests = 0;
         info.dropped = legacy.dropped;
         return true;
     }

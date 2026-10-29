@@ -398,9 +398,7 @@ def test_module_vb1940_stereo_roce_naive(
         initial_timeout = utils.timeout_sequence(
             [(30, ready_frame), (0.5, max(1, frame_limit - ready_frame - 2)), (30, 1)]
         )
-        with utils.PriorityScheduler(), utils.Watchdog(
-            "watchdog", initial_timeout=initial_timeout
-        ) as watchdog:
+        with utils.Watchdog("watchdog", initial_timeout=initial_timeout) as watchdog:
             application = StereoLatencyApplication(
                 headless=headless,
                 cuda_context=cu_context,
@@ -432,6 +430,12 @@ def test_module_vb1940_stereo_roce_naive(
     )
     pairs = list(zip(left_collected, right_collected))
     assert pairs, "stereo latency test produced no aligned frame pairs"
+    # The watchdog sink stops the receivers at frame_limit aligned pairs, but
+    # in-flight work can be dropped while the graph drains. Require sustained
+    # aligned delivery without coupling recorder timing to an exact count.
+    assert (
+        len(pairs) >= frame_limit * 0.8
+    ), f"stereo latency test recorded only {len(pairs)}/{frame_limit} aligned pairs"
 
     limit_ns = MAX_SKEW_NS
     limit_ms = limit_ns / 1_000_000.0

@@ -201,7 +201,8 @@ def _encode_bayer_image(rgb_image, bayer_format):
         raise Exception(f"Unexpected bayer format={bayer_format}")
     # upper_line is red0, green0, red1, green1, ...
     r, g = sr.ravel(), sg.ravel()
-    assert r.size == g.size
+    if r.size != g.size:
+        raise RuntimeError("Red and green planes hold different numbers of pixels.")
     c = cp.empty(((r.size + g.size) // 2,), dtype=dtype)
     c[0::2] = r[::2]
     c[1::2] = g[::2]
@@ -462,12 +463,15 @@ def run(
         raise ValueError("stereo needs two channel IPs")
 
     (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuInit failed: {cu_result}")
     cu_device_ordinal = 0
     cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDeviceGet failed: {cu_result}")
     cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {cu_result}")
 
     adapter = hololink_module.Adapter.get_adapter()
     if module_dir:
@@ -495,10 +499,13 @@ def run(
             headless, cu_context, cu_device_ordinal, channels, frame_limit
         )
         application.run()
-        return application
     finally:
         (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    # Checked out here so that a teardown failure doesn't displace an exception
+    # coming out of application.run().
+    if cu_result != cuda.CUresult.CUDA_SUCCESS:
+        raise RuntimeError(f"cuDevicePrimaryCtxRelease failed: {cu_result}")
+    return application
 
 
 def main():

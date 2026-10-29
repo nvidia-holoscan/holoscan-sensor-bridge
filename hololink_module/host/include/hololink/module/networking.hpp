@@ -15,7 +15,15 @@
 
 namespace hololink::module {
 
-/// MAC (medium access control) address.
+/**
+ * @brief A 48-bit Ethernet MAC (medium access control) address.
+ *
+ * The six octets are stored in the order they are written in the usual
+ * text form, so `aa:bb:cc:dd:ee:ff` is `{0xaa, 0xbb, 0xcc, 0xdd, 0xee,
+ * 0xff}`: element 0 is the first octet written (the one carrying the
+ * multicast and locally-administered flags). This is also the order the
+ * octets appear on the network.
+ */
 using MacAddress = std::array<uint8_t, 6>;
 
 /// Default Ethernet MTU, in bytes. Adapter-owned mirror of the legacy

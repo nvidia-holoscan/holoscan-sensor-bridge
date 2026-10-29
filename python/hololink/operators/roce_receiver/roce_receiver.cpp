@@ -175,7 +175,6 @@ PYBIND11_MODULE(_roce_receiver, m)
     // Bind RoceReceiverMetadata class
     py::class_<RoceReceiverMetadata>(m, "RoceReceiverMetadata")
         .def(py::init<>())
-        .def_readwrite("rx_write_requests", &RoceReceiverMetadata::rx_write_requests)
         .def_readwrite("received_frame_number", &RoceReceiverMetadata::received_frame_number)
         .def_readwrite("imm_data", &RoceReceiverMetadata::imm_data)
         .def_readwrite("received_s", &RoceReceiverMetadata::received_s)

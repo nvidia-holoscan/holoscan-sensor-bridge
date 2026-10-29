@@ -17,7 +17,6 @@
 
 #include "ar0234.hpp"
 
-#include <cassert>
 #include <chrono>
 #include <stdexcept>
 #include <thread>
@@ -157,7 +156,11 @@ void Ar0234::configure_converter(std::shared_ptr<hololink::csi::CsiConverter> co
     }
     HSB_LOG_DEBUG("configure_converter:width={},height={},bpp={}", width_, height_,
         static_cast<int>(pixel_format_));
-    assert(pixel_format_ == hololink::csi::PixelFormat::RAW_10);
+    if (pixel_format_ != hololink::csi::PixelFormat::RAW_10) {
+        throw std::runtime_error(fmt::format(
+            "Ar0234::configure_converter: unsupported pixel format {}; only RAW_10 is supported.",
+            static_cast<int>(pixel_format_)));
+    }
 
     uint32_t start_byte = converter->receiver_start_byte();
     uint32_t transmitted_line_bytes = converter->transmitted_line_bytes(pixel_format_, width_);

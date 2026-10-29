@@ -90,7 +90,7 @@ class HSBLiteFlasherBase(ABC):
 class HSBLiteFlasherUDP(HSBLiteFlasherBase):
     """Raw UDP"""
 
-    MIN_VERSION = 0x2407
+    MIN_VERSION = 0x2402
 
     def flash(self, clnx_path: str, cpnx_path: str) -> bool:
         return _flash_strategies.hsb_lite_flash_2407(

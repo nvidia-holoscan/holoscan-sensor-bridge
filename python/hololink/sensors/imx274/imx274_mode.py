@@ -154,9 +154,9 @@ imx274_mode_3840X2160_60fps = [
     (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
 ]
 
-# Mode : 3840X2160 12 bits 60fps
+# Mode : 3840X2160 12 bits 30fps
 # value pairs use hex number system
-imx274_mode_3840X2160_60fps_12bits = [
+imx274_mode_3840X2160_30fps_12bits = [
     (IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS),
     (0x3000, 0x12),
     (0x3120, 0xF0),
@@ -342,7 +342,7 @@ imx274_mode_1920x1080_60fps = [
 class Imx274_Mode(Enum):
     IMX274_MODE_3840X2160_60FPS = 0
     IMX274_MODE_1920X1080_60FPS = 1
-    IMX274_MODE_3840X2160_60FPS_12BITS = 2
+    IMX274_MODE_3840X2160_30FPS_12BITS = 2
     Unknown = 3
 
 
@@ -360,6 +360,6 @@ imx_frame_format.insert(
     frame_format(1920, 1080, 60, hololink.sensors.csi.PixelFormat.RAW_10),
 )
 imx_frame_format.insert(
-    Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value,
-    frame_format(3840, 2160, 60, hololink.sensors.csi.PixelFormat.RAW_12),
+    Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS.value,
+    frame_format(3840, 2160, 30, hololink.sensors.csi.PixelFormat.RAW_12),
 )

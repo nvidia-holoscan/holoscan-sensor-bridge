@@ -55,7 +55,7 @@ Set `FERN_TOKEN` in GitLab (**Settings → CI/CD → Variables**, masked) and in
 Install the pinned CLI version (matches `fern/fern.config.json`):
 
 ```bash
-npm install -g fern-api@5.74.1
+npm install -g fern-api@5.168.0
 ```
 
 Run Fern commands from **`docs/user_guide/fern`** (where `fern.config.json` lives):
@@ -70,30 +70,35 @@ Or use the build script from the repo root (Docker or `--no-docker`).
 
 ## C++ API reference
 
-Fern generates the C++ API reference only from `src/hololink/emulation/`. Generate it
-explicitly with:
+Fern generates the C++ API reference from the headers in the current checkout.
+Generate it explicitly with:
 
 ```bash
 docs/make_docs.sh --with-library-mdx
 ```
 
-This requires Fern authentication. Builds with an explicit `FERN_TOKEN` generate it
-automatically; unauthenticated local checks use a placeholder page instead. Pass
-`--skip-library-mdx` to suppress automatic generation.
+Fern CLI 5.168.0 parses library sources locally via Docker by default; the retained
+`--local` flag is also accepted. Local generation requires a running Docker-compatible
+runtime because Fern starts its C++ parser in a sibling container. It requires no Fern
+login or token. The docs container forwards the Docker socket and shares the checkout
+and parser temporary files at the same paths used by the host daemon.
+
+Local builds and previews reuse existing generated API pages, or a placeholder page
+when API pages are absent. `FERN_TOKEN` and cached login credentials do not select API
+generation. Pass `--with-library-mdx` to regenerate the reference; `--skip-library-mdx`
+overrides that flag and reuses existing pages or placeholders.
+
+CI preview jobs explicitly pass `--with-library-mdx` to publish a complete API reference.
+Remote previews and production publishing still require Fern authentication.
+Both publication modes require generated API pages. Include `--with-library-mdx` to
+generate them, or reuse a prepared generated tree with `--skip-library-mdx`.
 
 ## Publish preview
 
-Remote preview (requires login):
+Publish a remote preview with a fresh API reference from the repo root (requires login):
 
 ```bash
-cd docs/user_guide/fern
-fern generate --docs --preview
-```
-
-Or from the repo root:
-
-```bash
-sh docs/make_docs.sh --publish-preview --preview-id <branch-name> --force
+sh docs/make_docs.sh --with-library-mdx --publish-preview --preview-id <branch-name> --force
 ```
 
 ## Publish production
@@ -101,7 +106,7 @@ sh docs/make_docs.sh --publish-preview --preview-id <branch-name> --force
 Publish to the public site (`docs.nvidia.com/holoscan/sensor-bridge`):
 
 ```bash
-sh docs/make_docs.sh --publish
+sh docs/make_docs.sh --with-library-mdx --publish
 ```
 
 This runs the docs pipeline, then `fern generate --docs`. Fern prompts for confirmation

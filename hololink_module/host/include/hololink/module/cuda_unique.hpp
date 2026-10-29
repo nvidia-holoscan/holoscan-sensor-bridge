@@ -14,6 +14,8 @@
 
 #include "hololink/module/logging.hpp"
 
+/// @cond INCLUDE_INTERNAL_DOCUMENTATION
+
 /* Adapter-owned CUDA RAII helpers and an error-check macro. The host
  * framework deliberately does not depend on src/hololink/common, so the
  * pieces a public module header needs (here, the unique_ptr aliases that
@@ -89,5 +91,7 @@ inline void cuda_check(CUresult result, const char* file, int line)
 
 #define HOLOLINK_MODULE_CUDA_CHECK(FUNC) \
     ::hololink::module::cuda_check((FUNC), HOLOLINK_MODULE_FILE, __LINE__)
+
+/// @endcond // INCLUDE_INTERNAL_DOCUMENTATION
 
 #endif // HOLOLINK_MODULE_CUDA_UNIQUE_HPP

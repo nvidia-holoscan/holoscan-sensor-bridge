@@ -30,6 +30,7 @@
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/operators/roce_receiver_op.hpp"
 
 #include "hololink/module/sensors/vb1940/vb1940_cam.hpp"
@@ -137,7 +138,7 @@ int main(int argc, char** argv)
     std::string hololink_ip = default_hololink_ip;
     std::string module_dir;
     std::chrono::seconds discovery_timeout(30);
-    holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
+    holoscan::LogLevel log_level = hololink::module::operators::default_log_level();
 
     const struct option long_options[] = {
         { "help", no_argument, nullptr, 'h' },
@@ -208,14 +209,14 @@ int main(int argc, char** argv)
                       << "  --headless                 Run holoviz without a display\n"
                       << "  --fullscreen               Run holoviz fullscreen\n"
                       << "  --discovery-timeout <s>    Seconds to wait for the bootp announcement (default 30)\n"
-                      << "  --log-level <level>        Holoscan log level\n";
+                      << "  --log-level <level>        Holoscan log level (default $HOLOLINK_LOG_LEVEL, else INFO)\n";
             return EXIT_SUCCESS;
         } else {
             throw std::runtime_error("Unhandled option");
         }
     }
 
-    holoscan::set_log_level(log_level);
+    hololink::module::operators::set_log_level(log_level);
     std::cout << "Initializing." << std::endl;
 
     HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));

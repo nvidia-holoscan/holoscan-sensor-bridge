@@ -12,33 +12,54 @@
 
 namespace hololink::module {
 
-/* Abstract base for any service-locator entry point. Concrete
- * subclasses provide their own get_service strategy:
+/**
+ * @brief Module encapsulates a set of services, normally
+ *      associated with a specific HSB implementation.
  *
- *   - LoadedModule wraps a (get_service, release_service) callback
- *     pair coming from a peer binary.
- *   - Publisher::SelfModule (private nested) looks services up
- *     directly in the local Publisher's registry, used by in-binary
- *     code that wants the same typed T::get_service(module, ...) path
- *     consumer code uses.
+ * The group of services for a specific Module are normally
+ * implemented in a single shared object file, but an application
+ * also provides a Module instance that encapsulates services
+ * that those loaded modules will use (e.g. Logging).
  *
- * There are many Module instances per process — one per peer
- * relationship (LoadedModule), plus one self-Module per binary
- * (Publisher::SelfModule). Consumers always hold a shared_ptr<Module>
- * regardless of which subclass is underneath. */
+ * Applications hold a `std::shared_ptr<Module>` and pass it to the
+ * type-safe `get_service` function of the interface they want (e.g.
+ * `Service<T>::get_service`), which calls Module::get_service
+ * and returns a correctly typed pointer.
+ *
+ * A service returned from a Module remains valid for as long as the
+ * caller holds it, independent of how long the caller keeps the Module
+ * itself.
+ */
 class Module : public std::enable_shared_from_this<Module> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     virtual ~Module() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Look up a service. On a registry hit the cached instance is
-     * returned; on a miss the module attempts construction via a
-     * type_id-keyed default constructor registered with the
-     * Publisher (used by ConfigurableService<T>::get_service to
-     * materialize impls lazily). Throws when no entry results
-     * unless allow_null=true. The returned shared_ptr's deleter
-     * keeps this Module alive (and through it, whatever resources
-     * back the service) for as long as the caller holds it.
-     * Higher-level callers go through Service<T>::get_service. */
+    /**
+     * @brief Look up a service by its untyped identifiers.
+     *
+     * This is the untyped lookup that the type-safe `get_service`
+     * functions are built on; applications always call those
+     * instead. If a service matching both identifiers is available, it
+     * is returned; repeated calls with the same identifiers may return
+     * the same instance. A service that has not been used before may be
+     * created by the module as part of the lookup.
+     *
+     * @param instance_id Names the specific service instance; its format
+     *      is defined by the service type.
+     * @param type_id Names the type of the service interface,
+     *      corresponding with the 'type_id' member of a Service class
+     *      (e.g. `"mipi_dphy.v1"`).
+     * @param allow_null If `false` (the default), a service that cannot
+     *      be found causes a std::runtime_error to be thrown. If `true`,
+     *      an empty pointer is returned instead.
+     * @returns The service, as a type-erased pointer to the object
+     *      registered under `type_id`, or nullptr when it is
+     *      not found and `allow_null` is `true`.
+     * @throws std::runtime_error if `instance_id` or `type_id` is null,
+     *      or if the service is not found and `allow_null` is `false`.
+     */
     virtual std::shared_ptr<const void> get_service(
         const char* instance_id,
         const char* type_id,
@@ -46,23 +67,53 @@ public:
         = 0;
 };
 
-/* Concrete Module that wraps a (get_service, release_service)
- * callback pair from a peer binary. Optionally owns a "lifetime
- * keeper" (e.g. an RAII dlopen handle for the host-loaded-.so case)
- * — when the last shared_ptr<LoadedModule> drops, the keeper is
- * destroyed too. The keeper is opaque so this class has no dlfcn
- * dependency. */
+/// @cond INCLUDE_INTERNAL_DOCUMENTATION
+/**
+ * @brief Implementation of Module where get_service delegates
+ *      to the set of callbacks published by a loaded .so module.
+ */
 class LoadedModule : public Module {
 public:
-    /* Wrap a peer's callback pair. Both callbacks must be non-NULL.
-     * The optional keeper is held until this Module is destroyed and
-     * is provided so the host's .so loader can attach a dlopen-handle
-     * RAII without LoadedModule having to know about dlopen. */
+    /**
+     * @brief Wrap a peer's callback pair in a new LoadedModule.
+     *
+     * @param get_service Peer callback used to look up services. Must be
+     *        non-NULL.
+     * @param release_service Peer callback invoked with each handle
+     *        previously returned by @p get_service once it is no longer
+     *        referenced. Must be non-NULL.
+     * @param keeper Optional opaque object whose lifetime is tied to this
+     *        module; it is destroyed after the last reference to the
+     *        module is released. Typically an RAII dlopen handle supplied
+     *        by the host's .so loader, so this class needs no dlfcn
+     *        dependency. May be null.
+     * @returns The new module.
+     * @throws std::runtime_error if @p get_service or @p release_service
+     *         is NULL.
+     */
     static std::shared_ptr<LoadedModule> create(
         hololink_module_get_service get_service,
         hololink_module_release_service release_service,
         std::shared_ptr<void> keeper = nullptr);
 
+    /**
+     * @brief Look up a service by delegating to the peer's get_service
+     * callback.
+     *
+     * The returned shared_ptr's deleter calls the peer's release_service
+     * callback with the handle and releases a strong reference to this
+     * module.
+     *
+     * @param instance_id Identifies the service instance. Must be
+     *        non-NULL.
+     * @param type_id Identifies the service type. Must be non-NULL.
+     * @param allow_null If true, a lookup that finds no matching service
+     *        returns an empty shared_ptr; if false, it throws.
+     * @returns The service handle, or an empty shared_ptr when no service
+     *          matches and @p allow_null is true.
+     * @throws std::runtime_error if @p instance_id or @p type_id is NULL,
+     *         or if no service matches and @p allow_null is false.
+     */
     std::shared_ptr<const void> get_service(
         const char* instance_id,
         const char* type_id,
@@ -77,6 +128,7 @@ private:
     hololink_module_release_service release_service_;
     std::shared_ptr<void> keeper_;
 };
+/** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
 } // namespace hololink::module
 

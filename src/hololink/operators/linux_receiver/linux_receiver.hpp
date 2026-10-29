@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -80,9 +80,9 @@ public:
 
     /**
      * Block until the next complete frame arrives.
-     * @returns false if timeout_ms elapses before
+     * @return false if timeout_ms elapses before
      * the complete frame is observed.
-     * @param metadata is updated with statistics
+     * @param metadata Output metadata updated with statistics
      * collected with the video frame.
      */
     bool get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata, CUstream cuda_stream);
@@ -117,7 +117,7 @@ protected:
     const int socket_;
     const uint64_t received_address_offset_;
     const unsigned queue_size_;
-    bool volatile exit_;
+    std::atomic<bool> exit_;
     pthread_mutex_t ready_mutex_;
     pthread_cond_t ready_condition_;
     std::atomic<bool> consumer_ready_;

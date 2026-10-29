@@ -32,6 +32,7 @@
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/operators/linux_receiver_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
 #include "max96716a.hpp"
 #include <hololink/common/cuda_helper.hpp>
@@ -279,7 +280,7 @@ int main(int argc, char** argv)
     int64_t frame_limit = 0;
     std::string configuration;
     std::string hololink_ip = hololink::env_hololink_ip(0, "192.168.0.2");
-    holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
+    holoscan::LogLevel log_level = hololink::module::operators::default_log_level();
     int32_t window_width = 1920;
     int32_t window_height = 1080;
     std::string title = "MAX96716A VPG";
@@ -371,7 +372,7 @@ int main(int argc, char** argv)
         }
     }
 
-    holoscan::set_log_level(log_level);
+    hololink::module::operators::set_log_level(log_level);
 
     // CUDA section
     CudaCheck(cuInit(0));

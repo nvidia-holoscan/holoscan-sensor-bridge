@@ -210,7 +210,8 @@ def main():
         type=int,
         choices=mode_choices,
         default=mode_choices[1],
-        help=" ".join([f"{mode.value}:{mode.name}" for mode in modes]),
+        help=" ".join([f"{mode.value}:{mode.name}" for mode in modes])
+        + "; the 3840x2160 modes (0 and 2) require --sensor 0 or 1",
     )
     parser.add_argument(
         "--frame-limit",
@@ -253,7 +254,7 @@ def main():
         type=int,
         choices=[-1, 0, 1],
         default=-1,
-        help="Sensor to use (-1 for stereo)",
+        help="Sensor to use (-1 for stereo, the default)",
     )
     parser.add_argument(
         "--skip-reset",
@@ -273,6 +274,13 @@ def main():
     args = parser.parse_args()
 
     hololink_module.logging_level(args.log_level)
+
+    # Two 4k streams exceed the network bandwidth and take the interface down.
+    if args.sensor == -1 and args.camera_mode in (0, 2):
+        parser.error(
+            "--camera-mode 0 and 2 (3840x2160) require a single camera; "
+            "select one with --sensor 0 or --sensor 1"
+        )
 
     # Get a handle to the Hololink device
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)

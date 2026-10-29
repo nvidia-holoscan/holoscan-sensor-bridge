@@ -398,9 +398,15 @@ class MockServer:
                 if (self._i2c_trigger is not None) and (self._i2c_trigger < trigger):
                     trigger = self._i2c_trigger
                 now = time.monotonic()
-                timeout = None
-                if trigger > now:
-                    timeout = trigger - now
+                # Never pass None here: to select() that means "block until a
+                # control message arrives", not "don't wait".  Once the host is
+                # streaming, the only control traffic is the watchdog tap the
+                # host sends after it processes a frame -- so blocking here
+                # while a frame is already due stops frames forever, the host
+                # never taps again, and both sides deadlock in silence.  An
+                # overdue trigger has to poll (0) and let the loop below emit
+                # the frame and re-arm frame_trigger.
+                timeout = max(0.0, trigger - now)
                 cr = [control_socket, self._control_r]
                 cw = []
                 cx = []
@@ -846,8 +852,15 @@ class TestServer:
         return r
 
     def channel_metadata(self):
+        # The mock server answers on 127.0.0.1 (or whatever --mock-camera
+        # named), so there is no enumerated NIC to name. An empty "interface"
+        # resolves to ifindex 0, which leaves egress selection to the routing
+        # table. from_enumeration_metadata treats a missing key the same way,
+        # so this is optional; it is spelled out to mirror the metadata that
+        # real enumeration records.
         metadata = {
             "peer_ip": self._server_address,
+            "interface": "",
             "control_port": self._control_udp_port,
             "hsb_ip_version": self._server._hsb_ip_version,
             "fpga_uuid": "a0578d60-9353-41ec-9278-d56544eebbe3",

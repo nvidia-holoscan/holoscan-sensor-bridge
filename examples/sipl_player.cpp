@@ -47,17 +47,22 @@ public:
     {
         auto entity = op_input.receive<holoscan::gxf::Entity>("input");
         if (entity) {
-            // Print out the HSB metadata.
+            // Print out the HSB metadata. The keys are absent for a frame whose HSB record
+            // could not be matched (after a capture drop) or for a non-HSB camera.
             const auto& camera = camera_info_;
-            HOLOSCAN_LOG_INFO("[{}] frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}, bytes={}",
-                camera.output_name,
-                metadata()->get<int64_t>(camera.output_name + "_frame_number"),
-                metadata()->get<int64_t>(camera.output_name + "_timestamp_s"),
-                metadata()->get<int64_t>(camera.output_name + "_timestamp_ns"),
-                metadata()->get<int64_t>(camera.output_name + "_metadata_s"),
-                metadata()->get<int64_t>(camera.output_name + "_metadata_ns"),
-                metadata()->get<int64_t>(camera.output_name + "_crc"),
-                metadata()->get<int64_t>(camera.output_name + "_bytes_written"));
+            if (metadata()->has_key(camera.output_name + "_frame_number")) {
+                HOLOSCAN_LOG_INFO("[{}] frame={}, ts={}.{:09}, meta_ts={}.{:09}, crc=0x{:08x}, bytes={}",
+                    camera.output_name,
+                    metadata()->get<int64_t>(camera.output_name + "_frame_number"),
+                    metadata()->get<int64_t>(camera.output_name + "_timestamp_s"),
+                    metadata()->get<int64_t>(camera.output_name + "_timestamp_ns"),
+                    metadata()->get<int64_t>(camera.output_name + "_metadata_s"),
+                    metadata()->get<int64_t>(camera.output_name + "_metadata_ns"),
+                    metadata()->get<int64_t>(camera.output_name + "_crc"),
+                    metadata()->get<int64_t>(camera.output_name + "_bytes_written"));
+            } else {
+                HOLOSCAN_LOG_INFO("[{}] no HSB metadata for this frame", camera.output_name);
+            }
 
             // The SIPL image metadata is written to "{camera_name}_metadata"
             // Print out the start/end timestamps as an example.

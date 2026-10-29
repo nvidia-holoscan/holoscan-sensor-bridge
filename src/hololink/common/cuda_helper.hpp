@@ -80,9 +80,9 @@ public:
     /**
      * Construct a new CudaFunctionLauncher object
      *
-     * @param source pointer to source code
-     * @param functions list of functions defined by the source code.
-     * @param options options to pass to the compiler
+     * @param source Pointer to source code.
+     * @param functions List of functions defined by the source code.
+     * @param options Options to pass to the compiler.
      */
     CudaFunctionLauncher(const char* source, const std::vector<std::string>& functions, const std::vector<std::string>& options = std::vector<std::string>());
     ~CudaFunctionLauncher();
@@ -90,9 +90,9 @@ public:
     /**
      * Launch a kernel on a grid.
      *
-     * @param grid [in] grid size
-     * @param stream [in] stream
-     * @param args [in] kernel arguments (optional)
+     * @param grid [in] Grid size.
+     * @param stream [in] Stream.
+     * @param args [in] Kernel arguments (optional).
      */
     template <class... TYPES>
     void launch(const std::string& name, const dim3& grid, CUstream stream, TYPES... args) const
@@ -104,10 +104,10 @@ public:
     /**
      * Launch a kernel with block size on a grid.
      *
-     * @param grid [in] grid size
-     * @param block [in] block size
-     * @param stream [in] stream
-     * @param args [in] kernel arguments (optional)
+     * @param grid [in] Grid size.
+     * @param block [in] Block size.
+     * @param stream [in] Stream.
+     * @param args [in] Kernel arguments (optional).
      */
     template <class... TYPES>
     void launch(const std::string& name, const dim3& grid, const dim3& block, CUstream stream, TYPES... args) const
@@ -120,10 +120,10 @@ private:
     /**
      * Launch a kernel with block size on a grid.
      *
-     * @param grid [in] grid size
-     * @param block [in] block size (optional)
-     * @param stream [in] stream (optional)
-     * @param args [in] kernel arguments (optional)
+     * @param grid [in] Grid size.
+     * @param block [in] Block size (optional).
+     * @param stream [in] Stream (optional).
+     * @param args [in] Kernel arguments (optional).
      */
     void launch_internal(const std::string& name, const dim3& grid, const dim3* block, CUstream stream, void** args) const;
 
@@ -154,9 +154,9 @@ template <typename T, CUresult func(T)>
 struct Deleter {
     typedef T pointer;
     /**
-     * @brief Operator to call the cleanup function
+     * @brief Operator to call the cleanup function.
      *
-     * @param value The CUDA object to clean up
+     * @param value The CUDA object to clean up.
      */
     void operator()(T value) const { func(value); }
 };
@@ -171,9 +171,9 @@ using UniqueCUstream = std::unique_ptr<CUstream, Deleter<CUstream, &cuStreamDest
 class CudaContextScopedPush {
 public:
     /**
-     * @brief Construct a new scoped cuda context object
+     * @brief Construct a new scoped cuda context object.
      *
-     * @param cuda_context context to push
+     * @param cuda_context Context to push.
      */
     explicit CudaContextScopedPush(CUcontext cuda_context);
     CudaContextScopedPush() = delete;

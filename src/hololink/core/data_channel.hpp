@@ -78,6 +78,7 @@ constexpr uint32_t DP_HOST_MAC_LOW = 0x20;
 constexpr uint32_t DP_HOST_MAC_HIGH = 0x24;
 constexpr uint32_t DP_HOST_IP = 0x28;
 constexpr uint32_t DP_HOST_UDP_PORT = 0x2C;
+constexpr uint32_t DP_VLAN = 0x34; // TSN VLAN tag register
 
 class Enumerator;
 class Programmer;
@@ -89,7 +90,7 @@ class DataChannel {
 
 public:
     /**
-     * @brief Construct a new DataChannel object
+     * @brief Construct a new DataChannel object.
      *
      * @param metadata
      */
@@ -103,8 +104,8 @@ public:
      * @brief
      *
      * @param metadata
-     * @return true
-     * @return false
+     * @return true.
+     * @return false.
      */
     static bool enumerated(const Metadata& metadata);
 
@@ -130,14 +131,14 @@ public:
     /**
      * @brief
      *
-     * @return std::shared_ptr<Hololink>
+     * @return std::shared_ptr<Hololink>.
      */
     std::shared_ptr<Hololink> hololink() const;
 
     /**
      * @brief
      *
-     * @return std::string
+     * @return std::string.
      */
     const std::string& peer_ip() const;
 
@@ -196,9 +197,9 @@ public:
     /**
      * Stamp 802.1Q VLAN parameters into the metadata so they are applied
      * automatically during configure_roce() / configure_coe().
-     * @param vlan_id    12-bit VLAN ID [1, 4094]
-     * @param sensor_pcp 3-bit PCP for the sensor data virtual port
-     * @param evt_pcp    3-bit PCP for the EVT channel
+     * @param vlan_id    12-bit VLAN ID [1, 4094].
+     * @param sensor_pcp 3-bit PCP for the sensor data virtual port.
+     * @param evt_pcp    3-bit PCP for the EVT channel.
      */
     static void use_vlan(Metadata& metadata, uint16_t vlan_id,
         uint8_t sensor_pcp, uint8_t evt_pcp);

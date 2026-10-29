@@ -40,6 +40,7 @@
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/operators/packed_format_converter_op.hpp"
 #include "hololink/module/tools.hpp"
 
@@ -275,8 +276,9 @@ static void print_usage(const char* argv0, const std::string& default_hololink_i
               << default_hololink_ip << ")\n"
               << "  --module-dir <path>        Directory containing hololink_<UUID>.so\n"
               << "  --camera-mode <int>        IMX274 mode (1=1920x1080 60fps default, "
-                 "0=3840x2160 60fps RAW10, 2=3840x2160 60fps RAW12)\n"
-              << "  --sensor <int>             Sensor to use (0 or 1, or -1 for stereo)\n"
+                 "0=3840x2160 60fps RAW10, 2=3840x2160 30fps RAW12; "
+                 "4k modes require --sensor 0 or 1)\n"
+              << "  --sensor <int>             Sensor to use (0 or 1, or -1 for stereo, the default)\n"
               << "  --pattern <int>            Enable the IMX274 test pattern with this value\n"
               << "  --timeout <ms>             CoE capture timeout in milliseconds "
                  "(default 1500)\n"
@@ -286,7 +288,7 @@ static void print_usage(const char* argv0, const std::string& default_hololink_i
               << "  --no-packetizer            Capture unpacketized CSI-2 data instead of "
                  "HSB-packed data\n"
               << "  --discovery-timeout <s>    Seconds to wait for bootp (default 30)\n"
-              << "  --log-level <level>        Holoscan log level\n";
+              << "  --log-level <level>        Holoscan log level (default $HOLOLINK_LOG_LEVEL, else INFO)\n";
 }
 
 int main(int argc, char** argv)
@@ -304,7 +306,7 @@ int main(int argc, char** argv)
     std::string hololink_ip = default_hololink_ip;
     std::string module_dir;
     std::chrono::seconds discovery_timeout(30);
-    holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
+    holoscan::LogLevel log_level = hololink::module::operators::default_log_level();
 
     const struct option long_options[] = {
         { "help", no_argument, nullptr, 'h' },
@@ -389,6 +391,14 @@ int main(int argc, char** argv)
                 throw std::runtime_error("Unhandled option");
             }
         }
+        // Two 4k streams exceed the network bandwidth and take the interface down.
+        using hololink::module::sensors::imx274::Imx274_Mode;
+        if (((camera_mode == Imx274_Mode::IMX274_MODE_3840X2160_60FPS)
+                || (camera_mode == Imx274_Mode::IMX274_MODE_3840X2160_30FPS_12BITS))
+            && (sensor == -1)) {
+            throw std::runtime_error("--camera-mode 0 and 2 (3840x2160) require a single "
+                                     "camera; select one with --sensor 0 or --sensor 1");
+        }
     } catch (const std::invalid_argument& e) {
         std::cerr << "Error: " << e.what() << "\n";
         print_usage(argv[0], default_hololink_ip);
@@ -403,7 +413,7 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    holoscan::set_log_level(log_level);
+    hololink::module::operators::set_log_level(log_level);
 
     std::shared_ptr<hololink::module::HololinkInterfaceV1> hololink;
     bool hololink_started = false;

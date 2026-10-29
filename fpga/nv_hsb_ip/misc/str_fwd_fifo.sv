@@ -52,7 +52,7 @@ assign empty      = (rd_ptr == wr_ptr_cmt);
 
 assign rd_rdy   = !empty;
 
-always@(posedge clk or posedge rst) begin
+always@(posedge clk) begin
   if (rst) begin
     afull <= '1;
   end
@@ -61,7 +61,7 @@ always@(posedge clk or posedge rst) begin
   end
 end
 
-always@(posedge clk or posedge rst) begin
+always@(posedge clk) begin
   if (rst) begin
     wr_ptr      <=  '0;
     wr_ptr_cmt  <=  '0;
@@ -83,7 +83,7 @@ always@(posedge clk or posedge rst) begin
   end
 end
 
-always@(posedge clk or posedge rst) begin
+always@(posedge clk) begin
   if (rst) begin
     rd_ptr      <=  '0;
   end

@@ -214,6 +214,15 @@ if(HOLOLINK_BUILD_SOCKET)
 endif() # HOLOLINK_BUILD_SOCKET
 
 if(HOLOLINK_BUILD_ROCE)
+  add_executable(cpu_roce_loopback cpu_roce_loopback.cpp)
+  target_link_libraries(cpu_roce_loopback
+    PRIVATE
+      hololink
+      hololink::operators::cpu_roce_transceiver
+      holoscan::core
+  )
+  list(APPEND EXAMPLE_INSTALL_TARGETS cpu_roce_loopback)
+
   add_executable(vb1940_player
     vb1940_player.cpp
     )
@@ -385,6 +394,26 @@ if(HOLOLINK_MODULE_BUILD_OPERATORS AND NOT HOLOLINK_BUILD_ONLY_NATIVE)
       holoscan::ops::holoviz
     )
   list(APPEND EXAMPLE_INSTALL_TARGETS module_linux_vb1940_player)
+
+  if(HOLOLINK_BUILD_PCIE)
+  # Module-path PCIe example. Drives the hsb_pcie module in-process
+  # through HololinkInterfaceV1 (no daemon, no legacy `hololink` core) and
+  # the module-native PcieReceiver / PcieReceiverOp. It needs a bound
+  # endpoint and a camera, so it is not registered as a ctest.
+  add_executable(module_pcie_imx258_player module_pcie_imx258_player.cpp)
+  target_link_libraries(module_pcie_imx258_player
+    PRIVATE
+      hololink::module
+      hololink::operators
+      hololink::hsb_pcie::headers
+      hololink::module::sensors::imx258
+      holoscan::core
+      holoscan::ops::bayer_demosaic
+      holoscan::ops::holoviz
+      CUDA::cuda_driver
+    )
+  list(APPEND EXAMPLE_INSTALL_TARGETS module_pcie_imx258_player)
+  endif() # HOLOLINK_BUILD_PCIE
 endif() # HOLOLINK_MODULE_BUILD_OPERATORS
 
 if(HOLOLINK_BUILD_FUSA)

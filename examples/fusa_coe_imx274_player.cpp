@@ -269,7 +269,7 @@ int main(int argc, char** argv)
     options_description.add_options()
         ("camera-mode", value<int>()->default_value(
             static_cast<int>(hololink::sensors::imx274_mode::IMX274_MODE_1920X1080_60FPS)),
-            "IMX274 mode (default: 0)")
+            "IMX274 mode (default: 1; 0 and 2 are 3840x2160 and require --sensor 0 or 1)")
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
@@ -284,6 +284,17 @@ int main(int argc, char** argv)
     auto variables_map = Parser().parse_command_line(argc, argv, options_description);
     auto hololink = variables_map["hololink"].as<std::string>();
     auto sensor = variables_map["sensor"].as<int>();
+
+    // Two 4k streams exceed the network bandwidth and take the interface down.
+    const int camera_mode_value = variables_map["camera-mode"].as<int>();
+    if (sensor == -1
+        && (camera_mode_value == hololink::sensors::imx274_mode::IMX274_MODE_3840X2160_60FPS
+            || camera_mode_value == hololink::sensors::imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS)) {
+        HOLOSCAN_LOG_ERROR("--camera-mode {} (3840x2160) requires a single camera; "
+                           "select one with --sensor 0 or --sensor 1",
+            camera_mode_value);
+        return -1;
+    }
 
     try {
         // Get a handle to the Hololink device.

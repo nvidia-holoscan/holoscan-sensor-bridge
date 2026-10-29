@@ -29,7 +29,8 @@ PYBIND11_MODULE(_hololink_module_hsb_lite, m)
     py::module_::import("hololink_module._hololink_py_module");
 
     py::class_<ad::hsb_lite::HsbLiteInterfaceV1,
-        std::shared_ptr<ad::hsb_lite::HsbLiteInterfaceV1>>(m, "HsbLiteInterfaceV1")
+        std::shared_ptr<ad::hsb_lite::HsbLiteInterfaceV1>>(
+        m, "HsbLiteInterfaceV1")
         .def_static(
             "get_service",
             [](std::shared_ptr<ad::Module> module, const std::string& instance_id,
@@ -87,4 +88,7 @@ PYBIND11_MODULE(_hololink_module_hsb_lite, m)
             "or reconfiguring HSB; the board reboots and device I/O fails until "
             "it re-enumerates. Recovery is left to the pipeline (unlike the "
             "blocking reset()); models an abrupt loss for reconnection tests.");
+    py::object cls = m.attr("HsbLiteInterfaceV1");
+    cls.attr("type_id") = ad::hsb_lite::HsbLiteInterfaceV1::type_id;
+    cls.attr("release_version") = ad::hsb_lite::HsbLiteInterfaceV1::release_version;
 }

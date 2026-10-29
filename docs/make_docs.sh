@@ -29,15 +29,16 @@ usage() {
     cat <<EOF
 Usage: docs/make_docs.sh [options]
 
-Build and validate Fern docs (default). Preview only with --preview.
+Build and validate Fern docs, reusing API MDX or placeholders by default.
+Preview only with --preview.
 
 Options:
   --preview, --dev       Run fern docs dev (local preview; uses the docs container by default)
   --login                Log in to Fern (device-code in Docker; browser on host)
   --no-docker            Run on the host instead of the docs container
   --docker               Use the docs container (default)
-  --with-library-mdx     Generate the Emulation C++ API MDX (requires Fern auth)
-  --skip-library-mdx     Skip C++ API generation
+  --with-library-mdx     Generate C++ API MDX from this checkout (Docker; no Fern auth)
+  --skip-library-mdx     Reuse API MDX or placeholders; overrides --with-library-mdx
   --skip-fern-check      Pipeline only; skip fern check
   --publish              Publish docs to production (docs.nvidia.com)
   --publish-preview      Publish a remote Fern docs preview (CI)
@@ -51,9 +52,10 @@ Options:
 Environment:
   DOCKER_OPTS            Extra flags for docker run (optional; default: empty).
   FERN_TOKEN             Non-expiring Fern org API token from 'fern token', for
-                         C++ API generation and publishing (optional). The 'fern login' credential in
-                         ~/.fern is shared into the container automatically and
-                         is NOT used as FERN_TOKEN.
+                         publishing. API generation is selected only by
+                         --with-library-mdx and needs no Fern login or token.
+                         The 'fern login' credential in ~/.fern is shared into the
+                         container automatically and is NOT used as FERN_TOKEN.
 EOF
 }
 

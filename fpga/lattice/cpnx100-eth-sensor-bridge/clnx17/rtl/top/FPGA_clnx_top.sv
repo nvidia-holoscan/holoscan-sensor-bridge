@@ -64,6 +64,7 @@ module FPGA_clnx_top #(
     .lock_o   ( locked_lvds_pll )
   );
 
+  logic s_rst;
   logic s_rst_n;
   logic a_rst_n;
 
@@ -74,7 +75,7 @@ module FPGA_clnx_top #(
     .i_locked  ( locked_lvds_pll ),
     .o_arst    (                 ),
     .o_arst_n  ( a_rst_n         ),
-    .o_srst    (                 ),
+    .o_srst    ( s_rst           ),
     .o_srst_n  ( s_rst_n         )
   );
 
@@ -148,7 +149,7 @@ module FPGA_clnx_top #(
     .RESET_VALUE ( 1'b1                 )
   ) spi_sync (
     .clk         ( aclk_60               ),
-    .rst_n       ( s_rst_n               ),
+    .rst         ( s_rst                 ),
     .sync_in     ( {CTRL_SPI_SCSN     ,CTRL_SPI_SSCK     ,CTRL_SPI_MOSI     ,FLASH_SPI_MOSI[1]}     ),
     .sync_out    ( {CTRL_SPI_SCSN_sync,CTRL_SPI_SSCK_sync,CTRL_SPI_MOSI_sync,FLASH_SPI_MOSI_1_sync} )
   );
@@ -162,7 +163,7 @@ module FPGA_clnx_top #(
     .FPGA_VERSION(FPGA_VERSION)
   ) spi_peri_ctrl  (
     .clk                ( aclk_60               ),
-    .rst_n              ( s_rst_n               ),
+    .rst                ( s_rst                 ),
     .mipi_debug_en      ( rt_mipi_debug_en      ),
     .mipi_en            ( mipi_en               ),
     .soft_rstn          ( soft_rstn             ),

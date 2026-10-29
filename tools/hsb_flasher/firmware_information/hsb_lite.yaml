@@ -86,3 +86,14 @@ firmware_versions:
       - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2606/lattice/fpga_cpnx_v2606_GA.bit
         md5: e1facc218b298d7c19ecad99f987b72b
         size: 1965683
+
+  - version: 0x2609
+    clnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2609/lattice/fpga_clnx_v2609_GA.bit
+        md5: eaa7026d488bc7f0e7beba1ebb4556b0
+        size: 377554
+    cpnx:
+      - location: https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2609/lattice/fpga_cpnx_v2609_GA.bit
+        md5: 7f3af47442bdaf90a332fe1fc1ddceb7
+        size: 1965683
+

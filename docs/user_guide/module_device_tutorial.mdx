@@ -122,7 +122,7 @@ protected:
     void publish_channel_configuration() override
     {
         auto impl = std::make_shared<TutorialDeviceChannelConfigurationV1>();
-        ServicePublisher<HsbLiteChannelConfigurationV1>(shared_from_this())
+        ServicePublisher<HsbIpChannelConfigurationV1>(shared_from_this())
             .publish("", impl);
     }
 };
@@ -150,7 +150,7 @@ public:
                 + std::to_string(TOTAL_SENSORS - 1) + ")");
         }
         // One physical data plane (0) shared by every sensor, one SIF each.
-        hsb_lite_sensor_metadata(metadata, sensor_number,
+        hsb_ip_sensor_metadata(metadata, sensor_number,
             /*data_plane=*/0, /*sifs_per_sensor=*/1);
     }
 };
@@ -188,6 +188,7 @@ class TutorialDeviceInterfaceV1
     : public ConfigurableService<TutorialDeviceInterfaceV1> {
 public:
     static constexpr const char* type_id = "tutorial_device.v1";
+    static constexpr const char* release_version = UNRELEASED;
 
     static std::string locator_id(const EnumerationMetadata& metadata)
     {
@@ -204,6 +205,10 @@ public:
 `type_id` is the identity `get_service` uses to hand back the right type; it must be
 unique to a class. `locator_id` builds the key used to find a cached instance for a
 device — a `;`-separated `name=value` string (here just `serial=<serial_number>`).
+`release_version` records the release that froze this interface, or `UNRELEASED` while
+no release has published it; see `hololink_module/INTERFACES.md`. A new interface starts
+out `UNRELEASED` and is editable in place, so declare it that way until you ship. Only
+the interface declares it — the implementation below inherits it.
 
 Having declared the public interface `TutorialDeviceInterfaceV1` — visible to any
 application that includes this header — we now move to its implementation
@@ -249,25 +254,28 @@ private:
 };
 ```
 
-`TutorialDevicePublisher::construct_overrides` is the right place to construct instances
-of `TutorialDeviceV1`:
+`TutorialDevicePublisher::construct_board_services` is the right place to construct
+instances of `TutorialDeviceV1`. It is the tail of the `construct_service` chain, where
+a board publishes the services it *adds* — as opposed to `construct_overrides` at the
+head, which is for substituting your own implementation of a service the framework would
+otherwise build itself:
 
 ```cpp
 class TutorialDevicePublisher : public HsbLitePublisher {
 protected:
     // ...
 
-    bool construct_overrides(
+    bool construct_board_services(
         const std::string& instance_id,
         const std::string& type_id) override
     {
-        if (!Publisher::has_type_id<TutorialDeviceV1>(type_id)) {
-            return false;
+        if (Publisher::has_type_id<TutorialDeviceV1>(type_id)) {
+            auto impl = std::make_shared<TutorialDeviceV1>();
+            ServicePublisher<TutorialDeviceV1>(shared_from_this())
+                .publish(instance_id, impl);
+            return true;
         }
-        auto impl = std::make_shared<TutorialDeviceV1>();
-        ServicePublisher<TutorialDeviceV1>(shared_from_this())
-            .publish(instance_id, impl);
-        return true;
+        return HsbLitePublisher::construct_board_services(instance_id, type_id);
     }
 };
 ```
@@ -283,6 +291,9 @@ protected:
   maintains.
 - Returning `true` means the object is built and no further handlers need to be
   searched.
+- Chaining to `HsbLitePublisher::construct_board_services` matters: the publisher you
+  derive from uses this same hook for its own services, and skipping the call would drop
+  them. Derive from `HsbIpPublisher` instead and there is no base branch to chain to.
 
 If your application needs specific functions on your board — like the `set_status_led`
 method above — it must fetch a handle to `TutorialDeviceInterfaceV1`. Your application
@@ -438,35 +449,40 @@ inline void stamp_cpnx_mipi_dphy_metadata(
 Two hooks on the publisher carry this, and a board overrides whichever differ from the
 ones it inherits:
 
-- `set_mipi_dphy_metadata`: called from `update_metadata` during enumeration. Stamps the
-  design's numbers. A board that stamps nothing leaves the service unconfigured, and
-  every `program()` call reports `HOLOLINK_MODULE_NOT_FOUND`.
-- `construct_mipi_dphy`: a branch of the `construct_service` chain, called lazily on
-  first fetch. Publishes the implementation matching the register layout and the bus it
-  sits on.
+- `update_board_metadata`: the tail step of `update_metadata`, called during
+  enumeration. Stamps the design's numbers, and its return value is `update_metadata`'s
+  — return `HOLOLINK_MODULE_OK` to accept the device. A board that stamps nothing leaves
+  the service unconfigured, and every `program()` call reports
+  `HOLOLINK_MODULE_NOT_FOUND`.
+- `construct_board_services`: the tail branch of the `construct_service` chain, called
+  lazily on first fetch. Publishes the implementation matching the register layout and
+  the bus it sits on.
 
 The two must agree. Stamping one design's shape while constructing another design's
 layout leaves the service unconfigured rather than writing to the wrong registers, which
 is what the implementation's `configured()` check is for.
 
-`module_core::HsbLitePublisher` supplies defaults for the HSB-Lite FPGA it is named
-after, so a board built on the same design inherits them and its `module_entry.cpp`
-contributes only its identity. A board that inherits the publisher's machinery without
-inheriting its FPGA (i.e. the single-FPGA CertusPro-NX boards), overrides both hooks
-together:
+`module_core::HsbIpPublisher` — the base every board's publisher derives from — stamps
+and constructs no D-PHY at all, because the D-PHY belongs to an FPGA design rather than
+to the HSB IP. `module_core::HsbLitePublisher` supplies the CrossLink-NX defaults for
+the FPGA it is named after, so a board built on the same design inherits them and its
+`module_entry.cpp` contributes only its identity. A board on a different design — the
+single-FPGA CertusPro-NX ones — states both hooks together:
 
 ```cpp
-class TauroTechDa326Publisher : public HsbLitePublisher {
+class TauroTechDa326Publisher : public HsbIpPublisher {
 protected:
-    void set_mipi_dphy_metadata(EnumerationMetadata& metadata) override
+    hololink_module_status_t update_board_metadata(
+        EnumerationMetadata& metadata) override
     {
         module_core::stamp_cpnx_mipi_dphy_metadata(metadata, 150);
+        return HOLOLINK_MODULE_OK;
     }
 
-    bool construct_mipi_dphy(
+    bool construct_board_services(
         const std::string& instance_id, const std::string& type_id) override
     {
-        return construct_cpnx_mipi_dphy(instance_id, type_id);
+        return module_core::construct_cpnx_mipi_dphy(*this, instance_id, type_id);
     }
 };
 ```

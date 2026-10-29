@@ -9,3 +9,4 @@ sonar-project.properties export-ignore
 RELEASE.sh export-ignore
 PUBLISH.sh export-ignore
 greptile.json export-ignore
+/ci export-ignore

@@ -27,7 +27,9 @@
 #include "hololink/module/status.h"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
 
-#include "hsb_lite_publisher.hpp"
+#include "hsb_ip_publisher.hpp"
+#include "hsb_lite_default.hpp"
+#include "mipi_dphy/cpnx.hpp"
 
 using namespace hololink::module;
 using namespace hololink::module::module_core;
@@ -142,63 +144,65 @@ private:
 };
 
 /* TauroTech DA326 module Publisher. */
-/* TauroTech DA326 channel-configuration override.
+/* TauroTech DA326 channel configuration.
  *
  * The DA326 has two sensors on a single data plane (data_plane=0), one
- * SIF per sensor. The base HsbLiteChannelConfigurationV1 incorrectly maps
- * data_plane == sensor_number (HSB-Lite 1:1); this override keeps
- * data_plane=0 for both sensors so hif_address stays at 0x2000300. */
+ * SIF per sensor, so hif_address stays at 0x2000300 for both. */
 class TauroTechDa326ChannelConfigurationV1
-    : public hololink::module::module_core::HsbLiteChannelConfigurationV1 {
+    : public hololink::module::module_core::HsbIpChannelConfigurationV1 {
 public:
+    // The single source of truth for the valid range, shared by
+    // use_sensor's bounds check and is_sensor_valid().
+    static constexpr int64_t TOTAL_SENSORS = 2;
+
+    bool is_sensor_valid(int64_t sensor_number) const override
+    {
+        return sensor_number >= 0 && sensor_number < TOTAL_SENSORS;
+    }
+
     void use_sensor(hololink::module::EnumerationMetadata& metadata,
         int64_t sensor_number) override
     {
-        constexpr int64_t TOTAL_SENSORS = 2;
-        if (sensor_number < 0 || sensor_number >= TOTAL_SENSORS) {
+        if (!is_sensor_valid(sensor_number)) {
             throw std::runtime_error(
                 std::string("While selecting a TauroTech DA326 sensor: ")
                 + "sensor_number " + std::to_string(sensor_number)
                 + " is out of range (DA326 supports 0-1)");
         }
         // Single data plane (0) shared by both sensors; one SIF per sensor.
-        hololink::module::module_core::hsb_lite_sensor_metadata(
+        hololink::module::module_core::hsb_ip_sensor_metadata(
             metadata, sensor_number, /*data_plane=*/0, /*sifs_per_sensor=*/1);
     }
 };
 
-class TauroTechDa326Publisher : public HsbLitePublisher {
+class TauroTechDa326Publisher : public HsbIpPublisher {
 protected:
-    /* Single-FPGA CertusPro-NX, so both halves of the D-PHY pairing differ
-     * from the HSB-Lite default this publisher inherits. */
-    void set_mipi_dphy_metadata(
+    /* Single-FPGA CertusPro-NX; pairs with the CPNX layout
+     * construct_board_services publishes. */
+    hololink_module_status_t update_board_metadata(
         hololink::module::EnumerationMetadata& metadata) override
     {
         /* sync_clk_i is pcs_clk, osc_clk's 150 MHz HF output. */
         module_core::stamp_cpnx_mipi_dphy_metadata(metadata, 150);
+        return HOLOLINK_MODULE_OK;
     }
 
-    bool construct_mipi_dphy(
+    /* What this board adds to the canonical set: its own supplement and
+     * the single-FPGA CertusPro-NX D-PHY. Neither substitutes for a
+     * canonical branch, so both belong on the tail hook rather than
+     * construct_overrides. */
+    bool construct_board_services(
         const std::string& instance_id,
         const std::string& type_id) override
     {
-        return construct_cpnx_mipi_dphy(instance_id, type_id);
+        return construct_taurotech_da326(instance_id, type_id)
+            || module_core::construct_cpnx_mipi_dphy(
+                *this, instance_id, type_id);
     }
 
-    std::string module_name() const override { return "taurotech_da326"; }
-
-    void publish_channel_configuration() override
-    {
-        auto impl = std::make_shared<TauroTechDa326ChannelConfigurationV1>();
-        hololink::module::ServicePublisher<
-            hololink::module::module_core::HsbLiteChannelConfigurationV1>(
-            shared_from_this())
-            .publish("", impl);
-    }
-
-    bool construct_overrides(
+    virtual bool construct_taurotech_da326(
         const std::string& instance_id,
-        const std::string& type_id) override
+        const std::string& type_id)
     {
         if (!Publisher::has_type_id<TauroTechDa326V1>(type_id)) {
             return false;
@@ -207,6 +211,28 @@ protected:
         ServicePublisher<TauroTechDa326V1>(shared_from_this())
             .publish(instance_id, impl);
         return true;
+    }
+
+    std::string module_name() const override { return "taurotech_da326"; }
+
+    void publish_channel_configuration() override
+    {
+        auto impl = std::make_shared<TauroTechDa326ChannelConfigurationV1>();
+        hololink::module::ServicePublisher<
+            hololink::module::module_core::HsbIpChannelConfigurationV1>(
+            shared_from_this())
+            .publish("", impl);
+    }
+
+    /* The DA326 carries the same Renesas Bajoran TS1 the HSB-Lite
+     * carriers do, so it names that impl explicitly rather than
+     * inheriting one. */
+    bool construct_oscillator(
+        const std::string& instance_id,
+        const std::string& type_id) override
+    {
+        return construct_shared_oscillator<HsbLiteOscillatorV1>(
+            instance_id, type_id);
     }
 };
 
