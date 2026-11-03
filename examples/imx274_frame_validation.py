@@ -1,20 +1,84 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# Single IMX274 sensor via RoceReceiverOp (RDMA/InfiniBand), displayed live with Holoviz, with
+# per-frame validation. HSDK5 port of the v2.7 (HSDK4) imx274_frame_validation.py; it keeps the
+# same components:
+#
+#   RoceReceiverOp -> InstrumentedTimeProfiler -> CsiToBayerOp -> ImageProcessorOp ->
+#     BayerDemosaicOp -> HolovizOp
+#   RoceReceiverOp -> ComputeCrcOp (GPU CRC) -> CheckCrcOp (CRC check, metadata only)
+#   ImageProcessorOp (metadata) -> MonitorOperator (record_times(), validate_frame())
+#
+# - ComputeCrcOp / CheckCrcOp are hololink's C++ nvCOMP 5 operators (CRC-32/JAMCRC on the GPU,
+#   the FPGA's own format). In HSDK5 the two operators share a hl.CrcChannel object instead of
+#   CheckCrcOp holding a pointer to ComputeCrcOp. ComputeCrcOp puts each frame's CRC in the
+#   channel under its frame number; CheckCrcOp takes it, waiting only for the GPU.
+# - In v2.7 the chain was receiver -> ComputeCrcOp -> CheckCrcOp -> profiler -> CsiToBayerOp.
+#   In HSDK5 a tensor that one operator forwards cannot be forwarded again by a C++
+#   operator (RUNTIME_PORT_BINDING_UNAVAILABLE). Thus ComputeCrcOp is a branch from the
+#   receiver, CheckCrcOp takes ComputeCrcOp's metadata, and the profiler stays in the main
+#   chain. The profiler must be in the main chain: MonitorOperator then always gets a frame
+#   after the profiler has recorded it.
+# - CrcValidationOp keeps the v2.7 check_crc(), get_crc_errors() and get_crcs() methods. In v2.7
+#   it was a Python subclass of CheckCrcOp; HSDK5 operators cannot be subclassed from Python, so
+#   it is a plain Python class and CheckCrcOp calls its check_crc() through hl.CrcChannel.
+# - InstrumentedTimeProfiler, MonitorOperator, record_times(), validate_frame(),
+#   print_crc_results() and the performance report are the v2.7 functions. HSDK5 metadata is a
+#   fixed CaptureMetadata struct, so the values that v2.7 added to the metadata dictionary
+#   (operator timestamp, frame sizes, CRC error count) are kept per frame number in
+#   _FrameRecords instead.
+# - HSDK5 HolovizOp has no camera_pose_output port, so MonitorOperator takes the metadata output
+#   of ImageProcessorOp. The "complete" timestamp is thus the end of image processing.
+# - --frame-limit is the receiver's frame_limit parameter: the receiver ends the run after
+#   that many frames (HSDK5 has no CountCondition).
+# - --headless leaves out the BayerDemosaicOp and HolovizOp branch.
+#
+# Usage:
+#   imx274_frame_validation.py [OPTIONS]
+#
+# Options:
+#   --hololink IP                 IP address of Hololink board (default: 192.168.0.2)
+#   --camera-mode N               IMX274 mode (default: 0 = 3840x2160@60fps)
+#   --ibv-name NAME               IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N                  Port number of IBV device (default: 1)
+#   --expander-configuration N    I2C expander configuration (0 or 1, default: 0)
+#   --pattern N                   Configure a test pattern (0-11) instead of live video
+#   --crc-frame-check N           0 = CRC check disabled, 1 = check every frame (default)
+#   --skip-reset                  Don't call reset on the hololink device
+#   --frame-limit N               Number of frames to capture (default: unlimited)
+#   --headless                    Run without the display branch
+#   --fullscreen                  Run in fullscreen mode
+#   --log-level N                 Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
 import datetime
 import logging
 import math
-import os
 import queue
+import sys
 import threading
+from datetime import timedelta
 
-import cuda.bindings.driver as cuda
-import cupy as cp
-import holoscan
+import capture_metadata
+import holoscan as hs
+import holoscan_vision as hv
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
 
 MS_PER_SEC = 1000.0
 US_PER_SEC = 1000.0 * MS_PER_SEC
@@ -24,58 +88,92 @@ SEC_PER_NS = 1.0 / NS_PER_SEC
 # Shared lock for thread-safe access to recorder_queue.queue internal deque
 recorder_queue_lock = threading.Lock()
 
+_BAYER_FORMAT_NAMES = ["bggr", "rggb", "gbrg", "grbg"]
+_BAYER_FORMAT_VALUES = {name: index for index, name in enumerate(_BAYER_FORMAT_NAMES)}
 
-# Custom CRC checker operator that inherits from CheckCrcOp
-class CrcValidationOp(hololink_module.operators.CheckCrcOp):
+# Matches hololink::operators::kMetadataPairingWindow (capture_metadata_utils.hpp): the
+# receiver stamps both ports with an identical capture_time, so this bounded-window
+# OnAligned+Exact{} pairs them precisely.
+_METADATA_PAIRING_WINDOW = timedelta(microseconds=500)
+
+
+class CrcValidationOp:
     """
     Custom CRC checker that validates computed CRC against received CRC
     and tracks errors.
+
+    hl.CrcChannel calls check_crc() from the C++ CheckCrcOp for every checked frame.
     """
 
-    def __init__(
-        self,
-        *args,
-        compute_crc_op=None,
-        crc_metadata_name="crc",
-        **kwargs,
-    ):
-        hololink_module.operators.CheckCrcOp.__init__(
-            self, *args, compute_crc_op=compute_crc_op, **kwargs
-        )
-        self._crc_metadata_name = crc_metadata_name
+    def __init__(self):
+        self._lock = threading.Lock()
         self._frame_count = 0
         self._crc_errors = 0
         self._crcs = []  # list of (received_crc, computed_crc)
 
-    def check_crc(self, computed_crc):
+    def check_crc(self, computed_crc, received_crc, frame_number):
         """
-        This method is called by the C++ base class CheckCrcOp.
-        It receives the computed CRC and can compare it with metadata.
+        This method is called by the C++ CheckCrcOp (through hl.CrcChannel).
+        It receives the computed CRC and the CRC from the frame metadata.
         """
-        self._frame_count += 1
-        received_crc = self.metadata.get(self._crc_metadata_name, 0)
+        with self._lock:
+            self._frame_count += 1
+            if received_crc != computed_crc:
+                self._crc_errors += 1
+                logging.warning(
+                    f"Frame {self._frame_count}: CRC mismatch! "
+                    f"computed={computed_crc:#x}, received={received_crc:#x}"
+                )
+            else:
+                logging.debug(
+                    f"Frame {self._frame_count}: CRC match " f"({computed_crc:#x})"
+                )
 
-        if received_crc != computed_crc:
-            self._crc_errors += 1
-            logging.warning(
-                f"Frame {self._frame_count}: CRC mismatch! "
-                f"computed={computed_crc:#x}, received={received_crc:#x}"
-            )
-        else:
-            logging.debug(
-                f"Frame {self._frame_count}: CRC match " f"({computed_crc:#x})"
-            )
-
-        self._crcs.append((received_crc, computed_crc))
-
-        # Store error count in metadata for validation operator
-        self.metadata["crc_errors"] = self._crc_errors
+            self._crcs.append((received_crc, computed_crc))
 
     def get_crc_errors(self):
-        return self._crc_errors
+        with self._lock:
+            return self._crc_errors
 
     def get_crcs(self):
-        return self._crcs
+        with self._lock:
+            return list(self._crcs)
+
+
+class _FrameRecords:
+    """Per-frame values that v2.7 kept in the metadata dictionary.
+
+    InstrumentedTimeProfiler adds the values; MonitorOperator removes them.
+    """
+
+    lock = threading.Lock()
+    records = {}
+    crc_validator = None
+    calculated_frame_size = 0
+    recorder_queue = None
+    expected_fps = 60
+
+    @classmethod
+    def reset(cls, crc_validator, calculated_frame_size, recorder_queue, expected_fps):
+        with cls.lock:
+            cls.records = {}
+            cls.crc_validator = crc_validator
+            cls.calculated_frame_size = calculated_frame_size
+            cls.recorder_queue = recorder_queue
+            cls.expected_fps = expected_fps
+
+    @classmethod
+    def put(cls, frame_number, record):
+        with cls.lock:
+            cls.records[frame_number] = record
+            # Frames that do not get to the monitor must not stay here.
+            if len(cls.records) > 64:
+                del cls.records[min(cls.records)]
+
+    @classmethod
+    def pop(cls, frame_number):
+        with cls.lock:
+            return cls.records.pop(frame_number, {})
 
 
 # The purpose of this function is to parse the recorder queue values, extract the values that needed for:
@@ -214,20 +312,35 @@ def print_crc_results(crcs, crc_errors):
 
 
 def get_timestamp(metadata, name):
-    s = metadata[f"{name}_s"]
-    f = metadata[f"{name}_ns"]
+    # metadata is the CaptureMetadata struct (fields <name>_s and <name>_ns)
+    # or a dictionary made by save_timestamp().
+    if isinstance(metadata, dict):
+        s = metadata[f"{name}_s"]
+        f = metadata[f"{name}_ns"]
+    else:
+        s = getattr(metadata, f"{name}_s")
+        f = getattr(metadata, f"{name}_ns")
     f *= SEC_PER_NS
     return s + f
 
 
-def record_times(recorder_queue, metadata, expected_fps=60):
+def _put_dropping_oldest(recorder_queue, record):
+    """Queue a record without blocking: when the queue is full, drop its oldest record."""
+    try:
+        recorder_queue.put_nowait(record)
+    except queue.Full:
+        recorder_queue.get_nowait()
+        recorder_queue.put_nowait(record)
+
+
+def record_times(recorder_queue, metadata, frame_record, expected_fps=60):
     #
     now = datetime.datetime.now(datetime.timezone.utc)
     #
-    frame_number = metadata.get("frame_number", 0)
+    frame_number = metadata.frame_number
 
     # get frame crc errors
-    crc32_errors = metadata.get("crc_errors", 0)
+    crc32_errors = frame_record.get("crc_errors", 0)
 
     # frame_start_s is the time that the first data arrived at the FPGA;
     # the network receiver calls this "timestamp".
@@ -253,17 +366,18 @@ def record_times(recorder_queue, metadata, expected_fps=60):
     # the next operator after the network receiver.  This is used to compute
     # how much time overhead is required for the pipeline to actually receive
     # sensor data.
-    operator_timestamp_s = get_timestamp(metadata, "operator_timestamp")
+    operator_timestamp_s = get_timestamp(frame_record, "operator_timestamp")
 
-    # complete_timestamp_s is the time when visualization finished.
-    complete_timestamp_s = get_timestamp(metadata, "complete_timestamp")
+    # complete_timestamp_s is the time when image processing finished.
+    complete_timestamp_s = get_timestamp(frame_record, "complete_timestamp")
 
-    # get the frame size and calculated frame size from the metadata
-    received_frame_size = metadata.get("received_frame_size")
-    calculated_frame_size = metadata.get("calculated_frame_size")
+    # get the frame size and calculated frame size from the frame record
+    received_frame_size = frame_record.get("received_frame_size")
+    calculated_frame_size = frame_record.get("calculated_frame_size")
 
-    # Use thread-safe put() operation instead of append()
-    recorder_queue.put(
+    # Thread-safe, and never blocks the monitor (see _put_dropping_oldest)
+    _put_dropping_oldest(
+        recorder_queue,
         (
             now,
             frame_start_s,
@@ -275,7 +389,7 @@ def record_times(recorder_queue, metadata, expected_fps=60):
             crc32_errors,
             received_frame_size,
             calculated_frame_size,
-        )
+        ),
     )
 
     # validate the frame
@@ -290,411 +404,126 @@ def save_timestamp(metadata, name, timestamp):
     metadata[f"{name}_ns"] = int(f * NS_PER_SEC)
 
 
-class InstrumentedTimeProfiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        operator_name="operator",
-        calculated_frame_size=0,
-        crc_frame_check=1,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._operator_name = operator_name
-        self._calculated_frame_size = calculated_frame_size
-        self._crc_frame_check = crc_frame_check
+class InstrumentedTimeProfiler(hs.Operator):
+    in_tensor = hs.Input("in_tensor", hs.payload.Tensor)
+    in_metadata = hs.Input("in_metadata", capture_metadata.CaptureMetadata)
+    tensor = hs.Output("tensor", hs.payload.Tensor)
+    metadata = hs.Output("metadata", capture_metadata.CaptureMetadata)
+
+    operator_name = hs.Param("operator")
 
     def setup(self, spec):
         logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.in_tensor, queue_depth=4)
+        spec.input(self.in_metadata, queue_depth=4)
+        spec.output(self.tensor)
+        spec.output(self.metadata)
 
-    def compute(self, op_input, op_output, context):
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.in_tensor, self.in_metadata],
+                    window=_METADATA_PAIRING_WINDOW,
+                )
+            )
+            .input(self.in_tensor, hs.Exact())
+            .input(self.in_metadata, hs.Exact())
+        )
+
+    def compute(self, context):
         # What time is it now?
         operator_timestamp = datetime.datetime.now(datetime.timezone.utc)
 
-        in_message = op_input.receive("input")
-        cp_frame = cp.asarray(in_message.get(""))
+        tensor_sample = self.in_tensor.receive()
+        metadata_sample = self.in_metadata.receive()
+        if tensor_sample.is_missing or metadata_sample.is_missing:
+            return
 
-        # Save the number of bytes in the frame to compare to CSI calculated frame size
-        self.metadata["received_frame_size"] = cp_frame.nbytes
-        self.metadata["calculated_frame_size"] = self._calculated_frame_size
+        # Save the number of bytes in the frame to compare to CSI calculated frame size. The
+        # received tensor knows its size; no copy of the frame is needed.
+        frame_record = {}
+        frame_record["received_frame_size"] = tensor_sample.data.nbytes
+        frame_record["calculated_frame_size"] = _FrameRecords.calculated_frame_size
 
         save_timestamp(
-            self.metadata, self._operator_name + "_timestamp", operator_timestamp
+            frame_record, self.operator_name + "_timestamp", operator_timestamp
         )
-        op_output.emit({"": cp_frame}, "output")
+        _FrameRecords.put(metadata_sample.data.frame_number, frame_record)
+
+        self.tensor.forward(tensor_sample)
+        self.metadata.forward(metadata_sample)
 
 
-class MonitorOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        recorder_queue=None,
-        expected_fps=60,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._recorder_queue = recorder_queue
-        self._expected_fps = expected_fps
+class MonitorOperator(hs.Operator):
+    input = hs.Input("input", capture_metadata.CaptureMetadata)
 
     def setup(self, spec):
         logging.info("setup")
-        spec.input("input")
+        spec.input(self.input, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
         # What time is it now?
         complete_timestamp = datetime.datetime.now(datetime.timezone.utc)
-        _ = op_input.receive("input")
+        metadata = self.input.receive_data()
 
         # save the complete timestamp and record the times
-        save_timestamp(self.metadata, "complete_timestamp", complete_timestamp)
-        record_times(self._recorder_queue, self.metadata, self._expected_fps)
-
-
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        camera_mode,
-        frame_limit,
-        recorder_queue,
-        crc_frame_check,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._recorder_queue = recorder_queue
-        self._crc_frame_check = crc_frame_check
-
-        # This is a control for HSDK
-        self.is_metadata_enabled = True
-
-        # CRC validator will be set in compose if enabled
-        self.crc_validator = None
-
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
-        self._camera.set_mode(self._camera_mode)
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.info(f"{frame_size=}")
-
-        frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
+        frame_record = _FrameRecords.pop(metadata.frame_number)
+        if "operator_timestamp_s" not in frame_record:
+            return
+        save_timestamp(frame_record, "complete_timestamp", complete_timestamp)
+        # CheckCrcOp checked this frame before it got here.
+        crc_validator = _FrameRecords.crc_validator
+        if crc_validator is not None:
+            frame_record["crc_errors"] = crc_validator.get_crc_errors()
+        record_times(
+            _FrameRecords.recorder_queue,
+            metadata,
+            frame_record,
+            _FrameRecords.expected_fps,
         )
 
-        # CRC operators using nvCOMP 5.0 (optional)
-        # Note: Unlike Linux version which samples every Nth frame,
-        # GPU-based CRC is fast enough to check every frame (when crc_frame_check=1)
-        if self._crc_frame_check > 0:
-            compute_crc = hololink_module.operators.ComputeCrcOp(
-                self,
-                name="compute_crc",
-                frame_size=frame_size,
-            )
-            self.crc_validator = CrcValidationOp(
-                self,
-                name="crc_validator",
-                compute_crc_op=compute_crc,
-                crc_metadata_name="crc",
-            )
-            logging.info("CRC validation enabled (nvCOMP 5.0) - checking every frame")
-        else:
-            logging.info("CRC validation disabled")
 
-        profiler = InstrumentedTimeProfiler(
-            self,
-            name="profiler",
-            calculated_frame_size=frame_size,
-            crc_frame_check=self._crc_frame_check,
-        )
+class TensorSinkOp(hs.Operator):
+    """Consume the image when --headless leaves out the display branch."""
 
-        pixel_format = self._camera.pixel_format()
-        bayer_format = self._camera.bayer_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx274 is 50
-            optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
+    input = hs.Input("input", hs.schema.Image)
 
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            framebuffer_srgb=True,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
 
-        # Get FPS from camera mode for dynamic frame time validation
-        camera_fps = hololink_module.sensors.imx274.imx274_mode.imx_frame_format[
-            self._camera_mode.value
-        ].framerate
-
-        monitor = MonitorOperator(
-            self,
-            name="monitor",
-            recorder_queue=self._recorder_queue,
-            expected_fps=camera_fps,
-        )
-
-        # Pipeline flow - conditionally include CRC validation
-        if self._crc_frame_check > 0:
-            # Pipeline with CRC validation using nvCOMP 5.0
-            self.add_flow(receiver_operator, compute_crc, {("output", "input")})
-            self.add_flow(compute_crc, self.crc_validator, {("output", "input")})
-            self.add_flow(self.crc_validator, profiler, {("output", "input")})
-        else:
-            # Pipeline without CRC validation
-            self.add_flow(receiver_operator, profiler, {("output", "input")})
-
-        self.add_flow(profiler, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})
-
-    def _terminate(self, recorded_timestamps):
-        self._ok.disable_tick()
-        global timestamps
-        timestamps = recorded_timestamps
+    def compute(self, context):
+        self.input.receive_data()
 
 
-def main():
-    parser = argparse.ArgumentParser()
-    modes = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode
-    mode_choices = [mode.value for mode in modes]
-    mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
-    parser.add_argument(
-        "--camera-mode",
-        type=int,
-        choices=mode_choices,
-        default=mode_choices[0],
-        help=mode_help,
-    )
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
-    parser.add_argument(
-        "--fullscreen", action="store_true", help="Run in fullscreen mode"
-    )
-    parser.add_argument(
-        "--frame-limit",
-        type=int,
-        default=None,
-        help="Exit after receiving this many frames",
-    )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-    parser.add_argument(
-        "--configuration",
-        default=default_configuration,
-        help="Configuration file",
-    )
-    parser.add_argument(
-        "--hololink",
-        default="192.168.0.2",
-        help="IP address of Hololink board",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=int,
-        default=20,
-        help="Logging level to display",
-    )
-    infiniband_devices = hololink_module.infiniband_devices()
-    parser.add_argument(
-        "--ibv-name",
-        default=infiniband_devices[0] if infiniband_devices else None,
-        help="IBV device to use",
-    )
-    parser.add_argument(
-        "--ibv-port",
-        type=int,
-        default=1,
-        help="Port number of IBV device",
-    )
-    parser.add_argument(
-        "--expander-configuration",
-        type=int,
-        default=0,
-        choices=(0, 1),
-        help="I2C Expander configuration",
-    )
-    parser.add_argument(
-        "--pattern",
-        type=int,
-        choices=range(12),
-        help="Configure to display a test pattern.",
-    )
-    parser.add_argument(
-        "--skip-reset",
-        action="store_true",
-        help="Don't call reset on the hololink device.",
-    )
-    parser.add_argument(
-        "--crc-frame-check",
-        type=int,
-        default=1,
-        help="GPU-based CRC validation using nvCOMP 5.0: 0=disabled, 1=check every frame (default). Note: unlike CPU-based checking, GPU CRC is fast enough to always check every frame.",
-    )
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"{channel_metadata=}")
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(
-        args.camera_mode
-    )
 
-    # Thread-safe recorder queue for timestamps - allows about 10 minutes of queuing for 60fps
-    recorder_queue = queue.Queue(maxsize=30_000)
+def _camera_fps(camera_mode):
+    # Get FPS from camera mode for dynamic frame time validation
+    try:
+        from hololink.sensors.imx274 import imx274_mode
 
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
-        args.ibv_name,
-        args.ibv_port,
-        camera,
-        camera_mode,
-        args.frame_limit,
-        recorder_queue,
-        args.crc_frame_check,
-    )
-    application.config(args.configuration)
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    if not args.skip_reset:
-        hololink.reset()
-    logging.debug("Waiting for PTP sync.")
-    if not hololink.ptp_synchronize():
-        raise ValueError("Failed to synchronize PTP.")
-    else:
-        logging.debug("PTP synchronized.")
-    if not args.skip_reset:
-        camera.setup_clock()
-    camera.configure(camera_mode)
-    camera.set_digital_gain_reg(0x4)
-    if args.pattern is not None:
-        camera.test_pattern(args.pattern)
-    logging.info("Calling run")
-    application.run()
-    hololink.stop()
+        return imx274_mode.imx_frame_format[camera_mode].framerate
+    except (ImportError, AttributeError, IndexError):
+        return 60
 
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
-    # Report CRC validation results (if enabled)
-    if args.crc_frame_check > 0 and application.crc_validator:
-        crc_errors = application.crc_validator.get_crc_errors()
-        crcs = application.crc_validator.get_crcs()
-        print_crc_results(crcs, crc_errors)
-    else:
-        logging.info("CRC validation was disabled (--crc-frame-check=0)")
-
+def print_performance_report(recorder_queue):
     # Report stats at the end of the application
     frame_time_dts = []
     cpu_latency_dts = []
@@ -807,5 +636,361 @@ def main():
         )
 
 
+def run(
+    hololink_ip,
+    camera_mode,
+    ibv_name,
+    ibv_port,
+    expander_configuration,
+    pattern,
+    crc_frame_check,
+    skip_reset,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    cuda_device_ordinal = 0
+
+    logging.info("Initializing.")
+    # Get a handle to the GPU
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    cuda_driver.cuCtxSetCurrent(cu_context)
+
+    # Get a handle to the Hololink device
+    channel_metadata = hl.find_channel(hololink_ip)
+    logging.info(f"{channel_metadata=}")
+    hololink_channel = hl.DataChannel(channel_metadata)
+
+    hololink = hololink_channel.hololink()
+    hololink.start()
+    if not skip_reset:
+        hololink.reset()
+    logging.debug("Waiting for PTP sync.")
+    if not hololink.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP.")
+    else:
+        logging.debug("PTP synchronized.")
+
+    # Get a handle to the camera
+    camera = hl.NativeImx274Sensor(
+        hololink_channel, expander_configuration=expander_configuration
+    )
+    if not skip_reset:
+        camera.setup_clock()
+    camera.configure(camera_mode)
+    camera.set_digital_gain_reg(0x4)
+    if pattern is not None:
+        camera.test_pattern(pattern)
+
+    pixel_format = camera.get_pixel_format()
+    bayer_format = camera.get_bayer_format()
+    frame_width = camera.get_width()
+    frame_height = camera.get_height()
+
+    geometry = hl.resolve_generic_geometry(camera)
+    frame_size = (
+        geometry["start_byte"]
+        + geometry["bytes_per_line"] * geometry["pixel_height"]
+        + geometry["trailing_bytes"]
+    )
+    logging.info(f"{frame_size=}")
+
+    # Thread-safe recorder queue for timestamps: the last 30,000 records (about 8 minutes at
+    # 60 fps); a longer run drops the oldest, so the final report covers the end of the run
+    recorder_queue = queue.Queue(maxsize=30_000)
+
+    # Get FPS from camera mode for dynamic frame time validation
+    camera_fps = _camera_fps(camera_mode)
+
+    # CRC validator is set if CRC validation is enabled
+    crc_validator = CrcValidationOp() if crc_frame_check > 0 else None
+    _FrameRecords.reset(crc_validator, frame_size, recorder_queue, camera_fps)
+
+    graph = hs.Graph("imx274_frame_validation")
+
+    receiver_operator = graph.op(
+        hl.operators.RoceReceiverOp,
+        "receiver",
+        data_channel=hololink_channel,
+        frame_context=int(cu_context),
+        device_start=camera.start,
+        device_stop=camera.stop,
+        frame_size=frame_size,
+        ibv_name=ibv_name,
+        ibv_port=ibv_port,
+        frame_limit=frame_limit or 0,
+        frame_limit_ends_run=True,
+    )
+
+    # The profiler is the operator after the receiver, in the main chain, as in v2.7. Thus
+    # MonitorOperator always gets a frame after the profiler has recorded it.
+    profiler = graph.op(InstrumentedTimeProfiler, "profiler")
+    graph.add_flow(receiver_operator.tensor, profiler.in_tensor, queue_depth=4)
+    graph.add_flow(receiver_operator.metadata, profiler.in_metadata, queue_depth=4)
+
+    # CRC operators using nvCOMP 5.0 (optional)
+    # Note: Unlike Linux version which samples every Nth frame,
+    # GPU-based CRC is fast enough to check every frame (when crc_frame_check=1)
+    if crc_frame_check > 0:
+        crc_channel = hl.CrcChannel(check_crc=crc_validator.check_crc)
+        compute_crc = graph.op(
+            hl.operators.ComputeCrcOp,
+            "compute_crc",
+            crc_channel=crc_channel,
+            frame_size=frame_size,
+            cuda_device_ordinal=cuda_device_ordinal,
+        )
+        check_crc = graph.op(
+            hl.operators.CheckCrcOp,
+            "crc_validator",
+            crc_channel=crc_channel,
+        )
+        logging.info("CRC validation enabled (nvCOMP 5.0) - checking every frame")
+
+        # Pipeline with CRC validation using nvCOMP 5.0.
+        # ComputeCrcOp is a branch from the receiver: in HSDK5 a tensor that one operator
+        # forwards cannot be forwarded again by a C++ operator (RUNTIME_PORT_BINDING_UNAVAILABLE),
+        # so its tensor output stays unconnected. CheckCrcOp takes ComputeCrcOp's metadata, so
+        # each frame's CRC is in the hl.CrcChannel (keyed by frame number) before CheckCrcOp
+        # looks it up.
+        graph.add_flow(receiver_operator.tensor, compute_crc.in_tensor, queue_depth=4)
+        graph.add_flow(
+            receiver_operator.metadata, compute_crc.in_metadata, queue_depth=4
+        )
+        graph.add_flow(
+            compute_crc.metadata,
+            check_crc.in_metadata,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+    else:
+        logging.info("CRC validation disabled")
+    csi_input = profiler
+
+    csi_to_bayer_operator = graph.op(
+        hl.operators.CsiToBayerOp,
+        "csi_to_bayer",
+        cuda_device_ordinal=cuda_device_ordinal,
+        geometry=geometry,
+        bayer_format=bayer_format,
+    )
+    graph.add_flow(csi_input.tensor, csi_to_bayer_operator.in_tensor, queue_depth=4)
+    graph.add_flow(csi_input.metadata, csi_to_bayer_operator.in_metadata, queue_depth=4)
+
+    image_processor_operator = graph.op(
+        hl.operators.ImageProcessorOp,
+        "image_processor",
+        pixel_format=pixel_format,
+        pixel_width=geometry["pixel_width"],
+        pixel_height=geometry["pixel_height"],
+        bayer_format=_BAYER_FORMAT_VALUES[bayer_format],
+        # Optical black value for imx274 is 50
+        optical_black=50,
+        cuda_device_ordinal=cuda_device_ordinal,
+    )
+    graph.add_flow(
+        csi_to_bayer_operator.tensor, image_processor_operator.in_tensor, queue_depth=4
+    )
+    graph.add_flow(
+        csi_to_bayer_operator.metadata,
+        image_processor_operator.in_metadata,
+        queue_depth=4,
+    )
+
+    monitor = graph.op(MonitorOperator, "monitor")
+    graph.add_flow(image_processor_operator.metadata, monitor.input, queue_depth=4)
+
+    if not headless:
+        demosaic = graph.op(
+            hv.operators.BayerDemosaicOp,
+            "demosaic",
+            bayer_grid_pos=bayer_format,
+            generate_alpha=True,
+            alpha_value=65535,
+        )
+        graph.add_flow(image_processor_operator.tensor, demosaic.input, queue_depth=4)
+
+        visualizer = graph.op(
+            "holoscan.visualization.HolovizOp",
+            "holoviz",
+            layers=[
+                {
+                    "port_name": "video",
+                    "kind": "image",
+                    "format": "rgba16_unorm",
+                    "max_width": frame_width,
+                    "max_height": frame_height,
+                }
+            ],
+            sink={
+                "kind": "window",
+                "framebuffer_srgb": True,
+                "title": "IMX274 Frame Validation",
+                "width": frame_width,
+                "height": frame_height,
+                "fullscreen": fullscreen,
+                "close_on_escape": True,
+            },
+            # One frame per received frame.
+            trigger={"kind": "layer"},
+        )
+        # Drop old frames so a slow display cannot back-pressure the pipeline.
+        graph.add_flow(
+            demosaic.output,
+            visualizer.video,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+    else:
+        # ImageProcessorOp fails if its tensor output has no consumer.
+        tensor_sink = graph.op(TensorSinkOp, "tensor_sink")
+        graph.add_flow(
+            image_processor_operator.tensor,
+            tensor_sink.input,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+
+    clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+    graph.set_default_clock(clock_key)
+
+    options = hs.CompileOptions()
+    for operator_path in ("receiver", "csi_to_bayer", "image_processor"):
+        options.deployment.bind_tensor_output_device(
+            operator_path=operator_path,
+            output_port="tensor",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+    if not headless:
+        options.deployment.bind_tensor_output_device(
+            operator_path="demosaic",
+            output_port="output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+
+    plan = hs.compile(graph, options)
+    if not plan.ok:
+        print("Graph compilation failed:", file=sys.stderr)
+        for diag in plan.diagnostics:
+            print(f"  {diag}", file=sys.stderr)
+        hololink.stop()
+        _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+        return 1
+
+    # Run it.
+    logging.info("Calling run")
+    with hs.run_async(plan) as session:
+        # With --frame-limit, the receiver ends the run after frame_limit frames. The wait runs
+        # on a thread, so that Ctrl+C can stop the run cleanly.
+        waiter = threading.Thread(target=session.wait, daemon=True)
+        waiter.start()
+        try:
+            while waiter.is_alive():
+                waiter.join(timeout=0.5)
+        except KeyboardInterrupt:
+            session.request_stop()
+            waiter.join()
+    hololink.stop()
+
+    _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+
+    # Report CRC validation results (if enabled)
+    if crc_frame_check > 0 and crc_validator:
+        crc_errors = crc_validator.get_crc_errors()
+        crcs = crc_validator.get_crcs()
+        print_crc_results(crcs, crc_errors)
+    else:
+        logging.info("CRC validation was disabled (--crc-frame-check=0)")
+
+    print_performance_report(recorder_queue)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--camera-mode",
+        type=int,
+        choices=[0, 1, 2],
+        default=0,
+        help="IMX274 mode (default: 0 = 3840x2160@60fps)",
+    )
+    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
+    parser.add_argument(
+        "--fullscreen", action="store_true", help="Run in fullscreen mode"
+    )
+    parser.add_argument(
+        "--frame-limit",
+        type=int,
+        default=None,
+        help="Exit after receiving this many frames",
+    )
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
+    )
+    parser.add_argument(
+        "--log-level",
+        type=int,
+        default=20,
+        help="Logging level to display",
+    )
+    parser.add_argument(
+        "--ibv-name",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
+    )
+    parser.add_argument(
+        "--ibv-port",
+        type=int,
+        default=1,
+        help="Port number of IBV device (with --ibv-name)",
+    )
+    parser.add_argument(
+        "--expander-configuration",
+        type=int,
+        default=0,
+        choices=(0, 1),
+        help="I2C Expander configuration",
+    )
+    parser.add_argument(
+        "--pattern",
+        type=int,
+        choices=range(12),
+        help="Configure to display a test pattern.",
+    )
+    parser.add_argument(
+        "--skip-reset",
+        action="store_true",
+        help="Don't call reset on the hololink device.",
+    )
+    parser.add_argument(
+        "--crc-frame-check",
+        type=int,
+        default=1,
+        help="GPU-based CRC validation using nvCOMP 5.0: 0=disabled, 1=check every frame (default). Note: unlike CPU-based checking, GPU CRC is fast enough to always check every frame.",
+    )
+
+    args = parser.parse_args()
+    logging.basicConfig(level=args.log_level)
+
+    return run(
+        args.hololink,
+        args.camera_mode,
+        args.ibv_name,
+        args.ibv_port,
+        args.expander_configuration,
+        args.pattern,
+        args.crc_frame_check,
+        args.skip_reset,
+        args.frame_limit,
+        args.headless,
+        args.fullscreen,
+    )
+
+
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

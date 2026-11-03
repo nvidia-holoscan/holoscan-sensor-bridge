@@ -16,12 +16,13 @@
 # See README.md for detailed information.
 
 import logging
+import re
 import sys
 from unittest import mock
 
 import pytest
+from hololink.sensors.vb1940.vb1940_mode import Vb1940_Mode
 
-import hololink as hololink_module
 from examples import vb1940_fusa_nvcomp_crc_validation
 
 
@@ -30,11 +31,11 @@ from examples import vb1940_fusa_nvcomp_crc_validation
 @pytest.mark.parametrize(
     "camera_mode",
     [
-        hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
+        Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
     ],
 )
 def test_vb1940_nvcomp_crc_validation(
-    camera_mode, headless, frame_limit, hololink_address, caplog
+    camera_mode, headless, frame_limit, hololink_address, caplog, capsys
 ):
     """
     Test VB1940 frame validation with nvCOMP CRC.
@@ -58,7 +59,7 @@ def test_vb1940_nvcomp_crc_validation(
 
     with caplog.at_level(logging.ERROR):
         with mock.patch("sys.argv", arguments):
-            vb1940_fusa_nvcomp_crc_validation.main()
+            result = vb1940_fusa_nvcomp_crc_validation.main()
 
     # Fail if app logged any ERROR or CRITICAL
     error_logs = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
@@ -66,3 +67,15 @@ def test_vb1940_nvcomp_crc_validation(
         f"nvCOMP CRC validation logged {len(error_logs)} error(s); "
         f"first: {error_logs[0].getMessage()}"
     )
+    # main() returns 1 for a CRC mismatch or a failed run (PTP, graph compile, runtime
+    # error), which it prints rather than logs.
+    assert result == 0, "nvCOMP CRC validation failed; see the summary it printed"
+    # It returns 0 when too few frames reached the check, so require at least half of them
+    # (the first and last 10 frames are never checked).
+    output = capsys.readouterr().out
+    checked = re.search(r"CRC Validation: (\d+) frames checked", output)
+    assert checked, "nvCOMP CRC validation checked no frames"
+    minimum = max(1, (frame_limit - 20) // 2)
+    assert (
+        int(checked.group(1)) >= minimum
+    ), f"nvCOMP CRC validation checked only {checked.group(1)} of {frame_limit} frames"

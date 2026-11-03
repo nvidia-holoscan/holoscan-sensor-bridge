@@ -44,11 +44,14 @@ list(GET CUDAToolkit_INCLUDE_DIRS 0 CUDA_TOOLKIT_INCLUDE_PATH)
 target_compile_definitions(sig_gen PUBLIC CUDA_TOOLKIT_INCLUDE_PATHS="${CUDA_TOOLKIT_INCLUDE_PATH}:${_libcudacxx_INCLUDE_DIR}")
 
 target_link_libraries(sig_gen
+  PUBLIC
+    hololink::gui_renderer
   PRIVATE
     hololink
     hololink::expr_eval
     holoscan::core
-    holoscan::viz::imgui
+    holoscan::visualization::holoviz
+    CUDA::cudart
 )
 
 # Installation of the sig_gen operator
@@ -59,6 +62,8 @@ install(TARGETS sig_gen
         COMPONENT hololink-operators)
 
 install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op.cuh
         ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op_gui.hpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/sig_gen_op_rational.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/sig_gen
         COMPONENT hololink-operators)

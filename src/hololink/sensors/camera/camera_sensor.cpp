@@ -55,6 +55,59 @@ void CameraSensor::configure_converter(std::shared_ptr<hololink::csi::CsiConvert
     throw std::runtime_error("configure_converter is not implemented for CameraSensor");
 }
 
+namespace {
+
+    // Adapter: captures the geometry that the camera driver computes via the CsiConverter
+    // protocol, using CsiToBayerOp-compatible alignment rules. File-scope (not a
+    // configure_converter()-local struct) so make_generic_geometry_adapter() below can hand one
+    // out to callers with no CameraSensor instance to drive it through.
+    class GeometryCaptureConverter : public hololink::csi::CsiConverter {
+    public:
+        hololink::csi::CsiGeometry& out;
+        explicit GeometryCaptureConverter(hololink::csi::CsiGeometry& g)
+            : out(g)
+        {
+        }
+
+        uint32_t receiver_start_byte() override { return 0; }
+
+        uint32_t received_line_bytes(uint32_t n) override { return (n + 7u) & ~7u; }
+
+        uint32_t transmitted_line_bytes(hololink::csi::PixelFormat fmt, uint32_t w) override
+        {
+            switch (fmt) {
+            case hololink::csi::PixelFormat::RAW_8:
+                return w;
+            case hololink::csi::PixelFormat::RAW_10:
+                return w * 5 / 4;
+            case hololink::csi::PixelFormat::RAW_12:
+                return w * 3 / 2;
+            default:
+                return w;
+            }
+        }
+
+        void configure(uint32_t sb, uint32_t bpl, uint32_t pw, uint32_t ph,
+            hololink::csi::PixelFormat fmt, uint32_t trailing = 0) override
+        {
+            out = { sb, bpl, pw, ph, fmt, trailing };
+        }
+    };
+
+} // namespace
+
+std::shared_ptr<hololink::csi::CsiConverter> CameraSensor::make_generic_geometry_adapter(
+    hololink::csi::CsiGeometry& out)
+{
+    return std::make_shared<GeometryCaptureConverter>(out);
+}
+
+void CameraSensor::configure_converter(hololink::csi::CsiGeometry& geom)
+{
+    auto adapter = make_generic_geometry_adapter(geom);
+    configure_converter(std::static_pointer_cast<hololink::csi::CsiConverter>(adapter));
+}
+
 int64_t CameraSensor::get_width() const { return width_; }
 
 int64_t CameraSensor::get_height() const { return height_; }

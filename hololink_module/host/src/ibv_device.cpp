@@ -28,10 +28,21 @@ static std::string read_first_line(const fs::path& path)
     return line;
 }
 
-std::pair<std::string, uint32_t> ibv_device_for_peer(const std::string& peer_ip)
+// Same rule as hololink::core::infiniband_device_for_peer(), which this library can't link, except
+// that core's uses the routing table for an interface without IPv4, tries device/net, and sorts sysfs.
+std::pair<std::string, uint32_t> ibv_device_for_peer(
+    const std::string& peer_ip, const std::string& interface)
 {
-    const auto [local_ip, local_interface, local_mac]
-        = local_ip_and_mac(peer_ip);
+    // The enumerated interface is authoritative when we have it. Falling back
+    // to local_ip_and_mac means falling back to the routing table, which ties
+    // between two boards on the same default subnet and hands both legs the
+    // same NIC -- and so the same IB device, on which only one of them is
+    // reachable.
+    std::string local_interface = interface;
+    if (local_interface.empty()) {
+        const auto [local_ip, routed_interface, local_mac] = local_ip_and_mac(peer_ip);
+        local_interface = routed_interface;
+    }
 
     int num_devices = 0;
     ibv_device** devices = ibv_get_device_list(&num_devices);
@@ -88,10 +99,10 @@ std::pair<std::string, uint32_t> ibv_device_for_peer(const std::string& peer_ip)
             + local_interface + "'");
     }
     // Debug diagnostic: the peer this caller passed in, the local interface
-    // local_ip_and_mac resolved for it, and the IB device the QP will bind to.
-    // Compare against the data channel's DP_HOST_IP (programmed from the same
-    // local_ip_and_mac on the data channel's peer): a mismatch in peer here vs
-    // there is the divergence that loses data.
+    // resolved for it, and the IB device the QP will bind to. Compare against
+    // the data channel's DP_HOST_IP (programmed by configure_common from the
+    // same enumerated interface): a mismatch in peer here vs there is the
+    // divergence that loses data.
     HSB_LOG_DEBUG(
         "ibv_device_for_peer peer_ip={} -> local_interface={} ib_device={} port={}",
         peer_ip, local_interface, matched_device, matched_port);

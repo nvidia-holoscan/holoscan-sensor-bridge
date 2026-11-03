@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,13 +16,10 @@
  */
 
 #include <climits>
+#include <cmath>
 #include <stdexcept>
 
-#include <thrust/device_vector.h>
-#include <thrust/extrema.h>
-#include <thrust/functional.h>
-
-#include "iq_enc_op.hpp"
+#include "iq_enc_kernels.hpp"
 
 static const size_t thread_block_size = 1024;
 
@@ -44,10 +41,12 @@ __global__ void cuda_encode_kernel(int16_t* encoded_output, const float* iq_comp
 
 namespace hololink::operators {
 
-void IQEncoderOp::cuda_iq_encode(int16_t* encoded_output, const float* iq_components, size_t count, float scale) {
+void cuda_iq_encode(int16_t* encoded_output, const float* iq_components, size_t count, float scale,
+                                 cudaStream_t stream) {
   if (count % 4) throw std::runtime_error("count must be multiple of 4");
+  if (count == 0) return;
   cuda_encode_kernel<<<static_cast<size_t>(std::ceil(1.0 * count / thread_block_size)),
-                   thread_block_size>>>(encoded_output, iq_components, count, scale);
+                   thread_block_size, 0, stream>>>(encoded_output, iq_components, count, scale);
 }
 
 }  // namespace hololink::operators

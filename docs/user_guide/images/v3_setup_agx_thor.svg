@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 730 340" width="730" height="340" role="img" aria-labelledby="t d">
+<title id="t">Jetson AGX Thor to Holoscan Sensor Bridge</title>
+<desc id="d">Jetson AGX Thor to Holoscan Sensor Bridge. The AGX Thor MGBE QSFP port is split into 4 internal 10G or 25G ports. Only mgbe0_0, 192.168.0.101/24, connects to SFP+ 0 of the board, 192.168.0.2.</desc>
+<rect x="0" y="0" width="730" height="340" fill="#ffffff"/>
+<text x="365.0" y="30" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Jetson AGX Thor to Holoscan Sensor Bridge</text>
+<rect x="20" y="55" width="300" height="245" rx="10" fill="#f2f7e8" stroke="#76b900" stroke-width="2"/>
+<text x="35" y="83" font-family="sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="#1a1a1a">Jetson AGX Thor</text>
+<text x="35" y="105" font-family="sans-serif" font-size="13" font-weight="normal" text-anchor="start" fill="#4a4a4a">JetPack 7.2.1</text>
+<rect x="120" y="120" width="195" height="170" rx="6" fill="#ffffff" stroke="#76b900" stroke-width="1.5"/>
+<text x="130" y="138" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">MGBE QSFP port</text>
+<text x="130" y="153" font-family="sans-serif" font-size="11" font-weight="normal" text-anchor="start" fill="#4a4a4a">4 x 10G or 4 x 25G internal ports</text>
+<rect x="130" y="162" width="175" height="40" rx="4" fill="#f2f7e8" stroke="#76b900" stroke-width="2"/>
+<text x="138" y="179" font-family="monospace" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">mgbe0_0</text>
+<text x="138" y="195" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.101/24</text>
+<rect x="130" y="208" width="175" height="22" rx="4" fill="#f4f4f4" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="138" y="223" font-family="sans-serif" font-size="11" font-weight="normal" text-anchor="start" fill="#8a8a8a">internal port 2</text>
+<rect x="130" y="234" width="175" height="22" rx="4" fill="#f4f4f4" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="138" y="249" font-family="sans-serif" font-size="11" font-weight="normal" text-anchor="start" fill="#8a8a8a">internal port 3</text>
+<rect x="130" y="260" width="175" height="22" rx="4" fill="#f4f4f4" stroke="#b0b0b0" stroke-width="1" stroke-dasharray="4 3"/>
+<text x="138" y="275" font-family="sans-serif" font-size="11" font-weight="normal" text-anchor="start" fill="#8a8a8a">internal port 4</text>
+<rect x="520" y="55" width="190" height="245" rx="10" fill="#eef3fb" stroke="#3b6ea8" stroke-width="2"/>
+<text x="615.0" y="83" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Holoscan Sensor</text>
+<text x="615.0" y="102" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Bridge board</text>
+<text x="615.0" y="119" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">Linux sockets or FuSa CoE</text>
+<rect x="525" y="155" width="120" height="54" rx="6" fill="#ffffff" stroke="#3b6ea8" stroke-width="1.5"/>
+<text x="533" y="173" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">SFP+ 0</text>
+<text x="533" y="193" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.2</text>
+<line x1="305" y1="182" x2="525" y2="182" stroke="#1a1a1a" stroke-width="3"/>
+<circle cx="305" cy="182" r="4" fill="#1a1a1a"/><circle cx="525" cy="182" r="4" fill="#1a1a1a"/>
+<text x="415.0" y="150" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">QSFP adapter + cable</text>
+<text x="415.0" y="164" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">(route to 192.168.0.2/32)</text>
+<text x="365.0" y="325" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">Connect SFP+ 0 of the board to mgbe0_0 only.</text>
+</svg>

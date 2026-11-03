@@ -25,7 +25,7 @@ using ::hololink::module::csi::PixelFormat;
 enum class Imx274_Mode : uint32_t {
     IMX274_MODE_3840X2160_60FPS = 0,
     IMX274_MODE_1920X1080_60FPS = 1,
-    IMX274_MODE_3840X2160_60FPS_12BITS = 2,
+    IMX274_MODE_3840X2160_30FPS_12BITS = 2,
     Unknown = 3,
 };
 
@@ -39,7 +39,7 @@ struct FrameFormat {
 inline constexpr std::array<FrameFormat, 3> IMX_FRAME_FORMAT { {
     FrameFormat { 3840, 2160, 60, PixelFormat::RAW_10 },
     FrameFormat { 1920, 1080, 60, PixelFormat::RAW_10 },
-    FrameFormat { 3840, 2160, 60, PixelFormat::RAW_12 },
+    FrameFormat { 3840, 2160, 30, PixelFormat::RAW_12 },
 } };
 
 // IMX274 register tables, vendored byte-for-byte from the legacy
@@ -69,7 +69,7 @@ constexpr size_t START_SEQUENCE_SIZE = 6;
 constexpr size_t STOP_SEQUENCE_SIZE = 2;
 constexpr size_t MODE_3840X2160_60FPS_SEQUENCE_SIZE = 83;
 constexpr size_t MODE_1920X1080_60FPS_SEQUENCE_SIZE = 84;
-constexpr size_t MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE = 83;
+constexpr size_t MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE = 83;
 
 // clang-format off
     // Declare the arrays
@@ -273,9 +273,9 @@ constexpr size_t MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE = 83;
         { 0x306B, 0x05 },
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
     }};
-    constexpr std::array<std::pair<uint16_t, uint8_t>, MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE>
-        IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE = {{
-        // Mode: 3840x2160 60fps RAW12
+    constexpr std::array<std::pair<uint16_t, uint8_t>, MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE>
+        IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE = {{
+        // Mode: 3840x2160 30fps RAW12
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
         { 0x3000, 0x12 },
         { 0x3120, 0xF0 },
@@ -363,7 +363,7 @@ constexpr size_t MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE = 83;
         { 0x306B, 0x07 },
         { IMX274_TABLE_WAIT_MS, IMX274_WAIT_MS },
     }};
-    static_assert(IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE.size() == MODE_3840X2160_60FPS_12BITS_SEQUENCE_SIZE, "IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE size mismatch");
+    static_assert(IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE.size() == MODE_3840X2160_30FPS_12BITS_SEQUENCE_SIZE, "IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE size mismatch");
 // clang-format on
 
 } // namespace hololink::module::sensors::imx274

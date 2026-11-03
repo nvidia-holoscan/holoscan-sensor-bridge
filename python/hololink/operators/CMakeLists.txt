@@ -13,46 +13,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-copy_hololink_python_files(
-    TARGET_NAME copy_hololink_operators_python
-    DESTINATION operators
-    FILES
-        __init__.py
-        base_receiver_op.py
-        image_shift_to_uint8_operator.py
-        linux_coe_receiver_operator.py
-        linux_receiver_operator.py
-)
+# Every hololink operator is registered in src/hololink/operators/operator_catalog.cpp
+# and exposed here via this package's __init__.py generic registry auto-discovery --
+# no per-operator Python or CMake code needed. pva_crc/ is the one exception: it houses a
+# standalone native extension (not a registered Operator), only built when a precompiled PVA
+# SDK is present -- see pva_crc/CMakeLists.txt's own comment.
 
-# include the operators
-if(HOLOLINK_BUILD_ARGUS_ISP)
-  add_subdirectory(argus_isp)
-endif()
-add_subdirectory(audio_packetizer)
-add_subdirectory(compute_crc)
-add_subdirectory(csi_to_bayer)
-if(HOLOLINK_BUILD_FUSA)
-  add_subdirectory(fusa_coe_capture)
-endif()
-add_subdirectory(image_processor)
-add_subdirectory(iq_dec)
-add_subdirectory(iq_enc)
-add_subdirectory(linux_receiver)
-add_subdirectory(linux_receiver_op)
-add_subdirectory(linux_coe_receiver)
-add_subdirectory(packed_format_converter)
+configure_file(__init__.py "${HOLOLINK_PYTHON_MODULE_OUT_DIR}/operators/__init__.py" COPYONLY)
+
 if(HOLOLINK_BUILD_PVA)
-  add_subdirectory(pva_crc)
+    add_subdirectory(pva_crc)
 endif()
-if (HOLOLINK_BUILD_ROCE)
-  add_subdirectory(roce_receiver)
-  add_subdirectory(roce_transmitter)
-  add_subdirectory(gpu_roce_transceiver)
-  add_subdirectory(sig_gen)
-  add_subdirectory(sig_viewer)
-endif() # HOLOLINK_BUILD_ROCE
-if(HOLOLINK_BUILD_SIPL)
-  add_subdirectory(sipl_capture)
-endif()
-add_subdirectory(sub_frame_combiner)
-add_subdirectory(udp_transmitter)

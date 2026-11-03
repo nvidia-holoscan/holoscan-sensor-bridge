@@ -1,55 +1,34 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-# http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
 
-# See README.md for detailed information.
+"""hololink -- HSDK5 Python bindings for the Holoscan Sensor Bridge.
 
-# Import hololink_core FIRST with RTLD_GLOBAL so its symbols are available to _hololink
-# This prevents duplicate copies of hololink_core code in memory
-from . import hololink_core  # noqa: F401
-from . import (
-    emulation,
-    operators,
-    renesas_bajoran_lite_ts1,
-    renesas_bajoran_lite_ts2,
-    sensors,
-)
+Importing this module registers every hololink operator with HSDK5's
+authoring registry (see operator_catalog.cpp); ``hololink.operators``
+exposes them for ``graph.op(...)``.
+"""
+
+# capture_metadata is a sibling top-level module generated from capture_metadata.fbs (see
+# src/hololink/operators/CMakeLists.txt's capture_metadata_schema_generated target's PYTHON
+# flag), placed next to this package rather than inside it. Importing it here -- for its
+# side effect, not its contents -- registers the "hololink.CaptureMetadataT" payload identity
+# that every operator below with a CaptureMetadataT-typed port (ImageProcessorOp, CsiToBayerOp,
+# etc.) needs for the `from . import operators` discovery pass below to find them at all;
+# without this, every such operator is silently dropped from `hololink.operators` (confirmed by
+# removing this import and hitting exactly that, not assumed). operator_catalog.cpp used to
+# register this identity manually instead -- removed once this module's own auto-registration
+# made that a hard AUTHORING_REGISTRY_DUPLICATE failure (see that file's own comment).
+import capture_metadata  # noqa: F401
+
+from . import _hololink as _native
 from ._hololink import (
-    APB_RAM,
     BL_I2C_BUS,
     CAM_I2C_BUS,
     CLNX_SPI_BUS,
     CPNX_SPI_BUS,
     CTRL_EVENT,
-    CTRL_EVT_SW_EVENT,
-    DP_BUFFER_LENGTH,
-    DP_HOST_IP,
-    DP_HOST_MAC_HIGH,
-    DP_HOST_MAC_LOW,
-    DP_HOST_UDP_PORT,
-    DP_MAX_BUFF,
-    DP_PACKET_SIZE,
-    DP_PAGE_INC,
-    DP_PAGE_LSB,
-    DP_PAGE_MSB,
-    DP_QP,
-    DP_RKEY,
-    DP_VP_MASK,
     FPGA_DATE,
-    HOLOLINK_100G_BOARD_ID,
-    HOLOLINK_LITE_BOARD_ID,
-    HOLOLINK_NANO_BOARD_ID,
+    GPIO,
     HSB_IP_VERSION,
     HSB_LOG_LEVEL_DEBUG,
     HSB_LOG_LEVEL_ERROR,
@@ -57,7 +36,6 @@ from ._hololink import (
     HSB_LOG_LEVEL_INVALID,
     HSB_LOG_LEVEL_TRACE,
     HSB_LOG_LEVEL_WARN,
-    I2C_10B_ADDRESS,
     I2C_BUSY,
     I2C_CTRL,
     I2C_DONE,
@@ -71,117 +49,98 @@ from ._hololink import (
     I2C_REG_NUM_BYTES,
     I2C_REG_STATUS,
     I2C_START,
-    LEOPARD_EAGLE_BOARD_ID,
     METADATA_SIZE,
-    MICROCHIP_POLARFIRE_BOARD_ID,
-    MICROCHIP_POLARFIRE_BOARD_R2_ID,
-    RD_BLOCK,
+    PAGE_SIZE,
     RD_DWORD,
     REQUEST_FLAGS_ACK_REQUEST,
-    RESPONSE_INVALID_CMD,
-    RESPONSE_SUCCESS,
+    RESET_SPI_BUS,
     SPI_CTRL,
-    WR_BLOCK,
-    WR_DWORD,
     AD9986Config,
     AsyncEventListener,
     BasicEnumerationStrategy,
     BayerFormat,
-    CsiConverter,
+    CrcChannel,
     DataChannel,
+    DataChannels,
+    Deserializer,
     EnumerationStrategy,
     Enumerator,
-    Hololink,
-    HsbLogLevel,
+    HololinkDevice,
+    I2c,
     ImGuiRenderer,
     Metadata,
-    NvtxTrace,
+    NamedLock,
+    NativeImx274Sensor,
+    NativeVb1940Sensor,
     PacketizerProgram,
     PixelFormat,
+    ReceiverMemoryDescriptor,
     Sequencer,
+    Serializer,
+    Spi,
     Synchronizable,
     Synchronizer,
     Timeout,
-    TimeoutError,
-    TransactionError,
-    UnsupportedVersion,
-    csi,
+    Uart,
+    find_channel,
     get_hsb_log_level,
+    get_packetizer_program,
     hsb_log_debug,
     hsb_log_error,
     hsb_log_info,
     hsb_log_trace,
     hsb_log_warn,
+    infiniband_device_for_peer,
     infiniband_devices,
     log_timestamp_s,
-    set_hsb_log_level,
-)
-from .hololink_core import (
-    DEFAULT_MTU,
-    PAGE_SIZE,
-    UDP_PACKET_SIZE,
-    ArpWrapper,
-    Deserializer,
-    Reactor,
-    ReceiverMemoryDescriptor,
-    Serializer,
-    gettid,
-    local_ip_and_mac,
-    local_ip_and_mac_from_socket,
-    local_mac,
+    resolve_generic_geometry,
+    resolve_generic_geometry_from_dimensions,
+    resolve_packed_geometry,
     round_up,
+    set_hsb_log_level,
+    set_uuid_strategy,
+    use_mtu,
+    use_sensor,
+    use_vlan,
 )
+
+# Must follow the _hololink import above: it reads HSDK5's authoring registry at import
+# time, which _hololink's native module load is what populates.
+from . import operators  # isort:skip # noqa: E402
+
+# hololink.sensors is a lazy shim (its __getattr__ imports each sensor package on first
+# use), so importing it here costs nothing and keeps `hololink.sensors.<pkg>` reachable as an
+# attribute of the top-level package, which the tests and the HSDK4-era drivers rely on.
+from . import sensors  # isort:skip # noqa: E402
 
 __all__ = [
     "AD9986Config",
-    "APB_RAM",
-    "ArpWrapper",
     "AsyncEventListener",
     "BL_I2C_BUS",
     "BasicEnumerationStrategy",
     "BayerFormat",
     "CAM_I2C_BUS",
     "CLNX_SPI_BUS",
-    "CTRL_EVENT",
-    "CTRL_EVT_SW_EVENT",
     "CPNX_SPI_BUS",
-    "CsiConverter",
-    "DEFAULT_MTU",
-    "DP_BUFFER_LENGTH",
-    "DP_HOST_IP",
-    "DP_HOST_MAC_HIGH",
-    "DP_HOST_MAC_LOW",
-    "DP_HOST_UDP_PORT",
-    "DP_MAX_BUFF",
-    "DP_PACKET_SIZE",
-    "DP_PAGE_LSB",
-    "DP_PAGE_MSB",
-    "DP_PAGE_INC",
-    "DP_QP",
-    "DP_RKEY",
-    "DP_VP_MASK",
+    "CTRL_EVENT",
+    "CrcChannel",
     "DataChannel",
+    "DataChannels",
     "Deserializer",
-    "emulation",
     "EnumerationStrategy",
     "Enumerator",
     "FPGA_DATE",
-    "HOLOLINK_100G_BOARD_ID",
-    "HOLOLINK_LITE_BOARD_ID",
-    "HOLOLINK_NANO_BOARD_ID",
+    "GPIO",
     "HSB_IP_VERSION",
-    "HSB_LOG_LEVEL_TRACE",
     "HSB_LOG_LEVEL_DEBUG",
-    "HSB_LOG_LEVEL_INFO",
-    "HSB_LOG_LEVEL_WARN",
     "HSB_LOG_LEVEL_ERROR",
+    "HSB_LOG_LEVEL_INFO",
     "HSB_LOG_LEVEL_INVALID",
-    "HsbLogLevel",
-    "Hololink",
-    "I2C_10B_ADDRESS",
-    "I2C_CTRL",
+    "HSB_LOG_LEVEL_TRACE",
+    "HSB_LOG_LEVEL_WARN",
+    "HololinkDevice",
     "I2C_BUSY",
-    "I2C_CORE_EN",
+    "I2C_CTRL",
     "I2C_DONE",
     "I2C_FSM_ERR",
     "I2C_I2C_ERR",
@@ -193,101 +152,53 @@ __all__ = [
     "I2C_REG_NUM_BYTES",
     "I2C_REG_STATUS",
     "I2C_START",
+    "I2c",
     "ImGuiRenderer",
-    "LEOPARD_EAGLE_BOARD_ID",
     "METADATA_SIZE",
-    "MICROCHIP_POLARFIRE_BOARD_ID",
-    "MICROCHIP_POLARFIRE_BOARD_R2_ID",
     "Metadata",
-    "NvtxTrace",
+    "NamedLock",
+    "NativeImx274Sensor",
+    "NativeVb1940Sensor",
     "PAGE_SIZE",
     "PacketizerProgram",
     "PixelFormat",
-    "RD_BLOCK",
-    "RD_DWORD",
-    "Reactor",
     "ReceiverMemoryDescriptor",
+    "RD_DWORD",
     "REQUEST_FLAGS_ACK_REQUEST",
-    "RESPONSE_INVALID_CMD",
-    "RESPONSE_SUCCESS",
+    "RESET_SPI_BUS",
     "SPI_CTRL",
     "Sequencer",
     "Serializer",
+    "Spi",
     "Synchronizable",
     "Synchronizer",
     "Timeout",
-    "TimeoutError",
-    "TransactionError",
-    "UDP_PACKET_SIZE",
-    "UnsupportedVersion",
-    "WR_BLOCK",
-    "WR_DWORD",
-    "core",
-    "csi",
-    "gettid",
+    "Uart",
+    "find_channel",
     "get_hsb_log_level",
-    "hsb_log_trace",
+    "get_packetizer_program",
     "hsb_log_debug",
-    "hsb_log_info",
-    "hsb_log_warn",
     "hsb_log_error",
+    "hsb_log_info",
+    "hsb_log_trace",
+    "hsb_log_warn",
+    "infiniband_device_for_peer",
     "infiniband_devices",
-    "local_ip_and_mac",
-    "local_ip_and_mac_from_socket",
-    "local_mac",
-    "operators",
-    "renesas_bajoran_lite_ts1",
-    "renesas_bajoran_lite_ts2",
-    "round_up",
-    "sensors",
     "log_timestamp_s",
+    "operators",
+    "sensors",
+    "resolve_generic_geometry",
+    "resolve_generic_geometry_from_dimensions",
+    "resolve_packed_geometry",
+    "round_up",
     "set_hsb_log_level",
+    "set_uuid_strategy",
+    "use_mtu",
+    "use_sensor",
+    "use_vlan",
 ]
 
-import logging
-
-trace_level = logging.DEBUG - 5
-trace_name = "TRACE"
-logging.addLevelName(trace_level, trace_name)
-setattr(logging, trace_name, trace_level)
-
-logger = logging.getLogger()
-
-
-class TidFilter(logging.Filter):
-    def filter(self, record):
-        record.tid = gettid()
-        return True
-
-
-logger.addFilter(TidFilter())
-
-
-class LogTimestampFilter(logging.Filter):
-    def filter(self, record):
-        record.log_timestamp_s = log_timestamp_s()
-        return True
-
-
-logger.addFilter(LogTimestampFilter())
-
-
-def log_trace(self, message, *args, **kwargs):
-    if self.isEnabledFor(trace_level):
-        self._log(trace_level, message, *args, **kwargs)
-
-
-setattr(logging.getLoggerClass(), trace_name.lower(), log_trace)
-
-
-def log_trace_to_root(message, *args, **kwargs):
-    logging.log(trace_level, message, *args, **kwargs)
-
-
-setattr(logging, trace_name.lower(), log_trace_to_root)
-
-log_format = "%(levelname)s %(log_timestamp_s).4f %(funcName)s %(filename)s:%(lineno)d tid=0x%(tid)x -- %(message)s"
-
-
-def logging_level(n):
-    logging.basicConfig(format=log_format, level=n)
+# The FuSa geometry helper is available only when the capture components were built.
+if hasattr(_native, "resolve_geometry"):
+    resolve_geometry = _native.resolve_geometry
+    __all__.append("resolve_geometry")

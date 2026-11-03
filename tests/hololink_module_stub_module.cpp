@@ -12,8 +12,8 @@
 
 #include "hololink/module/module.hpp"
 #include "hololink/module/publisher.hpp"
-#include "hololink/module/service.hpp"
 #include "hololink/module/service_locator.h"
+#include "hololink_module_test_services.hpp"
 
 // Anonymous namespace holds file-local TYPES only — function-local
 // classes / anonymous namespaces are the only tools that give types
@@ -21,21 +21,8 @@
 // below.
 namespace {
 
-class HostTestServiceV1
-    : public hololink::module::Service<HostTestServiceV1> {
-public:
-    static constexpr const char* type_id = "hololink_module_test.host.v1";
-    virtual ~HostTestServiceV1() = default;
-    virtual int answer() const = 0;
-};
-
-class TestServiceV1
-    : public hololink::module::Service<TestServiceV1> {
-public:
-    static constexpr const char* type_id = "hololink_module_test.module.v1";
-    virtual ~TestServiceV1() = default;
-    virtual int answer() const = 0;
-};
+using hololink::module::test::HostTestServiceV1;
+using hololink::module::test::TestServiceV1;
 
 class TestServiceImpl : public TestServiceV1 {
 public:

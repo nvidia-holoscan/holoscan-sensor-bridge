@@ -16,26 +16,36 @@
 # See README.md for detailed information.
 
 import logging
+import re
 import sys
 from unittest import mock
 
 import pytest
+import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
 from examples import imx274_pva_crc_validation
 
 
+@utils.requires_roce
 @pytest.mark.skip_unless_pva
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
     ],
 )
 def test_imx274_pva_crc_validation(
-    camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, caplog
+    camera_mode,
+    headless,
+    frame_limit,
+    hololink_address,
+    ibv_name,
+    ibv_port,
+    caplog,
+    capsys,
 ):
     """
     Test IMX274 frame validation with PVA CRC hardware.
@@ -62,8 +72,8 @@ def test_imx274_pva_crc_validation(
         arguments.extend(["--headless"])
 
     with caplog.at_level(logging.ERROR):
-        with mock.patch("sys.argv", arguments):
-            imx274_pva_crc_validation.main()
+        with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+            result = imx274_pva_crc_validation.main()
 
     # Fail if app logged any ERROR or CRITICAL
     error_logs = [rec for rec in caplog.records if rec.levelno >= logging.ERROR]
@@ -71,3 +81,14 @@ def test_imx274_pva_crc_validation(
         f"PVA CRC validation logged {len(error_logs)} error(s); "
         f"first: {error_logs[0].getMessage()}"
     )
+    assert result == 0
+    monitor.assert_ok()
+    # The app logs each mismatch (caught above) and prints a summary; v2.7 checked
+    # only the log. The summary also shows that the PVA checked frames at all.
+    output = capsys.readouterr().out
+    validated = re.search(r"Validated frames: (\d+)", output)
+    mismatches = re.search(r"Mismatches: +(\d+)", output)
+    assert validated and mismatches, "The app printed no PVA CRC summary"
+    checked, errors = int(validated.group(1)), int(mismatches.group(1))
+    assert errors == 0, f"PVA CRC validation found {errors} errors in {checked} frames"
+    assert checked > 10, f"PVA CRC validation checked only {checked} frames"

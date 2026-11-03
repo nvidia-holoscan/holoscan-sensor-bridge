@@ -16,6 +16,9 @@
 
 #include <cuda.h>
 
+#include <hololink/core/hololink.hpp> // ExtendedCounter
+#include <hololink/core/metadata.hpp>
+
 #include "hololink/module/data_channel.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/frame_metadata.hpp"
@@ -48,37 +51,30 @@ public:
 
     bool get_next_frame(unsigned timeout_ms, CUstream cuda_stream) override;
     bool frames_ready() override;
+    bool receive_path_failed() override;
     CUdeviceptr frame_memory() override;
     std::shared_ptr<void> frame_buffer_owner() override;
-    void stamp_metadata(holoscan::MetadataDictionary& metadata) override;
+    void stamp_metadata(hololink::Metadata& metadata) override;
     std::shared_ptr<hololink::module::DataChannelInterfaceV1>
     data_channel() override;
 
 private:
     Config config_ {};
 
-    std::string flags_key_;
-    std::string psn_key_;
-    std::string crc_key_;
-    std::string frame_number_key_;
-    std::string timestamp_s_key_;
-    std::string timestamp_ns_key_;
-    std::string bytes_written_key_;
-    std::string metadata_s_key_;
-    std::string metadata_ns_key_;
-    std::string received_s_key_;
-    std::string received_ns_key_;
-    std::string imm_data_key_;
-    std::string page_number_key_;
-
     std::shared_ptr<hololink::module::RoceDataChannelInterfaceV1> channel_;
     std::shared_ptr<hololink::module::DataChannelInterfaceV1> data_channel_;
     std::shared_ptr<hololink::module::FrameMetadataInterfaceV1> frame_metadata_;
     std::shared_ptr<hololink::module::ReceiverMemoryDescriptor> frame_buffer_;
     std::shared_ptr<hololink::module::RoceReceiverInterfaceV1> receiver_;
+    // The same receiver when its module publishes RoceReceiverInterfaceV2, which also reports a
+    // failed receive path; null otherwise.
+    std::shared_ptr<hololink::module::RoceReceiverInterfaceV2> receiver_v2_;
     std::shared_ptr<std::thread> monitor_thread_;
     std::vector<uint8_t> host_metadata_;
     hololink::module::RoceReceiverFrameInfoV1 frame_info_ {};
+    // Extends the EOF block's 16-bit frame_number to 32 bits, as RoceReceiverOp does.
+    // Restarted by construct(), so each connection counts from its first frame.
+    hololink::ExtendedCounter<uint32_t, uint16_t> frame_number_;
 
     std::atomic<bool> running_ { false };
     bool configured_ = false;

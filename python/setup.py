@@ -112,20 +112,24 @@ def has_coe_offload():
 
 
 def get_l4t_version():
-    # /sys/class/dmi/id/bios_version reports the UEFI firmware version, which on
-    # IGX may carry a leading "v" (e.g. "v36.4.3"). Extract the dotted numeric
-    # portion so int() never chokes on a "v" prefix or a trailing suffix, then
-    # normalize to a fixed-length triple so version comparisons are reliable.
-    with open("/sys/class/dmi/id/bios_version", "r") as f:
-        bios_version = f.read().strip()
-    m = re.search(r"\d+(?:\.\d+)*", bios_version)
-    if not m:
+    # Derive the L4T version from the BSP release file, the same way docker/build.sh
+    # does: the first line looks like "# R36 (release), REVISION: 5.1, ..." and
+    # yields (36, 5, 1). docker/Dockerfile copies the host's file into the L4T
+    # container images. The DMI bios_version is deliberately not used: it reports
+    # the UEFI/QSPI firmware version, which on IGX is flashed independently of the
+    # rootfs and can lag or lead the real BSP.
+    try:
+        with open("/etc/nv_tegra_release", "r") as f:
+            release_line = f.readline()
+    except OSError:
         return (0, 0, 0)
-    parts = [int(x) for x in m.group(0).split(".")]
-    # Normalize to (major, minor, patch). A short match like "39" would yield
-    # (39,), and in Python (39,) >= (39, 0, 0) is False -- which would wrongly
-    # disable the argus-ISP build on an L4T-39 platform. Padding fixes that.
-    return tuple((parts + [0, 0, 0])[:3])
+    major = re.match(r"#\s*R(\d+)", release_line)
+    revision = re.search(r"REVISION:\s*(\d+)\.(\d+)", release_line)
+    if not major or not revision:
+        return (0, 0, 0)
+    # Always a (major, minor, patch) triple so comparisons against e.g.
+    # (39, 0, 0) are reliable.
+    return (int(major.group(1)), int(revision.group(1)), int(revision.group(2)))
 
 
 setuptools.setup(
@@ -167,18 +171,18 @@ setuptools.setup(
     },
     packages=[
         "hololink",
-        "hololink/hololink_core",
         "hololink/emulation",
         "hololink/emulation/sensors",
         "hololink/operators",
+        "hololink/operators/pva_crc",
         "hololink/sensors",
         "hololink/sensors/camera",
         "hololink/sensors/camera/imx274",
         "hololink/sensors/ecam0m30tof",
         "hololink/sensors/imx274",
         "hololink/sensors/imx715",
+        "hololink/sensors/ox08d10",
         "hololink/sensors/vb1940",
-        "hololink/sensors/ecam0m30tof",
         "hololink_module",
         "hololink_module.operators",
         "hololink_module.hsb_lite",
@@ -206,14 +210,28 @@ setuptools.setup(
                 # the logic of FindPython3.cmake to find the active version
                 f"-DPython3_ROOT_DIR={Path(sys.prefix)}",
                 "-DBUILD_SHARED_LIBS:BOOL=OFF",
+                # The wheel is the Python package: build the bindings and the hololink_module
+                # stack regardless of the CMake defaults.
+                "-DHOLOLINK_BUILD_PYTHON:BOOL=ON",
+                "-DHOLOLINK_BUILD_MODULE:BOOL=ON",
                 # argus has a breaking change between l4t 36 (Jetpack 6.X) and l4t 39 (Jetpack 7.2+) for which this is compatible.
                 f"-DHOLOLINK_BUILD_ARGUS_ISP={'ON' if os.path.isdir('/usr/src/jetson_multimedia_api/argus') and get_l4t_version() >= (39, 0, 0) else 'OFF'}",
-                f"-DHOLOLINK_BUILD_SIPL={'ON' if has_coe_offload() else 'OFF'}",
+                # HOLOLINK_BUILD_SIPL in the environment overrides the CoE offload detection
+                # (docker/Dockerfile.demo keeps it OFF while sipl_capture is unported).
+                f"-DHOLOLINK_BUILD_SIPL={os.environ.get('HOLOLINK_BUILD_SIPL', 'ON' if has_coe_offload() else 'OFF')}",
                 f"-DHOLOLINK_BUILD_FUSA={'ON' if has_coe_offload() else 'OFF'}",
+                # The HSB emulator and its hololink.emulation module ship in the wheel by
+                # default; HOLOLINK_BUILD_EMULATOR=OFF in the environment leaves them out.
+                f"-DHOLOLINK_BUILD_EMULATOR={os.environ.get('HOLOLINK_BUILD_EMULATOR', 'ON')}",
                 f"-DHOLOLINK_BUILD_PVA={'ON' if os.path.isdir('/opt/nvidia/pva-sdk-2.9') else 'OFF'}",
                 # build roce only if the infiniband device driver & devices are present. It is not enough to check for the directory presence, e.g. AGX Thor
                 f"-DHOLOLINK_BUILD_ROCE={'ON' if os.path.isdir('/sys/class/infiniband') and any(os.scandir('/sys/class/infiniband')) else 'OFF'}",
                 f"-DHOLOLINK_ROCE_USE_GPU_VRAM={os.environ.get('HOLOLINK_ROCE_USE_GPU_VRAM', 'ON')}",
+                # The PCIe transport (hsb_pcie module, hololink_pcie_identity; PcieReceiverOp
+                # once it is ported to HSDK5) is userspace and ships in the wheel like any other
+                # module; the hololink_pcie kernel module is built from its own tree and
+                # installed separately (scripts/deploy_pcie_kmod.sh), never from the wheel.
+                "-DHOLOLINK_BUILD_PCIE:BOOL=ON",
                 # Add this to debug the code
                 # "-DCMAKE_BUILD_TYPE=Debug",
                 "-DHOLOLINK_PYTHON_INSTALL_DIR:PATH=.",

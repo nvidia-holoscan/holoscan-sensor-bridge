@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,63 +18,50 @@
 #ifndef SRC_HOLOLINK_OPERATORS_IQ_DEC_IQ_DEC_OP_HPP
 #define SRC_HOLOLINK_OPERATORS_IQ_DEC_IQ_DEC_OP_HPP
 
-#include <mutex>
+#include <atomic>
+#include <cstdint>
+#include <memory>
+#include <optional>
 
 #include <hololink/common/gui_renderer.hpp>
-#include <hololink/core/smart_object_pool.hpp>
-#include <holoscan/holoscan.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/port.hpp>
 
 namespace hololink::operators {
 
 /***
  * The IQDecoderOp operator extracts the in-phase and quadrature signal components
- * out of an encoded buffer and creates a signal buffer.
+ * out of an encoded buffer and creates a float signal buffer.
+ *
+ * max_samples bounds the IQ samples per input buffer (each takes 4 encoded bytes and decodes to
+ * two floats); it sizes the output's runtime pool.
  *
  * Input:
- *  'input' - The port that receives the encoded input buffer.
+ *  'input' - The encoded int16 input buffer
  *
  * Output:
- *  'output' - The output port for the signal buffer
- *
- * Parameters:
- *  'scale'    - The signal will be scaled by this factor after it is decoded.
- *  'renderer' - Since Dear ImGui is not supported by Holoviz operators,
- *               a pointer to an ImGuiRenderer object is required.
+ *  'output' - The float signal buffer (interleaved IQ samples)
  */
-class IQDecoderOp : public holoscan::Operator {
+class IQDecoderOp : public holoscan::Operator<> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(IQDecoderOp)
+    explicit IQDecoderOp(uint64_t max_samples, float scale = 1.0f,
+        std::shared_ptr<hololink::ImGuiRenderer> renderer = nullptr);
 
-    IQDecoderOp() = default;
-
-    void initialize() override;
     void setup(holoscan::OperatorSpec& spec) override;
-
+    [[nodiscard]] holoscan::Contract contract() const override;
     void start() override;
     void stop() override;
+    holoscan::expected<void, holoscan::Error> compute(holoscan::ExecutionContext& context) override;
 
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext& context) override;
+    holoscan::Input<holoscan::Tensor> input { "input" };
+    holoscan::Output<holoscan::Tensor> output { "output" };
 
 private:
-    using Tensor = std::shared_ptr<holoscan::Tensor>;
-    using DLManagedTensorContextPool = SmartObjectPool<holoscan::DLManagedTensorContext>;
-    DLManagedTensorContextPool dl_managed_tensor_context_pool_;
-    std::mutex mutex_;
-    ImGuiRenderer::Handle renderer_handle_;
-
-    /**
-     * Cuda implementation of the decode function.
-     * All pointers point to device memory
-     * count is the number of IQ pairs (samples)
-     * scale is the scaling factor. The range of values is assumed to be [-scale, scale];
-     */
-    static void cuda_iq_decode(float* iq_component, const int16_t* encoded_input, size_t count, float scale = 1.0f);
-
-    // Parameters
-    holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> allocator_;
-    holoscan::Parameter<float> scale_;
-    holoscan::Parameter<hololink::ImGuiRenderer*> renderer_;
+    uint64_t max_samples_;
+    std::atomic<float> scale_;
+    std::shared_ptr<hololink::ImGuiRenderer> renderer_;
+    std::optional<ImGuiRenderer::Handle> renderer_handle_;
+    uint64_t dropped_ = 0;
 };
 
 } // namespace hololink::operators

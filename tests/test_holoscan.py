@@ -15,171 +15,102 @@
 
 # See README.md for detailed information.
 
-import ctypes
+# HSDK5 differences from v2.7: the pipeline is an hs.Graph. The receiver ends
+# the run at frame_limit frames; v2.7 used a CountCondition.
+# The test also checks that the receiver emitted frames and that the run ended
+# well (utils.RunMonitor).
+
 import logging
 
-import cuda.bindings.driver as cuda
+import applications
 import mock_camera
 import mock_server
+import operators
 import pytest
 import utils
 
 import hololink as hololink_module
 
-holoscan = pytest.importorskip(
-    "holoscan", reason="Use 'pip3 install holoscan' to enable holoscan tests."
-)
 
+class CameraWatchdog:
+    """Taps the mock camera's watchdog for each frame, as v2.7's WatchdogOperator
+    did; the mock camera stops sending when it isn't tapped."""
 
-class WatchdogOperator(holoscan.core.Operator):
-    def __init__(self, *args, camera=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        assert camera is not None
+    def __init__(self, camera):
         self._camera = camera
 
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-
-    def start(self):
-        pass
-
-    def stop(self):
-        pass
-
-    def compute(self, op_input, op_output, context):
-        # Get input message; we have to do this
-        # otherwise Holoscan is unhappy
-        op_input.receive("input")
+    def tap(self):
         self._camera.tap_watchdog()
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        camera,
-        camera_mode,
-        frame_limit=10,
-        headless=False,
-        ibv_name=None,  # None means use unaccelerated network
-        ibv_port=None,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._headless = headless
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-
-    def compose(self):
-        logging.info("compose")
-        cuda.cuCtxSetCurrent(self._cuda_context)
-
-        self._camera.configure(*self._camera_mode)
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera.get_width()
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera.get_height(),
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        frame_context = self._cuda_context
-        if self._ibv_name is None:
-            receiver_operator = hololink_module.operators.LinuxReceiverOperator(
-                self,
-                holoscan.conditions.CountCondition(self, count=self._frame_limit),
-                name="receiver",
-                frame_size=frame_size,
-                frame_context=frame_context,
-                hololink_channel=self._hololink_channel,
-                device=self._camera,
+def run_holoscan_test(
+    server, camera_mode, frame_limit, receiver, receiver_kwargs, headless
+):
+    with applications.CudaContext() as cuda_context:
+        # Get the data plane controller.
+        channel_metadata = server.channel_metadata()
+        hololink_channel = hololink_module.DataChannel(channel_metadata)
+        hololink = hololink_channel.hololink()
+        # Camera
+        camera = mock_camera.MockCamera(hololink_channel)
+        hololink.start()
+        try:
+            camera.configure(*camera_mode)
+            geometry = camera.geometry()
+            sensor = applications.SensorCamera(
+                metadata=channel_metadata,
+                channel=hololink_channel,
+                device=hololink,
+                camera=camera,
+                geometry=geometry,
+                frame_size=geometry["start_byte"]
+                + geometry["bytes_per_line"] * geometry["pixel_height"]
+                + geometry["trailing_bytes"],
+                pixel_format=camera.get_pixel_format().value,
+                bayer_format=camera.get_bayer_format().name.lower(),
+                width=camera.get_width(),
+                height=camera.get_height(),
             )
-        else:
-            receiver_operator = hololink_module.operators.RoceReceiverOp(
-                self,
-                holoscan.conditions.CountCondition(self, count=self._frame_limit),
-                name="receiver",
-                frame_size=frame_size,
-                frame_context=frame_context,
-                ibv_name=self._ibv_name,
-                ibv_port=self._ibv_port,
-                hololink_channel=self._hololink_channel,
-                device=self._camera,
-            )
-
-        bayer_format = self._camera.get_bayer_format()
-        pixel_format = self._camera.get_pixel_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
-
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera.get_width()
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera.get_height(),
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            framebuffer_srgb=True,
-        )
-
-        watchdog_operator = WatchdogOperator(
-            self,
-            name="watchdog",
-            camera=self._camera,
-        )
-
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(demosaic, watchdog_operator, {("transmitter", "input")})
+            # Here's our holoscan application
+            logging.info("Initializing.")
+            with utils.RunMonitor() as monitor:
+                test_graph = applications.TestGraph("holoscan")
+                rx = applications.add_receiver(
+                    test_graph,
+                    "receiver",
+                    receiver,
+                    sensor,
+                    cuda_context.cu_context,
+                    frame_limit,
+                    **receiver_kwargs,
+                )
+                isp = applications.add_isp(test_graph, "", rx, sensor)
+                applications.show_images(
+                    test_graph,
+                    "holoviz",
+                    [
+                        applications.Image(
+                            isp["demosaic"].output, sensor.width, sensor.height
+                        )
+                    ],
+                    headless,
+                    "Mock camera",
+                )
+                watchdog_operator = test_graph.op(
+                    operators.WatchdogOp,
+                    "watchdog",
+                    watchdog_token=operators.register(CameraWatchdog(camera)),
+                )
+                operators.metadata_flow(
+                    test_graph,
+                    isp["image_processor"].metadata,
+                    watchdog_operator.metadata,
+                )
+                test_graph.run()
+        finally:
+            hololink.stop()
+    # The run is frame_limit frames long; the last one isn't counted.
+    monitor.assert_ok(min_frames=min(11, frame_limit // 2))
 
 
 frame_rate_s = 0.1
@@ -247,42 +178,18 @@ def test_holoscan(
     image, _ = utils.make_image(height, width, bayer_format, pixel_format)
 
     with mock_server.TestServer(mock_camera_ip) as server:
-        # Get a handle to the GPU
-        (cu_result,) = cuda.cuInit(0)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_device_ordinal = 0
-        cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-        # Get the data plane controller.
-        channel_metadata = server.channel_metadata()
-        hololink_channel = hololink_module.DataChannel(channel_metadata)
-
-        # Camera
-        camera = mock_camera.MockCamera(hololink_channel)
         camera_mode = (height, width, bayer_format, pixel_format, frame_rate_s)
-
-        # Here's our holoscan application
-        logging.info("Initializing.")
-        application = HoloscanApplication(
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
-            camera,
+        run_holoscan_test(
+            server,
             camera_mode,
-            headless=headless,
-            frame_limit=frame_limit,
+            frame_limit,
+            hololink_module.operators.LinuxReceiverOp,
+            {},
+            headless,
         )
-        hololink = hololink_channel.hololink()
-        hololink.start()
-        try:
-            application.run()
-        finally:
-            hololink.stop()
 
 
+@utils.requires_roce
 @pytest.mark.skip_unless_mock_camera
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
@@ -305,39 +212,12 @@ def test_network_accelerated_holoscan(
     image, _ = utils.make_image(height, width, bayer_format, pixel_format)
 
     with mock_server.TestServer(mock_camera_ip) as server:
-        # Get a handle to the GPU
-        (cu_result,) = cuda.cuInit(0)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_device_ordinal = 0
-        cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-        cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-        assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-        # Get the data plane controller.
-        channel_metadata = server.channel_metadata()
-        hololink_channel = hololink_module.DataChannel(channel_metadata)
-
-        # Camera
-        camera = mock_camera.MockCamera(hololink_channel)
         camera_mode = (height, width, bayer_format, pixel_format, frame_rate_s)
-
-        # Here's our holoscan application
-        logging.info("Initializing.")
-        application = HoloscanApplication(
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
-            camera,
+        run_holoscan_test(
+            server,
             camera_mode,
-            headless=headless,
-            frame_limit=frame_limit,
-            ibv_name=ibv_name,
-            ibv_port=ibv_port,
+            frame_limit,
+            hololink_module.operators.RoceReceiverOp,
+            {"ibv_name": ibv_name, "ibv_port": ibv_port},
+            headless,
         )
-        hololink = hololink_channel.hololink()
-        hololink.start()
-        try:
-            application.run()
-        finally:
-            hololink.stop()

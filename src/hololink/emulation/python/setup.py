@@ -30,6 +30,8 @@ def get_version():
 setup(
     name="hololink",
     version=get_version(),
+    # The extension is built against the stable ABI (abi3) as of CPython 3.12.
+    python_requires=">=3.10",
     description="Holoscan Sensor Bridge Emulation",
     url="https://github.com/nvidia-holoscan/holoscan-sensor-bridge",
     packages=["hololink", "hololink.emulation", "hololink.emulation.sensors"],

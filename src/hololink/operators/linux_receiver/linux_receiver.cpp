@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,6 +18,10 @@
  */
 
 #include "linux_receiver.hpp"
+
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
 
 #include <alloca.h>
 #include <atomic>
@@ -196,13 +200,13 @@ void LinuxReceiver::run()
         }
 
         if (received_bytes <= 0) {
+            // Closing the data socket wakes recv() with EBADF.  That is an
+            // expected part of shutdown once close() has requested exit.
+            if (exit_) {
+                break;
+            }
             // check if there is a timeout
             if ((recv_errno == EAGAIN) || (recv_errno == EWOULDBLOCK) || (recv_errno == EINTR)) {
-                // should we exit?
-                if (exit_) {
-                    break;
-                }
-                // if not, continue
                 continue;
             }
             HSB_LOG_ERROR("recv returned received_bytes={}, recv_errno={}", received_bytes, recv_errno);
@@ -256,7 +260,7 @@ void LinuxReceiver::run()
                 if ((target_address >= cu_buffer_) && (target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
                     uint64_t offset = (target_address - cu_buffer_) % cu_page_size_;
                     if (offset + size > cu_page_size_) {
-                        HSB_LOG_ERROR("Packet spans page boundary; address={:`#x`}, size={:`#x`}, offset={:`#x`}, cu_page_size_={:`#x`}",
+                        HSB_LOG_ERROR("Packet spans page boundary; address={:#x}, size={:#x}, offset={:#x}, cu_page_size_={:#x}",
                             target_address, size, offset, cu_page_size_);
                         break;
                     }
@@ -299,7 +303,7 @@ void LinuxReceiver::run()
                 if ((size > 0) && (target_address >= cu_buffer_ && target_address + size <= (cu_buffer_ + cu_buffer_size_))) {
                     uint64_t offset = (target_address - cu_buffer_) % cu_page_size_;
                     if (offset + size > cu_page_size_) {
-                        HSB_LOG_ERROR("Packet spans page boundary; address={:`#x`}, size={:`#x`}, offset={:`#x`}, cu_page_size_={:`#x`}",
+                        HSB_LOG_ERROR("Packet spans page boundary; address={:#x}, size={:#x}, offset={:#x}, cu_page_size_={:#x}",
                             target_address, size, offset, cu_page_size_);
                         break;
                     }
@@ -375,8 +379,22 @@ LinuxReceiverDescriptor* LinuxReceiver::signal(LinuxReceiverDescriptor* received
             // if there is no available descriptor use the oldest ready one and drop the frame
             available = ready_.front();
             ready_.pop();
+            if (trace_dropped_phase_.size() < 160) {
+                trace_dropped_phase_ += fmt::format("{}{}", trace_dropped_phase_.empty() ? "" : ",",
+                    available->metadata_.frame_number);
+            }
             if (consumer_ready_) {
-                HSB_LOG_DEBUG("No available descriptors, dropping oldest ready frame {}.", available->metadata_.frame_number);
+                // Rate-limited: the consumer is not keeping up with the receiver, which is worth
+                // seeing at the default log level, but not once per dropped page.
+                ++dropped_ready_frames_;
+                const auto now = std::chrono::steady_clock::now();
+                if (now - dropped_report_time_ >= std::chrono::seconds(1)) {
+                    HSB_LOG_WARN("LinuxReceiver: no available descriptors; dropped {} ready frame(s) in the "
+                                 "last second (latest frame {}); the consumer is not keeping up",
+                        dropped_ready_frames_, available->metadata_.frame_number);
+                    dropped_ready_frames_ = 0;
+                    dropped_report_time_ = now;
+                }
             }
         } else {
             available = available_.front();
@@ -384,7 +402,26 @@ LinuxReceiverDescriptor* LinuxReceiver::signal(LinuxReceiverDescriptor* received
         }
     }
     // make sure the copy is complete before we overwrite the buffer
+    static const bool trace = std::getenv("HOLOLINK_RX_TRACE") != nullptr;
+    const auto sync_begin = std::chrono::steady_clock::now();
     CudaCheck(cuEventSynchronize(available->event_));
+    if (trace) {
+        const auto now = std::chrono::steady_clock::now();
+        trace_max_sync_ = std::max(trace_max_sync_,
+            std::chrono::duration_cast<std::chrono::microseconds>(now - sync_begin));
+        trace_max_ready_ = std::max(trace_max_ready_, ready_.size() + 1);
+        ++trace_pages_;
+        if (now - trace_report_time_ >= std::chrono::seconds(1)) {
+            HSB_LOG_WARN("LinuxReceiver trace: {} pages/s, max ready-queue depth {}, longest event sync {:.2f} ms, "
+                         "dropped pages (frame_number): [{}]",
+                trace_pages_, trace_max_ready_, trace_max_sync_.count() / 1000.0, trace_dropped_phase_);
+            trace_pages_ = 0;
+            trace_max_ready_ = 0;
+            trace_max_sync_ = std::chrono::microseconds { 0 };
+            trace_dropped_phase_.clear();
+            trace_report_time_ = now;
+        }
+    }
 
     // place in the ready queue for the application to process
     ready_.push(received);
@@ -444,8 +481,10 @@ bool LinuxReceiver::get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& m
 
         // Because we're setting up the next frame of data for pipeline processing,
         // we can allow this memcpy to overlap with other GPU work. We just make sure
-        // that this copy is happening on the same stream as the pipeline.
-        CudaCheck(cuMemcpyHtoDAsync(cu_buffer_, ready_descriptor->memory_, metadata.frame_metadata.bytes_written, cuda_stream));
+        // that this copy is happening on the same stream as the pipeline. A frame never
+        // exceeds its page; don't read past the page when the device reports more.
+        const size_t frame_bytes = std::min<size_t>(metadata.frame_metadata.bytes_written, cu_page_size_);
+        CudaCheck(cuMemcpyHtoDAsync(cu_buffer_, ready_descriptor->memory_, frame_bytes, cuda_stream));
         CudaCheck(cuEventRecord(ready_descriptor->event_, cuda_stream));
 
         available_.push(ready_descriptor);

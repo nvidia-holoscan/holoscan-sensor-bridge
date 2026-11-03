@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,12 +16,12 @@
  */
 #include "udp_transmitter_op.hpp"
 
-#include <hololink/common/cuda_error.hpp>
+#include <cuda_runtime.h>
 #include <hololink/core/logging_internal.hpp>
 
 namespace hololink::operators {
+
 namespace {
-    static const char* input_name = "input";
     // The field size sets a theoretical limit of 65,535 bytes
     // (8-byte header + 65,527 bytes of data) for a UDP datagram.
     // However, the actual limit for the data length, which is
@@ -32,45 +32,42 @@ namespace {
 
 void UdpTransmitterOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.input<Tensor>(input_name);
+    spec.input(input, "input")
+        .expects_tensor(holoscan::TensorInputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+            },
+        });
+}
 
-    spec.param(destination_ip_,
-        "ip",
-        "ip",
-        "Destination IP",
-        std::string(""));
-
-    spec.param(destination_port_,
-        "port",
-        "port",
-        "Destination Port",
-        static_cast<uint16_t>(5000));
-
-    spec.param(max_buffer_size_,
-        "max_buffer_size",
-        "max buffer size",
-        "Maximum buffer size",
-        static_cast<uint16_t>(max_udp_data_size));
-
-    spec.param(queue_size_,
-        "queue_size",
-        "queue size",
-        "The number of buffers that can wait to be transmitted",
-        static_cast<uint16_t>(1));
-
-    // In lossy mode, if the incoming data rate is higher than the outgoing data rate,
-    // the operator will drop the incoming data if the queue is full.
-    spec.param(lossy_,
-        "lossy",
-        "lossy",
-        "Lossy mode",
-        true);
+holoscan::Contract UdpTransmitterOp::contract() const
+{
+    holoscan::Contract result;
+    result.trigger(holoscan::OnEach { input });
+    return result;
 }
 
 void UdpTransmitterOp::start()
 {
-    thread_ = std::thread([this] {
-        // Create UDP socket
+    const auto& p = params();
+    const auto ip = p.ip;
+    const auto port = p.port;
+    const auto max_buffer_size = p.max_buffer_size;
+
+    if (max_buffer_size == 0) {
+        throw std::runtime_error("UdpTransmitterOp: max_buffer_size must be > 0");
+    }
+    if (max_buffer_size > max_udp_data_size) {
+        throw std::runtime_error(
+            fmt::format("UdpTransmitterOp: max_buffer_size {} exceeds the IPv4 UDP payload limit {}",
+                max_buffer_size, max_udp_data_size));
+    }
+
+    // Set before the thread exists, not from inside it: stop() may run before the new
+    // thread reaches its first statement, and a running_ = true executed in the thread
+    // after stop()'s running_ = false would strand the loop below forever.
+    running_ = true;
+    thread_ = std::thread([this, ip, port, max_buffer_size] {
         socket_ = socket(AF_INET, SOCK_DGRAM, 0);
         if (socket_ < 0) {
             perror("Socket creation failed");
@@ -80,57 +77,75 @@ void UdpTransmitterOp::start()
         // Configure server address
         memset(&destination_address_, 0, sizeof(destination_address_));
         destination_address_.sin_family = AF_INET;
-        destination_address_.sin_port = htons(destination_port_.get());
-        destination_address_.sin_addr.s_addr = inet_addr(destination_ip_.get().c_str());
+        destination_address_.sin_port = htons(port);
+        destination_address_.sin_addr.s_addr = inet_addr(ip.c_str());
 
-        running_ = true;
-        while (true) {
-            std::unique_lock<std::mutex> lock(mutex_);
-            cv_.wait(lock, [this] { return !running_ || (!tensor_queue_.empty()); });
-            if (!running_)
-                break;
-            auto tensor = std::move(tensor_queue_.front());
-            tensor_queue_.pop();
-            lock.unlock();
-            cv_.notify_all();
-            int64_t total_sz = tensor->nbytes();
-            if (total_sz == 0)
-                continue;
-
-            host_buffer_.resize(total_sz);
-            char* ptr = reinterpret_cast<char*>(host_buffer_.data());
-
-            cudaError_t cuda_status = cudaMemcpy(&host_buffer_.front(), tensor->data(), host_buffer_.size(), cudaMemcpyDeviceToHost);
-            if (cuda_status != cudaSuccess) {
-                HSB_LOG_ERROR("cudaMemcpy failed: {}", cudaGetErrorString(cuda_status));
-                continue;
-            }
-
-            int64_t offset = 0;
-            const int64_t max_buffer_size = static_cast<int64_t>(max_buffer_size_.get());
-            if (max_buffer_size <= 0) {
-                HSB_LOG_ERROR("Invalid max_buffer_size: {}. It must be > 0.", max_buffer_size);
-                continue;
-            }
-
-            while (offset < total_sz) {
-                int64_t current_chunk_size = std::min(max_buffer_size, total_sz - offset);
-
-                // Send data via UDP
-                auto bytes = ::sendto(
-                    socket_,
-                    ptr + offset,
-                    current_chunk_size,
-                    0,
-                    reinterpret_cast<sockaddr*>(&destination_address_),
-                    sizeof(destination_address_));
-
-                if (bytes < 0) {
-                    HSB_LOG_ERROR("UDP send failed: {} (errno: {})", strerror(errno), errno);
+        int current_cuda_device = -1;
+        try {
+            while (true) {
+                std::unique_lock<std::mutex> lock(mutex_);
+                cv_.wait(lock, [this] { return !running_ || !tensor_queue_.empty(); });
+                if (!running_)
                     break;
+                auto sample = std::move(tensor_queue_.front());
+                tensor_queue_.pop();
+                lock.unlock();
+                cv_.notify_all();
+
+                const auto& tensor = sample.data;
+                const int64_t total_bytes = tensor.nbytes();
+                if (total_bytes == 0)
+                    continue;
+
+                // Switch CUDA context to the tensor's source device when needed.
+                const DLDevice dev = tensor.device();
+                if (dev.device_type == kDLCUDA && dev.device_id != current_cuda_device) {
+                    cudaSetDevice(dev.device_id);
+                    current_cuda_device = dev.device_id;
                 }
-                offset += bytes;
+
+                // Wait for the producer's GPU work to finish, then copy to host.
+                if (auto r = tensor.synchronize_for_host(); !r)
+                    throw std::runtime_error(
+                        fmt::format("synchronize_for_host failed: {}",
+                            holoscan::error_code_name(r.error().code)));
+                host_buffer_.resize(total_bytes);
+                if (cudaMemcpy(host_buffer_.data(), tensor.data(), total_bytes, cudaMemcpyDeviceToHost)
+                    != cudaSuccess)
+                    throw std::runtime_error("cudaMemcpy DeviceToHost failed");
+
+                // A tensor may be larger than max_buffer_size, so split it across
+                // multiple UDP datagrams instead of silently truncating it.
+                int64_t offset = 0;
+                while (offset < total_bytes) {
+                    const int64_t chunk_size = std::min(
+                        static_cast<int64_t>(max_buffer_size), total_bytes - offset);
+
+                    auto bytes = ::sendto(
+                        socket_,
+                        host_buffer_.data() + offset,
+                        chunk_size,
+                        0,
+                        reinterpret_cast<sockaddr*>(&destination_address_),
+                        sizeof(destination_address_));
+
+                    if (bytes < 0)
+                        throw std::runtime_error(
+                            fmt::format("UDP send failed: {} (errno: {})", strerror(errno), errno));
+
+                    HSB_LOG_DEBUG("Socket: {}, Size: {}, Bytes sent: {}",
+                        socket_, chunk_size, bytes);
+
+                    offset += bytes;
+                }
             }
+        } catch (const std::exception& e) {
+            HSB_LOG_ERROR("UDP transmitter worker thread error: {}", e.what());
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                running_ = false;
+            }
+            cv_.notify_all();
         }
 
         if (socket_ >= 0) {
@@ -142,33 +157,51 @@ void UdpTransmitterOp::start()
 
 void UdpTransmitterOp::stop()
 {
-    running_ = false;
+    // The send loop re-checks running_ from cv_.wait's predicate, which it evaluates
+    // holding mutex_.  Clearing the flag without that mutex leaves a window where the
+    // predicate has already read running_ as true but the thread has not yet parked on
+    // cv_: the notify_all() below lands on an empty wait queue, is lost, and the thread
+    // sleeps until the next notify -- which never comes once the graph is stopping, so
+    // the join() below hangs forever.  Take mutex_ so the store cannot fall in that
+    // window.  This is the same deadlock that hung RoceTransmitterOp::stop().
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        running_ = false;
+    }
     cv_.notify_all();
     thread_.join();
 }
 
-void UdpTransmitterOp::compute(holoscan::InputContext& op_input, [[maybe_unused]] holoscan::OutputContext& op_output,
-    [[maybe_unused]] holoscan::ExecutionContext& context)
+holoscan::expected<void, holoscan::Error> UdpTransmitterOp::compute(
+    holoscan::ExecutionContext& /*context*/)
 {
-    auto maybe_tensor = op_input.receive<Tensor>(input_name);
-    if (!maybe_tensor) {
-        HSB_LOG_ERROR("Failed to receive message from port 'in'");
-        return;
+    auto maybe_sample = input.receive();
+    if (!maybe_sample) {
+        HSB_LOG_ERROR("Failed to receive message from port 'input'");
+        return holoscan::make_unexpected(std::move(maybe_sample).error());
     }
 
-    auto tensor = maybe_tensor.value();
-    queue_buffer(std::move(tensor));
+    enqueue(std::move(*maybe_sample));
+    return {};
 }
 
-void UdpTransmitterOp::queue_buffer(Tensor buffer)
+void UdpTransmitterOp::enqueue(holoscan::Sample<holoscan::Tensor> sample)
 {
+    const auto& p = params();
+    const auto queue_size = p.queue_size;
     std::unique_lock<std::mutex> lock(mutex_);
-    if (lossy_.get() && tensor_queue_.size() >= queue_size_.get()) {
+    if (p.lossy && tensor_queue_.size() >= queue_size) {
         HSB_LOG_DEBUG("Dropping buffer due to lossy mode and full queue");
         return;
     }
-    cv_.wait(lock, [this] { return tensor_queue_.size() < queue_size_.get(); });
-    tensor_queue_.push(std::move(buffer));
+    // Also exit the wait if the operator is shutting down, to avoid blocking
+    // the compute thread indefinitely when stop() is called mid-enqueue.
+    cv_.wait(lock, [this, queue_size] {
+        return !running_ || queue_size == 0 || tensor_queue_.size() < queue_size;
+    });
+    if (!running_)
+        return;
+    tensor_queue_.push(std::move(sample));
     lock.unlock();
     cv_.notify_all();
 }

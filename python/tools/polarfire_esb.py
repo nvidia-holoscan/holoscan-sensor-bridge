@@ -19,11 +19,9 @@ import argparse
 import hashlib
 import logging
 import os
+import stat
 import time
 import zipfile
-
-import requests
-import yaml
 
 import hololink as hololink_module
 
@@ -49,19 +47,44 @@ PFSRV_MBX_WDATA = 0x28
 SPI_CONN_ADDR = 0x03000000
 
 
+def _safe_extract(zip_ref, dest="."):
+    # The archive comes from a URL named by a YAML manifest, so treat its member
+    # names as untrusted. Validate every member up front, before anything is
+    # written to disk.
+    dest = os.path.realpath(dest)
+    prefix = dest + os.sep
+    for member in zip_ref.infolist():
+        # A symlink member could otherwise be restored first and used to
+        # redirect a later member out of dest.
+        if stat.S_ISLNK(member.external_attr >> 16):
+            raise ValueError(
+                f"Refusing to extract {member.filename!r}: archive contains a symlink"
+            )
+        # ".." components and absolute paths both land outside dest here.
+        target = os.path.realpath(os.path.join(dest, member.filename))
+        if target != dest and not target.startswith(prefix):
+            raise ValueError(
+                f"Refusing to extract {member.filename!r}: "
+                f"resolves to {target}, outside of {dest}"
+            )
+    zip_ref.extractall(dest)
+
+
 def download_extract(current_file_cfg):
     current_url = current_file_cfg.get("url", None)
     filename = current_file_cfg.get("filename", None)
     expected_md5 = current_file_cfg.get("md5", None)
 
     if current_url:
+        import requests  # only for downloading: --help runs without it
+
         r = requests.get(current_url, timeout=300)
         # parse URL to get last set of / before zip
         zipname = current_url.split("/")[-1]
         with open(zipname, "wb") as f:
             f.write(r.content)
         with zipfile.ZipFile(zipname) as zip_ref:
-            zip_ref.extractall(".")
+            _safe_extract(zip_ref, ".")
     with open(filename, "rb") as file_to_check:
         data = file_to_check.read()
         md5_returned = hashlib.md5(data).hexdigest()
@@ -96,6 +119,8 @@ def _spi_program(hololink):
 
 
 def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
+
+    import yaml  # only for the configuration: --help runs without PyYAML
 
     yaml_path = os.path.join(os.getcwd(), cfg_file)
     try:
@@ -133,6 +158,7 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
 
         in_spi = traditional_peripherals_py.get_traditional_spi(
             peer_ip=channel_metadata["peer_ip"],
+            peer_interface=channel_metadata["interface"],
             control_port=channel_metadata["control_port"],
             serial_number=channel_metadata["serial_number"],
             spi_address=spi_con_addr,
@@ -149,7 +175,7 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
             cpol=1,
             cpha=1,
             width=1,
-            prescaler=0x4,
+            clock_divisor=0x4,
         )
     with open(spi_filename, "rb") as f:
         content = list(f.read())
@@ -200,11 +226,21 @@ def _spi_flash(spi_con_addr, hololink, cfg_file, channel_metadata):
         logging.warning(f"Archive file {archive_filename} doesn't exist for cleanup")
 
 
-def manual_enumeration(args):
+def manual_enumeration(args, interface=""):
+    """Build a metadata blob for a board that never answered bootp.
+
+    `interface` names the NIC control-plane requests should leave by; it is
+    what enumeration would have recorded from the bootp reply's IP_PKTINFO.
+    The default of "" resolves to ifindex 0, which leaves egress selection to
+    the routing table -- the behavior this path has always had. Pass a real
+    NIC name when the routing table cannot pick correctly, e.g. two boards on
+    overlapping data-plane subnets.
+    """
     m = {
         "control_port": 8192,
         "hsb_ip_version": 0x2502,
         "peer_ip": args.hololink,
+        "interface": interface,
         "sequence_number_checking": 0,
         "serial_number": "100",
         "fpga_uuid": "ed6a9292-debf-40ac-b603-a24e025309c1",
@@ -245,7 +281,10 @@ def main():
     )
 
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
+    logging.basicConfig(
+        format="%(levelname)s %(filename)s:%(lineno)d %(funcName)s -- %(message)s",
+        level=args.log_level,
+    )
 
     # Get a handle to the Hololink device
 
@@ -259,7 +298,7 @@ def main():
         channel_metadata = manual_enumeration(args)
     else:
         channel_metadata = hololink_module.Enumerator.find_channel(
-            channel_ip="192.168.0.2"
+            channel_ip=args.hololink
         )
 
     hololink_channel = hololink_module.DataChannel(channel_metadata)

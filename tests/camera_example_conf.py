@@ -1,4 +1,6 @@
-import json
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import time
 
@@ -51,10 +53,6 @@ camera_properties = {
             "coe": {
                 1: "examples/linux_coe_single_vb1940_player.py",
                 2: "examples/linux_coe_stereo_vb1940_player.py",
-            },
-            "sipl": {
-                1: "examples/sipl_player.py",
-                2: "examples/sipl_player.py",
             },
             "roce": {
                 1: "examples/vb1940_player.py",
@@ -195,12 +193,12 @@ camera_properties = {
                 "pixel_format": hololink_module.sensors.csi.PixelFormat.RAW_10,
                 "bayer_format": hololink_module.sensors.csi.BayerFormat.RGGB,
             },
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value: {
+            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS.value: {
                 "start_bytes": 210,
                 "start_lines": 16,
                 "width": 3840,
                 "height": 2160,
-                "frame_rate": 60,
+                "frame_rate": 30,
                 "pixel_format": hololink_module.sensors.csi.PixelFormat.RAW_12,
                 "bayer_format": hololink_module.sensors.csi.BayerFormat.RGGB,
             },
@@ -255,12 +253,24 @@ def sleep_frame_rate(last_frame_time, frame_rate_per_second):
         time.sleep(delta_s)
 
 
-def handle_failed_subprocess(subprocess, name, kill=None):
+def handle_failed_subprocess(subprocess, name, kill=None, out_file=None, err_file=None):
     if kill:
         subprocess.kill()
     stdout, stderr = subprocess.communicate()
-    print(f"{name} subprocess stdout: \n{stdout.decode('utf-8', errors='replace')}")
-    print(f"{name} subprocess stderr: \n{stderr.decode('utf-8', errors='replace')}")
+
+    # A stream redirected to a file comes back from communicate() as None, and one
+    # that was never captured does too: report it as empty rather than raise here,
+    # in the error path, and hide the failure being reported.
+    def contents(file, data):
+        if file:
+            file.seek(0)
+            data = file.read()
+        return "" if data is None else data.decode("utf-8", errors="replace")
+
+    out_contents = contents(out_file, stdout)
+    err_contents = contents(err_file, stderr)
+    print(f"{name} subprocess stdout: \n{out_contents}")
+    print(f"{name} subprocess stderr: \n{err_contents}")
     print(f"{name} subprocess {kill=}")
 
 
@@ -428,36 +438,7 @@ single_camera_imx_loopback_cases_extended = [
     (
         "imx274",
         "linux",
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value,
-        False,
-    ),
-]
-
-# SIPL example utilities
-
-
-def get_camera_count_from_json_config(json_config):
-    with open(json_config, "r") as f:
-        config = json.load(f)
-    return len(config["cameraConfigs"])
-
-
-def has_sipl_interface():
-    try:
-        coe_channels = os.listdir("/sys/class/capture-coe-channel/")
-        return len(coe_channels) > 0
-    except FileNotFoundError:
-        return False
-
-
-# hardware accelerated tests for sipl transport. requires the "--hw-loopback" option/fixture
-# Note: because of the nature of SIPL capture configurations, the actual camera count for the tests
-# will be determined by the number of cameras in the JSON configuration file.
-vb1940_loopback_cases_sipl = [
-    (
-        "sipl",
-        None,
-        hololink_module.sensors.vb1940.vb1940_mode.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
+        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS.value,
         False,
     ),
 ]

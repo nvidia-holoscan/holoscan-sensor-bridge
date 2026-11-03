@@ -16,7 +16,6 @@
 import logging
 
 import hololink as hololink_module
-from hololink.sensors.camera import CameraSensor
 
 # Camera I2C address.
 I2C_ADDRESS = 0b00110100
@@ -34,13 +33,12 @@ BAYER_FORMAT = 108
 INITIALIZE = 199
 
 
-class MockCamera(CameraSensor):
-    """Mock camera sensor class."""
+class MockCamera:
+    """Mock camera sensor class. HSDK5 doesn't install the HSDK4
+    hololink.sensors.camera.CameraSensor base class; the test pipeline takes its
+    geometry from geometry() instead of configure_converter()."""
 
     def __init__(self, hololink_channel, i2c_bus=hololink_module.CAM_I2C_BUS):
-        # It is recommended to not use super()
-        # (https://pybind11.readthedocs.io/en/stable/advanced/classes.html#overriding-virtual-functions-in-python)
-        CameraSensor.__init__(self)
         self._hololink_channel = hololink_channel
         self._hololink = hololink_channel.hololink()
         self._i2c = self._hololink.get_i2c(i2c_bus)
@@ -86,7 +84,7 @@ class MockCamera(CameraSensor):
         reply = self._i2c.i2c_transaction(
             I2C_ADDRESS, serializer.data(), read_byte_count
         )
-        deserializer = hololink_module.Deserializer(reply)
+        deserializer = hololink_module.Deserializer(bytes(reply))
         r = deserializer.next_uint32_be()
         return r
 
@@ -118,6 +116,13 @@ class MockCamera(CameraSensor):
 
     def tap_watchdog(self, watchdog_timeout_s=20):
         self.set_register(WATCHDOG, watchdog_timeout_s)
+
+    def geometry(self):
+        """The CSI geometry CsiToBayerOp needs; the mock camera sends no header
+        and no trailing bytes."""
+        return hololink_module.resolve_generic_geometry_from_dimensions(
+            int(self._pixel_format.value), self._width, self._height
+        )
 
     # @override
     def configure_converter(self, converter):

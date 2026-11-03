@@ -32,9 +32,10 @@ target_include_directories(roce_receiver
   )
 
 target_link_libraries(roce_receiver
+  PUBLIC
+    hololink::operators::base_receiver_op
   PRIVATE
     hololink::core
-    hololink::operators::base_receiver_op
     CUDA::cuda_driver
     ${ibverbs_LIBRARIES}
   )

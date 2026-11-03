@@ -26,12 +26,20 @@ option(HOLOLINK_MODULE_BUILD_OPERATORS
 # (hololink::hsb_lite::headers, hololink::leopard_vb1940::headers) exist
 # by the time the per-sensor camera drivers link against them. host/
 # itself stays first because it defines hololink::module_headers,
-# which everything below depends on.
+# which everything below depends on. The PCIe transport is entirely
+# module-owned (module/hsb_pcie: the receiver service, its device access
+# and the kernel ABI mirrors included); host/ carries no transport
+# directory, PcieReceiverOp in host/operators reaches the receiver
+# through the service locator like RoceReceiverOp does.
 add_subdirectory(host)
 add_subdirectory(module/core)
+if(HOLOLINK_BUILD_PCIE)
+  add_subdirectory(module/hsb_pcie)
+endif()
 add_subdirectory(module/hsb_lite)
 add_subdirectory(module/hsb_lite_2510)
 add_subdirectory(module/leopard_vb1940)
+add_subdirectory(module/leopard_vb1940_2510)
 add_subdirectory(module/taurotech_da326)
 add_subdirectory(module/tutorial)
 add_subdirectory(host/operators)
@@ -75,4 +83,21 @@ if(HOLOLINK_BUILD_PYTHON)
         DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
         COMPONENT "hololink-python_libs"
         PATTERN "__pycache__" EXCLUDE)
+
+    # The Adapter locates the supplement .so files relative to the Python extension:
+    # <dir containing hololink_module/>/lib/hololink/modules (the pip-wheel layout). The
+    # install rule above puts them under ${CMAKE_INSTALL_PREFIX}/lib/hololink/modules,
+    # which a Python package installed elsewhere (e.g. /usr/local/lib/python3.x/dist-packages
+    # for a system interpreter) does not resolve to; install a copy beside the package too.
+    # Skipped when HOLOLINK_PYTHON_INSTALL_DIR is "." (the wheel build), where it is the
+    # same location as the rule above. The directory is "lib", not CMAKE_INSTALL_LIBDIR,
+    # because that is the name the Adapter appends.
+    if(NOT HOLOLINK_PYTHON_INSTALL_DIR STREQUAL ".")
+        install(
+            DIRECTORY "${CMAKE_BINARY_DIR}/lib/hololink/modules/"
+            DESTINATION "${HOLOLINK_PYTHON_INSTALL_DIR}/lib/hololink/modules"
+            FILE_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+            DIRECTORY_PERMISSIONS OWNER_READ OWNER_WRITE OWNER_EXECUTE GROUP_READ GROUP_EXECUTE WORLD_READ WORLD_EXECUTE
+            COMPONENT "hololink-python_libs")
+    endif()
 endif()

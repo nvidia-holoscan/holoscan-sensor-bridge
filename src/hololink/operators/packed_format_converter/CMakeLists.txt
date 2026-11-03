@@ -23,16 +23,33 @@ set_property(TARGET packed_format_converter PROPERTY POSITION_INDEPENDENT_CODE O
 
 add_library(hololink::operators::packed_format_converter ALIAS packed_format_converter)
 
+add_dependencies(packed_format_converter capture_metadata_schema_generated)
+
 target_include_directories(packed_format_converter
+  PUBLIC
+    $<BUILD_INTERFACE:${CAPTURE_METADATA_SCHEMA_GENERATED_DIR}>
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(packed_format_converter
+  PUBLIC
+    # packed_format_converter.hpp includes the generated capture_metadata_traits.hpp,
+    # which uses holoscan::schema types. capture_metadata_schema_generated alone may
+    # not carry holoscan::schema's own usage requirements to an installed consumer
+    # (unlike within this build tree); link it explicitly, matching base_receiver_op's
+    # INTERFACE link of the same (src/hololink/operators/CMakeLists.txt).
+    holoscan::schema
+    # packed_format_converter.hpp's output port is now schema::ImageT (the image-domain
+    # payload), which pulls in holoscan/sensor_io/sensor_schema_package.hpp for schema::ImageT
+    # itself. holoscan::schema alone does not carry sensor_io's own usage requirements to an
+    # installed consumer; link it explicitly, same reasoning as holoscan::schema above.
+    holoscan::sensor_io
   PRIVATE
     hololink
     holoscan::core
+    holoscan::schema
   )
 
 # Installation of the packed_format_converter operator

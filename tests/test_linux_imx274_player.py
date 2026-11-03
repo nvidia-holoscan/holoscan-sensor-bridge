@@ -20,16 +20,16 @@ from unittest import mock
 
 import pytest
 import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
 from examples import linux_imx274_player
 
 
 @pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
     ],
 )
 def test_linux_imx274_player(
@@ -47,16 +47,13 @@ def test_linux_imx274_player(
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        with mock.patch(
-            "hololink.operators.LinuxReceiverOperator",
-            utils.MockedLinuxReceiverOperator,
-        ):
-            linux_imx274_player.main()
+    # RunMonitor counts the frames the receiver emits, which v2.7 did with a
+    # subclass of the receiver operator.
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = linux_imx274_player.main()
 
-    # Make sure we actually did receive something;
-    # see utils.py to see how this is set
-    assert utils.receiver_count > 10
+    assert result == 0
+    monitor.assert_ok()
 
     # check for errors
     captured = capsys.readouterr()

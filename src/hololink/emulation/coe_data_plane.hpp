@@ -34,7 +34,7 @@ public:
      *
      * `def __init__(self: hemu.COEDataPlane, hsb_emulator: hemu.HSBEmulator, source_ip: hemu.IPAddress, data_plane_id: int, sensor_id: int)`
      *
-     * @brief Construct a new COEDataPlane object
+     * @brief Construct a new COEDataPlane object.
      * @param hsb_emulator The HSBEmulator object to attach to.
      * @param source_ip The IP address of the DataPlane.
      * @param data_plane_id The identifying index of the DataPlane.

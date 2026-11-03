@@ -19,9 +19,15 @@ import logging
 import time
 from enum import Enum
 
+import hololink.renesas_bajoran_lite_ts1  # noqa: F401 -- side-effect import; makes
+
 import hololink as hololink_module
 
 from . import li_i2c_expander
+
+# hololink_module.renesas_bajoran_lite_ts1.device_configuration() (used in setup_clock()
+# below) resolve without relying on import-order side effects.
+
 
 # Camera info
 DRIVER_NAME = "e-CAM0M30_TOF"
@@ -121,7 +127,10 @@ class ECam0M30Tof:
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported ECAM0M30TOF version:{version}, expected {VERSION}."
+            )
 
         # configure the sensor based on the mode
         self.configure_sensor(ecam0m30_tof_mode, depth_range)

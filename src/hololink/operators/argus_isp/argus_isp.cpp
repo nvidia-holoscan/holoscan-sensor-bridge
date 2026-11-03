@@ -15,8 +15,14 @@
  * limitations under the License.
  */
 
-#include <gxf/std/tensor.hpp>
-#include <holoscan/holoscan.hpp>
+#include <array>
+#include <chrono>
+#include <thread>
+#include <vector>
+
+#include <fmt/format.h>
+#include <fmt/ranges.h>
+
 #include <npp.h>
 
 #include "argus_isp.hpp"
@@ -27,21 +33,79 @@
 // ensure this includes the full definition of CameraProvider
 #include <hololink/operators/argus_isp/camera_provider.hpp>
 
+#include <hololink/common/cuda_helper.hpp>
+#include <hololink/core/logging_internal.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
+#include <holoscan/memory/tensor_storage.hpp>
+#include <holoscan/memory/unbounded_allocator.hpp>
+
 namespace hololink::operators {
+
+ArgusIspOp::ArgusIspOp(int bayer_format, float exposure_time_ms, float analog_gain,
+    int pixel_bit_depth,
+    std::shared_ptr<holoscan::Allocator> pool,
+    uint32_t camera_index, uint32_t sensor_mode_index)
+    : bayer_format_(bayer_format)
+    , exposure_time_ms_(exposure_time_ms)
+    , analog_gain_(analog_gain)
+    , pixel_bit_depth_(pixel_bit_depth)
+    , pool_(std::move(pool))
+    , camera_index_(camera_index)
+    , sensor_mode_index_(sensor_mode_index)
+{
+    if (!pool_)
+        pool_ = std::make_shared<holoscan::UnboundedAllocator>();
+}
+
+ArgusIspOp::~ArgusIspOp() = default;
 
 void ArgusIspOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.input<holoscan::gxf::Entity>("input");
-    spec.output<holoscan::gxf::Entity>("output");
+    // Input and output declaration names share one namespace per operator (Holoscan rejects
+    // reusing a name across inputs/outputs/readiness sources), so the input ports here use an
+    // "input_" prefix while the outputs keep the bare "tensor"/"metadata" names that downstream
+    // consumers (add_flow, bind_tensor_output_device) wire against.
+    (void)spec.input(input_tensor, "in_tensor")
+        .tensor_field(holoscan::schema::ImageTensorFields::data);
+    spec.input(input_metadata, "in_metadata");
+    // The RGB output is loaned from the runtime pool (like ImageProcessorOp), so that
+    // downstream operators such as HolovizOp can bind it. A plain make_tensor() allocation
+    // gives RUNTIME_PORT_BINDING_UNAVAILABLE downstream.
+    static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
+    static constexpr std::size_t kMaxOutputBytes = 64ULL * 1024 * 1024;
+    (void)spec.output(output_tensor, "tensor")
+        .max_emits_per_compute(1U)
+        .tensor_field(holoscan::schema::ImageTensorFields::data)
+        .produces_tensor(holoscan::TensorOutputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                .dtype = kUInt8,
+            },
+            .bounds = holoscan::TensorBounds {
+                .max_rank = 3U,
+                .max_byte_span = kMaxOutputBytes,
+            },
+            .storage = holoscan::TensorOutputStorage::kRuntimePool,
+        });
+    spec.output(output_metadata, "metadata").max_emits_per_compute(1U);
+}
 
-    spec.param(bayer_format_, "bayer_format", "BayerFormat", "Bayer format (one of hololink::operators::ArgusIspOp::BayerFormat)");
-    spec.param(exposure_time_ms_, "exposure_time_ms", "ExposureTimeMs", "Exposure set for the camera sensor in milliseconds");
-    spec.param(analog_gain_, "analog_gain", "AnalogGain", "Min analog gain");
-    spec.param(pixel_bit_depth_, "pixel_bit_depth", "PixelBitDepth", "Pixel bit depth of the Bayer frame");
-    spec.param(pool_, "pool", "Pool", "Pool to allocate the output message.");
-    spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName", "Name of the output tensor", std::string(""));
-    spec.param(camera_index_, "camera_index", "CameraIndex", "Argus camera index number");
-    spec.param(sensor_mode_index_, "sensor_mode_index", "SensorModeIndex", "Argus sensor mode index for the selected camera", 0u);
+holoscan::Contract ArgusIspOp::contract() const
+{
+    // Upstream stamps both ports with an identical capture_time, so OnAligned pairs them on an
+    // exact match (see kMetadataPairingWindow).
+    holoscan::Contract result;
+    result
+        .trigger(holoscan::OnAligned {
+            .ports = holoscan::ports(input_tensor, input_metadata),
+            .window = hololink::operators::kMetadataPairingWindow,
+        })
+        .input(input_tensor, holoscan::Exact {})
+        .input(input_metadata, holoscan::Exact {});
+    return result;
 }
 
 void ArgusIspOp::start()
@@ -62,18 +126,16 @@ void ArgusIspOp::start()
     argus_impl_->setup_camera_devices(camera_index_);
 
     // set sensormode.
-    const uint32_t sensor_mode_index = sensor_mode_index_.get();
-    argus_impl_->set_sensor_mode_info(sensor_mode_index);
+    argus_impl_->set_sensor_mode_info(sensor_mode_index_);
 
     // set reprocessing info
-    argus_impl_->set_reprocess_info(bayer_format_.get(), pixel_bit_depth_.get());
+    argus_impl_->set_reprocess_info(bayer_format_, pixel_bit_depth_);
 
     // set output stream
-    argus_impl_->setup_output_streams(sensor_mode_index);
+    argus_impl_->setup_output_streams(sensor_mode_index_);
 
     // Pipe the eglStreams for camera images to CUDA.
     CudaCheck(cuInit(0));
-    CUdevice cudaDevice;
     CudaCheck(cuDeviceGet(&cuda_device_, 0));
     CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
 
@@ -86,7 +148,7 @@ void ArgusIspOp::start()
     CudaCheck(cuEGLStreamConsumerConnect(&argus_impl_->cuda_egl_o_connection_,
         argus_impl_->i_egl_output_stream_->getEGLStream()));
 
-    argus_impl_->setup_capture_request(analog_gain_.get(), exposure_time_ms_.get());
+    argus_impl_->setup_capture_request(analog_gain_, exposure_time_ms_);
     argus_impl_->setup_input_streams();
 
     CudaCheck(cuEGLStreamProducerConnect(&argus_impl_->cuda_egl_i_connection_,
@@ -114,8 +176,9 @@ void ArgusIspOp::stop()
 
     camera_provider_.reset();
 
+    // Release held tensor references so EGL-backed buffers can be freed
     for (int i = 0; i < MaxNumberOfFrames; i++) {
-        tensor_pointers_[i].reset();
+        tensor_holders_[i].reset();
     }
 
     cuMemFree(device_ptr_nv12_);
@@ -123,53 +186,84 @@ void ArgusIspOp::stop()
     cuda_context_ = nullptr;
 }
 
-void ArgusIspOp::compute(holoscan::InputContext& input,
-    holoscan::OutputContext& output,
-    holoscan::ExecutionContext& context)
+holoscan::expected<void, holoscan::Error> ArgusIspOp::compute(holoscan::ExecutionContext& context)
 {
-    auto maybe_entity = input.receive<holoscan::gxf::Entity>("input");
-    if (!maybe_entity) {
-        throw std::runtime_error("Failed to receive input");
+    // kNotReady is a normal, expected outcome from any call in compute_impl() below (a
+    // clock-driven downstream consumer, e.g. HolovizOp, can trigger this operator's activation
+    // -- or contend for its output pool -- before new data/capacity has actually arrived) --
+    // drop this activation instead of failing the whole pipeline over it.
+    auto result = compute_impl(context);
+    if (!result && result.error().code == holoscan::ErrorCode::kNotReady) {
+        return {};
     }
+    return result;
+}
 
-    auto& entity = maybe_entity.value();
-
-    const auto input_tensor = entity.get<holoscan::Tensor>();
-    if (!input_tensor) {
-        throw std::runtime_error("Tensor not found in message");
+holoscan::expected<void, holoscan::Error> ArgusIspOp::compute_impl(holoscan::ExecutionContext& context)
+{
+    auto maybe_paired = hololink::operators::receive_paired_tensor_metadata(input_tensor, input_metadata);
+    if (!maybe_paired) {
+        return holoscan::make_unexpected(std::move(maybe_paired).error());
     }
+    if (!*maybe_paired) {
+        if (const uint64_t dropped = mismatched_frames_.count()) {
+            HSB_LOG_WARN("ArgusIspOp: dropped {} frame(s) in the last second whose payload and metadata "
+                         "were stamped as different frames",
+                dropped);
+        }
+        return {};
+    }
+    auto& paired = **maybe_paired;
+    const holoscan::schema::ImageT& in_image = paired.tensor.data;
+    const holoscan::Tensor& in_tensor = *in_image.data;
+    const hololink::CaptureMetadataT& in_frame = paired.metadata.data;
 
-    DLDevice input_device = input_tensor->device();
-
+    DLDevice input_device = in_tensor.device();
     if (input_device.device_type == kDLCUDAHost) {
-        throw std::runtime_error("The tensor is on the host");
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument, "The tensor is on the host" });
     } else if (!is_integrated_) {
-        throw std::runtime_error("The tensor is not on the iGPU");
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument, "The tensor is not on the iGPU" });
     }
 
-    if (input_tensor->ndim() != 3) {
-        throw std::runtime_error("Tensor must be an image");
+    if (in_tensor.ndim() != 3) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument, "Tensor must be an image" });
     }
 
-    DLDataType dtype = input_tensor->dtype();
+    DLDataType dtype = in_tensor.dtype();
     if (dtype.code != kDLUInt || dtype.bits != 16) {
-        throw std::runtime_error(fmt::format("Unexpected image data type '(code: {}, bits: {})',"
-                                             "expected '(code: {}, bits: {})'",
-            static_cast<int>(dtype.code), dtype.bits, static_cast<int>(kDLUInt), 16));
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unexpected image data type '(code: {}, bits: {})',"
+                        "expected '(code: {}, bits: {})'",
+                static_cast<int>(dtype.code), dtype.bits, static_cast<int>(kDLUInt), 16) });
     }
 
-    const auto input_shape = input_tensor->shape();
+    const auto input_shape = in_tensor.shape_span();
     const uint32_t height = input_shape[0];
     const uint32_t width = input_shape[1];
     const uint32_t components = input_shape[2];
     if (components != 1) {
-        throw std::runtime_error(fmt::format("Unexpected component count {}, expected '1'", components));
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unexpected component count {}, expected '1'", components) });
+    }
+    // The EGL frame below is handed the tensor's data with no row pitch (0): its rows must be
+    // dense.
+    const std::vector<int64_t> strides = in_tensor.strides();
+    if (strides.size() != 3 || strides[2] != int64_t(sizeof(uint16_t))
+        || strides[1] != int64_t(sizeof(uint16_t)) || strides[0] != int64_t(width) * int64_t(sizeof(uint16_t))) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unsupported image layout: byte strides [{}]; ArgusIspOp needs dense rows",
+                fmt::join(strides, ", ")) });
     }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    // Get the CUDA stream from the input message if present, otherwise generate one.
-    // This stream will also be transmitted on the output port.
-    cudaStream_t cuda_stream = input.receive_cuda_stream();
+    // Get the CUDA stream to use for this frame.
+    cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(context.cuda_stream().get());
 
     // Map the cuda pointer to the EGL frame
     size_t frame_index = frame_number_ % MaxNumberOfFrames;
@@ -183,86 +277,98 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     producerEglFrame[frame_index].eglColorFormat = CU_EGL_COLOR_FORMAT_BAYER_RGGB;
     producerEglFrame[frame_index].cuFormat = CU_AD_FORMAT_UNSIGNED_INT16;
 
-    tensor_pointers_[frame_index] = input_tensor->dl_ctx();
-    producerEglFrame[frame_index].frame.pPitch[0] = reinterpret_cast<void*>(input_tensor->data());
+    // Keep the input tensor alive while the EGL producer holds a reference to its data
+    tensor_holders_[frame_index] = in_tensor;
+    producerEglFrame[frame_index].frame.pPitch[0] = const_cast<void*>(in_tensor.data());
 
     CUresult r = cuEGLStreamProducerPresentFrame(&argus_impl_->cuda_egl_i_connection_,
         producerEglFrame[frame_index],
-        &cuda_stream);
+        reinterpret_cast<CUstream*>(&cuda_stream));
     if (r != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to present the frame to the cuEGLStream\n");
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to present the frame to the cuEGLStream" });
     }
 
     if (frame_number_ > 0) {
-        CUresult res;
         CUeglFrame frame;
-        do {
+        CUresult res;
+        constexpr int kMaxRetries = 100;
+        for (int attempt = 0; attempt < kMaxRetries; ++attempt) {
             res = cuEGLStreamProducerReturnFrame(&argus_impl_->cuda_egl_i_connection_,
                 &frame,
-                &cuda_stream);
-        } while (res != CUDA_SUCCESS);
+                reinterpret_cast<CUstream*>(&cuda_stream));
+            if (res == CUDA_SUCCESS)
+                break;
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        if (res != CUDA_SUCCESS) {
+            return holoscan::make_unexpected(holoscan::Error {
+                holoscan::ErrorCode::kFailure, "Failed to return the previous input frame" });
+        }
 
-        tensor_pointers_[(frame_number_ - 1) % MaxNumberOfFrames].reset();
+        // Release the previous frame's tensor now that the EGL producer returned it
+        tensor_holders_[(frame_number_ - 1) % MaxNumberOfFrames].reset();
     }
 
     Argus::ICaptureSession* i_capture_session = Argus::interface_cast<Argus::ICaptureSession>(argus_impl_->capture_session_);
     if (!i_capture_session) {
-        throw std::runtime_error("Failed to create CaptureSession in setup capture request");
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to create CaptureSession in setup capture request" });
     }
 
-    if (i_capture_session->capture(argus_impl_->request_.get()) == 0)
-        throw std::runtime_error("Failed to submit capture request");
+    if (i_capture_session->capture(argus_impl_->request_.get()) == 0) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to submit capture request" });
+    }
 
     CUgraphicsResource cuda_resource = { 0 };
     if (cuEGLStreamConsumerAcquireFrame(&argus_impl_->cuda_egl_o_connection_,
-            &cuda_resource, &cuda_stream, CUDA_EGL_INFINITE_TIMEOUT)
+            &cuda_resource, reinterpret_cast<CUstream*>(&cuda_stream), CUDA_EGL_INFINITE_TIMEOUT)
         != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to acquire frame from EGLStream");
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to acquire frame from EGLStream" });
     }
+
+    // Release the consumer frame on every exit path after this point.
+    auto release_consumer_frame = [&]() {
+        cuEGLStreamConsumerReleaseFrame(&argus_impl_->cuda_egl_o_connection_,
+            cuda_resource, reinterpret_cast<CUstream*>(&cuda_stream));
+    };
 
     CUeglFrame cuda_egl_frame;
     if (cuGraphicsResourceGetMappedEglFrame(&cuda_egl_frame, cuda_resource, 0, 0) != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to map output eglframe");
+        release_consumer_frame();
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to map output eglframe" });
     }
 
-    // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
-    auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
-        fragment()->executor().context(), pool_->gxf_cid());
-
-    nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
-        = CreateTensorMap(context.context(),
-            allocator.value(),
-            { { out_tensor_name_.get(),
-                nvidia::gxf::MemoryStorageType::kDevice,
-                nvidia::gxf::Shape { static_cast<int>(height),
-                    static_cast<int>(width),
-                    3 },
-                nvidia::gxf::PrimitiveType::kUnsigned8,
-                0,
-                nvidia::gxf::ComputeTrivialStrides(
-                    nvidia::gxf::Shape { static_cast<int>(height),
-                        static_cast<int>(width),
-                        3 },
-                    nvidia::gxf::PrimitiveTypeSize(nvidia::gxf::PrimitiveType::kUnsigned8)) } },
-            false);
-
-    if (!out_message) {
-        throw std::runtime_error("failed to create out_message\n");
+    // Loan the output tensor from the output port's runtime pool: (height, width, 3) uint8 RGB
+    // on device.
+    static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
+    const std::array<int64_t, 3> shape_arr { int64_t(height), int64_t(width), 3 };
+    auto loan = output_tensor.allocate_tensor(holoscan::TensorLoanRequest { .shape = shape_arr, .dtype = kUInt8 });
+    if (!loan) {
+        release_consumer_frame();
+        if (loan.error().code == holoscan::ErrorCode::kResourceExhausted) {
+            // Every pool slot is still held downstream: drop this frame.
+            if (const uint64_t dropped = dropped_frames_.count()) {
+                HSB_LOG_WARN("ArgusIspOp: dropped {} frame(s) in the last second because downstream "
+                             "was behind",
+                    dropped);
+            }
+            // The input frame was presented above, so advance as after an emitted frame: the next
+            // frame then takes the next slot, and the next return releases this frame's tensor.
+            frame_number_++;
+            return {};
+        }
+        return holoscan::make_unexpected(std::move(loan).error());
     }
-
-    const auto tensor = out_message.value().get<nvidia::gxf::Tensor>(out_tensor_name_.get().c_str());
-    if (!tensor) {
-        throw std::runtime_error(
-            fmt::format("failed to create out_tensor with name \"{}\"", out_tensor_name_.get()));
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        release_consumer_frame();
+        return holoscan::make_unexpected(std::move(writer).error());
     }
-
-    void* output_data_ptr = tensor.value()->pointer();
-    if (!output_data_ptr) {
-        throw std::runtime_error("output data_ptr is invalid\n");
-    }
-    // add the npp function
-    NppStreamContext npp_stream_ctx_ {};
-    npp_stream_ctx_.hStream = cuda_stream;
+    auto* const out_rgb_ptr = static_cast<Npp8u*>(writer->data());
 
     CUDA_MEMCPY2D pCopyParams;
     pCopyParams.srcY = 0u;
@@ -277,18 +383,26 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     pCopyParams.WidthInBytes = static_cast<unsigned int>(cuda_egl_frame.width);
     pCopyParams.Height = static_cast<unsigned int>(cuda_egl_frame.height);
     if (cuMemcpy2DAsync(&pCopyParams, cuda_stream) != CUDA_SUCCESS) {
-        throw std::runtime_error("Could not copy from Y array to device\n");
+        release_consumer_frame();
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Could not copy from Y array to device" });
     }
     pCopyParams.srcArray = cuda_egl_frame.frame.pArray[1];
     pCopyParams.dstY = static_cast<unsigned int>(cuda_egl_frame.height);
     pCopyParams.Height = static_cast<unsigned int>(cuda_egl_frame.height) / 2;
     if (cuMemcpy2DAsync(&pCopyParams, cuda_stream) != CUDA_SUCCESS) {
-        throw std::runtime_error("Could not copy from UV array to device\n");
+        release_consumer_frame();
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Could not copy from UV array to device" });
     }
 
     const auto in_y_ptr = reinterpret_cast<const uint8_t*>(device_ptr_nv12_);
     const auto in_uv_ptr = in_y_ptr + width * height;
     const uint8_t* in_y_uv_ptrs[2] = { in_y_ptr, in_uv_ptr };
+
+    // add the npp function
+    NppStreamContext npp_stream_ctx_ {};
+    npp_stream_ctx_.hStream = cuda_stream;
 
     NppiSize oSizeROI;
     oSizeROI.width = width;
@@ -296,23 +410,62 @@ void ArgusIspOp::compute(holoscan::InputContext& input,
     NppStatus status = nppiNV12ToRGB_709HDTV_8u_P2C3R_Ctx(
         in_y_uv_ptrs,
         width * sizeof(Npp8u),
-        static_cast<Npp8u*>(output_data_ptr),
+        out_rgb_ptr,
         width * sizeof(Npp8u) * 3,
         oSizeROI,
         npp_stream_ctx_);
     if (status != NPP_SUCCESS) {
-        throw std::runtime_error(fmt::format("Failed with \"{}\" to convert NV12 to RGB\n", static_cast<int>(status)));
+        release_consumer_frame();
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure,
+            fmt::format("Failed with \"{}\" to convert NV12 to RGB\n", static_cast<int>(status)) });
     }
-    // Emit the tensor
-    auto result = holoscan::gxf::Entity(std::move(out_message.value()));
 
-    if (cuEGLStreamConsumerReleaseFrame(&argus_impl_->cuda_egl_o_connection_, cuda_resource, &cuda_stream) != CUDA_SUCCESS) {
-        throw std::runtime_error("Failed to release the frame");
+    if (cuEGLStreamConsumerReleaseFrame(&argus_impl_->cuda_egl_o_connection_,
+            cuda_resource, reinterpret_cast<CUstream*>(&cuda_stream))
+        != CUDA_SUCCESS) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "Failed to release the frame" });
     }
 
     frame_number_++;
 
-    output.emit(result, "output");
+    // Pass every metadata field through unchanged (this operator only transforms the
+    // tensor payload from Bayer to RGB, not the frame's hardware metadata).
+    hololink::CaptureMetadataT out_metadata = hololink::operators::forward_metadata(in_frame);
+
+    // Both emits below share the ORIGINAL capture_time this frame arrived with (propagated,
+    // not re-minted -- see propagate_emit_options()), so downstream consumers' own bounded
+    // OnAligned pairing windows stay meaningful and capture_time keeps reflecting the real
+    // capture instant all the way through the pipeline.
+    const holoscan::EmitOptions emit_opts = hololink::operators::propagate_emit_options(
+        paired.tensor.metadata, static_cast<uint64_t>(in_frame.frame_number));
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        return holoscan::make_unexpected(std::move(committed).error());
+    }
+    holoscan::schema::ImageT out_descriptor;
+    out_descriptor.height = static_cast<int32_t>(height);
+    out_descriptor.width = static_cast<int32_t>(width);
+    out_descriptor.encoding = holoscan::schema::ImageEncoding_RGB8;
+    // color_space stays UNSPECIFIED. The BT.709 matrix in nppiNV12ToRGB_709HDTV_8u_P2C3R_Ctx
+    // above was used to convert from YUV; the RGB result carries no BT.709 claim, and HolovizOp
+    // accepts REC709 only on YUV layers, so labelling it would make the display reject it.
+    auto emitted = hololink::operators::emit_tensor_and_metadata(
+        [&] { return output_tensor.emit_tensor(std::move(*loan), out_descriptor, emit_opts); },
+        output_metadata, out_metadata, emit_opts);
+    if (!emitted) {
+        return holoscan::make_unexpected(std::move(emitted).error());
+    }
+    if (*emitted == hololink::operators::PairedEmit::kDropped) {
+        // A downstream queue is full: the frame is dropped rather than failing the run.
+        if (const uint64_t dropped = dropped_frames_.count()) {
+            HSB_LOG_WARN("ArgusIspOp: dropped {} frame(s) in the last second because downstream "
+                         "was behind",
+                dropped);
+        }
+    }
+    return {};
 }
 
 } // namespace hololink::operators

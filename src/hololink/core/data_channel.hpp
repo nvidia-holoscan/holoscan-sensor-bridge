@@ -20,8 +20,10 @@
 #ifndef SRC_HOLOLINK_DATA_CHANNEL
 #define SRC_HOLOLINK_DATA_CHANNEL
 
+#include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 
 #include <cuda.h>
 
@@ -78,18 +80,21 @@ constexpr uint32_t DP_HOST_MAC_LOW = 0x20;
 constexpr uint32_t DP_HOST_MAC_HIGH = 0x24;
 constexpr uint32_t DP_HOST_IP = 0x28;
 constexpr uint32_t DP_HOST_UDP_PORT = 0x2C;
+constexpr uint32_t DP_VLAN = 0x34; // TSN VLAN tag register
 
 class Enumerator;
 class Programmer;
 
-class DataChannel {
+// enable_shared_from_this lets a shared-owned channel hand out owners of itself, which is how
+// Python's hololink.DataChannel passes itself to an Operator as a constructor handle.
+class DataChannel : public std::enable_shared_from_this<DataChannel> {
     // Enumerator calls our methods to reconfigure Metadata.
     friend class Enumerator;
     friend class Programmer;
 
 public:
     /**
-     * @brief Construct a new DataChannel object
+     * @brief Construct a new DataChannel object.
      *
      * @param metadata
      */
@@ -103,8 +108,8 @@ public:
      * @brief
      *
      * @param metadata
-     * @return true
-     * @return false
+     * @return true.
+     * @return false.
      */
     static bool enumerated(const Metadata& metadata);
 
@@ -130,16 +135,30 @@ public:
     /**
      * @brief
      *
-     * @return std::shared_ptr<Hololink>
+     * @return std::shared_ptr<Hololink>.
      */
     std::shared_ptr<Hololink> hololink() const;
 
     /**
      * @brief
      *
-     * @return std::string
+     * @return std::string.
      */
     const std::string& peer_ip() const;
+
+    /**
+     * @brief The InfiniBand (RoCE) device and port that reach this channel's board.
+     *
+     * The device on the network interface that configure_roce() programs the board to send to:
+     * core::infiniband_device_for_peer() with the interface the board enumerated on. The RoCE
+     * operators use it when they're given no ibv_name.
+     *
+     * @param sysfs_root the InfiniBand class directory; tests pass a fake tree
+     * @returns the device name and port number, which are also logged
+     * @throws std::runtime_error naming the board and the interface when no device is bound to it
+     */
+    std::pair<std::string, uint32_t> infiniband_device(
+        const std::string& sysfs_root = "/sys/class/infiniband") const;
 
     /**
      * @brief
@@ -196,9 +215,9 @@ public:
     /**
      * Stamp 802.1Q VLAN parameters into the metadata so they are applied
      * automatically during configure_roce() / configure_coe().
-     * @param vlan_id    12-bit VLAN ID [1, 4094]
-     * @param sensor_pcp 3-bit PCP for the sensor data virtual port
-     * @param evt_pcp    3-bit PCP for the EVT channel
+     * @param vlan_id    12-bit VLAN ID [1, 4094].
+     * @param sensor_pcp 3-bit PCP for the sensor data virtual port.
+     * @param evt_pcp    3-bit PCP for the EVT channel.
      */
     static void use_vlan(Metadata& metadata, uint16_t vlan_id,
         uint8_t sensor_pcp, uint8_t evt_pcp);

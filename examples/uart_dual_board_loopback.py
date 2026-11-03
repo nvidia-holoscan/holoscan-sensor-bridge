@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,429 +13,327 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""
-Dual-board UART test using Holoscan operators.
+"""Test UART between two cross-wired boards using HSDK5.
 
-Physical wiring:
-  Board 1 GPIO 10 (TX) → Board 2 GPIO 11 (RX)
-  Board 2 GPIO 10 (TX) → Board 1 GPIO 11 (RX)
+Wire board 1 GPIO 10 (TX) to board 2 GPIO 11 (RX), board 2 GPIO 10 to
+board 1 GPIO 11, and connect a common ground. Run one process per board.
+Use matching UART settings. RTS/CTS flow control requires additional wiring.
 
-This app works like uart_loopback_app.py but with separate TX and RX boards.
-Uses chunked writes/reads to handle the 256-byte FIFO limitation.
+Start the receiver before the transmitter for one-way tests. The transmitter is not
+synchronised with the receiver and the boards' RX FIFOs hold 256 bytes, so a 512-byte
+burst that arrives while nobody is draining loses its second half: bytes 0-255 queue
+up, 256-510 are dropped (RX_OVERFLOW), and the UART core parks the last byte in its
+holding register until a slot frees. A receiver that starts reading between bursts
+then sees "half burst, parked last byte, next burst", which with the repeating default
+pattern looks like one burst with byte 255 duplicated at offset 256. A transmitter
+started after the receiver is a problem too: while it resets and reconfigures its
+board the TX line is not idle, and the receiver gets a 0x00 break frame ahead of the
+real burst. The receiver therefore discards whatever is queued, waits for the line to
+go quiet, and only accepts a capture whose first bytes match the expected prefix,
+resynchronising otherwise. For dual tests,
+start both processes within --startup-delay (increase it when using two terminals),
+and swap --test-string/--expected-rx-string between the boards. Dual mode writes
+and reads one 16-byte chunk at a time, exchanging an ACK byte after each chunk,
+so the default 512-byte messages do not require a 512-byte receive FIFO. Both
+boards must run this version of the chunk-and-ACK protocol.
 
-Usage:
-  # Option 1: Separate TX/RX on different boards
-  # Terminal 1 (Receiver):
-  python3 uart_dual_board_loopback.py --mode rx --hololink 192.168.2.2
-
-  # Terminal 2 (Transmitter):
-  python3 uart_dual_board_loopback.py --mode tx --hololink 192.168.0.2
-
-  # Option 2: Dual mode (both TX and RX on same board)
-  # Terminal 1 (Board 1):
-  python3 uart_dual_board_loopback.py --mode dual --hololink 192.168.0.2 --test-string "HELLO" --expected-rx-string "WORLD"
-
-  # Terminal 2 (Board 2):
-  python3 uart_dual_board_loopback.py --mode dual --hololink 192.168.2.2 --test-string "WORLD" --expected-rx-string "HELLO"
+UART is configured once by get_uart(). --cycle-limit counts completed transfers;
+receive timeouts, mismatches and runtime failures return a nonzero exit status.
 """
 
 import argparse
 import logging
-import os
+import sys
 import time
+from datetime import timedelta
 
-import holoscan
+import holoscan as hs
 
-import hololink as hololink_module
-
-
-class UartInitOp(holoscan.core.Operator):
-    """
-    Initializes and configures the UART with the provided parameters.
-    Emits a simple trigger to downstream operators when done.
-    """
-
-    def __init__(
-        self,
-        fragment,
-        hololink_channel,
-        uart,
-        port_number,
-        baud_rate=115200,
-        data_bits=8,
-        parity=0,
-        stop_bits=1,
-        flow_control=0,
-        *args,
-        **kwargs,
-    ):
-        self._hololink = hololink_channel.hololink()
-        self._uart = uart
-        self._port_number = port_number
-        self._baud_rate = baud_rate
-        self._data_bits = data_bits
-        self._parity = parity
-        self._stop_bits = stop_bits
-        self._flow_control = flow_control
-        super().__init__(fragment, *args, **kwargs)
-
-    def setup(self, spec: holoscan.core.OperatorSpec):
-        spec.output("configured_out")
-
-    def compute(self, op_input, op_output, context):
-        logging.info(
-            f"UartInitOp: configuring UART port={self._port_number} baud={self._baud_rate} data_bits={self._data_bits} parity={self._parity} stop_bits={self._stop_bits} flow_control={self._flow_control}"
-        )
-
-        # Configure UART
-        self._uart.uart_configure(
-            baud_rate=self._baud_rate,
-            data_bits=self._data_bits,
-            parity=self._parity,
-            stop_bits=self._stop_bits,
-            flow_control=self._flow_control,
-        )
-
-        logging.info("UartInitOp: UART configured - ready for communication")
-
-        # Give both boards time to configure
-        time.sleep(2.0)
-
-        # Emit to let downstream operators proceed
-        op_output.emit(True, "configured_out")
+import hololink as hl
 
 
-class UartTxOp(holoscan.core.Operator):
-    """
-    Transmitter operator - writes test data to UART in chunks.
-    Similar to UartLoopbackOp but only transmits (no readback).
-    """
+class _UartShared:
+    """One live UART handle and completion count for this process's graph."""
 
-    def __init__(
-        self,
-        fragment,
-        hololink_channel,
-        uart,
-        test_string,
-        sleep_time,
-        *args,
-        **kwargs,
-    ):
-        self._hololink = hololink_channel.hololink()
-        self._uart = uart
-        self._test_string = test_string
-        self._sleep_time = sleep_time
-        super().__init__(fragment, *args, **kwargs)
+    uart = None
+    completed_cycles = 0
 
-    def setup(self, spec: holoscan.core.OperatorSpec):
-        spec.input("configured_in")
-        spec.output("tx_done")  # Signal that transmission is complete
 
-    def compute(self, op_input, op_output, context):
-        _ = op_input.receive("configured_in")
-
-        logging.info(f"UartTxOp: current UART config: baud={self._uart.baud_rate()}")
-
-        # Write test string in chunks
-        try:
-            data = self._test_string.encode("utf-8")
-            chunk_size = 16  # Using smaller chunks for flow control (256-byte FIFO)
-            total_bytes = len(data)
-            num_chunks = (
-                total_bytes + chunk_size - 1
-            ) // chunk_size  # Ceiling division
-
-            logging.info(
-                f"UartTxOp: Writing {total_bytes} bytes in {num_chunks} chunks of {chunk_size} bytes: {self._test_string!r}"
+def _read_exact(uart, size, read_max_bytes, deadline):
+    """Read real bytes only; uart_read pads its result to the requested size."""
+    received = bytearray()
+    while len(received) < size:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"UART receive timeout: got {len(received)}/{size} bytes"
             )
+        count = min(read_max_bytes, 256, size - len(received))
+        data, bytes_read = uart.uart_read(count)
+        if not 0 <= bytes_read <= min(count, len(data)):
+            raise RuntimeError(f"Invalid UART read count: {bytes_read}")
+        received.extend(data[:bytes_read])
+        if not bytes_read:
+            time.sleep(0.001)
+    return bytes(received)
 
-            for i in range(0, total_bytes, chunk_size):
-                chunk = data[i : i + chunk_size]
-                chunk_num = i // chunk_size + 1
-                chunk_str = chunk.decode("utf-8", errors="replace")
 
-                logging.debug(
-                    f"UartTxOp: Sending chunk {chunk_num}/{num_chunks} ({len(chunk)} bytes): '{chunk_str}'"
+# A burst has no internal gaps longer than a few milliseconds at any supported baud
+# rate, while bursts are --sleep-time (2 s by default) apart, so half a second of
+# silence marks a burst boundary.
+_SYNC_IDLE_S = 0.5
+
+
+def _discard_until_idle(uart, read_max_bytes, deadline, idle_s=_SYNC_IDLE_S):
+    """Drop queued bytes until the line has been quiet for idle_s, so the next read
+    starts at a burst boundary (see the module docstring). Returns the bytes dropped."""
+    discarded = 0
+    quiet_since = time.monotonic()
+    while time.monotonic() - quiet_since < idle_s:
+        if time.monotonic() >= deadline:
+            raise TimeoutError(
+                f"UART line never went idle for {idle_s}s; discarded {discarded} bytes"
+            )
+        data, bytes_read = uart.uart_read(min(read_max_bytes, 256))
+        if bytes_read:
+            discarded += bytes_read
+            quiet_since = time.monotonic()
+        else:
+            time.sleep(0.001)
+    if discarded:
+        logging.warning(
+            "UART RX: discarded %d stale byte(s) queued before the first transfer "
+            "(the transmitter was already running)",
+            discarded,
+        )
+    return discarded
+
+
+# Bytes of the expected message that a capture must begin with to be accepted.
+_SYNC_PREFIX = 16
+
+
+def _capture_first_burst(uart, expected_data, read_max_bytes, deadline):
+    """Synchronise to the transmitter, then capture one message (module docstring).
+
+    Discard queued bytes, wait for the line to be quiet, then compare what arrives with
+    the first _SYNC_PREFIX expected bytes as it arrives; on the first mismatch (a 0x00
+    break frame from a peer that reset after we synced, or a burst we joined late),
+    drop it and start over. The real burst follows the glitch after a quiet gap and
+    is captured whole."""
+    probe = expected_data[:_SYNC_PREFIX]
+    while True:
+        _discard_until_idle(uart, read_max_bytes, deadline)
+        head = bytearray()
+        while len(head) < len(probe):
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"UART receive timeout: got {len(head)}/{len(expected_data)} bytes"
                 )
-
-                self._uart.uart_write(chunk)
-
-            logging.info(f"UartTxOp: Transmission complete - sent {total_bytes} bytes")
-            logging.info(
-                "\n\n============================================================================================================================\n\n"
+            count = min(read_max_bytes, 256, len(probe) - len(head))
+            data, bytes_read = uart.uart_read(count)
+            if not bytes_read:
+                time.sleep(0.001)
+                continue
+            head.extend(data[:bytes_read])
+            if not probe.startswith(bytes(head)):
+                break
+        if bytes(head) == probe:
+            rest = _read_exact(
+                uart, len(expected_data) - len(probe), read_max_bytes, deadline
             )
-
-            # Emit signal that transmission is done (for dual mode)
-            op_output.emit(True, "tx_done")
-
-            # Allow time before next cycle
-            time.sleep(self._sleep_time)
-
-        except Exception as e:
-            logging.error(f"UART write failed: {e}")
+            return bytes(head) + rest
+        logging.warning(
+            "UART RX: leading bytes %r do not match the expected %r; "
+            "discarding and resynchronising",
+            bytes(head),
+            probe,
+        )
 
 
-class UartRxOp(holoscan.core.Operator):
-    """
-    Receiver operator - reads data from UART in chunks.
-    Similar to UartLoopbackOp but only receives (no write).
-    """
+def _transfer(
+    uart, mode, tx_data, expected_data, read_max_bytes, read_timeout, first=False
+):
+    """One transfer; dual peers drain each other's FIFO after each small write.
 
-    def __init__(
-        self,
-        fragment,
-        hololink_channel,
-        uart,
-        expected_string,
-        read_max_bytes,
-        sleep_time,
-        *args,
-        **kwargs,
-    ):
-        self._hololink = hololink_channel.hololink()
-        self._uart = uart
-        self._expected_string = expected_string
-        self._read_max_bytes = read_max_bytes
-        self._sleep_time = sleep_time
-        super().__init__(fragment, *args, **kwargs)
-
-    def setup(self, spec: holoscan.core.OperatorSpec):
-        spec.input("configured_in")
-
-    def compute(self, op_input, op_output, context):
-        _ = op_input.receive("configured_in")
-
-        logging.info(f"UartRxOp: current UART config: baud={self._uart.baud_rate()}")
-
-        # Read test string from FIFO
-        try:
-            expected_data = self._expected_string.encode("utf-8")
-            total_bytes = len(expected_data)
-
-            logging.info(f"UartRxOp: Expecting {total_bytes} bytes")
-
-            # Initialize accumulators
-            received = bytearray()
-            start_time = time.time()
-            timeout = 30.0
-
-            # Read from FIFO until we have all expected bytes
-            while len(received) < total_bytes:
-                if time.time() - start_time > timeout:
-                    logging.error(
-                        f"UartRxOp: TIMEOUT! Got {len(received)}/{total_bytes} bytes"
+    first: in rx mode, resynchronise to a burst boundary before capturing."""
+    chunk_size = 16
+    deadline = time.monotonic() + read_timeout
+    received = bytearray()
+    size = max(len(tx_data), len(expected_data)) if mode == "dual" else len(tx_data)
+    if mode == "rx":
+        if first:
+            received.extend(
+                _capture_first_burst(uart, expected_data, read_max_bytes, deadline)
+            )
+        else:
+            received.extend(
+                _read_exact(uart, len(expected_data), read_max_bytes, deadline)
+            )
+    else:
+        for offset in range(0, size, chunk_size):
+            chunk = tx_data[offset : offset + chunk_size]
+            if chunk:
+                # Explicit list is accepted by the native std::vector<uint8_t> binding.
+                uart.uart_write(list(chunk))
+            if mode == "dual":
+                expected_chunk = expected_data[offset : offset + chunk_size]
+                actual = _read_exact(
+                    uart, len(expected_chunk), read_max_bytes, deadline
+                )
+                if actual != expected_chunk:
+                    raise RuntimeError(
+                        f"UART mismatch at byte {offset}: "
+                        f"expected {expected_chunk!r}, received {actual!r}"
                     )
-                    break
-
-                # Read whatever is available in FIFO (up to remaining bytes needed)
-                bytes_to_read = min(
-                    self._read_max_bytes, 256, total_bytes - len(received)
-                )  # Respect user-specified read_max_bytes, FIFO limit (256), and remaining bytes
-                rx, bytes_read = self._uart.uart_read(bytes_to_read)
-
-                if bytes_read > 0:
-                    # Filter out null bytes (empty FIFO reads)
-                    real_data = bytes([b for b in rx if b != 0])
-                    if len(real_data) > 0:
-                        received.extend(real_data)
-                        logging.debug(
-                            f"UartRxOp: Read {len(real_data)} bytes (total: {len(received)}/{total_bytes})"
-                        )
-
-            # Decode received data
-            rx_str = received.decode("utf-8", errors="replace")
-            logging.info(f"UartRxOp: Read {len(received)} total bytes: {rx_str!r}")
-
-            # Compare received string to expected one
-            if rx_str == self._expected_string:
-                logging.info("UartRxOp: SUCCESS! Data matches perfectly!")
-            else:
-                logging.error("UartRxOp: MISMATCH!")
-                logging.error(f"  Expected: {self._expected_string!r}")
-                logging.error(f"  Received: {rx_str!r}")
-
-            logging.info(
-                "\n\n============================================================================================================================\n\n"
+                received.extend(actual)
+                # Even an exhausted sender participates: without this barrier,
+                # unequal message lengths let the remaining sender overflow RX.
+                uart.uart_write([0x06])
+                ack = _read_exact(uart, 1, read_max_bytes, deadline)
+                if ack != b"\x06":
+                    raise RuntimeError(f"UART chunk acknowledgment mismatch: {ack!r}")
+    if mode != "tx":
+        if received != expected_data:
+            raise RuntimeError(
+                f"UART mismatch: expected {expected_data!r}, received {bytes(received)!r}"
             )
-
-            # Allow time before next cycle
-            time.sleep(self._sleep_time)
-
-        except Exception as e:
-            logging.error(f"UART read failed: {e}")
+        logging.info("UART SUCCESS: verified %d bytes", len(received))
+    else:
+        logging.info("UART TX: wrote %d bytes (no receive verification)", len(tx_data))
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        hololink_channel,
-        channel_metadata,
-        port_number,
-        baud_rate,
-        test_string,
-        read_max_bytes,
-        sleep_time,
-        cycle_limit,
-        mode,  # 'tx', 'rx', or 'dual'
-        expected_rx_string=None,  # For dual mode
-        data_bits=8,
-        parity=0,
-        stop_bits=1,
-        flow_control=0,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._hololink_channel = hololink_channel
-        self._channel_metadata = channel_metadata
-        self._hololink = hololink_channel.hololink()
-        self._port_number = port_number
-        self._baud_rate = baud_rate
-        self._data_bits = data_bits
-        self._parity = parity
-        self._stop_bits = stop_bits
-        self._flow_control = flow_control
-        self._test_string = test_string
-        self._read_max_bytes = read_max_bytes
-        self._sleep_time = sleep_time
-        self._cycle_limit = cycle_limit
-        self._mode = mode
-        self._expected_rx_string = expected_rx_string or test_string
+class UartTransferOp(hs.Operator):
+    """Keep configuration, transfer completion and cycle pacing serial."""
 
-    def compose(self):
-        logging.info("compose")
+    mode = hs.Param("dual")
+    test_string = hs.Param("")
+    expected_string = hs.Param("")
+    read_max_bytes = hs.Param(256)
+    sleep_time = hs.Param(2.0)
+    startup_delay = hs.Param(2.0)
+    read_timeout = hs.Param(30.0)
+    cycle_limit = hs.Param(0)
 
-        # Create the UART instance to be shared with the operators
-        self._uart = self._hololink.get_uart(
-            self._port_number,
-            self._baud_rate,
-            self._data_bits,
-            self._parity,
-            self._stop_bits,
-            self._flow_control,
-        )
+    def setup(self, spec):
+        pass
 
-        # Conditions support cycle-limit
-        if self._cycle_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._cycle_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
+    def contract(self):
+        return hs.Contract().trigger(hs.OnClock(period=timedelta(milliseconds=10)))
 
-        uart_init = UartInitOp(
-            self,
-            self._hololink_channel,
+    def start(self):
+        self._uart = _UartShared.uart
+        self._count = 0
+        self._next_cycle = time.monotonic() + self.startup_delay
+
+    def compute(self, context):
+        if self.cycle_limit and self._count >= self.cycle_limit:
+            context.request_stop()
+            return
+        if time.monotonic() < self._next_cycle:
+            return
+        _transfer(
             self._uart,
-            self._port_number,
-            self._baud_rate,
-            self._data_bits,
-            self._parity,
-            self._stop_bits,
-            self._flow_control,
-            condition,
-            name="uart_init",
+            self.mode,
+            self.test_string.encode("utf-8"),
+            self.expected_string.encode("utf-8"),
+            self.read_max_bytes,
+            self.read_timeout,
+            first=(self._count == 0),
         )
+        self._count += 1
+        _UartShared.completed_cycles = self._count
+        logging.info("UART completed cycles: %d", self._count)
+        self._next_cycle = time.monotonic() + self.sleep_time
+        if self.cycle_limit and self._count >= self.cycle_limit:
+            context.request_stop()
 
-        if self._mode == "tx":
-            # Transmitter mode
-            uart_tx = UartTxOp(
-                self,
-                self._hololink_channel,
-                self._uart,
-                self._test_string,
-                self._sleep_time,
-                name="uart_tx",
-            )
 
-            self.add_flow(
-                uart_init,
-                uart_tx,
-                {
-                    ("configured_out", "configured_in"),
-                },
+def run(
+    hololink_ip,
+    mode,
+    port_number,
+    baud_rate,
+    data_bits,
+    parity,
+    stop_bits,
+    flow_control,
+    test_string,
+    expected_rx_string,
+    read_max_bytes,
+    sleep_time,
+    cycle_limit,
+    startup_delay=2.0,
+    read_timeout=30.0,
+):
+    metadata = hl.find_channel(hololink_ip)
+    channel = hl.DataChannel(metadata)
+    hololink_dev = channel.hololink()
+    _UartShared.completed_cycles = 0
+    try:
+        hololink_dev.start()
+        hololink_dev.reset()
+        # get_uart configures and resets the FIFOs once; never reconfigure mid-transfer.
+        _UartShared.uart = hololink_dev.get_uart(
+            port_number, baud_rate, data_bits, parity, stop_bits, flow_control
+        )
+        logging.info(
+            "UART configured; waiting %.1f seconds for peer startup", startup_delay
+        )
+        graph = hs.Graph("uart_dual_board_loopback")
+        graph.op(
+            UartTransferOp,
+            "uart_transfer",
+            mode=mode,
+            test_string=test_string,
+            expected_string=expected_rx_string,
+            read_max_bytes=read_max_bytes,
+            sleep_time=sleep_time,
+            startup_delay=startup_delay,
+            read_timeout=read_timeout,
+            cycle_limit=cycle_limit or 0,
+        )
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+        plan = hs.compile(graph, hs.CompileOptions())
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+        interrupted = False
+        with hs.run_async(plan) as session:
+            try:
+                session.wait()
+            except KeyboardInterrupt:
+                interrupted = True
+                session.request_stop()
+                session.wait()
+            failed = any(
+                diag.severity == hs.diagnostics.DiagnosticSeverity.ERROR
+                for diag in session.diagnostics
             )
-
-        elif self._mode == "rx":
-            # Receiver mode
-            uart_rx = UartRxOp(
-                self,
-                self._hololink_channel,
-                self._uart,
-                self._test_string,  # Expected string
-                self._read_max_bytes,
-                self._sleep_time,
-                name="uart_rx",
-            )
-
-            self.add_flow(
-                uart_init,
-                uart_rx,
-                {
-                    ("configured_out", "configured_in"),
-                },
-            )
-
-        elif self._mode == "dual":
-            # Dual mode: both TX and RX
-            uart_tx = UartTxOp(
-                self,
-                self._hololink_channel,
-                self._uart,
-                self._test_string,  # String to transmit
-                self._sleep_time,
-                name="uart_tx",
-            )
-
-            uart_rx = UartRxOp(
-                self,
-                self._hololink_channel,
-                self._uart,
-                self._expected_rx_string,  # Expected string from other board
-                self._read_max_bytes,
-                self._sleep_time,
-                name="uart_rx",
-            )
-
-            # Flow: init -> tx -> rx
-            self.add_flow(
-                uart_init,
-                uart_tx,
-                {
-                    ("configured_out", "configured_in"),
-                },
-            )
-            self.add_flow(
-                uart_tx,
-                uart_rx,
-                {
-                    ("tx_done", "configured_in"),  # TX completes, then RX starts
-                },
-            )
-
-        else:
-            raise ValueError(
-                f"Invalid mode: {self._mode}. Must be 'tx', 'rx', or 'dual'"
-            )
+            if failed:
+                for diag in session.diagnostics:
+                    if diag.severity == hs.diagnostics.DiagnosticSeverity.ERROR:
+                        print(f"  {diag}", file=sys.stderr)
+        if failed:
+            return 1
+        if interrupted:
+            return 130
+        if cycle_limit and _UartShared.completed_cycles < cycle_limit:
+            logging.error("UART stopped before the requested cycle limit")
+            return 1
+        return 0
+    finally:
+        try:
+            hololink_dev.stop()
+        finally:
+            _UartShared.uart = None
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dual-board UART test using Holoscan operators"
-    )
-
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-    parser.add_argument(
-        "--configuration",
-        default=default_configuration,
-        help="Configuration file",
+        description="Dual-board UART test using HSDK5 operators"
     )
     parser.add_argument(
         "--hololink",
@@ -455,8 +353,6 @@ def main():
         default=20,
         help="Logging level to display",
     )
-
-    # UART parameters
     parser.add_argument(
         "--port-number",
         type=int,
@@ -499,7 +395,7 @@ def main():
         help="UART flow control [0=None, 1=RTS/CTS]",
     )
 
-    # Create a 512-byte test string with repeating pattern for easy verification
+    # Create a 512-byte test string with repeating pattern for easy verification.
     test_pattern = "0123456789ABCDEF"  # 16 bytes
     default_test_string = test_pattern * 32  # 16 * 32 = 512 bytes
 
@@ -511,7 +407,7 @@ def main():
     parser.add_argument(
         "--expected-rx-string",
         default=None,
-        help="Expected string to receive (for dual mode, defaults to test-string if not specified)",
+        help="Expected string to receive (rx and dual modes; defaults to test-string if not specified)",
     )
     parser.add_argument(
         "--read-max-bytes",
@@ -530,14 +426,40 @@ def main():
         type=int,
         help="Limit the number of cycles for the application; by default this runs forever.",
     )
-
+    parser.add_argument(
+        "--startup-delay",
+        type=float,
+        default=2.0,
+        help="Seconds before the first transfer; start both dual peers within this interval",
+    )
+    parser.add_argument(
+        "--read-timeout",
+        type=float,
+        default=30.0,
+        help="Receive deadline per transfer [seconds]",
+    )
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
+    if args.port_number != 0:
+        parser.error("Only UART port 0 is supported")
+    if not 1 <= args.read_max_bytes <= 256:
+        parser.error("--read-max-bytes must be between 1 and 256")
+    if args.cycle_limit is not None and args.cycle_limit <= 0:
+        parser.error("--cycle-limit must be positive")
+    if args.sleep_time < 0 or args.startup_delay < 0 or args.read_timeout <= 0:
+        parser.error("Delays must be nonnegative and --read-timeout must be positive")
+    expected_rx = (
+        args.test_string if args.expected_rx_string is None else args.expected_rx_string
+    )
+    for message in (args.test_string, expected_rx):
+        if not message:
+            parser.error("Test and expected strings must be nonempty")
+        if any(byte >= (1 << args.data_bits) for byte in message.encode("utf-8")):
+            parser.error("Message bytes do not fit the selected --data-bits")
+
+    logging.basicConfig(level=args.log_level)
 
     logging.info("=" * 80)
-    logging.info(
-        f"UART Dual-Board Test (Holoscan Operators) - Mode: {args.mode.upper()}"
-    )
+    logging.info(f"UART Dual-Board Test (HSDK5 Operators) - Mode: {args.mode.upper()}")
     logging.info("=" * 80)
     logging.info(f"Board IP: {args.hololink}")
     if args.mode == "tx":
@@ -545,48 +467,32 @@ def main():
         logging.info(f"TX String: {args.test_string!r} ({len(args.test_string)} bytes)")
     elif args.mode == "rx":
         logging.info("Mode: RECEIVER")
-        logging.info(
-            f"Expected RX: {args.test_string!r} ({len(args.test_string)} bytes)"
-        )
+        logging.info(f"Expected RX: {expected_rx!r} ({len(expected_rx)} bytes)")
     else:  # dual
         logging.info("Mode: DUAL (TX + RX)")
         logging.info(f"TX String: {args.test_string!r} ({len(args.test_string)} bytes)")
-        expected_rx = args.expected_rx_string or args.test_string
         logging.info(f"Expected RX: {expected_rx!r} ({len(expected_rx)} bytes)")
     logging.info("=" * 80)
 
-    logging.info("Initializing...")
-
-    # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-
-    # Set up the application
-    expected_rx_string = args.expected_rx_string or args.test_string
-    application = HoloscanApplication(
-        hololink_channel,
-        channel_metadata,
-        args.port_number,
-        args.baud_rate,
-        args.test_string,
-        args.read_max_bytes,
-        args.sleep_time,
-        args.cycle_limit,
-        args.mode,
-        expected_rx_string,
-        args.data_bits,
-        args.parity,
-        args.stop_bits,
-        args.flow_control,
+    sys.exit(
+        run(
+            args.hololink,
+            args.mode,
+            args.port_number,
+            args.baud_rate,
+            args.data_bits,
+            args.parity,
+            args.stop_bits,
+            args.flow_control,
+            args.test_string,
+            expected_rx,
+            args.read_max_bytes,
+            args.sleep_time,
+            args.cycle_limit,
+            args.startup_delay,
+            args.read_timeout,
+        )
     )
-    application.config(args.configuration)
-
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    hololink.reset()
-    application.run()
-    hololink.stop()
 
 
 if __name__ == "__main__":

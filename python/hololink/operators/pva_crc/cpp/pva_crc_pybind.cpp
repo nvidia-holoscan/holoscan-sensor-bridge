@@ -1,14 +1,20 @@
-// SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 // SPDX-License-Identifier: Apache-2.0
 //
-// PyBind11 wrapper for PVA CRC
+// Nanobind wrapper for PVA CRC (HSDK5; this file was pybind11 pre-rewrite -- see
+// python/hololink/_hololink.cpp's own header comment for the project-wide switch). PvaCrcPython
+// itself is unchanged from the pre-rewrite version: it has no Holoscan or binding-framework
+// dependency of its own, just input-validating wrapping of hololink::PvaCrc
+// (src/hololink/operators/pva_crc/pva_crc.hpp) -- a precompiled library; this file and that
+// header are all a caller needs.
 
 #include <hololink/operators/pva_crc/pva_crc.hpp>
 #include <memory>
-#include <pybind11/pybind11.h>
+#include <nanobind/nanobind.h>
 #include <stdexcept>
 
-namespace py = pybind11;
+namespace nb = nanobind;
+using namespace nb::literals;
 
 // Wrapper class to provide Python-friendly API
 class PvaCrcPython {
@@ -108,7 +114,7 @@ private:
     std::unique_ptr<PvaCrc> m_pva;
 };
 
-PYBIND11_MODULE(pva_crc, m)
+NB_MODULE(pva_crc, m)
 {
     m.doc() = "PVA Hardware-Accelerated CRC32 Computation - Async API\n\n"
               "This module provides Python bindings to NVIDIA PVA (Programmable Vision Accelerator)\n"
@@ -121,14 +127,14 @@ PYBIND11_MODULE(pva_crc, m)
               "    result = crc.check_results(fence, output_crc.data.ptr, timeout_us=2000)\n"
               "    if result == 0: crc.free_fence(fence)  # Complete!\n";
 
-    py::class_<PvaCrcPython>(m, "PvaCrc")
-        .def(py::init<>(), "Create a new PVA CRC instance")
+    nb::class_<PvaCrcPython>(m, "PvaCrc")
+        .def(nb::init<>(), "Create a new PVA CRC instance")
 
         .def("initialize", &PvaCrcPython::initialize,
-            py::arg("data_size"),
-            py::arg("remaining_size") = 0,
-            py::arg("is_first_chunk") = true,
-            py::arg("use_dual_vpu") = false,
+            "data_size"_a,
+            "remaining_size"_a = 0,
+            "is_first_chunk"_a = true,
+            "use_dual_vpu"_a = false,
             "Initialize PVA CRC with 1D buffer size (NEW API with dual VPU support).\n\n"
             "Args:\n"
             "    data_size: Size of buffer in bytes (must be multiple of 4, min 32KB, max 12MB)\n"
@@ -140,7 +146,7 @@ PYBIND11_MODULE(pva_crc, m)
             "    RuntimeError: If initialization fails")
 
         .def("launch_compute", &PvaCrcPython::launch_compute,
-            py::arg("input_ptr"),
+            "input_ptr"_a,
             "Launch async CRC computation (non-blocking).\n\n"
             "Args:\n"
             "    input_ptr: GPU memory address (from CuPy array.data.ptr)\n\n"
@@ -150,9 +156,9 @@ PYBIND11_MODULE(pva_crc, m)
             "    RuntimeError: If not initialized or launch fails")
 
         .def("check_results", &PvaCrcPython::check_results,
-            py::arg("fence_handle"),
-            py::arg("output_ptr"),
-            py::arg("timeout_us") = 0,
+            "fence_handle"_a,
+            "output_ptr"_a,
+            "timeout_us"_a = 0,
             "Check if computation is complete and retrieve results.\n\n"
             "Args:\n"
             "    fence_handle: Fence from launch_compute()\n"
@@ -163,7 +169,7 @@ PYBIND11_MODULE(pva_crc, m)
             "The output buffer must be sizeof(uint32_t) bytes (single CRC value)")
 
         .def("free_fence", &PvaCrcPython::free_fence,
-            py::arg("fence_handle"),
+            "fence_handle"_a,
             "Free fence handle after retrieving results.\n\n"
             "Args:\n"
             "    fence_handle: Fence from launch_compute()")

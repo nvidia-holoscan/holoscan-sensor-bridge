@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <thread>
 
 #include "hololink.hpp"
@@ -62,16 +63,26 @@ public:
 class SpiDaemonThread {
 public:
     explicit SpiDaemonThread(Hololink& hololink, JESDConfig& jesd_config);
+    // Stops the thread.
+    ~SpiDaemonThread();
+
+    SpiDaemonThread(const SpiDaemonThread&) = delete;
+    SpiDaemonThread& operator=(const SpiDaemonThread&) = delete;
 
     /**
-     * Starts the thread and blocks until the SPI daemon is connected.
+     * Starts the thread and blocks until the SPI daemon is connected. Throws if the thread
+     * ends first (e.g. it can't listen).
      */
     void run();
 
     /**
-     * Stops the thread and blocks until it's complete.
+     * Stops the thread and blocks until it's complete. Safe to call more than once; a stopped
+     * thread can't be run again.
      */
     void stop();
+
+    // True once the thread has ended: stopped, disconnected by the daemon, or failed.
+    bool finished() const noexcept;
 
 protected:
     // Message types and definition, must match SPI Daemon's definition.
@@ -117,8 +128,16 @@ protected:
     JESDConfig& jesd_config_;
     std::thread thread_;
     std::atomic<bool> running_;
+    std::atomic<bool> stopping_;
+    std::atomic<bool> finished_;
+    // The sockets thread_func() blocks on; stop() shuts them down to wake it.
+    std::mutex sockets_mutex_;
+    int server_fd_;
+    int sock_fd_;
 
     void thread_func();
+    void serve();
+    bool adopt_socket(int& member, int fd);
     int execute_jesd(int jesd_state);
 };
 
@@ -130,14 +149,21 @@ protected:
 class AD9986Config : public JESDConfig {
 public:
     explicit AD9986Config(Hololink& hololink);
+    // Stops the SPI daemon thread.
+    ~AD9986Config() override;
 
     // Set the host pause mapping for the AD9986.
     // 0x01: Interface 0
     // 0x02: Interface 1
     void host_pause_mapping(uint32_t mask);
 
-    // Applies the current configuration.
+    // Applies the current configuration: starts the SPI daemon thread and blocks until the
+    // daemon has driven the JESD configuration. Throws if the daemon connection ends first.
     void apply();
+
+    // Stops the SPI daemon thread apply() started. Call it before stopping or resetting the
+    // board.
+    void stop();
 
     // Returns true if the JESD link is healthy:
     // - AD9082 link status == 0x60 (JESD204_LINK_STATUS_DATA)

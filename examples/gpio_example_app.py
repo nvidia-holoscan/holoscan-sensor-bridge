@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,20 +12,42 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
+#
 # See README.md for detailed information.
+#
+# GPIO pin sweep demo: GpioSetOp cycles every pin through a sequence of test configurations
+# (all-output-low, all-output-high, all-input, alternating odd/even -- for use with a jumper
+# wire between adjacent pins), GpioSetOp forwards the just-changed pin to GpioGetOp, which reads
+# it back and logs direction/value, pausing to let a human probe the physical board with a
+# multimeter. No C++ operator involved -- both are thin wrappers around a raw hololink.GPIO
+# register handle (hololink_dev.get_gpio(metadata), restored as part of this port; GPIO wasn't
+# bound to Python at all before this round).
+#
+# Pacing: the old app let GpioSetOp tick freely and relied on GpioGetOp's own time.sleep(
+# sleep_time) plus a single-slot downstream queue to backpressure the whole pipeline to roughly
+# one pin change per sleep_time seconds. Here GpioSetOp's own hs.OnClock(period=sleep_time) is
+# paced directly at the intended cadence instead -- same real-world outcome (one change every
+# sleep_time seconds), without depending on backpressure semantics to get there; GpioGetOp's own
+# sleep is dropped as redundant pacing, not a separate kept-for-fidelity behavior.
+#
+# --cycle-limit: the old app's CountCondition counted GpioGetOp's own ticks (one per GPIO
+# change, not per full configs sweep -- a bit of a misnomer in the old flag's own name, preserved
+# as-is). Here GpioSetOp counts its own compute() calls directly and calls
+# context.request_stop() once the limit is reached -- simpler than this effort's established
+# cross-thread _FrameLimitObserver pattern, which exists specifically for apps where counting
+# and stopping happen on different operators; here GpioSetOp is naturally both.
 
 import argparse
 import logging
-import os
-import time
+import sys
+from datetime import timedelta
 
-import holoscan
+import holoscan as hs
 
-import hololink as hololink_module
+import hololink as hl
 
 # configurations to test
-configs = [
+CONFIGS = [
     "ALL_OUT_L",  # All pins output low
     "ALL_OUT_H",  # All pins output high
     "ALL_IN",  # All pins inputs
@@ -34,59 +56,80 @@ configs = [
 ]
 
 # dictionary for print beautification
-dir = {0: "output", 1: "input"}
+DIRECTION_NAMES = {0: "output", 1: "input"}
 
 
-# define custom Operators for use in the demo
-class GpioSetOp(holoscan.core.Operator):
-    """
-    operator to demonstrate different GPIO test configuration settings.
-    This operator changes the GPIOs pin by pin according to the test
-    configuration it currently runs (specified in the 'configs' variable).
-    It sends the latest changed pin + the current test configuration to the
-    GpioGetOp for validation purposes.
-    once a sweep on all 16 pins is completed, next test configuration is set.
+class _GpioShared:
+    """Shared hololink.GPIO handle: graph.op() can't take a live object as a kwarg, so both
+    operators read it from here instead, matching this whole porting effort's established
+    class-level-stash pattern for sharing a live object between two pure-Python operators.
     """
 
-    def __init__(self, fragment, hololink_channel, gpio, *args, **kwargs):
-        self._hololink = hololink_channel.hololink()
-        self._gpio = gpio
+    gpio = None
+
+
+class GpioSetOp(hs.Operator):
+    """Sweeps every pin through CONFIGS, one pin change per compute(); forwards the changed pin
+    and current test configuration to GpioGetOp for validation.
+
+    The changed pin and test configuration are always produced together (every compute() call
+    emits both), so they're sent as one (pin, test_config) tuple through a single port rather
+    than two separate ports -- the latter would need OnAligned-style pairing (this effort's
+    established mechanism for correlating two ports' data) despite having no natural capture-time
+    relationship to align on, since these are plain scalars, not tensor/metadata samples.
+    """
+
+    pin_and_config_out = hs.Output("pin_and_config_out", hs.pyobject)
+
+    sleep_time = hs.Param(2.0)
+    cycle_limit = hs.Param(0)  # 0 = unlimited
+
+    def setup(self, spec):
+        spec.output(self.pin_and_config_out)
+
+    def contract(self):
+        return hs.Contract().trigger(
+            hs.OnClock(period=timedelta(seconds=self.sleep_time))
+        )
+
+    def start(self):
+        self._gpio = _GpioShared.gpio
+        self._supported_pins_number = self._gpio.get_supported_pin_num()
         self.pin = 0
         self.test_config = 0
+        self._count = 0
 
-        # how many pins are supported on the platform running the example
-        self._supported_pins_number = self._gpio.get_supported_pin_num()
-
-        # Need to call the base class constructor last
-        super().__init__(fragment, *args, **kwargs)
-
-    def setup(self, spec: holoscan.core.OperatorSpec):
-        spec.output("gpio_changed_out")
-        spec.output("test_config_out")
-
-        # set all gpios as output, high - test fast setting via loop
+        # set all gpios as output, high -- test fast setting via loop
         for i in range(self._supported_pins_number):
             self._gpio.set_direction(i, self._gpio.OUT)
             self._gpio.set_value(i, self._gpio.HIGH)
 
-    def compute(self, op_input, op_output, context):
+    def compute(self, context):
+        # Checked first, before any register write: request_stop() lets the current scheduler
+        # generation finish rather than aborting mid-flight (confirmed by testing, not assumed --
+        # a fast clock period let a handful of extra compute() calls through after the limit was
+        # first reached when this check ran only at the end). Returning here before touching
+        # hardware bounds that slop to "a few extra no-op ticks", not "a few extra pin writes".
+        if self.cycle_limit and self._count >= self.cycle_limit:
+            context.request_stop()
+            return
 
-        logging.info(f"GpioSetOp[{configs[self.test_config]}]")
+        logging.info(f"GpioSetOp[{CONFIGS[self.test_config]}]")
 
         # set gpio pins per test configuration 1 pin at a time per current
         # configuration tested
-        if configs[self.test_config] == "ALL_OUT_L":
+        if CONFIGS[self.test_config] == "ALL_OUT_L":
             self._gpio.set_direction(self.pin, self._gpio.OUT)
             self._gpio.set_value(self.pin, self._gpio.LOW)
 
-        elif configs[self.test_config] == "ALL_OUT_H":
+        elif CONFIGS[self.test_config] == "ALL_OUT_H":
             self._gpio.set_direction(self.pin, self._gpio.OUT)
             self._gpio.set_value(self.pin, self._gpio.HIGH)
 
-        elif configs[self.test_config] == "ALL_IN":
+        elif CONFIGS[self.test_config] == "ALL_IN":
             self._gpio.set_direction(self.pin, self._gpio.IN)
 
-        elif configs[self.test_config] == "ODD_OUT_H":
+        elif CONFIGS[self.test_config] == "ODD_OUT_H":
             if (self.pin & 0x1) == 1:  # odd pin
                 self._gpio.set_direction(self.pin, self._gpio.OUT)
                 self._gpio.set_value(self.pin, self._gpio.HIGH)
@@ -100,122 +143,82 @@ class GpioSetOp(holoscan.core.Operator):
                 self._gpio.set_direction(self.pin, self._gpio.OUT)
                 self._gpio.set_value(self.pin, self._gpio.HIGH)
 
-        # send current changed pin and tested configuration to
-        # second operator to validate value changes
-        op_output.emit(self.pin, "gpio_changed_out")
-        op_output.emit(self.test_config, "test_config_out")
+        # send current changed pin and tested configuration to the next operator to
+        # validate value changes
+        self.pin_and_config_out.emit((self.pin, self.test_config))
 
         # prepare for next gpio to change
         self.pin += 1
         self.pin %= self._supported_pins_number
 
-        # done pins sweep - move to next configuration to test
+        # done pins sweep -- move to next configuration to test
         if self.pin == 0:
             self.test_config += 1
-            self.test_config %= len(configs)
+            self.test_config %= len(CONFIGS)
+
+        self._count += 1
 
 
-class GpioGetOp(holoscan.core.Operator):
-    """
-    operator to demonstrate reads from the GPIO bank
-    Receives the last changed GPIO number and it is set to input
-    reads and prints it value and direction.
-    sleeps for the given time to allow physcal board measurements
-    """
+class GpioGetOp(hs.Operator):
+    """Reads back the pin GpioSetOp just changed and logs its direction/value."""
 
-    def __init__(self, fragment, hololink_channel, gpio, sleep_time, *args, **kwargs):
-        self._hololink = hololink_channel.hololink()
-        self._gpio = gpio
-        self._sleep_time = sleep_time
+    pin_and_config_in = hs.Input("pin_and_config_in", hs.pyobject)
 
-        # Need to call the base class constructor last
-        super().__init__(fragment, *args, **kwargs)
+    def setup(self, spec):
+        spec.input(self.pin_and_config_in)
 
-    def setup(self, spec: holoscan.core.OperatorSpec):
-        spec.input("gpio_changed_in")
-        spec.input("test_config_in")
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.pin_and_config_in))
 
-    def compute(self, op_input, op_output, context):
+    def start(self):
+        self._gpio = _GpioShared.gpio
 
-        pin = op_input.receive("gpio_changed_in")
-        test_config = op_input.receive("test_config_in")
+    def compute(self, context):
+        pin, test_config = self.pin_and_config_in.receive_data()
 
-        logging.info(f"GpioGetOp[{configs[test_config]}]")
+        logging.info(f"GpioGetOp[{CONFIGS[test_config]}]")
         direction = self._gpio.get_direction(pin)
         value = self._gpio.get_value(pin)
-        logging.info(f"pin:{pin}, direction:{dir[direction]},value:{value}")
-
-        # sleep to allow time for physical board measurememt
-        time.sleep(self._sleep_time)
+        logging.info(f"pin:{pin}, direction:{DIRECTION_NAMES[direction]},value:{value}")
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        hololink_channel,
-        channel_metadata,
-        sleep_time,
-        cycle_limit,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._hololink_channel = hololink_channel
-        self._channel_metadata = channel_metadata
-        self._hololink = hololink_channel.hololink()
-        self._sleep_time = sleep_time
-        self._cycle_limit = cycle_limit  # may be None
+def run(hololink_ip, sleep_time, cycle_limit):
+    metadata = hl.find_channel(hololink_ip)
+    channel = hl.DataChannel(metadata)
+    hololink_dev = channel.hololink()
+    hololink_dev.start()
+    try:
+        hololink_dev.reset()
 
-    def compose(self):
-        logging.info("compose")
+        _GpioShared.gpio = hololink_dev.get_gpio(metadata)
 
-        # create the GPIO instance to be shared with the two operators
-        self._gpio = self._hololink.get_gpio(self._channel_metadata)
-
-        # Conditions support cycle-limit
-        if self._cycle_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._cycle_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
-
-        # example of operator instantiation
-        gpio_read = GpioGetOp(
-            self,
-            self._hololink_channel,
-            self._gpio,
-            self._sleep_time,
-            condition,
-            name="gpio_read",
+        graph = hs.Graph("gpio_example_app")
+        gpio_set = graph.op(
+            GpioSetOp, "gpio_set", sleep_time=sleep_time, cycle_limit=cycle_limit or 0
         )
-        gpio_set = GpioSetOp(self, self._hololink_channel, self._gpio, name="gpio_set")
-        self.add_flow(
-            gpio_set,
-            gpio_read,
-            {
-                ("gpio_changed_out", "gpio_changed_in"),
-                ("test_config_out", "test_config_in"),
-            },
-        )
+        gpio_read = graph.op(GpioGetOp, "gpio_read")
+        graph.add_flow(gpio_set.pin_and_config_out, gpio_read.pin_and_config_in)
+
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+
+        plan = hs.compile(graph, hs.CompileOptions())
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+
+        with hs.run_async(plan) as session:
+            session.wait()
+    finally:
+        hololink_dev.stop()
+
+    return 0
 
 
 def main():
     parser = argparse.ArgumentParser()
-
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-    parser.add_argument(
-        "--configuration",
-        default=default_configuration,
-        help="Configuration file",
-    )
     parser.add_argument(
         "--hololink",
         default="192.168.0.2",
@@ -238,31 +241,12 @@ def main():
         type=int,
         help="Limit the number of cycles for the application; by default this runs forever.",
     )
-
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
+
+    logging.basicConfig(level=args.log_level)
     logging.info("Initializing.")
 
-    # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-
-    # Set up the application
-    application = HoloscanApplication(
-        hololink_channel,
-        channel_metadata,
-        args.sleep_time,
-        args.cycle_limit,
-    )
-    application.config(args.configuration)
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    try:
-        hololink.reset()
-        application.run()
-    finally:
-        hololink.stop()
+    sys.exit(run(args.hololink, args.sleep_time, args.cycle_limit))
 
 
 if __name__ == "__main__":

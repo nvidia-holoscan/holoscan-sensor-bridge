@@ -28,7 +28,19 @@ _MODULES = [
     "vb1940",
 ]
 
-_OBJECTS = {}
+# Sensor/I2CExpanderOutputEN/LII2CExpander come from _hololink_sensor, a pybind11 module
+# sensors/CMakeLists.txt doesn't build today (broken against the installed HSDK5 holoscan-sdk --
+# see that file's own comment). Lazily loading them through __getattr__ below, instead of the
+# eager `from . import _hololink_sensor as sensor` this used to do, means importing
+# hololink.sensors itself still succeeds; only actually touching one of these three names fails
+# (with the normal ModuleNotFoundError for _hololink_sensor, not an import-time crash for every
+# caller regardless of whether they need them -- e.g. ecam0m30tof, which has its own local
+# li_i2c_expander.py and never touches any of the three).
+_OBJECTS = {
+    "Sensor": "_hololink_sensor",
+    "I2CExpanderOutputEN": "_hololink_sensor",
+    "LII2CExpander": "_hololink_sensor",
+}
 
 __all__ = [
     "csi",
@@ -39,14 +51,6 @@ __all__ = [
 
 __all__.extend(_MODULES)
 __all__.extend(_OBJECTS.keys())
-
-# Pre-populate the sensor module
-from . import _hololink_sensor as sensor  # noqa: E402, F401
-
-# Export sensor-related classes/enums
-Sensor = sensor.Sensor
-I2CExpanderOutputEN = sensor.I2CExpanderOutputEN
-LII2CExpander = sensor.LII2CExpander
 
 
 # Autocomplete

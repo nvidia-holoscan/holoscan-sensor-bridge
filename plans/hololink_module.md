@@ -17,11 +17,11 @@ points (`hololink_adapter_init`, `hololink_adapter_get_abi_check`). A symmetric 
 locator pattern lets the host and modules discover each other's capabilities without
 coupling.
 
-Interfaces are **not frozen during this project** — each V1 interface may be edited in
-place as implementations surface requirements, with all callers updated in the same
-commit. A hard freeze is adopted only when the project is complete, after which new
-capabilities are added through new versioned interfaces (`V2`, …) rather than changes to
-existing ones.
+Each interface is **frozen by the release that publishes it** — before that it may be
+edited in place as implementations surface requirements, with all callers updated in the
+same commit; after it, new capabilities are added through new versioned interfaces
+(`V2`, …) rather than changes to existing ones. The V1 set was frozen by release 2.7.0;
+`hololink_module/INTERFACES.md` records which release froze each interface.
 
 ## Scope
 
@@ -77,11 +77,12 @@ absorbs a private copy of it (and the `src/hololink/core/` symbols it pulls in) 
 
 ### First-party modules
 
-| Module directory         | Output `.so`                                            | Target device                                                          |
-| ------------------------ | ------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `module/hsb_lite/`       | `hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359_2603.so` | HSB-Lite, current FPGA (`0x2603`)                                      |
-| `module/hsb_lite_2510/`  | `hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359.so`      | HSB-Lite fallback (`0x2510` + any compat without a dedicated `.so`)    |
-| `module/leopard_vb1940/` | `hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so`      | Leopard VB1940 (bare-UUID exception: FPGA doesn't publish a compat-id) |
+| Module directory              | Output `.so`                                            | Target device                                                            |
+| ----------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------------ |
+| `module/hsb_lite/`            | `hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359_2603.so` | HSB-Lite, current FPGA (`0x2603`)                                        |
+| `module/hsb_lite_2510/`       | `hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359.so`      | HSB-Lite fallback (`0x2510` + any compat without a dedicated `.so`)      |
+| `module/leopard_vb1940/`      | `hololink_f1627640-b4dc-48af-a360-c55b09b3d230_2603.so` | Leopard VB1940, current FPGA (`0x2603`)                                  |
+| `module/leopard_vb1940_2510/` | `hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so`      | Leopard VB1940 fallback (the 2510 board reports `compat_id` 0) |
 
 Each module directory carries:
 
@@ -287,10 +288,10 @@ Compat-id has two representations that must not be confused:
 Example:
 
 ```
-hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so           # Leopard VB1940
-                                                           # (bare-UUID exception:
-                                                           # FPGA doesn't publish a
-                                                           # compat-id)
+hololink_f1627640-b4dc-48af-a360-c55b09b3d230_2603.so      # Leopard VB1940, compat 0x2603
+hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so           # Leopard VB1940 fallback
+                                                           # (the 2510 board reports
+                                                           # compat_id 0)
 hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359_2603.so      # HSB-Lite, compat 0x2603
 hololink_889b7ce3-65a5-4247-8b05-4ff1904c3359.so           # HSB-Lite fallback (catches
                                                            # 0x2510 + any compat-id
@@ -949,17 +950,24 @@ Python extension and do not statically link the adapter themselves.
 `type_id` strings include a version suffix (`"hololink.v1"`, `"hololink.v2"`, …). A
 single implementation may register under multiple type ids for backward compatibility.
 
-**During this project** — while the adapter and first-party modules are under
-development — V1 interfaces are not frozen. Implementations may surface method
-signatures, parameters, or return-type requirements not yet captured; the V1 class
-definition is edited in place and every caller in the tree is updated in the same
-commit. Exactly one V1 of each interface exists across the whole project at any moment.
+**Before an interface is released** — while it is under development — it is not frozen.
+Implementations may surface method signatures, parameters, or return-type requirements
+not yet captured; the class definition is edited in place and every caller in the tree is
+updated in the same commit. Exactly one unreleased version of each interface exists
+across the whole project at any moment.
 
-**After the project is complete** — every first-party module builds against the current
-V1 surface and passes its hardware tests — each V1 interface is declared frozen. Methods
-are never added, removed, reordered, or re-signatured thereafter. New capabilities
-become V2 classes, typically inheriting from V1 and adding methods; older consumers
-continue to resolve the V1 type id.
+**Once a release publishes an interface**, that version is frozen. Methods are never
+added, removed, reordered, or re-signatured thereafter. New capabilities become a new
+version of that interface, typically inheriting from the released one and adding methods;
+older consumers continue to resolve the older type id.
+
+Freezing is per interface, not per release. A release is simply the point at which a
+particular interface version was frozen, so several releases on the API is a mix of V1,
+V2, and later — only the interfaces that actually changed carry a newer version. Release
+2.7.0 published and froze the first set, so every interface in it is V1; a later release
+freezes only the interfaces whose version it bumps. Each frozen class declaration carries
+a `Frozen: <version>` tag in its header comment, and
+`hololink_module/INTERFACES.md` lists the interfaces frozen at each release.
 
 ### Versioning example — updating `RoceDataChannelInterface`
 
@@ -2476,8 +2484,8 @@ site-packages/hololink_adapter/
 ├── modules/
 │   ├── hololink_889b7ce3-…_2603.so     # hsb_lite module (compat 0x2603)
 │   ├── hololink_889b7ce3-….so          # hsb_lite_2510 fallback module
-│   ├── hololink_f1627640-….so          # leopard_vb1940 module (bare-UUID
-│   │                                   # exception: FPGA doesn't publish compat)
+│   ├── hololink_f1627640-…_2603.so     # leopard_vb1940 module (compat 0x2603)
+│   ├── hololink_f1627640-….so          # leopard_vb1940_2510 fallback module
 │   └── …
 ├── lib/                                 # static archives for out-of-tree module
 │   ├── libhololink_adapter_module.a     #   builds against the pip-installed package
@@ -5100,7 +5108,7 @@ derived names, each with its own blast radius and its own rename decision:
 | 2   | Include-path component          | `#include <hololink/adapter/…>`                                                                   | ~440 lines                                 | The public include tree is `host/include/hololink/adapter/…` (+ `operators/`, `sensors/`). Renaming the namespace implies renaming this dir to `hololink/module/`.                                                                                                                                                                                            |
 | 3   | C++ namespace                   | `hololink::adapter`                                                                               | 745                                        | Largest category. Note this is **distinct** from the `Adapter` host-singleton class — see open questions.                                                                                                                                                                                                                                                     |
 | 4   | Macro / include-guard prefix    | `HOLOLINK_ADAPTER_*`                                                                              | 536                                        | Mixed: most are include guards (mechanically derivable from path), but real macros too — `HOLOLINK_ADAPTER_OK` (102), `HOLOLINK_ADAPTER_CUDA_CHECK` (84), status codes, `HOLOLINK_ADAPTER_BUILD_OPERATORS`/`_CRC` build options, `HOLOLINK_ADAPTER_EXPORT`, `HOLOLINK_ADAPTER_API_VERSION`, `HOLOLINK_ADAPTER_ABI_MAGIC`, `HOLOLINK_ADAPTER_TEST_MODULE_DIR`. |
-| 5   | C-ABI entry points / types      | `hololink_adapter_init`, `hololink_adapter_get_abi_check`, `hololink_adapter_*_t`                 | ~46                                        | The `dlsym` symbols + their structs (`hololink_adapter_init_t`, `_module_services_t`, `_abi_check_t`, `_status_t`, `_service_t`, the `get_service`/`release_service` fn typedefs). Renaming is an ABI break — acceptable since interfaces are not frozen, but every module's `module_entry.cpp` and the host loader must change together.                     |
+| 5   | C-ABI entry points / types      | `hololink_adapter_init`, `hololink_adapter_get_abi_check`, `hololink_adapter_*_t`                 | ~46                                        | The `dlsym` symbols + their structs (`hololink_adapter_init_t`, `_module_services_t`, `_abi_check_t`, `_status_t`, `_service_t`, the `get_service`/`release_service` fn typedefs). Renaming is an ABI break — acceptable at the time, since the interfaces were not yet frozen, but every module's `module_entry.cpp` and the host loader must change together.                     |
 | 6   | Python import package           | `import hololink_adapter`                                                                         | 38                                         | Installed package `python/hololink_adapter/`; build copies to `${CMAKE_BINARY_DIR}/python/hololink_adapter/` and installs to `…/hololink_adapter`.                                                                                                                                                                                                            |
 | 7   | pybind extension module         | `_hololink_adapter` / `_hololink_adapter.so`                                                      | 92                                         | Core ext `hololink_adapter_py.cpp` → `_hololink_adapter.so`; also `hololink_adapter.operators` + `_hololink_adapter_operators`, and per-sensor exts.                                                                                                                                                                                                          |
 | 8   | CMake targets + alias namespace | `hololink_adapter_*` targets, `hololink::adapter*` aliases, `find_package(hololink_adapter)`      | ~65 target refs                            | Archives `hololink_adapter_headers`/`hololink::adapter_headers`, `hololink_adapter_module`/`hololink::adapter`, `hololink_adapter_operators`, sensor targets `hololink::adapter::sensors::{imx274,vb1940}`, the export/package name, plus ~25 test targets (`hololink_adapter_*_test`, `*_stub_module`).                                                      |
@@ -6120,3 +6128,78 @@ hardware:** `test_roce_imx274_reconnect` (mono, instances 0 and 1) and
 correct CRCs after rediscovery. R4 (control-plane timeout routing) is now implemented as
 a complementary detector. Remaining: `LinuxNetworkReceiver` (the Linux reconnect cases
 skip until it lands) and a consolidated Docker/CI build of all the C++ changes.
+
+### Phase 5 extension — `HsbIp` base publisher + `leopard_vb1940_2510`
+
+**Context.** `module_core::HsbLitePublisher` was doing two jobs: the canonical
+HSB-IP-shaped publisher (control plane, data channels, receivers, sequencer, I2C,
+PTP/PPS, enumeration body) and the HSB-Lite board definition (CrossLink-NX D-PHY, the
+`HsbLiteInterfaceV1` supplement, the Bajoran TS1 oscillator, the 3-sensor / 2-SIF
+layout). Every non-HSB-Lite board inherited it and then overrode the HSB-Lite parts back
+out — `leopard_vb1940` overrode `construct_hsb_lite` to return `false` purely to keep
+the `hsb_lite.v1` type_id from resolving on a Leopard board, and `taurotech_da326` did
+not, so a DA326 published an `HsbLiteV1` supplement it has no use for.
+
+Separately, a 2510-FPGA Leopard VB1940 needed a module. The delta it needs is the one
+that separates `module/hsb_lite_2510/` from `module/hsb_lite/` — the pre-0x2602
+data-plane memory map and the pre-0x2603 RDMA immediate-data layout on both receivers —
+and those implementations already sat in `module/core/`, reachable only through
+`HsbLite2510Publisher`, a subclass of `HsbLitePublisher`. Splitting the base was the
+prerequisite.
+
+**Deliverable.** Recorded in full in `plans/hololink_module_hsbip.md`; in outline:
+
+- **New `module/core/hsb_ip_publisher.hpp`** — `module_core::HsbIpPublisher`, the
+  generic half. Names nothing carrier-specific: `construct_oscillator` publishes
+  nothing and `publish_channel_configuration` is pure virtual. Neither
+  `construct_mipi_dphy` nor `set_mipi_dphy_metadata` survives on it — the D-PHY belongs
+  to the FPGA design, so a board publishes its own from the new
+  `construct_board_services` tail hook (alongside its supplement) and stamps the
+  matching register shape from `update_board_metadata`, the tail step of
+  `update_metadata`. Also adds a
+  `construct_shared_oscillator<Impl>` helper holding the share-by-serial caching two
+  publishers open-coded, and `configured_hololink(instance_id, what)` (was
+  `mipi_dphy_parent`), now shared by `construct_i2c` and `construct_ptp_pps_output`.
+  `hsb_lite_sensor_metadata` → `hsb_ip_sensor_metadata`;
+  `HsbIpChannelConfigurationV1` carries the `channel_configuration.module_core.v1`
+  type_id and the board-independent `use_mtu` / `use_multicast`.
+
+- **`HsbLitePublisher` is now the HSB-Lite carrier definition** on top of it: CLNX
+  D-PHY, Bajoran TS1, `HsbLiteChannelConfigurationV1`, `HsbLiteInterfaceV1`. The two
+  D-PHY publish helpers became free functions next to their impls
+  (`construct_clnx_mipi_dphy` / `construct_cpnx_mipi_dphy`), so the base includes
+  neither design's header.
+
+- **`leopard_vb1940` and `taurotech_da326` derive from `HsbIpPublisher`.** The DA326
+  stops publishing `hsb_lite.v1` (the point of the re-parenting — it is not expected to
+  implement it) and its channel configuration gained an `is_sensor_valid` bounded by its
+  own two sensors; it previously inherited HSB-Lite's three, so `update_metadata`
+  accepted a bootp `data_plane` of 2 and then threw out of `use_sensor` in the reactor's
+  bootp callback. `module/tutorial/` deliberately stays on `HsbLitePublisher`.
+
+- **The 2510 implementations are `HsbIp2510*`** (`hsb_ip_2510_data_channel.hpp`,
+  `hsb_ip_2510_roce_receiver.hpp`, `hsb_ip_2510_linux_receiver.hpp`) — the revision is a
+  property of the HSB IP, not of a carrier. The `HsbLite2510*` transport names and their
+  `*.hsb_lite_2510.v1` type_ids retire with the three headers that held them; nothing
+  in-tree resolved those strings, and they are recorded as unfrozen internal override
+  targets. Both 2510 publishers construct the `HsbIp2510*` types directly.
+
+- **New `module/leopard_vb1940_2510/`.** `LeopardVb1940_2510_Publisher` derives from
+  `LeopardVb1940Publisher` (identical D-PHY configuration and TS2 oscillator on both
+  revisions) and carries only the four transport branches plus the version gate.
+  `LeopardVb1940Publisher` and its impls moved into a module-private
+  `module/leopard_vb1940/leopard_vb1940_publisher.hpp` that both module directories
+  include.
+
+- **Filenames follow the `hsb_lite` pair.** The 2510 VB1940 reports `compat_id` 0, so
+  `module/leopard_vb1940_2510/` takes the bare `hololink_<UUID>.so` as the UUID's
+  catch-all and `module/leopard_vb1940/` drops `NO_COMPAT_SUFFIX` for the
+  `_2603.so` form the current FPGA's `compat_id` resolves. The gate has an **upper bound
+  only** (decline above 0x2603): a 2510 VB1940 is known only to report *some* version
+  below 0x2603, and a lower bound guessed too high would decline the board the module
+  exists for.
+
+**Done when.** `hololink_module_leopard_vb1940_test` covers both `.so` resolutions
+(compat 0x2603 → suffixed, compat 0 and absent → bare), the gate in both directions, and
+enumerate/`use_sensor` agreement on the AIO layout; `hololink_module_hsb_lite_test`
+passes unchanged, which is the regression gate for the type_id wrappers.

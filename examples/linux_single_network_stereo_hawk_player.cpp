@@ -15,18 +15,52 @@
  * limitations under the License.
  */
 
-#include <getopt.h>
+// Hawk module stereo (both AR0234 sensors of one GMSL link, FSYNC-synced) live viewer over the
+// software (Linux) receiver, one HolovizOp window per sensor:
+//   LinuxReceiverOp -> SkewProbeOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp ->
+//     HolovizOp
+//
+// SkewProbeOp is a pass-through that records each frame's FPGA-receive timestamp (from the
+// receiver's CaptureMetadataT) to measure left/right stereo skew; see SkewState below.
+//
+// hololink_module's Hawk/Ar0234/Max9295d/Max96716a/TauroTechDa326InterfaceV1 sensor driver is
+// unchanged; only the receiver (hololink::module::operators::LinuxReceiverOp, itself ported to
+// HSDK5's Operator<Params> shape) and the downstream converters (native, already-ported
+// hololink::operators::CsiToBayerOp/ImageProcessorOp) changed.
 
-#include <cuda.h>
+#include <getopt.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <stdexcept>
 #include <string>
 #include <vector>
+
+#include <cuda.h>
+
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/domain/tensor.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/expected.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/core/sample.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
 
 #include "hawk.hpp"
 #include "hololink/module/adapter.hpp"
@@ -36,21 +70,70 @@
 #include "hololink/module/ptp_pps_output.hpp"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
 #include "max96716a.hpp"
+#include <capture_metadata_traits.hpp>
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/common/tools.hpp>
+#include <hololink/core/csi_controller.hpp>
 #include <hololink/core/logging.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include "player_support.hpp"
+
+namespace hx = hololink::examples;
 
 namespace {
 
 using hololink::module::sensors::ar0234::Ar0234;
 using hololink::module::sensors::hawk::Hawk;
 using hololink::module::sensors::max96716a::Max96716a;
+
+// Geometry-capture adapter: see hawk_single_link_player.cpp for the rationale.
+class GeometryCaptureConverter : public hololink::csi::CsiConverter {
+public:
+    explicit GeometryCaptureConverter(hololink::csi::CsiGeometry& out)
+        : out_(out)
+    {
+    }
+
+    uint32_t receiver_start_byte() override { return 0; }
+
+    uint32_t received_line_bytes(uint32_t line_bytes) override
+    {
+        return (line_bytes + 7u) & ~7u;
+    }
+
+    uint32_t transmitted_line_bytes(
+        hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) override
+    {
+        switch (pixel_format) {
+        case hololink::csi::PixelFormat::RAW_8:
+            return pixel_width;
+        case hololink::csi::PixelFormat::RAW_10:
+            return pixel_width * 5 / 4;
+        case hololink::csi::PixelFormat::RAW_12:
+            return pixel_width * 3 / 2;
+        default:
+            return pixel_width;
+        }
+    }
+
+    void configure(uint32_t start_byte, uint32_t received_bytes_per_line, uint32_t pixel_width,
+        uint32_t pixel_height, hololink::csi::PixelFormat pixel_format,
+        uint32_t trailing_bytes = 0) override
+    {
+        out_ = { start_byte, received_bytes_per_line, pixel_width, pixel_height, pixel_format,
+            trailing_bytes };
+    }
+
+private:
+    hololink::csi::CsiGeometry& out_;
+};
+
+// ---------------------------------------------------------------------------
+// Stereo skew measurement: pairs left/right frames by nearest FPGA-receive timestamp.
+// ---------------------------------------------------------------------------
 
 /// Pairs left/right frames by nearest FPGA-receive timestamp; reports stereo skew.
 class SkewState {
@@ -59,6 +142,7 @@ public:
 
     void record(const std::string& label, int64_t ts_ns)
     {
+        std::lock_guard lock(mutex_);
         auto& own = (label == "left") ? left_ : right_;
         auto& other = (label == "left") ? right_ : left_;
         if (!other.empty()) {
@@ -97,6 +181,7 @@ public:
 
     std::string summary() const
     {
+        std::lock_guard lock(mutex_);
         const size_t n = deltas_ns_.size();
         if (n == 0)
             return "no paired frames";
@@ -106,180 +191,91 @@ public:
     }
 
 private:
+    // Both legs' probes record from their own threads.
+    mutable std::mutex mutex_;
     std::vector<int64_t> left_;
     std::vector<int64_t> right_;
     std::vector<int64_t> deltas_ns_;
 };
 
-/// Pass-through operator that records each frame's FPGA-receive timestamp.
-class SkewProbeOp : public holoscan::Operator {
+// Pass-through operator that records each frame's FPGA-receive timestamp (from the typed
+// CaptureMetadataT metadata port) and re-emits both tensor and metadata unchanged.
+struct SkewProbeOpParams {
+    std::string label;
+    SkewState* state = nullptr;
+};
+
+class SkewProbeOp : public holoscan::Operator<SkewProbeOpParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(SkewProbeOp)
-    SkewProbeOp() = default;
+    holoscan::Input<holoscan::Tensor> input_tensor { "in_tensor" };
+    holoscan::Input<hololink::CaptureMetadataT> input_metadata { "in_metadata" };
+    holoscan::Output<holoscan::Tensor> output_tensor { "tensor" };
+    holoscan::Output<hololink::CaptureMetadataT> output_metadata { "metadata" };
 
     void setup(holoscan::OperatorSpec& spec) override
     {
-        spec.input<holoscan::gxf::Entity>("in");
-        spec.output<holoscan::gxf::Entity>("out");
-        spec.param(label_, "label", "Label", "Left/right label for skew pairing.");
+        spec.input(input_tensor, "in_tensor")
+            .expects_tensor(holoscan::TensorInputSpec {
+                .representation = holoscan::TensorRepresentation {
+                    .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                },
+            })
+            .queue_depth(4U);
+        spec.input(input_metadata, "in_metadata").queue_depth(4U);
+        spec.output(output_tensor, "tensor");
+        spec.output(output_metadata, "metadata");
     }
 
-    void set_state(SkewState* state) { state_ = state; }
+    [[nodiscard]] holoscan::Contract contract() const override
+    {
+        holoscan::Contract c;
+        c.trigger(holoscan::OnAligned {
+                      .ports = holoscan::ports(input_tensor, input_metadata),
+                      .window = hololink::operators::kMetadataPairingWindow,
+                  })
+            .input(input_tensor, holoscan::Exact {})
+            .input(input_metadata, holoscan::Exact {});
+        return c;
+    }
 
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute(
         holoscan::ExecutionContext&) override
     {
-        auto maybe = op_input.receive<holoscan::gxf::Entity>("in");
-        if (!maybe)
-            return;
-        auto md = metadata();
-        if (md && state_ != nullptr) {
-            int64_t s = md->get<int64_t>("timestamp_s", 0);
-            int64_t ns = md->get<int64_t>("timestamp_ns", 0);
-            int64_t ts_ns = s * 1'000'000'000LL + ns;
-            state_->record(label_.get(), ts_ns);
+        auto maybe_paired = hololink::operators::receive_paired_tensor_metadata(input_tensor, input_metadata);
+        if (!maybe_paired)
+            return holoscan::make_unexpected(std::move(maybe_paired).error());
+        if (!*maybe_paired) {
+            hx::count_mismatched_frame(mismatched_frames_, "SkewProbeOp");
+            return {};
         }
-        op_output.emit(maybe.value(), "out");
+        auto& paired = **maybe_paired;
+
+        const auto& p = params();
+        if (p.state != nullptr) {
+            const int64_t ts_ns = paired.metadata.data.timestamp_s * 1'000'000'000LL
+                + paired.metadata.data.timestamp_ns;
+            p.state->record(p.label, ts_ns);
+        }
+
+        if (auto result = output_tensor.emit(paired.tensor); !result) {
+            return holoscan::make_unexpected(std::move(result).error());
+        }
+        if (auto result = output_metadata.emit(paired.metadata); !result) {
+            return holoscan::make_unexpected(std::move(result).error());
+        }
+        return {};
     }
 
 private:
-    holoscan::Parameter<std::string> label_;
-    SkewState* state_ = nullptr;
+    hololink::operators::DropCounter mismatched_frames_;
 };
 
-class HoloscanApplication : public holoscan::Application {
-public:
-    HoloscanApplication(bool headless, bool fullscreen, CUcontext cuda_context,
-        int cuda_device_ordinal,
-        std::vector<hololink::module::EnumerationMetadata> sif_metadatas,
-        std::shared_ptr<Hawk> camera,
-        hololink::module::sensors::ar0234::ar0234_mode::Mode camera_mode,
-        int64_t frame_limit,
-        int32_t window_height, int32_t window_width,
-        std::vector<std::string> window_titles,
-        SkewState* skew_state)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , cuda_context_(cuda_context)
-        , cuda_device_ordinal_(cuda_device_ordinal)
-        , sif_metadatas_(std::move(sif_metadatas))
-        , camera_(std::move(camera))
-        , camera_mode_(camera_mode)
-        , frame_limit_(frame_limit)
-        , window_height_(window_height)
-        , window_width_(window_width)
-        , window_titles_(std::move(window_titles))
-        , skew_state_(skew_state)
-    {
-        // Per-frame metadata propagation through every operator. REJECT policy
-        // at any merge point so mismatched left/right metadata won't be silently
-        // combined. Mirrors the Python stereo player.
-        is_metadata_enabled(true);
-        metadata_policy(holoscan::MetadataPolicy::kReject);
-    }
-
-    void compose() override
-    {
-        camera_->set_mode(camera_mode_);
-        for (size_t idx = 0; idx < sif_metadatas_.size(); ++idx) {
-            compose_pipeline(idx, sif_metadatas_[idx], window_titles_[idx]);
-        }
-    }
-
-private:
-    void compose_pipeline(size_t idx,
-        const hololink::module::EnumerationMetadata& sif_metadata,
-        const std::string& window_title)
-    {
-        const std::string label = (idx == 0) ? "left" : "right";
-        const std::string suffix = std::to_string(idx);
-
-        std::shared_ptr<holoscan::Condition> condition;
-        if (frame_limit_) {
-            condition = make_condition<holoscan::CountCondition>("count_" + suffix, frame_limit_);
-        } else {
-            condition = make_condition<holoscan::BooleanCondition>("ok_" + suffix, true);
-        }
-
-        auto csi_to_bayer_pool = make_resource<holoscan::BlockMemoryPool>("csi_pool_" + suffix,
-            1, camera_->width() * sizeof(uint16_t) * camera_->height(), 2);
-        auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
-            "csi_to_bayer_" + suffix,
-            holoscan::Arg("allocator", csi_to_bayer_pool),
-            holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
-        camera_->configure_converter(csi_to_bayer_operator);
-
-        const size_t frame_size = csi_to_bayer_operator->get_csi_length();
-        auto receiver_operator = make_operator<hololink::module::operators::LinuxReceiverOp>(
-            "receiver_" + suffix, condition,
-            holoscan::Arg("enumeration_metadata", sif_metadata),
-            holoscan::Arg("frame_context", cuda_context_),
-            holoscan::Arg("frame_size", frame_size),
-            holoscan::Arg("device_start", std::function<void()>([this] { camera_->start(); })),
-            holoscan::Arg("device_stop", std::function<void()>([this] { camera_->stop(); })));
-
-        auto skew_probe = make_operator<SkewProbeOp>("skew_probe_" + label,
-            holoscan::Arg("label", label));
-        skew_probe->set_state(skew_state_);
-
-        auto bayer_format = camera_->bayer_format();
-        auto pixel_format = camera_->pixel_format();
-        auto image_processor_operator = make_operator<hololink::operators::ImageProcessorOp>(
-            "image_processor_" + suffix,
-            holoscan::Arg("optical_black", 50),
-            holoscan::Arg("bayer_format", static_cast<int>(bayer_format)),
-            holoscan::Arg("pixel_format", static_cast<int>(pixel_format)));
-
-        const uint32_t rgba_components_per_pixel = 4;
-        auto bayer_pool = make_resource<holoscan::BlockMemoryPool>("bayer_pool_" + suffix,
-            1,
-            camera_->width() * rgba_components_per_pixel * sizeof(uint16_t) * camera_->height(),
-            2);
-        auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>("demosaic_" + suffix,
-            holoscan::Arg("pool", bayer_pool),
-            holoscan::Arg("generate_alpha", true),
-            holoscan::Arg("alpha_value", 65535),
-            holoscan::Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
-            holoscan::Arg("interpolation_mode", 0));
-
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>("holoviz_" + suffix,
-            holoscan::Arg("framebuffer_srgb", true),
-            holoscan::Arg("fullscreen", fullscreen_),
-            holoscan::Arg("headless", headless_),
-            holoscan::Arg("height", window_height_),
-            holoscan::Arg("width", window_width_),
-            holoscan::Arg("window_title", window_title));
-
-        add_flow(receiver_operator, skew_probe, { { "output", "in" } });
-        add_flow(skew_probe, csi_to_bayer_operator, { { "out", "input" } });
-        add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
-        add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
-        add_flow(demosaic, visualizer, { { "transmitter", "receivers" } });
-    }
-
-    const bool headless_;
-    const bool fullscreen_;
-    const CUcontext cuda_context_;
-    const int cuda_device_ordinal_;
-    std::vector<hololink::module::EnumerationMetadata> sif_metadatas_;
-    std::shared_ptr<Hawk> camera_;
-    hololink::module::sensors::ar0234::ar0234_mode::Mode camera_mode_;
-    const int64_t frame_limit_;
-    const int32_t window_height_;
-    const int32_t window_width_;
-    std::vector<std::string> window_titles_;
-    SkewState* skew_state_;
-};
-
-} // anonymous namespace
-
-int main(int argc, char** argv)
+int run_player(int argc, char** argv, holoscan::ManagedShutdownSignals& signals)
 {
     int32_t camera_mode_int = hololink::module::sensors::ar0234::ar0234_mode::AR0234_MODE_1920X1200_60FPS;
     bool headless = false;
     bool fullscreen = false;
     int64_t frame_limit = 0;
-    std::string configuration;
     std::string hololink_ip = hololink::env_hololink_ip(0, "192.168.0.2");
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
     int32_t window_width = 1920;
@@ -330,9 +326,10 @@ int main(int argc, char** argv)
                 fullscreen = true;
             else if (name == "frame-limit")
                 frame_limit = std::stoll(argument);
-            else if (name == "configuration")
-                configuration = argument;
-            else if (name == "hololink")
+            else if (name == "configuration") {
+                if (!hx::check_configuration(argument))
+                    return EXIT_FAILURE;
+            } else if (name == "hololink")
                 hololink_ip = argument;
             else if (name == "window-height")
                 window_height = std::stoi(argument);
@@ -354,22 +351,10 @@ int main(int argc, char** argv)
             else if (name == "disable-sync")
                 disable_sync = true;
             else if (name == "log-level") {
-                if (argument == "trace" || argument == "TRACE")
-                    log_level = holoscan::LogLevel::TRACE;
-                else if (argument == "debug" || argument == "DEBUG")
-                    log_level = holoscan::LogLevel::DEBUG;
-                else if (argument == "info" || argument == "INFO")
-                    log_level = holoscan::LogLevel::INFO;
-                else if (argument == "warn" || argument == "WARN")
-                    log_level = holoscan::LogLevel::WARN;
-                else if (argument == "error" || argument == "ERROR")
-                    log_level = holoscan::LogLevel::ERROR;
-                else if (argument == "critical" || argument == "CRITICAL")
-                    log_level = holoscan::LogLevel::CRITICAL;
-                else if (argument == "off" || argument == "OFF")
-                    log_level = holoscan::LogLevel::OFF;
-                else
+                const auto level = hx::parse_log_level(argument);
+                if (!level)
                     throw std::runtime_error("Unhandled log level: " + argument);
+                log_level = *level;
             }
         } else if (c == 'h') {
             std::cout << "Usage: " << argv[0] << " [options]" << std::endl
@@ -380,52 +365,50 @@ int main(int argc, char** argv)
 
     holoscan::set_log_level(log_level);
 
-    // CUDA
-    CudaCheck(cuInit(0));
-    int cu_device_ordinal = 0;
     CUdevice cu_device;
-    CudaCheck(cuDeviceGet(&cu_device, cu_device_ordinal));
-    CUcontext cu_context;
-    CudaCheck(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
-
-    // Both SIFs always — stereo.
-    const std::vector<int64_t> sif_list = { 0, 1 };
-
-    auto& adapter = hololink::module::Adapter::get_adapter();
-    hololink::module::EnumerationMetadata metadata
-        = adapter.wait_for_channel(hololink_ip, std::chrono::seconds(30));
-
-    std::vector<hololink::module::EnumerationMetadata> sif_metadatas;
-    for (auto sif : sif_list) {
-        hololink::module::EnumerationMetadata sif_meta = metadata;
-        adapter.use_sensor(sif_meta, sif);
-        sif_metadatas.push_back(std::move(sif_meta));
-    }
-
-    auto holo_iface = hololink::module::HololinkInterfaceV1::get_service(metadata);
-    holo_iface->start();
-    auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(metadata);
-
-    auto legacy_holo = board->hololink();
-    auto deserializer = std::make_shared<Max96716a>(legacy_holo);
-    auto hawk = std::make_shared<Hawk>(legacy_holo, skip_setup);
-    auto camera_mode = static_cast<hololink::module::sensors::ar0234::ar0234_mode::Mode>(camera_mode_int);
-
-    std::vector<std::string> window_titles = {
-        title + " - left",
-        title + " - right",
-    };
-    int32_t per_h = window_height / 2;
-    int32_t per_w = window_width / 2;
-
+    std::shared_ptr<hololink::module::HololinkInterfaceV1> holo_iface;
     SkewState skew_state;
-
-    auto application = holoscan::make_application<HoloscanApplication>(headless, fullscreen,
-        cu_context, cu_device_ordinal, sif_metadatas, hawk, camera_mode,
-        frame_limit, per_h, per_w, window_titles, &skew_state);
-    application->config(configuration);
+    // HSDK4 printed the stereo skew summary for every run that reached the Hawk bring-up, failed
+    // or not, and none when CUDA, enumeration or the board connection failed before it.
+    bool bring_up_started = false;
 
     try {
+        // CUDA
+        CudaCheck(cuInit(0));
+        int cu_device_ordinal = 0;
+        CudaCheck(cuDeviceGet(&cu_device, cu_device_ordinal));
+        CUcontext cu_context;
+        CudaCheck(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+        cuCtxSetCurrent(cu_context);
+
+        // Both SIFs always — stereo.
+        const std::vector<int64_t> sif_list = { 0, 1 };
+
+        auto& adapter = hololink::module::Adapter::get_adapter();
+        hololink::module::EnumerationMetadata metadata
+            = adapter.wait_for_channel(hololink_ip, std::chrono::seconds(30));
+
+        std::vector<hololink::module::EnumerationMetadata> sif_metadatas;
+        for (auto sif : sif_list) {
+            hololink::module::EnumerationMetadata sif_meta = metadata;
+            adapter.use_sensor(sif_meta, sif);
+            sif_metadatas.push_back(std::move(sif_meta));
+        }
+
+        holo_iface = hololink::module::HololinkInterfaceV1::get_service(metadata);
+        holo_iface->start();
+        auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(metadata);
+
+        auto legacy_holo = board->hololink();
+        auto deserializer = std::make_shared<Max96716a>(legacy_holo);
+        auto hawk = std::make_shared<Hawk>(legacy_holo, skip_setup);
+        auto camera_mode = static_cast<hololink::module::sensors::ar0234::ar0234_mode::Mode>(camera_mode_int);
+        bring_up_started = true;
+        hawk->set_mode(camera_mode);
+
+        hololink::module::sensors::max96716a::Max96716a::GmslLink link
+            = hololink::module::sensors::max96716a::Max96716a::GmslLink::LINK_A;
+
         if (!skip_setup) {
             if (!skip_reset) {
                 holo_iface->reset();
@@ -445,8 +428,8 @@ int main(int argc, char** argv)
             }
 
             // Only enable the link we care about
-            auto link = (channel_arg == "B") ? Max96716a::GmslLink::LINK_B
-                                             : Max96716a::GmslLink::LINK_A;
+            link = (channel_arg == "B") ? Max96716a::GmslLink::LINK_B
+                                        : Max96716a::GmslLink::LINK_A;
             deserializer->enable_link_exclusive(link);
 
             // Serializer sanity check
@@ -510,15 +493,157 @@ int main(int argc, char** argv)
             }
         }
 
-        application->run();
-    } catch (...) {
+        // Build the graph.
+        holoscan::Graph graph { "linux_single_network_stereo_hawk_player" };
+        holoscan::CompileOptions compile_options;
+
+        // Both AR0234s are identical and configured identically; resolve geometry once.
+        hololink::csi::CsiGeometry geometry;
+        hawk->configure_converter(std::make_shared<GeometryCaptureConverter>(geometry));
+        const size_t frame_size = geometry.start_byte + geometry.bytes_per_line * geometry.pixel_height
+            + geometry.trailing_bytes;
+
+        const auto bayer_format = hawk->bayer_format();
+        const auto pixel_format = hawk->pixel_format();
+        const auto bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format);
+
+        const int32_t per_w = window_width / 2;
+        const int32_t per_h = window_height / 2;
+
+        const std::vector<std::string> sif_name = { "left", "right" };
+        std::vector<std::string> tensor_output_operator_paths;
+        std::vector<std::string> image_output_operator_paths;
+
+        for (size_t idx = 0; idx < sif_list.size(); ++idx) {
+            const int64_t sif = sif_list[idx];
+            const std::string label = sif_name[sif];
+            const std::string suffix = std::to_string(idx);
+            const std::string window_title = title + " - " + label;
+
+            holoscan::visualization::LayerStack layers;
+            // The sensor's image; HolovizOp scales it into the window.
+            layers.add_image_layer("video", hx::rgba16_layer(geometry.pixel_width, geometry.pixel_height));
+
+            auto viz = hx::add_holoviz(graph, "holoviz_" + suffix, std::move(layers),
+                hx::DisplayConfig {
+                    .title = window_title,
+                    .width = static_cast<uint32_t>(per_w),
+                    .height = static_cast<uint32_t>(per_h),
+                    .fullscreen = fullscreen,
+                    .headless = headless,
+                },
+                compile_options, cu_device_ordinal);
+
+            auto receiver = graph.op<hololink::module::operators::LinuxReceiverOp>(
+                "receiver_" + suffix,
+                sif_metadatas[idx],
+                [hawk] { hawk->start(); },
+                [hawk] { hawk->stop(); });
+            receiver.set_params(hololink::module::operators::LinuxReceiverParams {
+                .frame_context = cu_context,
+                .frame_size = frame_size,
+                // Stop after --frame-limit frames, as HSDK4's CountCondition on the receiver did.
+                .frame_limit = frame_limit,
+                .frame_limit_ends_run = true,
+            });
+
+            auto skew_probe = graph.op<SkewProbeOp>("skew_probe_" + label);
+            skew_probe.set_params(SkewProbeOpParams { .label = label, .state = &skew_state });
+
+            auto csi = graph.op<hololink::operators::CsiToBayerOp>("csi_to_bayer_" + suffix);
+            csi.set_params(hololink::operators::CsiToBayerParams {
+                .cuda_device_ordinal = cu_device_ordinal,
+                .geometry = geometry,
+                .bayer_format = bayer_format,
+            });
+
+            auto ip = graph.op<hololink::operators::ImageProcessorOp>("image_processor_" + suffix);
+            ip.set_params(hololink::operators::ImageProcessorParams {
+                .pixel_format = int(pixel_format),
+                .bayer_format = int(bayer_format),
+                .optical_black = 50, // Optical black value for AR0234 is 50
+                .cuda_device_ordinal = cu_device_ordinal,
+                .pixel_width = geometry.pixel_width,
+                .pixel_height = geometry.pixel_height,
+            });
+
+            auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>("bayer_demosaic_" + suffix);
+            demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+                .bayer_grid_pos = bayer_grid_pos,
+                .generate_alpha = true,
+                .alpha_value = 65535U,
+            });
+
+            graph.add_flow(receiver->tensor, skew_probe->input_tensor, hx::pipeline_edge());
+            graph.add_flow(receiver->metadata, skew_probe->input_metadata, hx::pipeline_edge());
+            graph.add_flow(skew_probe->output_tensor, csi->input_tensor, hx::pipeline_edge());
+            graph.add_flow(skew_probe->output_metadata, csi->input_metadata, hx::pipeline_edge());
+            graph.add_flow(csi->output_tensor, ip->input_tensor, hx::pipeline_edge());
+            graph.add_flow(csi->output_metadata, ip->input_metadata, hx::pipeline_edge());
+            graph.add_flow(ip->output_tensor, demosaic->input, hx::pipeline_edge());
+            graph.add_flow(demosaic->output, viz->image_layer_input(0), hx::display_edge());
+
+            tensor_output_operator_paths.push_back("receiver_" + suffix);
+            tensor_output_operator_paths.push_back("csi_to_bayer_" + suffix);
+            tensor_output_operator_paths.push_back("image_processor_" + suffix);
+            image_output_operator_paths.push_back("bayer_demosaic_" + suffix);
+        }
+
+        graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+        for (const auto& operator_path : tensor_output_operator_paths) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = operator_path,
+                    .output_port = "tensor",
+                    .device = holoscan::DeviceId { cu_device_ordinal },
+                });
+        }
+        for (const auto& operator_path : image_output_operator_paths) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = operator_path,
+                    .output_port = "output",
+                    .device = holoscan::DeviceId { cu_device_ordinal },
+                });
+        }
+
+        const auto plan = holoscan::compile(graph, std::move(compile_options));
+        if (!plan.ok()) {
+            hx::print_compile_failure(plan);
+            holo_iface->stop();
+            std::cout << "Stereo skew: " << skew_state.summary() << std::endl;
+            CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+            return EXIT_FAILURE;
+        }
+
+        auto session = holoscan::run_async(plan, signals);
+        session.wait();
+        const bool failed = hx::report_session(session, plan);
+
         holo_iface->stop();
         std::cout << "Stereo skew: " << skew_state.summary() << std::endl;
-        throw;
-    }
-    holo_iface->stop();
-    std::cout << "Stereo skew: " << skew_state.summary() << std::endl;
+        CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
 
-    CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
-    return 0;
+        return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    } catch (const std::exception& e) {
+        if (holo_iface) {
+            holo_iface->stop();
+        }
+        if (bring_up_started) {
+            std::cout << "Stereo skew: " << skew_state.summary() << std::endl;
+        }
+        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+        return EXIT_FAILURE;
+    }
+}
+
+} // namespace
+
+int main(int argc, char** argv)
+{
+    // With managed signals, Ctrl+C stops the session cooperatively, so the Hawk and the board are
+    // stopped, and the stereo skew reported, on the way out.
+    return hx::run_with_managed_signals(
+        [&](holoscan::ManagedShutdownSignals& signals) { return run_player(argc, argv, signals); });
 }

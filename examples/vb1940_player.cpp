@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,171 +15,197 @@
  * limitations under the License.
  */
 
+// Single VB1940 live viewer over a single RoCE network:
+//   RoceReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp -> HolovizOp
+
 #include <chrono>
 #include <cstdint>
-#include <filesystem>
-#include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <thread>
-#include <unistd.h>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include <cuda.h>
 
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
+
+#include <hololink/common/cuda_helper.hpp>
 #include <hololink/common/holoargs.hpp>
 #include <hololink/common/tools.hpp>
 #include <hololink/core/csi_controller.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
+#include <hololink/core/logging.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/roce_receiver/roce_receiver_op.hpp>
 #include <hololink/sensors/camera/camera_sensor.hpp>
 #include <hololink/sensors/camera/vb1940/native_vb1940_sensor.hpp>
 
-#include <cuda.h>
-#include <cuda_runtime.h>
+#include "player_support.hpp"
 
-class HoloscanApplication : public holoscan::Application {
-public:
-    HoloscanApplication(
-        bool headless,
-        bool fullscreen,
-        CUcontext cuda_context,
-        int cuda_device_ordinal,
-        hololink::DataChannel& hololink_channel,
-        const std::string& ibv_name,
-        uint32_t ibv_port,
-        std::shared_ptr<hololink::sensors::NativeVb1940Sensor> camera,
-        hololink::sensors::vb1940_mode::Mode camera_mode,
-        int frame_limit)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , cuda_context_(cuda_context)
-        , cuda_device_ordinal_(cuda_device_ordinal)
-        , hololink_channel_(hololink_channel)
-        , ibv_name_(ibv_name)
-        , ibv_port_(ibv_port)
-        , camera_(camera)
-        , camera_mode_(camera_mode)
-        , frame_limit_(frame_limit)
-    {
-        if (ibv_name_.empty()) {
-            // Select the first available device to be the default
-            auto infiniband_devices = hololink::infiniband_devices();
-            if (!infiniband_devices.empty()) {
-                ibv_name_ = infiniband_devices[0];
-                HOLOSCAN_LOG_INFO("Using IBV device: {}", ibv_name_);
-            } else {
-                throw std::runtime_error(
-                    "No InfiniBand devices found. Please specify a device using --ibv-name or ensure "
-                    "an InfiniBand device is configured.");
-            }
-        }
+namespace hx = hololink::examples;
+
+namespace {
+
+int run_player(hololink::args::VariablesMap& variables_map, uint32_t use_sensor,
+    holoscan::ManagedShutdownSignals& signals)
+{
+    // Empty: the receiver uses the device on the board's network interface.
+    const std::string ibv_name = variables_map["ibv-name"].as<std::string>();
+
+    const int cuda_device_ordinal = 0;
+    CudaCheck(cuInit(0));
+    CUdevice cu_device;
+    CudaCheck(cuDeviceGet(&cu_device, cuda_device_ordinal));
+    CUcontext cu_context;
+    CudaCheck(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+    cuCtxSetCurrent(cu_context);
+
+    const std::string hololink_ip = variables_map["hololink"].as<std::string>();
+    HOLOSCAN_LOG_INFO("Finding Hololink channel for IP: {}", hololink_ip);
+    auto channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+    hololink::DataChannel::use_sensor(channel_metadata, use_sensor);
+    auto hololink_channel = std::make_shared<hololink::DataChannel>(channel_metadata);
+
+    auto hololink_dev = hololink_channel->hololink();
+    hololink_dev->start();
+    hololink_dev->reset();
+
+    auto camera = std::make_shared<hololink::sensors::NativeVb1940Sensor>(*hololink_channel);
+
+    const auto camera_mode = static_cast<hololink::sensors::vb1940_mode::Mode>(
+        variables_map["camera-mode"].as<int>());
+
+    hololink_dev->write_uint32(0x8, 0x0); // Keep the sensor RESET at low
+    camera->setup_clock();
+    // Release the sensor RESET to high
+    hololink_dev->write_uint32(0x8, use_sensor == 0 ? 0x1 : 0x2);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    camera->get_register_32(0x0000); // DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+    camera->get_register_32(0x0734); // EXT_CLOCK(25MHz = 0x017d7840)
+    camera->configure(camera_mode);
+
+    // Build the graph.
+    holoscan::Graph graph { "vb1940_player" };
+
+    hololink::csi::CsiGeometry geometry;
+    camera->configure_converter(geometry);
+    const size_t frame_size = geometry.start_byte + geometry.bytes_per_line * geometry.pixel_height
+        + geometry.trailing_bytes;
+
+    holoscan::CompileOptions compile_options;
+    holoscan::visualization::LayerStack layers;
+    layers.add_image_layer("video",
+        hx::rgba16_layer(static_cast<uint32_t>(camera->get_width()), static_cast<uint32_t>(camera->get_height())));
+
+    auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers),
+        hx::DisplayConfig {
+            .fullscreen = variables_map["fullscreen"].as<bool>(),
+            .headless = variables_map["headless"].as<bool>(),
+        },
+        compile_options, cuda_device_ordinal);
+
+    const uint32_t ibv_port = variables_map["ibv-port"].as<uint32_t>();
+
+    auto receiver = graph.op<hololink::operators::RoceReceiverOp>(
+        "receiver",
+        hololink_channel,
+        [camera] { camera->start(); },
+        [camera] { camera->stop(); });
+    receiver.set_params(hololink::operators::RoceReceiverParams {
+        .frame_context = cu_context,
+        .frame_size = frame_size,
+        .ibv_name = ibv_name,
+        .ibv_port = ibv_port,
+        .frame_limit = variables_map["frame-limit"].as<int>(),
+        .frame_limit_ends_run = true,
+    });
+
+    const auto bayer_format = camera->get_bayer_format();
+    const auto pixel_format = camera->get_pixel_format();
+
+    auto csi = graph.op<hololink::operators::CsiToBayerOp>("csi_to_bayer");
+    csi.set_params(hololink::operators::CsiToBayerParams {
+        .cuda_device_ordinal = cuda_device_ordinal,
+        .geometry = geometry,
+        .bayer_format = bayer_format,
+    });
+    auto ip = graph.op<hololink::operators::ImageProcessorOp>("image_processor");
+    ip.set_params(hololink::operators::ImageProcessorParams {
+        .pixel_format = int(pixel_format),
+        .bayer_format = int(bayer_format),
+        .optical_black = 8, // Optical black value for vb1940 is 8 for RAW10
+        .cuda_device_ordinal = cuda_device_ordinal,
+        .pixel_width = geometry.pixel_width,
+        .pixel_height = geometry.pixel_height,
+    });
+
+    const auto bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format);
+    auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>("bayer_demosaic");
+    demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+        .bayer_grid_pos = bayer_grid_pos,
+        .generate_alpha = true,
+        .alpha_value = 65535U,
+    });
+
+    graph.add_flow(receiver->tensor, csi->input_tensor, hx::pipeline_edge());
+    graph.add_flow(receiver->metadata, csi->input_metadata, hx::pipeline_edge());
+    graph.add_flow(csi->output_tensor, ip->input_tensor, hx::pipeline_edge());
+    graph.add_flow(csi->output_metadata, ip->input_metadata, hx::pipeline_edge());
+    graph.add_flow(ip->output_tensor, demosaic->input, hx::pipeline_edge());
+    graph.add_flow(demosaic->output, viz->image_layer_input(0), hx::display_edge());
+
+    graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+    for (const auto& operator_path : { std::string_view("receiver"), std::string_view("csi_to_bayer"), std::string_view("image_processor") }) {
+        compile_options.deployment.bind_tensor_output_device(
+            holoscan::TensorOutputDevicePlacement {
+                .operator_path = operator_path,
+                .output_port = "tensor",
+                .device = holoscan::DeviceId { cuda_device_ordinal },
+            });
+    }
+    compile_options.deployment.bind_tensor_output_device(
+        holoscan::TensorOutputDevicePlacement {
+            .operator_path = "bayer_demosaic",
+            .output_port = "output",
+            .device = holoscan::DeviceId { cuda_device_ordinal },
+        });
+
+    const auto plan = holoscan::compile(graph, std::move(compile_options));
+    if (!plan.ok()) {
+        hx::print_compile_failure(plan);
+        hololink_dev->stop();
+        CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+        return -1;
     }
 
-    void compose() override
-    {
-        using namespace holoscan;
+    auto session = holoscan::run_async(plan, signals);
+    session.wait();
+    const bool failed = hx::report_session(session, plan);
 
-        std::shared_ptr<Condition> condition;
-        if (frame_limit_) {
-            condition = make_condition<CountCondition>("count", frame_limit_);
-        } else {
-            condition = make_condition<BooleanCondition>("ok", true);
-        }
-        camera_->set_mode(camera_mode_);
+    hololink_dev->stop();
+    CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
 
-        auto csi_to_bayer_pool = make_resource<BlockMemoryPool>(
-            "pool",
-            1, // storage_type of 1 is device memory
-            camera_->get_width() * sizeof(uint16_t) * camera_->get_height(), // block_size
-            4 // num_blocks
-        );
+    return failed ? -1 : 0;
+}
 
-        auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>(
-            "csi_to_bayer",
-            Arg("allocator", csi_to_bayer_pool),
-            Arg("cuda_device_ordinal", cuda_device_ordinal_));
-        camera_->configure_converter(csi_to_bayer_operator);
-
-        size_t frame_size = csi_to_bayer_operator->get_csi_length();
-        auto receiver_operator = make_operator<hololink::operators::RoceReceiverOp>(
-            "receiver",
-            condition,
-            Arg("frame_size", frame_size),
-            Arg("frame_context", cuda_context_),
-            Arg("ibv_name", ibv_name_),
-            Arg("ibv_port", ibv_port_),
-            Arg("hololink_channel", &hololink_channel_),
-            Arg("device_start", std::function<void()>([this] {
-                camera_->start();
-            })),
-            Arg("device_stop", std::function<void()>([this] {
-                camera_->stop();
-            })));
-
-        auto pixel_format = static_cast<int>(camera_->get_pixel_format());
-        auto bayer_format = static_cast<int>(camera_->get_bayer_format());
-        auto image_processor_operator = make_operator<hololink::operators::ImageProcessorOp>(
-            "image_processor",
-            Arg("optical_black", 8), // Optical black value for vb1940 is 8 for RAW10
-            Arg("bayer_format", bayer_format),
-            Arg("pixel_format", pixel_format));
-
-        const int rgba_components_per_pixel = 4;
-        auto bayer_pool = make_resource<BlockMemoryPool>(
-            "pool",
-            1, // storage_type of 1 is device memory
-            camera_->get_width() * rgba_components_per_pixel * sizeof(uint16_t) * camera_->get_height(), // block_size
-            4 // num_blocks
-        );
-
-        auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>(
-            "demosaic",
-            Arg("pool", bayer_pool),
-            Arg("generate_alpha", true),
-            Arg("alpha_value", 65535),
-            Arg("bayer_grid_pos", bayer_format),
-            Arg("interpolation_mode", 0));
-
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
-            "holoviz",
-            Arg("fullscreen", fullscreen_),
-            Arg("headless", headless_),
-            Arg("framebuffer_srgb", true));
-
-        add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
-        add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
-        add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
-        add_flow(demosaic, visualizer, { { "transmitter", "receivers" } });
-    }
-
-private:
-    bool headless_;
-    bool fullscreen_;
-    CUcontext cuda_context_;
-    int cuda_device_ordinal_;
-    hololink::DataChannel& hololink_channel_;
-    std::string ibv_name_;
-    uint32_t ibv_port_;
-    std::shared_ptr<hololink::sensors::NativeVb1940Sensor> camera_;
-    hololink::sensors::vb1940_mode::Mode camera_mode_;
-    int frame_limit_;
-};
+} // namespace
 
 int main(int argc, char** argv)
 {
     using namespace hololink::args;
     OptionsDescription options_description("Allowed options");
-
-    std::string default_config = "example_configuration.yaml";
-    if (argc > 0 && argv[0] && std::string(argv[0]).find('/') != std::string::npos) {
-        auto abs = std::filesystem::absolute(argv[0]);
-        default_config = (abs.parent_path() / "example_configuration.yaml").string();
-    }
 
     // clang-format off
     options_description.add_options()
@@ -187,84 +213,36 @@ int main(int argc, char** argv)
         ("headless", bool_switch()->default_value(false), "Run in headless mode")
         ("fullscreen", bool_switch()->default_value(false), "Run in fullscreen mode")
         ("frame-limit", value<int>()->default_value(0), "Exit after receiving this many frames")
-        ("configuration", value<std::string>()->default_value(default_config), "Configuration file")
+        ("configuration", value<std::string>(), "Configuration file")
         ("hololink", value<std::string>()->default_value(hololink::env_hololink_ip(0, "192.168.0.2")), "IP address of Hololink board")
-        ("ibv-name", value<std::string>()->default_value(""), "IBV device to use (default: first available device)")
-        ("ibv-port", value<uint32_t>()->default_value(1), "Port number of IBV device (default: 1)")
+        ("ibv-name", value<std::string>()->default_value(""), "IBV device to use (default: the device on the board's network interface)")
+        ("ibv-port", value<uint32_t>()->default_value(1), "Port number of IBV device, with --ibv-name (default: 1)")
         ("use-sensor", value<uint32_t>()->default_value(0), "Use the specific sensor (0 or 1, default=0)")
         ;
     // clang-format on
 
+    hololink::logging::hsb_log_level = hololink::logging::HSB_LOG_LEVEL_INFO;
+
     auto variables_map = Parser().parse_command_line(argc, argv, options_description);
-    int use_sensor = variables_map["use-sensor"].as<uint32_t>();
+
+    const uint32_t use_sensor = variables_map["use-sensor"].as<uint32_t>();
     if (use_sensor >= 2) {
         HOLOSCAN_LOG_ERROR("Invalid value use_sensor={}; must be 0 or 1.", use_sensor);
         return -1;
     }
-
-    try {
-        // Initialize CUDA
-        cuInit(0);
-        CUdevice cu_device;
-        int cu_device_ordinal = 0;
-        cuDeviceGet(&cu_device, cu_device_ordinal);
-        CUcontext cu_context;
-        cuDevicePrimaryCtxRetain(&cu_context, cu_device);
-
-        // Get a handle to the Hololink device
-        HOLOSCAN_LOG_INFO("Finding Hololink channel for IP: {}", variables_map["hololink"].as<std::string>());
-        auto channel_metadata = hololink::Enumerator::find_channel(variables_map["hololink"].as<std::string>());
-        hololink::DataChannel::use_sensor(channel_metadata, use_sensor);
-        hololink::DataChannel hololink_channel(channel_metadata);
-
-        // Get a handle to the camera
-        auto camera = std::make_shared<hololink::sensors::NativeVb1940Sensor>(hololink_channel);
-
-        // Convert camera_mode to proper enum
-        auto camera_mode = static_cast<hololink::sensors::vb1940_mode::Mode>(variables_map["camera-mode"].as<int>());
-
-        // Set up the application
-        auto app = std::make_unique<HoloscanApplication>(
-            variables_map["headless"].as<bool>(),
-            variables_map["fullscreen"].as<bool>(),
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
-            variables_map["ibv-name"].as<std::string>(),
-            variables_map["ibv-port"].as<uint32_t>(),
-            camera,
-            camera_mode,
-            variables_map["frame-limit"].as<int>());
-        app->config(variables_map["configuration"].as<std::string>());
-
-        // Run it
-        auto hololink = hololink_channel.hololink();
-        hololink->start();
-        hololink->reset();
-        hololink->write_uint32(0x8, 0x0); // Keep the sensor RESET at low
-        camera->setup_clock();
-        // Release the sensor RESET to high
-        if (use_sensor == 0) {
-            hololink->write_uint32(0x8, 0x1);
-        } else if (use_sensor == 1) {
-            hololink->write_uint32(0x8, 0x2);
-        } else {
-            // We already checked this above; so this is redundant.
-            HOLOSCAN_LOG_ERROR("Invalid value use_sensor={}; must be 0 or 1.", use_sensor);
-            return -1;
-        }
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        camera->get_register_32(0x0000); // DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-        camera->get_register_32(0x0734); // EXT_CLOCK(25MHz = 0x017d7840)
-        camera->configure(camera_mode);
-
-        app->run();
-        hololink->stop();
-
-        cuDevicePrimaryCtxRelease(cu_device);
-        return 0;
-    } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+    if (variables_map.count("configuration")
+        && !hx::check_configuration(variables_map["configuration"].as<std::string>())) {
         return -1;
     }
+
+    // With managed signals, Ctrl+C stops the session cooperatively, so the camera and the board
+    // are stopped on the way out.
+    return hx::run_with_managed_signals([&](holoscan::ManagedShutdownSignals& signals) {
+        try {
+            return run_player(variables_map, use_sensor, signals);
+        } catch (const std::exception& e) {
+            HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+            return -1;
+        }
+    });
 }

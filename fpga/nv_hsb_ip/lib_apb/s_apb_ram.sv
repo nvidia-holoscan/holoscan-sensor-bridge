@@ -52,12 +52,13 @@ logic [W_DATA-1:0] reg_rdata_q;
 logic              reg_ready;
 logic              reg_err;
 logic              reg_addrerr;
+logic              reg_rdy_prev;
 logic              reg_rdy_prev_sync;
 logic [W_DATA-1:0] reg_wrdata;
 logic              reg_wr_en;
 logic              reg_rd_en;
 
-always_ff @(posedge i_aclk or posedge i_arst) begin
+always_ff @(posedge i_aclk) begin
   if (i_arst) begin
     reg_ready <= 0;
     reg_addr  <= 0;
@@ -110,7 +111,7 @@ data_sync #(
   .SYNC_DEPTH                       (2                      )
 ) u_wr_en_sync (
   .clk                              (i_pclk                 ),
-  .rst_n                            (!i_prst                ),
+  .rst                              (i_prst                 ),
   .sync_in                          (reg_wren               ),
   .sync_out                         (reg_wren_sync          )
 );
@@ -121,25 +122,19 @@ data_sync #(
   .SYNC_DEPTH                       (2                      )
 ) u_rd_en_sync (
   .clk                              (i_pclk                 ),
-  .rst_n                            (!i_prst                ),
+  .rst                              (i_prst                 ),
   .sync_in                          (reg_rden               ),
   .sync_out                         (reg_rden_sync          )
 );
-
-logic reg_rdy_prev  = '1;
-logic reg_wren_prev = '1;
-
 
 always @ (posedge i_pclk) begin
   if (i_prst) begin
     reg_rdy_prev  <= '0;
     reg_rdata_q   <= '0;
-    reg_wren_prev <= '0;
   end
   else begin
     reg_rdy_prev  <= (reg_wren_sync || reg_rden_sync);
     reg_rdata_q   <= reg_rden_sync ? ((reg_addrerr) ? 32'hBADADD12 : reg_rdata) : '0;
-    reg_wren_prev <= i_wr_en;
   end
 end
 
@@ -149,7 +144,7 @@ data_sync #(
   .SYNC_DEPTH                       (3                      )
 ) u_rdy_sync (
   .clk                              (i_aclk                 ),
-  .rst_n                            (!i_arst                ),
+  .rst                              (i_arst                 ),
   .sync_in                          (reg_rdy_prev           ),
   .sync_out                         (reg_rdy_prev_sync      )
 );
@@ -158,20 +153,25 @@ data_sync #(
 // RAM
 //------------------------------------------------------------------------------------------------//
 
-(* ram_style = "block" *) logic [R_WIDTH-1:0] blk_mem [R_CTRL] = '{default:'0}/*synthesis syn_ramstyle = "block_ram"*/;
-logic [W_COFST-1:0] addr_prev = '0;
+(* ram_style = "block" *) logic [R_WIDTH-1:0] blk_mem [R_CTRL]/*synthesis syn_ramstyle = "block_ram"*/;
+logic [W_COFST-1:0] addr_prev;
 
 always @ (posedge i_pclk) begin
   if ((reg_wr_en)) begin
     blk_mem[reg_raddr[W_COFST-1:0]] <= reg_wrdata;
   end
+  
   if (reg_rd_en) begin
-    reg_rdata     <= blk_mem[reg_raddr[W_COFST-1:0]];
+    reg_rdata <= blk_mem[reg_raddr[W_COFST-1:0]];
   end
 end
 
 always @ (posedge i_pclk) begin
-  addr_prev <= (o_rd_data_valid) ? i_addr : addr_prev;
+  if (i_prst) begin
+    addr_prev <= '0;
+  end else begin
+    addr_prev <= (o_rd_data_valid) ? i_addr : addr_prev;
+  end
 end
 
 assign reg_wrdata      = (reg_rden_sync || reg_wren_sync) ? reg_wdata            : i_wr_data;

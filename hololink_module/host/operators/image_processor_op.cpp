@@ -2,21 +2,24 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Native module image-processing operator. Self-contained: it carries its own
- * engine (the NVRTC applyBlackLevel / histogram / calcWBGains / applyOperations
- * kernels, the histogram sizing in start(), and the sub-frame-aware
- * white-balance accumulation in compute()). The pixel_format / bayer_format
- * parameters are interpreted against the module
+ * Native module image-processing operator. Self-contained: it carries its own engine (the
+ * NVRTC applyBlackLevel / histogram / calcWBGains / applyOperations kernels, the histogram
+ * sizing in start(), and the sub-frame-aware white-balance accumulation in compute()). The
+ * pixel_format / bayer_format parameters are interpreted against the module
  * hololink::module::csi::PixelFormat / BayerFormat.
  */
 
 #include "hololink/module/operators/image_processor_op.hpp"
 
+#include <array>
 #include <stdexcept>
+#include <vector>
 
 #include <fmt/format.h>
-#include <gxf/std/tensor.hpp>
-#include <holoscan/holoscan.hpp>
+#include <fmt/ranges.h>
+
+#include <hololink/operators/capture_metadata_utils.hpp>
+#include <hololink/operators/image_encoding_utils.hpp>
 
 #include "hololink/module/csi_converter.hpp" // PixelFormat / BayerFormat
 #include "hololink/module/cuda_unique.hpp" // HOLOLINK_MODULE_CUDA_CHECK
@@ -214,22 +217,73 @@ constexpr auto HISTOGRAM_BIN_COUNT = 256;
 
 namespace hololink::module::operators {
 
+namespace {
+
+    // The output tensor pool's slot size: one image of 16-bit samples when the application gave the
+    // image's size, the ceiling of earlier releases otherwise. The compiler evaluates it once, against
+    // the Params given to graph.op(). (The bound can't come from the input: a pass-through operator
+    // between CsiToBayerOp and this one, ComputeCrcOp for one, has no finite span of its own.)
+    holoscan::expected<std::uint64_t, holoscan::Error> output_frame_bytes(
+        const ImageProcessorParams& params) noexcept
+    {
+        static constexpr std::uint64_t kDefaultMaxOutputBytes = 64ULL * 1024 * 1024;
+        if (params.pixel_width == 0 || params.pixel_height == 0) {
+            return kDefaultMaxOutputBytes;
+        }
+        return std::uint64_t { params.pixel_width } * params.pixel_height * sizeof(uint16_t);
+    }
+
+} // namespace
+
 void ImageProcessorOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.input<holoscan::gxf::Entity>("input");
-    spec.output<holoscan::gxf::Entity>("output");
+    static constexpr DLDataType kUInt16 { static_cast<uint8_t>(kDLUInt), 16, 1 };
 
-    spec.param(bayer_format_, "bayer_format", "BayerFormat", "Bayer format (one of hololink::module::csi::BayerFormat)");
-    spec.param(pixel_format_, "pixel_format", "PixelFormat", "Pixel format (one of hololink::module::csi::PixelFormat)");
-    spec.param(optical_black_, "optical_black", "Optical Black", "optical black value", 0);
-    spec.param(
-        cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal", "Device to use for CUDA operations", 0);
+    (void)spec.input(input_tensor, "in_tensor")
+        .tensor_field(holoscan::schema::ImageTensorFields::data);
+    spec.input(input_metadata, "in_metadata");
+    spec.output(output_tensor, "tensor")
+        .max_emits_per_compute(1U)
+        .tensor_field(holoscan::schema::ImageTensorFields::data)
+        .produces_tensor(holoscan::TensorOutputSpec {
+                             .representation = holoscan::TensorRepresentation {
+                                 .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                                 .dtype = kUInt16,
+                             },
+                             .bounds = holoscan::TensorBounds {
+                                 .max_rank = 3U,
+                             },
+                             .storage = holoscan::TensorOutputStorage::kRuntimePool,
+                         },
+            // One slot holds one image of pixel_width x pixel_height 16-bit samples (see
+            // output_frame_bytes() above).
+            holoscan::parameter_projected_byte_span<&output_frame_bytes>("com.nvidia.hololink.module.operators.ImageProcessorOp.output_frame_bytes", holoscan::param_ref<&ImageProcessorParams::pixel_width>(), holoscan::param_ref<&ImageProcessorParams::pixel_height>()));
+    spec.output(output_metadata, "metadata").max_emits_per_compute(1U);
+}
+
+holoscan::Contract ImageProcessorOp::contract() const
+{
+    holoscan::Contract result;
+    result
+        .trigger(holoscan::OnAligned {
+            .ports = holoscan::ports(input_tensor, input_metadata),
+            .window = hololink::operators::kMetadataPairingWindow,
+        })
+        .input(input_tensor, holoscan::Exact {})
+        .input(input_metadata, holoscan::Exact {});
+    return result;
 }
 
 void ImageProcessorOp::start()
 {
+    const auto& p = params();
+    pixel_format_ = p.pixel_format;
+    bayer_format_ = p.bayer_format;
+    optical_black_ = p.optical_black;
+    cuda_device_ordinal_ = p.cuda_device_ordinal;
+
     HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));
-    HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGet(&cuda_device_, cuda_device_ordinal_.get()));
+    HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGet(&cuda_device_, cuda_device_ordinal_));
     HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
     int integrated = 0;
     HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_device_));
@@ -265,7 +319,7 @@ void ImageProcessorOp::start()
     histogram_threadblock_size_ = histogram_warp_count * warp_size;
 
     uint32_t least_significant_bit;
-    switch (hololink::module::csi::PixelFormat(pixel_format_.get())) {
+    switch (hololink::module::csi::PixelFormat(pixel_format_)) {
     case hololink::module::csi::PixelFormat::RAW_8:
         least_significant_bit = 0;
         break;
@@ -278,11 +332,11 @@ void ImageProcessorOp::start()
         least_significant_bit = 16 - 12;
         break;
     default:
-        throw std::runtime_error(fmt::format("Camera pixel format {} not supported.", int(pixel_format_.get())));
+        throw std::runtime_error(fmt::format("Camera pixel format {} not supported.", pixel_format_));
     }
 
     uint32_t x0y0_offset, x1y0_offset, x0y1_offset, x1y1_offset;
-    switch (hololink::module::csi::BayerFormat(bayer_format_.get())) {
+    switch (hololink::module::csi::BayerFormat(bayer_format_)) {
     case hololink::module::csi::BayerFormat::RGGB:
         x0y0_offset = 0; // R
         x1y0_offset = 1; // G
@@ -308,7 +362,7 @@ void ImageProcessorOp::start()
         x1y1_offset = 1; // G
         break;
     default:
-        throw std::runtime_error(fmt::format("Camera bayer format {} not supported.", int(bayer_format_.get())));
+        throw std::runtime_error(fmt::format("Camera bayer format {} not supported.", bayer_format_));
     }
 
     cuda_function_launcher_.reset(new CudaFunctionLauncher(
@@ -323,7 +377,7 @@ void ImageProcessorOp::start()
             fmt::format("-D HISTOGRAM_WARP_COUNT={}", histogram_warp_count),
             fmt::format("-D HISTOGRAM_THREADBLOCK_SIZE={}", histogram_threadblock_size_),
             fmt::format("-D HISTOGRAM_THREADBLOCK_MEMORY={}", histogram_threadblock_memory),
-            fmt::format("-D OPTICAL_BLACK={}", optical_black_.get() * (1 << least_significant_bit)) }));
+            fmt::format("-D OPTICAL_BLACK={}", optical_black_ * (1 << least_significant_bit)) }));
 
     white_balance_gains_memory_.reset([] {
         CUdeviceptr mem = 0;
@@ -334,6 +388,8 @@ void ImageProcessorOp::start()
     // Initialize white balance gains to 1.0 (no correction) to avoid using uninitialized values
     float initial_gains[CHANNELS] = { 1.0f, 1.0f, 1.0f };
     HOLOLINK_MODULE_CUDA_CHECK(cuMemcpyHtoD(white_balance_gains_memory_.get(), initial_gains, CHANNELS * sizeof(float)));
+    expected_frame_number_ = 0;
+    accumulating_histogram_ = false;
 }
 
 void ImageProcessorOp::stop()
@@ -348,53 +404,114 @@ void ImageProcessorOp::stop()
     cuda_context_ = nullptr;
 }
 
-void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputContext& output, holoscan::ExecutionContext& context)
+holoscan::expected<void, holoscan::Error> ImageProcessorOp::compute(holoscan::ExecutionContext& context)
 {
-    auto maybe_entity = input.receive<holoscan::gxf::Entity>("input");
-    if (!maybe_entity) {
-        throw std::runtime_error("Failed to receive input");
+    auto result = compute_impl(context);
+    if (!result && result.error().code == holoscan::ErrorCode::kNotReady) {
+        return {};
     }
+    return result;
+}
 
-    auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-
-    const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
-    if (!maybe_tensor) {
-        throw std::runtime_error("Tensor not found in message");
+holoscan::expected<void, holoscan::Error> ImageProcessorOp::compute_impl(holoscan::ExecutionContext& context)
+{
+    auto maybe_paired = hololink::operators::receive_paired_tensor_metadata(input_tensor, input_metadata);
+    if (!maybe_paired) {
+        return holoscan::make_unexpected(std::move(maybe_paired).error());
     }
+    if (!*maybe_paired) {
+        if (const uint64_t dropped = mismatched_frames_.count()) {
+            HSB_LOG_WARN("ImageProcessorOp: dropped {} frame(s) in the last second whose payload and metadata "
+                         "were stamped as different frames",
+                dropped);
+        }
+        return {};
+    }
+    auto& paired = **maybe_paired;
+    const holoscan::schema::ImageT& in_image = paired.tensor.data;
+    if (!in_image.data) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            "received frame has null tensor" });
+    }
+    const holoscan::Tensor& in_tensor = *in_image.data;
+    const hololink::CaptureMetadataT& in_frame = paired.metadata.data;
 
-    const auto input_tensor = maybe_tensor.value();
-
-    if (input_tensor->storage_type() == nvidia::gxf::MemoryStorageType::kHost) {
+    const DLDeviceType device_type = in_tensor.device().device_type;
+    if (device_type == kDLCPU || device_type == kDLCUDAHost) {
         if (!is_integrated_ && !host_memory_warning_) {
             host_memory_warning_ = true;
             HSB_LOG_WARN(
                 "The input tensor is stored in host memory, this will reduce performance of this "
                 "operator. For best performance store the input tensor in device memory.");
         }
-    } else if (input_tensor->storage_type() != nvidia::gxf::MemoryStorageType::kDevice) {
-        throw std::runtime_error(
-            fmt::format("Unsupported storage type {}", (int)input_tensor->storage_type()));
+    } else if (device_type != kDLCUDA) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unsupported device type {}", static_cast<int>(device_type)) });
     }
 
-    if (input_tensor->rank() != 3) {
-        throw std::runtime_error("Tensor must be an image");
-    }
-    if (input_tensor->element_type() != nvidia::gxf::PrimitiveType::kUnsigned16) {
-        throw std::runtime_error(fmt::format("Unexpected image data type '{}', expected '{}'", int(input_tensor->element_type()), int(nvidia::gxf::PrimitiveType::kUnsigned16)));
+    if (in_tensor.shape_span().size() != 3) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            "Tensor must be an image (rank 3)" });
     }
 
-    const uint32_t height = input_tensor->shape().dimension(0);
-    const uint32_t width = input_tensor->shape().dimension(1);
-    const uint32_t components = input_tensor->shape().dimension(2);
+    const DLDataType dtype = in_tensor.dtype();
+    if (dtype.code != kDLUInt || dtype.bits != 16) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            "Unexpected image data type, expected uint16" });
+    }
+
+    const uint32_t height = static_cast<uint32_t>(in_tensor.shape_span()[0]);
+    const uint32_t width = static_cast<uint32_t>(in_tensor.shape_span()[1]);
+    const uint32_t components = static_cast<uint32_t>(in_tensor.shape_span()[2]);
     if (components != 1) {
-        throw std::runtime_error(fmt::format("Unexpected component count {}, expected '1'", components));
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unexpected component count {}, expected '1'", components) });
     }
 
     CudaContextScopedPush cur_cuda_context(cuda_context_);
+    const CUstream cuda_stream = context.cuda_stream().get();
 
-    // Get the CUDA stream from the input message if present, otherwise generate one.
-    // This stream will also be transmitted on the output port.
-    const cudaStream_t cuda_stream = input.receive_cuda_stream();
+    // Allocate an owned output tensor -- input pool tensors are read-only under the receive lease.
+    static constexpr DLDataType kUInt16 { static_cast<uint8_t>(kDLUInt), 16, 1 };
+    const std::array<int64_t, 3> out_shape { int64_t(height), int64_t(width), int64_t(components) };
+    auto loan = output_tensor.allocate_tensor(holoscan::TensorLoanRequest { .shape = out_shape, .dtype = kUInt16 });
+    if (!loan) {
+        if (loan.error().code == holoscan::ErrorCode::kResourceExhausted) {
+            // Every pool slot is still held downstream: drop this frame, like a full downstream
+            // queue (below).
+            count_dropped_frame(in_frame.sub_frame_offset);
+            return {};
+        }
+        return holoscan::make_unexpected(std::move(loan).error());
+    }
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        return holoscan::make_unexpected(std::move(writer).error());
+    }
+
+    uint16_t* const image_ptr = static_cast<uint16_t*>(writer->data());
+    // Copy the input (read-leased) into the writable output slot, densely. The input's rows may
+    // be padded (its byte strides say so); its pixels must be packed.
+    const std::vector<int64_t> strides = in_tensor.strides();
+    const auto row_bytes = static_cast<int64_t>(width) * int64_t(sizeof(uint16_t));
+    if (strides.size() != 3 || strides[2] != int64_t(sizeof(uint16_t))
+        || strides[1] != int64_t(sizeof(uint16_t)) || strides[0] < row_bytes) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unsupported image layout: byte strides [{}]", fmt::join(strides, ", ")) });
+    }
+    CUDA_MEMCPY2D copy {};
+    copy.srcMemoryType = CU_MEMORYTYPE_UNIFIED;
+    copy.srcDevice = reinterpret_cast<CUdeviceptr>(in_tensor.data());
+    copy.srcPitch = static_cast<size_t>(strides[0]);
+    copy.dstMemoryType = CU_MEMORYTYPE_UNIFIED;
+    copy.dstDevice = reinterpret_cast<CUdeviceptr>(image_ptr);
+    copy.dstPitch = static_cast<size_t>(row_bytes);
+    copy.WidthInBytes = static_cast<size_t>(row_bytes);
+    copy.Height = height;
+    if (cuMemcpy2DAsync(&copy, cuda_stream) != CUDA_SUCCESS) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure, "cuMemcpy2DAsync failed in ImageProcessorOp::compute" });
+    }
 
     // apply optical black if set
     if (optical_black_ != 0) {
@@ -402,27 +519,32 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
             "applyBlackLevel",
             { width, height, 1 },
             cuda_stream,
-            input_tensor->pointer(), width, height);
+            image_ptr, width, height);
     }
 
     bool clear_histogram = true;
 
-    const bool has_sub_frame_offset = metadata()->has_key("sub_frame_offset");
+    const bool has_sub_frame_offset = (in_frame.sub_frame_rows > 0);
     if (has_sub_frame_offset) {
-        const auto frame_number = metadata()->get<int64_t>("frame_number");
-        if (frame_number == expected_frame_number_) {
+        if (accumulating_histogram_ && in_frame.frame_number == expected_frame_number_) {
             // for full-frame processing we have a full histogram for each frame, but for sub-frame processing
             // we need to accumulate the histogram for all sub-frames before calculating the white balance gains
             clear_histogram = false;
         } else {
-            // when we have sub-frames the white-balance gains of the previous frame will be used for the current frame
-            cuda_function_launcher_->launch(
-                "calcWBGains",
-                { 1, 1, 1 },
-                { 1, 1, 1 },
-                cuda_stream,
-                histogram_memory_.get(), white_balance_gains_memory_.get());
-            expected_frame_number_ = frame_number;
+            // when we have sub-frames the white-balance gains of the previous frame will be used
+            // for the current frame; the first frame after start() has no previous frame and
+            // keeps the initial gains (an empty or never-cleared histogram would give zero or
+            // garbage gains)
+            if (accumulating_histogram_) {
+                cuda_function_launcher_->launch(
+                    "calcWBGains",
+                    { 1, 1, 1 },
+                    { 1, 1, 1 },
+                    cuda_stream,
+                    histogram_memory_.get(), white_balance_gains_memory_.get());
+            }
+            expected_frame_number_ = in_frame.frame_number;
+            accumulating_histogram_ = true;
         }
     }
 
@@ -436,7 +558,7 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
         { width, height, 1 },
         { histogram_threadblock_size_, 2, 1 },
         cuda_stream,
-        input_tensor->pointer(), histogram_memory_.get(), width, height);
+        image_ptr, histogram_memory_.get(), width, height);
 
     // if we don't have sub-frames, calculate the white balance gains for the current frame and apply them
     if (!has_sub_frame_offset) {
@@ -452,10 +574,41 @@ void ImageProcessorOp::compute(holoscan::InputContext& input, holoscan::OutputCo
         "applyOperations",
         { width, height, 1 },
         cuda_stream,
-        input_tensor->pointer(), width, height, white_balance_gains_memory_.get());
+        image_ptr, width, height, white_balance_gains_memory_.get());
 
-    // Emit the tensor
-    output.emit(entity);
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        return holoscan::make_unexpected(std::move(committed).error());
+    }
+
+    // Pass metadata through unchanged -- this operator's white-balance/optical-black
+    // processing doesn't change frame identity or hardware metadata.
+    hololink::CaptureMetadataT out_metadata = hololink::operators::forward_metadata(in_frame);
+    const holoscan::EmitOptions emit_opts = hololink::operators::propagate_emit_options(
+        paired.tensor.metadata, static_cast<uint64_t>(in_frame.frame_number));
+    // Pass every non-tensor ImageT field through unchanged -- white-balance/optical-black
+    // processing doesn't change the frame's geometry, CFA phase, or color metadata.
+    holoscan::schema::ImageT out_descriptor = hololink::operators::forward_image_descriptor(in_image);
+    auto emitted = hololink::operators::emit_tensor_and_metadata(
+        [&] { return output_tensor.emit_tensor(std::move(*loan), out_descriptor, emit_opts); },
+        output_metadata, out_metadata, emit_opts);
+    if (!emitted) {
+        return holoscan::make_unexpected(std::move(emitted).error());
+    }
+    if (*emitted == hololink::operators::PairedEmit::kDropped) {
+        // A downstream queue is full: the frame is dropped rather than failing the session.
+        count_dropped_frame(out_metadata.sub_frame_offset);
+    }
+    return {};
+}
+
+void ImageProcessorOp::count_dropped_frame(int64_t sub_frame_offset)
+{
+    if (const uint64_t dropped = dropped_frames_.count()) {
+        HSB_LOG_WARN("ImageProcessorOp: dropped {} frame(s)/sub-frame(s) in the last second because "
+                     "downstream was behind (latest sub_frame_offset={})",
+            dropped, sub_frame_offset);
+    }
 }
 
 } // namespace hololink::module::operators

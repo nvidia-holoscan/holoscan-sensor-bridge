@@ -30,7 +30,8 @@ bool configure_bootp_socket(int fd, uint32_t port);
 /* Receive one datagram from `fd` and parse it into EnumerationMetadata
  * (bootp header, NVDA vendor section, and the v2 board body) along with
  * the raw packet bytes. Mirrors the field set the legacy enumerator
- * produced, minus the legacy strategy / data-channel enrichment. */
+ * produced, minus the legacy strategy / data-channel enrichment. Never
+ * blocks: with no datagram queued it returns empty metadata. */
 std::pair<EnumerationMetadata, std::vector<uint8_t>> receive_bootp(int fd);
 
 } // namespace hololink::module

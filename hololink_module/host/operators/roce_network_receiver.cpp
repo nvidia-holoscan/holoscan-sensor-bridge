@@ -35,24 +35,6 @@ hololink_module_status_t RoceNetworkReceiver::construct(
 {
     config_ = config;
 
-    auto rename = config_.rename_metadata;
-    if (!rename) {
-        rename = [](const std::string& name) { return name; };
-    }
-    flags_key_ = rename("flags");
-    psn_key_ = rename("psn");
-    crc_key_ = rename("crc");
-    frame_number_key_ = rename("frame_number");
-    timestamp_s_key_ = rename("timestamp_s");
-    timestamp_ns_key_ = rename("timestamp_ns");
-    bytes_written_key_ = rename("bytes_written");
-    metadata_s_key_ = rename("metadata_s");
-    metadata_ns_key_ = rename("metadata_ns");
-    received_s_key_ = rename("received_s");
-    received_ns_key_ = rename("received_ns");
-    imm_data_key_ = rename("imm_data");
-    page_number_key_ = rename("page_number");
-
     if (config_.queue_size == 0) {
         throw std::runtime_error("Queue size cannot be 0");
     }
@@ -61,6 +43,7 @@ hololink_module_status_t RoceNetworkReceiver::construct(
             "Queue size {} cannot be greater than the number of pages {}",
             config_.queue_size, config_.pages));
     }
+    frame_number_ = {};
 
     auto& adapter = hololink::module::Adapter::get_adapter();
     auto module = adapter.get_module(metadata);
@@ -95,10 +78,17 @@ hololink_module_status_t RoceNetworkReceiver::construct(
         page_size = received_frame_size;
     }
 
-    receiver_ = hololink::module::RoceReceiverInterfaceV1::get_service(metadata);
+    // V2 also reports a failed receive path; with a module that publishes only V1 that report
+    // is missing, as in RoceReceiverOp.
+    receiver_v2_ = hololink::module::RoceReceiverInterfaceV2::get_service(metadata, /*allow_null=*/true);
+    receiver_ = receiver_v2_;
+    if (!receiver_) {
+        receiver_ = hololink::module::RoceReceiverInterfaceV1::get_service(metadata);
+    }
 
     const std::string peer_ip = metadata.get<std::string>("peer_ip");
-    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(peer_ip);
+    const auto [ibv_name, ibv_port] = hololink::module::ibv_device_for_peer(
+        peer_ip, metadata.get<std::string>("interface", std::string {}));
 
     const hololink_module_status_t start_status = receiver_->start(
         ibv_name,
@@ -171,6 +161,7 @@ void RoceNetworkReceiver::destruct()
     }
     monitor_thread_.reset();
     receiver_.reset();
+    receiver_v2_.reset();
     channel_.reset();
     data_channel_.reset();
     frame_metadata_.reset();
@@ -193,6 +184,11 @@ bool RoceNetworkReceiver::frames_ready()
     return receiver_ && receiver_->frames_ready();
 }
 
+bool RoceNetworkReceiver::receive_path_failed()
+{
+    return receiver_v2_ && receiver_v2_->receive_path_failed();
+}
+
 CUdeviceptr RoceNetworkReceiver::frame_memory()
 {
     return static_cast<CUdeviceptr>(frame_info_.frame_memory);
@@ -203,7 +199,7 @@ std::shared_ptr<void> RoceNetworkReceiver::frame_buffer_owner()
     return frame_buffer_;
 }
 
-void RoceNetworkReceiver::stamp_metadata(holoscan::MetadataDictionary& metadata)
+void RoceNetworkReceiver::stamp_metadata(hololink::Metadata& metadata)
 {
     const CUresult copy_result = cuMemcpyDtoH(
         host_metadata_.data(),
@@ -223,19 +219,25 @@ void RoceNetworkReceiver::stamp_metadata(holoscan::MetadataDictionary& metadata)
             + std::to_string(decode_status));
     }
 
-    metadata.set(flags_key_, static_cast<int64_t>(v1_metadata.flags));
-    metadata.set(psn_key_, static_cast<int64_t>(v1_metadata.psn));
-    metadata.set(crc_key_, static_cast<int64_t>(v1_metadata.crc));
-    metadata.set(frame_number_key_, static_cast<int64_t>(v1_metadata.frame_number));
-    metadata.set(timestamp_s_key_, static_cast<int64_t>(v1_metadata.timestamp_s));
-    metadata.set(timestamp_ns_key_, static_cast<int64_t>(v1_metadata.timestamp_ns));
-    metadata.set(bytes_written_key_, static_cast<int64_t>(v1_metadata.bytes_written));
-    metadata.set(metadata_s_key_, static_cast<int64_t>(v1_metadata.metadata_s));
-    metadata.set(metadata_ns_key_, static_cast<int64_t>(v1_metadata.metadata_ns));
-    metadata.set(received_s_key_, static_cast<int64_t>(frame_info_.received_s));
-    metadata.set(received_ns_key_, static_cast<int64_t>(frame_info_.received_ns));
-    metadata.set(imm_data_key_, static_cast<int64_t>(frame_info_.imm_data));
-    metadata.set(page_number_key_, static_cast<int64_t>(frame_info_.imm_data & 0xFFF));
+    // Fixed key names, matching the vocabulary BaseReceiverOp's .inl reads to populate the
+    // typed CaptureMetadataT schema. v1_metadata.flags has no CaptureMetadataT slot and is
+    // dropped here -- the already-ported RoceReceiverOp::get_next_frame() makes the same
+    // omission for the same reason (see its own comment).
+    metadata["psn"] = static_cast<int64_t>(v1_metadata.psn);
+    metadata["crc"] = static_cast<int64_t>(v1_metadata.crc);
+    // The block's frame_number is 16 bits; report it extended to 32, as the other receivers do.
+    metadata["frame_number"] = static_cast<int64_t>(frame_number_.update(v1_metadata.frame_number));
+    metadata["timestamp_s"] = static_cast<int64_t>(v1_metadata.timestamp_s);
+    metadata["timestamp_ns"] = static_cast<int64_t>(v1_metadata.timestamp_ns);
+    metadata["bytes_written"] = static_cast<int64_t>(v1_metadata.bytes_written);
+    metadata["metadata_s"] = static_cast<int64_t>(v1_metadata.metadata_s);
+    metadata["metadata_ns"] = static_cast<int64_t>(v1_metadata.metadata_ns);
+    metadata["received_s"] = static_cast<int64_t>(frame_info_.received_s);
+    metadata["received_ns"] = static_cast<int64_t>(frame_info_.received_ns);
+    metadata["imm_data"] = static_cast<int64_t>(frame_info_.imm_data);
+    metadata["page_number"] = static_cast<int64_t>(frame_info_.imm_data & 0xFFF);
+    metadata["received_frame_number"] = static_cast<int64_t>(frame_info_.received_frame_number);
+    metadata["dropped"] = static_cast<int64_t>(frame_info_.dropped);
 }
 
 std::shared_ptr<hololink::module::DataChannelInterfaceV1>

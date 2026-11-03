@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 """Rules engine for HOLOLINK_def.svh validation.
 
 Public entry point: run_all_rules(parsed) -> List[Finding]

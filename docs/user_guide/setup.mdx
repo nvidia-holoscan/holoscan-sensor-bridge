@@ -1,18 +1,24 @@
 <Anchor id="HostSetupTarget" />
 
-Holoscan sensor bridge is supported on the following configurations:
+Holoscan Sensor Bridge 3.0 uses Holoscan SDK 5.0 and CUDA 13. Holoscan Sensor Bridge 3.0
+supports these configurations:
 
-- IGX systems configured with
-  [IGX OS 1.1.2+](https://developer.nvidia.com/igx-downloads) with CX7 SmartNIC devices.
-- AGX Orin systems running [JP6.2.1+](https://developer.nvidia.com/embedded/jetpack). In
-  this configuration, the on-board Ethernet controller is used with the Linux kernel
-  network stack for data I/O; all network I/O is performed by the CPU without network
-  acceleration.
-- AGX Thor systems running [JP7.2](https://developer.nvidia.com/embedded/jetpack) with
-  MGBE SmartNIC device and CoE transport.
+- IGX Thor Developer Kit (T7000) systems configured with
+  [IGX SW 2.0.1](https://developer.nvidia.com/igx-downloads) with CX7 SmartNIC devices.
+  Two graphics configurations are supported: Thor integrated GPU (iGPU) graphics and
+  discrete GPU (dGPU) graphics using an optional RTX PRO 6000 series dGPU, for example
+  the NVIDIA RTX PRO 6000 Blackwell Max-Q Workstation Edition. Holoscan SDK 5 does not
+  support IGX Orin (IGX OS 1.x).
+- AGX Orin systems running
+  [JetPack 7.2.1](https://developer.nvidia.com/embedded/jetpack). In this configuration,
+  the on-board Ethernet controller is used with the Linux kernel network stack for data
+  I/O; all network I/O is performed by the CPU without network acceleration.
+- AGX Thor systems running
+  [JetPack 7.2.1](https://developer.nvidia.com/embedded/jetpack) with MGBE SmartNIC
+  device and Camera-over-Ethernet (CoE) transport.
 - DGX Spark systems running
-  [DGX OS 7.2.3+](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html)
-  with CX7 SmartNIC devices.
+  [DGX OS 7.6.0](https://docs.nvidia.com/dgx/dgx-os-7-user-guide/introduction.html) with
+  CX7 SmartNIC devices.
 - x86 Linux workstations with an NVIDIA discrete GPU. Two host receive paths are
   supported: unaccelerated Linux socket-based receivers (used primarily for development
   or testing purposes) and an accelerated RoCE path that requires a ConnectX network
@@ -21,6 +27,10 @@ Holoscan sensor bridge is supported on the following configurations:
   appear available from the GPU and driver even when the PCIe path on the host does not
   support it, in which case you must disable GPU VRAM frame buffers at build time (see
   the **x86 Linux** tab).
+
+**Holoscan SDK 5 does not support IGX Orin (IGX OS 1.x) or JetPack 6. For these
+platforms, use
+[Holoscan Sensor Bridge 2.7](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/2.7.0).**
 
 After the [Holoscan sensor bridge board is set up](sensor_bridge_hardware_setup.mdx),
 configure a few prerequisites in your host system. While holoscan sensor bridge
@@ -51,42 +61,33 @@ Next, follow the directions on the appropriate tab below to configure your host 
 
 <Tab title="IGX">
 
-- Update the GPU driver to 535.309.01 and install IGX 1.1.3 by running the following.
+These steps are for the IGX Thor Developer Kit (T7000) with IGX SW 2.0.1. IGX Thor T7000
+has a Thor iGPU and a ConnectX-7 (CX7) SmartNIC. One configuration also has an RTX PRO
+6000 dGPU.
 
-  ```none
-  sudo tee /etc/apt/preferences.d/nvidia-driver-pin >/dev/null <<'EOF'
-  Package: nvidia-* libnvidia-*
-  Pin: version 535.309.01*
-  Pin-Priority: 1001
-  EOF
+<img src="images/v3_setup_igx_thor_t7000.svg" alt="IGX Thor T7000 connection to the Holoscan Sensor Bridge: CX7 QSFP port 0 at 192.168.0.101 to SFP+ 0 at 192.168.0.2, and CX7 QSFP port 1 at 192.168.0.102 to SFP+ 1 at 192.168.0.3" width="100%"/>
 
-  sudo apt-get purge "nvidia-kernel-*"
-  sudo apt-get update && sudo apt-get install -y nvidia-driver-535-open=535.309.01-0ubuntu0.22.04.1
-  sudo apt dist-upgrade
-  ```
+- If your IGX Thor T7000 has an RTX PRO 6000 dGPU, select the GPU that runs the
+  applications. `CUDA_VISIBLE_DEVICES` selects one of the two GPUs:
 
-  Reboot the machine so the new driver loads:
+  - `CUDA_VISIBLE_DEVICES=0` selects the dGPU.
+  - `CUDA_VISIBLE_DEVICES=1` selects the Thor iGPU.
 
-  ```none
-  sudo reboot
-  ```
+  Do not set `CUDA_VISIBLE_DEVICES=0,1`.
 
-  After rebooting, confirm the new driver is active:
+  The visualizer (HoloViz) must use the GPU that drives the display. If the application
+  GPU and the display GPU are not the same, the visualizer fails with the message
+  `No suitable adapter found for surface`. In this case, do one of these steps:
 
-  ```none
-  ➜ nvidia-smi
-  +---------------------------------------------------------------------------------------+
-  | NVIDIA-SMI 535.309.01             Driver Version: 535.309.01   CUDA Version: 12.2     |
-  |-----------------------------------------+----------------------+----------------------+
-  | GPU  Name                 Persistence-M | Bus-Id        Disp.A | Volatile Uncorr. ECC |
-  | Fan  Temp   Perf          Pwr:Usage/Cap |         Memory-Usage | GPU-Util  Compute M. |
-  |                                         |                      |               MIG M. |
-  |=========================================+======================+======================|
-  |   0  NVIDIA RTX 6000 Ada Gene...    Off | 00000005:09:00.0 Off |                  Off |
-  | 30%   34C    P8              20W / 300W |    189MiB / 49140MiB |      0%      Default |
-  |                                         |                      |                  N/A |
-  +-----------------------------------------+----------------------+----------------------+
-  ```
+  - Run the application with `--headless`. With this option, the C++ and Python examples
+    render into a GPU image and do not open a window. These examples have no
+    `--headless` option: `imx274_module_tutorial.cpp`, `imx274_module_tutorial.py`,
+    `linux_sub_frame_imx274_hsdk5_player.cpp` and `sub_frame_vb1940_player.cpp`. Run
+    `signal_generator.cpp` and `signal_generator.py` with `--no-gui`.
+  - Move the graphics output to the GPU that runs the applications. Default
+    configurations of IGX Thor T7000 use iGPU graphics. To reconfigure the device for
+    dGPU graphics, follow the IGX Thor platform instructions
+    [here](https://docs.nvidia.com/igx/user-guide/latest/SW/gpu/dgpu-support.html#enabling-dgpu-display-and-graphics).
 
 - Determine the name of the network device associated with the first CX7 port. This is
   the rightmost QSFP port when looking at the back of the IGX unit.
@@ -98,29 +99,11 @@ Next, follow the directions on the appropriate tab below to configure your host 
 ```
 
 ```none
-  roceP5p3s0f0 roceP5p3s0f1
+  roceP4p3s0f0 roceP4p3s0f1
 ```
 
 This will produce a list of CX7 ports; your device names may vary. The lowest numbered
-one, in this case `roceP5p3s0f0`, is the first CX7 port.
-
-Check the CX7 firmware version using one of the devices names that appear on your
-machine from the command above.
-
-```
-  cat /sys/class/infiniband/roceP5p3s0f0/fw_ver
-```
-
-```
-  28.39.3004
-```
-
-If the version is 28.38.1026 or lower, please
-[download](https://developer.nvidia.com/igx-downloads?sortBy=igx_downloads%2Fsort%2Fdate%3Adesc)
-the appropriate "ConnectX-7 Firmware" iso and
-[upgrade](https://docs.nvidia.com/igx/user-guide/1.1.1/base-os.html#update-the-connect-x-7-cx7-firmware)
-the CX7 firmware. Make sure to reboot the machine and re-check the firmware has loaded
-to the newer one.
+one, in this case `roceP4p3s0f0`, is the first CX7 port.
 
 Assign the name of the first CX7 port to the variable `$IN0`.
 
@@ -131,7 +114,7 @@ Assign the name of the first CX7 port to the variable `$IN0`.
 ```
 
 ```none
-  roceP5p3s0f0
+  roceP4p3s0f0
 ```
 
 Next, determine which host ethernet port is associated with that device, and assign that
@@ -143,13 +126,13 @@ to the variable `$EN0`, which we'll use later during network configuration.
 ```
 
 ```none
-  enP5p3s0f0np0
+  enP4p3s0f0np0
 ```
 
-In summary, the host network interface associated with `$IN0` (`roceP5p3s0f0`) is `$EN0`
-(`enP5p3s0f0np0`); your specific device names may vary.
+In summary, the host network interface associated with `$IN0` (`roceP4p3s0f0`) is `$EN0`
+(`enP4p3s0f0np0`); your specific device names may vary.
 
-- IGX OS uses NetworkManager to configure network interfaces. By default, the sensor
+- IGX SW uses NetworkManager to configure network interfaces. By default, the sensor
   bridge device uses the address 192.168.0.2 for the first port. Set up your first
   ethernet device (`$EN0`) to use the address 192.168.0.101 with a permanent route to
   192.168.0.2 using the
@@ -201,8 +184,8 @@ Let's refer to these as `$IN1` and `$EN1`. Given the commands to assign `$IN0` a
 ```
 
 ```none
-  roceP5p3s0f1
-  enP5p3s0f1np1
+  roceP4p3s0f1
+  enP4p3s0f1np1
 ```
 
 As above, your device names may be different. Configure the second QSFP network port
@@ -238,7 +221,13 @@ as appropriate.
 </Tab>
 <Tab title="AGX Orin">
 
-Demos and examples in this package assume a sensor bridge device is connected to `eno1`,
+<img src="images/v3_setup_agx_orin.svg" alt="Jetson AGX Orin connection to the Holoscan Sensor Bridge: 10 GbE RJ45 port end0 at 192.168.0.101 to SFP+ 0 at 192.168.0.2" width="100%"/>
+
+- Install JetPack 7.2.1 with [SDK Manager](https://developer.nvidia.com/sdk-manager). To
+  build and run the examples, make sure you install the CUDA Toolkit in the Jetson SDK
+  Components.
+
+Demos and examples in this package assume a sensor bridge device is connected to `end0`,
 which is the RJ45 connector on the AGX Orin.
 
 - Configure a static IP address of 192.168.0.101 on the on-board network port.
@@ -248,9 +237,8 @@ DHCP clients. Use the following command to update the IP address to 192.168.0.10
 ([Here](notes.mdx#holoscan-sensor-bridge-ip-address-configuration) is more information
 about configuring your system if you cannot use the 192.168.0.0/24 network in this way.)
 
-Note that for AGX running JP6.2.1, the on-board ethernet device is `eno1`, and for
-JP7.2, the on-board ethernet device is `end0`; if you're running a different
-configuration, use the appropriate name for the variable EN0:
+On AGX Orin with JetPack 7.2.1, the on-board Ethernet device is `end0`. If your
+configuration is different, use the applicable name for the variable EN0:
 
 ```none
   EN0=end0
@@ -295,8 +283,8 @@ example, to run on the first processor core,
   HOLOLINK_AFFINITY=0 python3 examples/linux_imx274_player.py
 ```
 
-Setting `HOLOLINK_AFFINITY` to blank will skip any core affinity settings in the sensor
-bridge code.
+If `HOLOLINK_AFFINITY` is blank or not set, the network receiver runs on the third
+processor core (core 2).
 
 - Run the "jetson_clocks" tool on startup, to set the core clocks to their maximum.
 
@@ -332,8 +320,17 @@ sudo systemctl enable jetson_clocks.service
   reboot
 ```
 
+When the system comes back up, build Holoscan Sensor Bridge outside the container with
+the [native build steps](build.mdx#NativeBuildTarget) on the Build page. A full JetPack
+7.2.1 installation does not leave enough disk space for the container build.
+
 </Tab>
 <Tab title="DGX Spark">
+
+<img src="images/v3_setup_dgx_spark.svg" alt="DGX Spark connection to the Holoscan Sensor Bridge: CX7 QSFP port 0 at 192.168.0.101 to SFP+ 0 at 192.168.0.2, and CX7 QSFP port 1 at 192.168.0.102 to SFP+ 1 at 192.168.0.3" width="100%"/>
+
+- Install DGX OS 7.6.0. NVIDIA tested Holoscan Sensor Bridge 3.0 with this DGX OS
+  version.
 
 - First check for the OTA ConnectX-7 hotplug feature and disable + reboot if present.
   This disables the NIC if no link is detected which can interfere with these
@@ -479,7 +476,10 @@ as appropriate.
 </Tab>
 <Tab title="AGX Thor">
 
-- After installing JP 7.2 on the Thor Devkit, complete the following steps.
+<img src="images/v3_setup_agx_thor.svg" alt="Jetson AGX Thor connection to the Holoscan Sensor Bridge: MGBE QSFP port mgbe0_0 at 192.168.0.101 to SFP+ 0 at 192.168.0.2" width="100%"/>
+
+- After installing JetPack 7.2.1 on the AGX Thor developer kit, complete the following
+  steps.
 
 If installation was done using the ISO method, install
 [CUDA Toolkit 13.2](https://developer.nvidia.com/cuda-downloads?target_os=Linux&target_arch=arm64-sbsa&Compilation=Native&Distribution=Ubuntu&target_version=24.04&target_type=deb_local)
@@ -488,10 +488,10 @@ and execute the following:
 ```none
   export PATH=/usr/local/cuda/bin:$PATH
   export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
-  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.0/release/Jetson_SIPL_API_R39.2.0_aarch64.tbz2
-  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.0/release/Jetson_Multimedia_API_R39.2.0_aarch64.tbz2
-  sudo tar xjf Jetson_SIPL_API_R39.2.0_aarch64.tbz2 -C /
-  sudo tar xjf Jetson_Multimedia_API_R39.2.0_aarch64.tbz2 -C /
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.1/release/Jetson_SIPL_API_R39.2.1_aarch64.tbz2
+  wget https://developer.nvidia.com/downloads/embedded/L4T/r39_Release_v2.1/release/Jetson_Multimedia_API_R39.2.1_aarch64.tbz2
+  sudo tar xjf Jetson_SIPL_API_R39.2.1_aarch64.tbz2 -C /
+  sudo tar xjf Jetson_Multimedia_API_R39.2.1_aarch64.tbz2 -C /
 ```
 
 - For the Linux socket-based examples, isolating a processor core from Linux kernel is
@@ -528,38 +528,15 @@ example, to run on the first processor core,
   HOLOLINK_AFFINITY=0 python3 examples/linux_imx274_player.py
 ```
 
-Setting `HOLOLINK_AFFINITY` to blank will skip any core affinity settings in the sensor
-bridge code.
+If `HOLOLINK_AFFINITY` is blank or not set, the network receiver runs on the third
+processor core (core 2).
 
 **This step requires a system reboot to take effect.**
 
-- Install Holoscan SDK v4.4.0:
-
-```none
-  sudo apt update
-  sudo apt install holoscan-cuda-13=4.4*
-```
-
-- Install other Holoscan sensor bridge dependencies:
-
-```none
-  . /etc/os-release
-  UBUNTU_VERSION="`echo ${VERSION_ID} | sed 's/\.//g'`"
-  sudo apt-get install ca-certificates gpg wget
-  wget https://developer.download.nvidia.com/compute/nvcomp/5.2.0/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
-  sudo dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
-  sudo cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0/nvcomp-*-keyring.gpg /usr/share/keyrings/
-  rm nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-5.2.0_5.2.0-1_arm64.deb
-  test -f /usr/share/doc/kitware-archive-keyring/copyright ||
-  wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
-  echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
-  sudo apt-get update
-  test -f /usr/share/doc/kitware-archive-keyring/copyright ||
-  sudo rm /usr/share/keyrings/kitware-archive-keyring.gpg
-  sudo apt-get install kitware-archive-keyring
-  sudo apt-get update
-  sudo apt install -y cmake=3.31.11* cmake-data=3.31.11* libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev python3-dev nvcomp-cuda-13
-```
+- To build and run the C++ FuSa CoE examples outside the container, install the build
+  dependencies. The dependencies are CMake 4, Holoscan SDK 5.0.0, nvCOMP 5.2.0 and Slang
+  2026.14. The [native build steps](build.mdx#NativeBuildTarget) on the Build page show
+  how. The [Holoscan Sensor Bridge container](build.mdx) includes these dependencies.
 
 - Enable the network interface and ensure that the camera enumerates (assumes camera IP
   address 192.168.0.2):
@@ -571,27 +548,15 @@ bridge code.
   sudo nmcli connection up hololink-$EN0
 ```
 
-- Obtain and build holoscan sensor bridge:
+- Get and build Holoscan Sensor Bridge:
 
-holoscan sensor bridge release v2.6 supports running C++ Li VB1940 accelerated
-networking based examples from the terminal cli as well as running Li VB1940 and IMX274
-python examples from within the holoscan sensor bridge container.
+Holoscan Sensor Bridge 3.0 supports two ways to run the examples on AGX Thor. You can
+run the C++ and Python examples outside the container, after the native build. You can
+also run them in the Holoscan Sensor Bridge container.
 
-as a first step, please clone the holoscan sensor bridge repository:
-
-```none
-  git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
-```
-
-to run C++ Li VB1940 accelerated networking SIPL based examples in the terminal cli use
-the following commands:
-
-```none
-  cd holoscan-sensor-bridge
-  mkdir build && cd build
-  cmake -DHOLOLINK_BUILD_SIPL=1 -DHOLOLINK_BUILD_FUSA=1 -DHOLOLINK_BUILD_ROCE=0 ..
-  make -j
-```
+To build outside the container, follow the
+[native build steps](build.mdx#NativeBuildTarget) on the Build page. On AGX Thor, use
+the CMake options `-DHOLOLINK_BUILD_ROCE=0 -DHOLOLINK_BUILD_FUSA=1`.
 
 <b> Running the CoE-Accelerated Examples </b>
 
@@ -607,52 +572,12 @@ acceleration. SIPL-enabled sensor drivers are written using the
 [Unified Device Driver Framework (UDDF)](uddf_drivers.mdx), and reference VB1940 UDDF
 drivers are included with JetPack 7.2.
 
-Use the following to run the SIPL-based CoE example applications for the VB1940 sensor:
-
-- Retrieve your camera's MAC ID:
-
-```none
-  ./tools/enumerate/hololink-enumerate
-```
-
-Example output:
-
-```none
-  mac_id=8C:1F:64:6D:70:03 hsb_ip_version=0x2510 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=f1627640-b4dc-48af-a360-c55b09b3d230 serial_number=ffffffffffffff interface=mgbe0_0 board=Leopard Eagle
-```
-
-- Update the `ip_address` and `mac_address` fields in these configuration files
-  (multiple instances in each file):
-
-**NOTE:** The provided JSON `sipl_config` files are compatible with JP7.2. For JP7.1,
-pull the source files from the
-[HSB 2.5.0 release](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/2.5.0/examples/sipl_config)
-and make necessary modifications to them.
-
-```none
-  ../examples/sipl_config/vb1940_single.json
-  ../examples/sipl_config/vb1940_dual.json
-```
-
-- Allow root to access the X display (ensure `DISPLAY` is set if using SSH):
-
-```none
-  xhost +
-```
-
-- Run the `sipl_player` application (HW ISP capture mode):
-
-```none
-  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json
-  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json
-```
-
-- For RAW capture mode (image quality will be poor without proper ISP processing):
-
-```none
-  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_single.json --raw
-  ./examples/sipl_player --json-config ../examples/sipl_config/vb1940_dual.json --raw
-```
+Holoscan Sensor Bridge does not include SIPL-based capture or SIPL example applications.
+SIPL camera capture for Holoscan SDK 5 applications is provided by the `SIPLCaptureOp`
+operator of the separate
+[Holoscan Camera](https://github.com/nvidia-holoscan/holoscan-camera) module
+(`holoscan_camera`); see the Holoscan Camera documentation for its build and run
+instructions.
 
 <b>FuSa</b>
 
@@ -670,21 +595,38 @@ A number of FuSa-based example applications are included for the IMX274, VB1940,
 TauroTech DA326 Hawk using the `fusa_coe_` prefix (Hawk variants:
 `fusa_coe_max96716a_player`, `fusa_coe_hawk_single_link_player`,
 `fusa_coe_hawk_dual_link_player`, `fusa_coe_single_network_stereo_hawk_player`). The C++
-sample applications can be run natively (not using a container) and are built by the
-host setup instructions above, while the Python variants must be run using the
+and Python sample applications can be run natively (not using a container) after the
+[native build steps](build.mdx#NativeBuildTarget) on the Build page, or in the
 [Holoscan Sensor Bridge container](build.mdx).
 
-**NOTE:** The `python/setup.py` will by default not enable the necessary FuSa or SIPL
-components unless it detects the required /dev/coe\* devices or the `COE_OFFLOAD`
-environment variable is set. No action is required in the provided docker container or
-in native python binding builds on supported platforms.
+**NOTE:** The `python/setup.py` will by default not enable the necessary FuSa components
+unless it detects the required /dev/coe\* devices or the `COE_OFFLOAD` environment
+variable is set. No action is required in the provided docker container or in native
+python binding builds on supported platforms.
 
-For example, to run the C++ VB1940 player example, run the following command with the IP
-address replaced with the IP address of the device:
+To run the C++ VB1940 player example, go to the repository directory. Then run this
+command. Use the IP address of your device:
 
 ```none
-  ./examples/fusa_coe_vb1940_player --hololink 192.168.0.2
+  sudo ./build/examples/fusa_coe_vb1940_player --hololink 192.168.0.2
 ```
+
+<Warning>
+On AGX Thor with JetPack 7.2.1, a FuSa CoE (`fusa_coe_`) application leaves an
+interrupt active on `mgbe0_0` after it closes. Linux socket (`linux_`) applications on
+that port can then lose packets. When the FuSa CoE application stops normally, it moves
+this interrupt to a different CPU. Then the problem does not occur. This step needs root
+privileges. The demo container has root privileges. Outside the container, run the
+FuSa CoE application with `sudo`. Reboot before you run Linux socket applications on
+that port in these cases:
+
+- You killed the FuSa CoE application.
+- The application logged a message that tells you to reboot before you run Linux-socket
+  applications on this interface.
+
+For more information, see [troubleshooting](troubleshooting.mdx).
+
+</Warning>
 
 - Building and running Li VB1940, IMX274, and TauroTech DA326 Hawk python examples from
   within the holoscan sensor bridge container is explained in the following pages of the
@@ -738,11 +680,10 @@ section).
 
 Install Docker, Docker Buildx, and the
 [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-on the host. Build the demo image with the dGPU option (see
-[build instructions](build.mdx)):
+on the host. Build the demo image (see [build instructions](build.mdx)):
 
 ```none
-  sh docker/build.sh --dgpu
+  sh docker/build.sh
 ```
 
 **When GPUDirect RDMA does not work end-to-end**
@@ -759,11 +700,11 @@ Symptoms include a black or blank image and application log lines similar to:
 This is a strong indication to rebuild with GPU VRAM disabled so the RoCE receiver uses
 pinned host memory instead:
 
-- **Demo container:** pass `--disable-roce-gpu-vram` to `docker/build.sh` (together with
-  `--dgpu` as usual) to build the image. Example:
+- **Demo container:** pass `--disable-roce-gpu-vram` to `docker/build.sh` to build the
+  image. Example:
 
 ```none
-  sh docker/build.sh --dgpu --disable-roce-gpu-vram
+  sh docker/build.sh --disable-roce-gpu-vram
 ```
 
 - **Native CMake build:** configure with:
@@ -812,7 +753,12 @@ Now, for all configurations,
   sudo apt update && sudo apt install -y linuxptp
   ```
 
-  Next, set up a systemd service file that will run `phc2sys`.
+  Next, set up a systemd service file that will run `phc2sys`. The `Restart=` settings
+  matter: `phc2sys` holds an open handle to the NIC's PTP hardware clock, and whenever
+  the NIC is reset (for example when the CoE capture driver recovers `$EN0` after a
+  `ptp4l` fault) that clock is re-registered under a new `/dev/ptpN` and `phc2sys` exits
+  with `ioctl PTP_SYS_OFFSET: No such device`. Without a restart policy the NIC clock
+  then free-runs until someone notices.
 
   ```none
   PHC2SYS_SERVICE=/etc/systemd/system/phc2sys-$EN0.service
@@ -822,16 +768,26 @@ Now, for all configurations,
   Requires=NetworkManager.service
   After=NetworkManager.service
   After=timemaster.service
+  # Never give up restarting; the default 5-starts-per-10-s limit would leave the
+  # clock unsynchronized after a burst of NIC resets.
+  StartLimitIntervalSec=0
 
   [Service]
   Type=simple
   ExecStartPre=timeout 3m bash -c "until [ \"\$(nmcli -g GENERAL.STATE device show $EN0)\" = \"100 (connected)\" ]; do sleep 1; done"
   ExecStart=/usr/sbin/phc2sys -c $EN0 -s CLOCK_REALTIME -O 0 -S 0.0001
+  # Restart when phc2sys exits on its own (NIC reset, PTP clock re-registered); wait
+  # long enough for the interface to come back before the ExecStartPre check runs.
+  Restart=on-failure
+  RestartSec=5
 
   [Install]
   WantedBy=multi-user.target
   EOF
   ```
+
+  Note that each restart steps the NIC clock onto system time again, so expect one PTP
+  step on the HSB after every NIC reset.
 
   Configure it for execution at startup, and start it now.
 
@@ -843,14 +799,50 @@ Now, for all configurations,
 
 Next, run `ptp4l` to send PTP SYNC messages to $EN0.
 
+The host is the only PTP clock on this link, so `ptp4l` is configured as a dedicated
+time source (`serverOnly 1`) with the Best Master Clock Algorithm switched off
+(`BMCA noop`). This matters because HSB applications reset the FPGA when they start,
+which drops the Ethernet link for a moment. With the default algorithm `ptp4l` reacts to
+every link flap by going FAULTY, then LISTENING, and only becomes MASTER again after the
+announce-receipt timeout, three announce intervals of 2 s plus a random 0 to 2 s. For
+those 6 to 8 s no SYNC messages are sent, the HSB cannot lock, and an application that
+waits for PTP lock before streaming (for example the stereo VSYNC path) is stalled for
+that long on every start. With the designated-master state machine selected by these two
+options the port goes straight from FAULTY to MASTER when the link comes back, and SYNC
+resumes within the next sync interval. `ptp4l` requires one of `serverOnly` or
+`clientOnly` whenever `BMCA` is `noop`; with `serverOnly` the port will never follow
+another master, which is the intended behaviour here.
+
+The last two settings keep a transmit-timestamp fault from taking the master away for
+long. Some NICs occasionally take more than the default 10 ms to return the hardware
+transmit timestamp of a SYNC message; `ptp4l` then logs
+`timed out while polling for tx timestamp` and `send sync failed`, puts the port in
+FAULTY, and with the default `fault_reset_interval` of 4 (the value is log2 seconds)
+sends nothing for 16 s. While the master is silent the HSB keeps its clock running at
+the last correction it computed, and when SYNC returns the HSB steps its clock back onto
+host time; after 16 s that step can be large enough to disturb a running synchronized
+camera pair. `tx_timestamp_timeout 50` gives the NIC 50 ms for the timestamp so the
+fault becomes rare, and `fault_reset_interval 0` re-initializes the port after about one
+second, so a fault that still happens costs about one second of SYNC instead of 16.
+
 ```none
 cat <<EOF | sudo tee /etc/linuxptp/hsb-ptp.conf >/dev/null
 # This configuration is appropriate for NVIDIA Holoscan sensor bridge
 # applications, where PTP messages are sent over L2 and a 1/2 second interval.
+# The host is the only time source on the link: run as a dedicated master and skip
+# the BMCA election, so SYNC resumes right after a link flap (HSB reset) instead
+# of after the 6-8 s announce-receipt timeout.
+# Allow 50 ms for the NIC to return a SYNC transmit timestamp, and re-initialize the
+# port about one second (2^0 s) after a fault instead of the default 16 s, so the HSB
+# is not left on its own clock for long.
 [global]
 logSyncInterval -1
 logMinDelayReqInterval -1
 network_transport L2
+serverOnly 1
+BMCA noop
+tx_timestamp_timeout 50
+fault_reset_interval 0
 EOF
 ```
 
@@ -880,16 +872,34 @@ sudo systemctl enable ptp4l-$EN0.service
 sudo systemctl start ptp4l-$EN0.service
 ```
 
-- For Orin iGPU with Cuda 12 configurations only (Jetpack 6 and IGX 1.X): Install
-  [NVIDIA DLA](https://developer.nvidia.com/deep-learning-accelerator) compiler.
-  Applications using inference need this at initialization time; some OS images for iGPU
-  don't include it.
+If `hsb-ptp.conf` changed on a host where `ptp4l` is already running, restart the
+service so the new configuration is picked up. Do this while no HSB application is
+streaming, because the HSB re-synchronizes to the master when it comes back.
 
-  ```none
-  sudo apt update && sudo apt install -y nvidia-l4t-dla-compiler
-  ```
+```none
+sudo systemctl restart ptp4l-$EN0.service
+```
 
-- Log in to Nvidia GPU Cloud (NGC) with your developer account:
+To confirm the configuration is active, start an HSB application (or bounce the link)
+and look at the service journal:
+
+```none
+journalctl -u ptp4l-$EN0.service -f
+```
+
+After the link flap the port must log `FAULTY to MASTER on INIT_COMPLETE`. Seeing
+`FAULTY to LISTENING on INIT_COMPLETE` followed several seconds later by
+`LISTENING to MASTER on ANNOUNCE_RECEIPT_TIMEOUT_EXPIRES` means the default election is
+still in use and `serverOnly 1` / `BMCA noop` are not in the configuration file the
+service loads (check the `-f` path in `ExecStart`). If a
+`timed out while polling for tx timestamp` fault does occur, the following
+`FAULTY to MASTER on INIT_COMPLETE` must appear about one second later; a 16 s gap means
+`fault_reset_interval 0` is not in effect.
+
+- Optional: log in to NVIDIA GPU Cloud (NGC) with your developer account. The container
+  base image (`nvcr.io/nvidia/cuda:13.0.0-runtime-ubuntu24.04`) is public. Thus you do
+  not have to log in to build the Holoscan Sensor Bridge container. Log in if you use
+  other NGC resources.
 
   - If you don't have a developer account for NGC please register at
     [https://catalog.ngc.nvidia.com/](https://catalog.ngc.nvidia.com/)
@@ -910,4 +920,5 @@ sudo systemctl start ptp4l-$EN0.service
     Login Succeeded
   ```
 
-Now proceed to [build and test the Holoscan Sensor Bridge container](build.mdx).
+Now proceed to [Build](build.mdx) to build the Holoscan Sensor Bridge software, in the
+demo container or on the host.

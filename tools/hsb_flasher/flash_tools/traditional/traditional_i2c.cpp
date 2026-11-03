@@ -17,7 +17,6 @@
 
 #include "traditional_peripherals.hpp"
 
-#include <cassert>
 #include <cstdint>
 
 #include <hololink/core/logging_internal.hpp>
@@ -94,7 +93,10 @@ public:
         // make sure DONE is 0.
         value = hololink_.read_uint32(reg_control_, timeout);
         HSB_LOG_DEBUG("control value={:#x}", value);
-        assert((value & TRADITIONAL_I2C_DONE) == 0);
+        if (value & TRADITIONAL_I2C_DONE) {
+            throw std::runtime_error(fmt::format(
+                "Unexpected I2C_DONE bit set, reg_control={:#x}, control value={:#x}", reg_control_, value));
+        }
         // write the num_bytes
         uint32_t num_bytes = (write_byte_count << 0) | (read_byte_count << 8);
         hololink_.write_uint32(reg_num_bytes_, num_bytes, timeout);

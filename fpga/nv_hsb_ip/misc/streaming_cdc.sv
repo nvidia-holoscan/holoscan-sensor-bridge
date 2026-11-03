@@ -102,7 +102,7 @@ data_sync #(
   .RST_SYNC   ( "TRUE"         )
 ) u_dst_ready_sync (
   .clk        ( i_src_clk      ),
-  .rst_n      ( !i_src_rst     ),
+  .rst        ( i_src_rst      ),
   .sync_in    ( dst_ready      ),
   .sync_out   ( dst_ready_sync )
 );

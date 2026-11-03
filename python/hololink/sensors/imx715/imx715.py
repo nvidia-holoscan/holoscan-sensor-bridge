@@ -23,9 +23,15 @@ Driver for the E-CON IMX715 camera module
 import logging
 import time
 
+import hololink.renesas_bajoran_lite_ts1  # noqa: F401 -- side-effect import; makes
+
 import hololink as hololink_module
 
 from . import li_i2c_expander
+
+# hololink_module.renesas_bajoran_lite_ts1.device_configuration() (used in setup_clock()
+# below) resolve without relying on import-order side effects.
+
 
 # Camera info
 DRIVER_NAME = "IMX715"
@@ -168,7 +174,10 @@ class Imx715Cam:
         # Make sure this is a version we know about.
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported IMX715 version:{version}, expected {VERSION}."
+            )
 
         # configure the camera based on the mode
         self.configure_camera(imx715_mode)

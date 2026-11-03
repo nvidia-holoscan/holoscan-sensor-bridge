@@ -19,18 +19,23 @@ import sys
 from unittest import mock
 
 import pytest
+from hololink.sensors.vb1940.vb1940_mode import Vb1940_Mode
 
 import hololink as hololink_module
 
 # This test relies on FUSA which may not be
 # configured on this host.  If that's the case,
 # then skip the test.
-pytest.importorskip("hololink.operators.fusa_coe_capture")
+if not hasattr(hololink_module.operators, "FusaCoeCaptureOp"):
+    pytest.skip(
+        "FusaCoeCaptureOp isn't in this build (HOLOLINK_BUILD_FUSA=OFF)",
+        allow_module_level=True,
+    )
 
 from examples import fusa_coe_vb1940_latency  # noqa: E402
 
 vb1940_camera_mode = [
-    hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
+    Vb1940_Mode.VB1940_MODE_2560X1984_30FPS,
 ]
 
 
@@ -39,12 +44,12 @@ vb1940_camera_mode = [
 @pytest.mark.skip_unless_coe
 @pytest.mark.parametrize("camera_mode", vb1940_camera_mode)
 def test_fusa_coe_vb1940_latency(
-    camera_mode, headless, frame_limit, hololink_address, coe_interfaces, capsys
+    camera_mode, headless, frame_limit, hololink_address, capsys
 ):
     """Test VB1940 latency measurement using FuSa CoE capture path."""
-    # Use first available CoE interface
-    coe_interface = coe_interfaces[0] if coe_interfaces else None
-
+    # No --interface: the app then uses the NIC the board enumerated on, for both the board's
+    # CoE destination and the capture. A route lookup (the coe_interfaces fixture) can pick
+    # another NIC on the same subnet, which would never see a frame.
     arguments = [
         sys.argv[0],
         "--hololink",
@@ -54,8 +59,6 @@ def test_fusa_coe_vb1940_latency(
         "--frame-limit",
         str(frame_limit),
     ]
-    if coe_interface:
-        arguments.extend(["--interface", coe_interface])
     if headless:
         arguments.extend(["--headless"])
 

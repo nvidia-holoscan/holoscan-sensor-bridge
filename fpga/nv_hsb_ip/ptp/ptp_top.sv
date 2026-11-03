@@ -137,7 +137,7 @@ logic        fa_adj_vld;
 //Egress wires
 logic [PTP_EGRESS_WIDTH-1:0]           ptp_tx_data;
 logic                                  ptp_tx_vld;
-logic [$clog2(PTP_EGRESS_WIDTH/8)-1:0] ptp_tx_len;
+logic [$clog2(PTP_EGRESS_WIDTH/8+1)-1:0] ptp_tx_len;
 
 //IP specific Delay Asymmetry
 logic [W_DLY-1:0] ip_dly_asymm;

@@ -20,7 +20,7 @@ module ptp_egress
   parameter  W_NUM_HOST       = NUM_HOST>1 ? $clog2(NUM_HOST) : 1,
   parameter  KEEP_WIDTH       = AXI_DWIDTH/8,
   parameter  PTP_EGRESS_WIDTH = 64*8,
-  localparam PTP_WIDTH        = $clog2(PTP_EGRESS_WIDTH/8),
+  localparam PTP_WIDTH        = $clog2(PTP_EGRESS_WIDTH/8+1),
   parameter  W_USER           = 17
 )(
   input                          i_pclk,

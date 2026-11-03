@@ -48,7 +48,7 @@ FPGA bitfile. Here is an example Python function to do this:
 
 ```python
 def program_soft_mipi_phy(camera_idx, num_lanes, clock_freq):
-    base_addr = 0x4000_0000
+    base_addr = 0x5000_0000
 
     lane_prog = num_lanes - 1
 
@@ -104,7 +104,7 @@ for how a module states its FPGA's shape.
 
 The FPGA source code for the project is located in the Holoscan Sensor Bridge repository
 at `fpga/nv_mipi_ref_design/mipi_cpnx_ref_design`. The pre-built bitfile is located
-[here](https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2606/mipi_ref_design/).
+[here](https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/hsb/fpga_ip/2609/mipi_ref_design/).
 
 ## Reference Hardware
 
@@ -148,25 +148,24 @@ requirements described in the pin tables below.
 
 ### Banks and Voltage Rails
 
-| Bank | VCCIO | I/O standard          | Notes                                                   |
-| ---- | ----- | --------------------- | ------------------------------------------------------- |
-| 0    | 3.3 V | LVCMOS33              | QSPI config flash, config pins                          |
-| 1    | 3.3 V | LVCMOS33              | Control I2C, GPIO, sensor control, **SFP_TX_DIS**, JTAG |
-| 2    | 3.3 V | LVCMOS33              | GPIO                                                    |
-| 3    | 1.2 V | MIPI_DPHY / LVCMOS12H | MIPI CSI-2 Port 1                                       |
-| 5    | 1.2 V | MIPI_DPHY / LVCMOS12H | MIPI CSI-2 Port 0                                       |
-| 6    | 3.3 V | LVCMOS33              | GPIO                                                    |
-| 7    | 3.3 V | LVCMOS33              | Camera I2C, auxiliary/PoC I2C, power control            |
-| 80   | 1.0 V | SERDES                | 10 GbE transceiver (TX / RX / refclk).                  |
+| Bank | VCCIO | I/O standard          | Notes                                        |
+| ---- | ----- | --------------------- | -------------------------------------------- |
+| 0    | 3.3 V | LVCMOS33              | QSPI config flash, config pins               |
+| 1    | 3.3 V | LVCMOS33              | Control I2C, GPIO, sensor control, JTAG      |
+| 2    | 3.3 V | LVCMOS33              | GPIO                                         |
+| 3    | 1.2 V | MIPI_DPHY / LVCMOS12H | MIPI CSI-2 Port 1                            |
+| 5    | 1.2 V | MIPI_DPHY / LVCMOS12H | MIPI CSI-2 Port 0                            |
+| 6    | 3.3 V | LVCMOS33              | GPIO, sensor control                         |
+| 7    | 3.3 V | LVCMOS33              | Camera I2C, auxiliary/PoC I2C, power control |
+| 80   | 1.0 V | SERDES                | 10 GbE transceiver (TX / RX / refclk).       |
 
 ### 10 GbE host interface
 
-| Signal         | Pin P | Pin N | I/O type                 | Dir | Function                                             |
-| -------------- | ----- | ----- | ------------------------ | --- | ---------------------------------------------------- |
-| **ETH_TXD**    | A9    | A8    | SERDES (HSO)             | Out | 10 GbE SERDES transmit → SFP+                        |
-| **ETH_RXD**    | C8    | B7    | SERDES (HSI)             | In  | 10 GbE SERDES receive ← SFP+                         |
-| **ETH_REFCLK** | D10   | E10   | SERDES refclk (HSI)      | In  | 161.1328125 MHz reference clock, supplied externally |
-| **SFP_TX_DIS** | F9    | —     | LVCMOS33 (bank 1, 3.3 V) | Out | SFP+ transmit disable                                |
+| Signal         | Pin P | Pin N | I/O type            | Dir | Function                                             |
+| -------------- | ----- | ----- | ------------------- | --- | ---------------------------------------------------- |
+| **ETH_TXD**    | A9    | A8    | SERDES (HSO)        | Out | 10 GbE SERDES transmit → SFP+                        |
+| **ETH_RXD**    | C8    | B7    | SERDES (HSI)        | In  | 10 GbE SERDES receive ← SFP+                         |
+| **ETH_REFCLK** | D10   | E10   | SERDES refclk (HSI) | In  | 161.1328125 MHz reference clock, supplied externally |
 
 ### MIPI CSI-2 receive — Port 0
 
@@ -190,10 +189,11 @@ requirements described in the pin tables below.
 
 ### Sensor & power control
 
-| Signal       | Pin | Bank | Dir | Function                               |
-| ------------ | --- | ---- | --- | -------------------------------------- |
-| **CAM_RST**  | H4  | 1    | Out | Sensor reset / power-down (active low) |
-| **CAM_MCLK** | H3  | 1    | Out | Sensor reference clock (27 MHz)        |
+| Signal        | Pin | Bank | Dir | Function                               |
+| ------------- | --- | ---- | --- | -------------------------------------- |
+| **CAM_RST**   | H4  | 1    | Out | Sensor reset / power-down (active low) |
+| **CAM_MCLK**  | H3  | 1    | Out | Sensor reference clock (27 MHz)        |
+| **CAM_FSYNC** | J9  | 6    | Out | Sensor frame sync (VSYNC)              |
 
 ### I2C buses
 
@@ -221,15 +221,15 @@ defaults shown below:
 
 | Signal       | Pin | Bank | Default dir |
 | ------------ | --- | ---- | ----------- |
-| **GPIO[0]**  | F3  | 1    | Out         |
-| **GPIO[1]**  | F2  | 1    | In          |
-| **GPIO[2]**  | H2  | 1    | Out         |
-| **GPIO[3]**  | G5  | 1    | Out         |
-| **GPIO[4]**  | G6  | 1    | In          |
+| **GPIO[0]**  | F12 | 7    | Out         |
+| **GPIO[1]**  | F11 | 7    | In          |
+| **GPIO[2]**  | F9  | 1    | Out         |
+| **GPIO[3]**  | G5  | 1    | In          |
+| **GPIO[4]**  | G6  | 1    | Out         |
 | **GPIO[5]**  | F7  | 1    | Out         |
 | **GPIO[6]**  | J8  | 6    | Out         |
 | **GPIO[7]**  | E6  | 1    | Out         |
-| **GPIO[8]**  | J9  | 6    | Out         |
+| **GPIO[8]**  | F6  | 1    | Out         |
 | **GPIO[9]**  | J4  | 2    | Out         |
 | **GPIO[10]** | J3  | 2    | Out         |
 

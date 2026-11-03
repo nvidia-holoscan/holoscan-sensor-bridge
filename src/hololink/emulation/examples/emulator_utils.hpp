@@ -49,6 +49,12 @@ struct LoopConfig {
 void sleep_frame_rate(struct timespec* frame_start_time, struct LoopConfig& loop_config);
 
 /////// data generation elements //////
+// The bytes HSB puts on the wire for one line of pixel_width pixels of pixel_bits (10 or 12) each
+// once its packetizer is enabled: a whole number of the pixel format's packetizer program loops,
+// padded to 64 bytes, as hololink::PacketizerProgram::padded_output_size() computes it on the host.
+// Throws std::invalid_argument for other bit depths, which the packetizer has no program for.
+uint32_t packetized_line_bytes(uint8_t pixel_bits, uint16_t pixel_width);
+
 // Load the data from the file into a single block of memory
 std::shared_ptr<uint8_t> load_data(const std::string& filename, int64_t& n_bytes, bool gpu = false);
 

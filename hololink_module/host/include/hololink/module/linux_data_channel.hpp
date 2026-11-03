@@ -23,39 +23,29 @@ class HololinkInterfaceV1;
 class SequencerInterfaceV1;
 class LinuxReceiverInterfaceV1;
 
-/* Software (Linux) transport view of a per-channel DataChannelInterfaceV1.
- * A separate ConfigurableService — has-a, not is-a — whose impl holds a
- * shared_ptr to its DataChannelInterfaceV1 anchor and adds the
- * software-transport surface (configure_socket / attach_receiver /
- * detach_receiver / frame_end_sequencer). Sibling of
- * RoceDataChannelInterfaceV1; both compose the same anchor.
+/**
+ * @brief Provide support for Linux data receivers.
  *
- * The wire protocol is still RoCEv2 (HSB always speaks RoCEv2), so the
- * channel still drives the legacy DataChannel::configure_roce. Two
- * things differ from the hardware path, both because the receiver lives
- * in user space rather than on a NIC:
- *   - the device frame-memory address programmed into the FPGA is 0
- *     (HSB writes from address 0; the software receiver adds the local
- *     buffer offset itself), not the receiver's external_frame_memory();
- *   - the destination UDP port is the host socket's bound local_port,
- *     not the fixed RoCEv2 port the hardware channel uses.
+ * For systems without hardware accelerated RDMA for delivery
+ * of received data, a Linux specific emulator for this is available,
+ * which uses the CPU to receive HSB data (via UDP) into a local buffer,
+ * and on the frame-end condition, that buffer is copied into the
+ * target (usually GPU) memory.
  *
- * Cached under instance_id "serial=<serial_number>;data_channel=<n>"
- * (the same key as the anchor it wraps). The supplement's
- * construct_service for this type_id fetches the anchor through the
- * Publisher and passes it to the impl's constructor. The impl's
- * configure(metadata) drives the anchor's ensure_configured(metadata)
- * before building its own legacy backing — application code calls
- * LinuxDataChannelInterfaceV1::get_service(metadata) without first
- * constructing the DataChannelInterfaceV1 itself. */
+ * Application code would normally interact with a Linux receiver object,
+ * which uses this object to support configuration of the local data
+ * receiver socket.
+ */
 class LinuxDataChannelInterfaceV1
     : public ConfigurableService<LinuxDataChannelInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "linux_data_channel.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* Per-channel instance_id derivation used by the metadata-form
-     * get_service. Same shape as DataChannelInterfaceV1::locator_id
-     * — both services key by (serial, data_channel). */
+     * get_service. Throws if the metadata is missing 'serial_number'
+     * or 'data_channel'. */
     static std::string locator_id(const EnumerationMetadata& metadata)
     {
         return "serial=" + metadata.get<std::string>("serial_number")
@@ -63,36 +53,65 @@ public:
     }
 
     virtual ~LinuxDataChannelInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Bind the operator-created datagram socket to this channel's data
-     * plane (delegates to the backing legacy
-     * DataChannel::configure_socket). Must be called before
-     * LinuxReceiverInterfaceV1::start(socket, …), so the receiver runs
-     * on a socket bound to the right local interface and HSB has a
-     * local_port to target. */
+    /**
+     * @brief Prepare a datagram socket to receive this channel's traffic.
+     *
+     * Binds the socket to the host interface that reaches the device.
+     * When the channel's enumeration metadata selects multicast or
+     * broadcast delivery, the socket joins that group or accepts that
+     * broadcast; otherwise the host assigns it a port, and
+     * attach_receiver() programs the device to transmit there.
+     *
+     * The application creates the socket and calls this before anything
+     * else runs on it.
+     *
+     * @param data_socket Datagram socket to prepare.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t configure_socket(int data_socket) = 0;
 
-    /* Wire up the on-device packetizer to deliver frames to the bound
-     * socket. Issues authenticate(get_qp_number, get_rkey) then
-     * configure_roce(0, frame_size, page_size, pages, local_port) — the
-     * device frame-memory address is 0 (the receiver adds the local
-     * offset) and the destination port is the receiver's local_port.
-     * The caller must have already brought the receiver up via
-     * LinuxReceiverInterfaceV1::start(...) (and configure_socket(...)
-     * before that). Call once after enumeration; pair with
-     * detach_receiver() before tearing the channel down. Per-channel
-     * enumeration fields are already cached on the anchor
-     * DataChannelInterfaceV1, so no metadata parameter is needed. */
+    /**
+     * @brief Deliver this channel's frames to a running receiver.
+     *
+     * Programs the device to transmit frames to the receiver; the frame
+     * layout it transmits -- frame size, page size and page count -- and
+     * the destination port come from the receiver, so the receiver is
+     * started, on a socket configure_socket() prepared, before this call.
+     * Frames arrive from here on. Pair it with detach_receiver() before
+     * tearing the channel down.
+     *
+     * @param receiver The started receiver frames are delivered to.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t attach_receiver(
         std::shared_ptr<LinuxReceiverInterfaceV1> receiver)
         = 0;
 
-    /* Detach the on-device packetizer from any host memory. */
+    /**
+     * @brief Stop transmitting, clearing the state attach_receiver() set
+     *      up.
+     *
+     * The channel delivers nothing until another attach_receiver(). This
+     * writes to the device, so it fails when the device is unreachable.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t detach_receiver() = 0;
 
-    /* The frame-end Sequencer attached to this channel. Triggered by
-     * the packetizer when a frame completes; receivers register
-     * read-back operations here. */
+    /**
+     * @brief The sequencer this channel triggers at the end of each frame.
+     *
+     * The device runs the sequence once per completed frame on this
+     * channel. Receivers add the device reads they want taken with every
+     * frame.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this channel publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> frame_end_sequencer(bool allow_null = false)
     {
@@ -100,11 +119,17 @@ public:
         return T::get_service(module(), instance_id.c_str(), allow_null);
     }
 
-    /* The HololinkInterface this channel belongs to — looked up via the
-     * per-board instance id helper. The corresponding
-     * DataChannelInterfaceV1 anchor's hololink() returns the same
-     * instance; kept here for callers that have a Linux-typed
-     * shared_ptr in hand. */
+    /**
+     * @brief The device this channel runs on.
+     *
+     * The same device DataChannelInterfaceV1::hololink() returns for this
+     * channel, for callers holding the software transport.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device is not published.
+     * @return The device.
+     */
     template <typename T = HololinkInterfaceV1>
     std::shared_ptr<T> get_hololink(bool allow_null = false)
     {
@@ -112,9 +137,11 @@ public:
         return T::get_service(module(), instance_id.c_str(), allow_null);
     }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 protected:
     virtual std::string frame_end_sequencer_instance_id() = 0;
     virtual std::string parent_hololink_instance_id() = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

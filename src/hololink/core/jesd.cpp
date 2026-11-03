@@ -1,5 +1,5 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,8 +19,11 @@
 #include "logging_internal.hpp"
 
 #include <arpa/inet.h>
+#include <cerrno>
 #include <netinet/in.h>
+#include <stdexcept>
 #include <sys/socket.h>
+#include <unistd.h>
 
 namespace hololink {
 
@@ -28,7 +31,17 @@ SpiDaemonThread::SpiDaemonThread(Hololink& hololink, JESDConfig& jesd_config)
     : hololink_(hololink)
     , jesd_config_(jesd_config)
     , running_(false)
+    , stopping_(false)
+    , finished_(false)
+    , server_fd_(-1)
+    , sock_fd_(-1)
 {
+}
+
+SpiDaemonThread::~SpiDaemonThread()
+{
+    // Destroying a joinable std::thread terminates the process.
+    stop();
 }
 
 void SpiDaemonThread::run()
@@ -38,6 +51,10 @@ void SpiDaemonThread::run()
 
     thread_ = std::thread(&SpiDaemonThread::thread_func, this);
     while (!running_.load(std::memory_order_relaxed)) {
+        // The thread sets running_ before it can finish, so re-check after seeing finished_.
+        if (finished() && !running_.load(std::memory_order_acquire)) {
+            throw std::runtime_error("SPI daemon thread ended before a daemon connected");
+        }
         HSB_LOG_INFO("Waiting for SPI Daemon connection...");
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
@@ -46,11 +63,60 @@ void SpiDaemonThread::run()
 
 void SpiDaemonThread::stop()
 {
+    stopping_.store(true, std::memory_order_release);
+    {
+        // Wake accept() or recv(); thread_func() closes the sockets.
+        std::lock_guard<std::mutex> lock(sockets_mutex_);
+        for (int fd : { server_fd_, sock_fd_ }) {
+            if (fd >= 0) {
+                shutdown(fd, SHUT_RDWR);
+            }
+        }
+    }
+    if (thread_.joinable()) {
+        thread_.join();
+    }
     running_.store(false, std::memory_order_release);
-    thread_.join();
 }
 
 void SpiDaemonThread::thread_func()
+{
+    try {
+        serve();
+    } catch (const std::exception& e) {
+        // An exception escaping a std::thread terminates the process.
+        HSB_LOG_ERROR("SPI daemon thread failed: {}", e.what());
+    }
+    {
+        std::lock_guard<std::mutex> lock(sockets_mutex_);
+        for (int* fd : { &sock_fd_, &server_fd_ }) {
+            if (*fd >= 0) {
+                close(*fd);
+                *fd = -1;
+            }
+        }
+    }
+    finished_.store(true, std::memory_order_release);
+}
+
+bool SpiDaemonThread::finished() const noexcept
+{
+    return finished_.load(std::memory_order_acquire);
+}
+
+// Publishes a socket for stop() to shut down; closes it instead if stop() came first.
+bool SpiDaemonThread::adopt_socket(int& member, int fd)
+{
+    std::lock_guard<std::mutex> lock(sockets_mutex_);
+    if (stopping_.load(std::memory_order_acquire)) {
+        close(fd);
+        return false;
+    }
+    member = fd;
+    return true;
+}
+
+void SpiDaemonThread::serve()
 {
     constexpr int SPI_DAEMON_SERVER_PORT = 8400;
     constexpr size_t MAX_SPI_DEVICES = 2;
@@ -72,20 +138,28 @@ void SpiDaemonThread::thread_func()
     int enable = 1;
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &enable, sizeof(enable)) < 0) {
         HSB_LOG_ERROR("Failed to set SO_REUSEADDR on server socket");
+        close(server_fd);
         return;
     }
     if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEPORT, &enable, sizeof(enable)) < 0) {
         HSB_LOG_ERROR("Failed to set SO_REUSEPORT on server socket");
+        close(server_fd);
         return;
     }
 
     if (bind(server_fd, (struct sockaddr*)&address, addrlen) < 0) {
         HSB_LOG_ERROR("Failed to bind server socket");
+        close(server_fd);
         return;
     }
 
     if (listen(server_fd, 1) < 0) {
         HSB_LOG_ERROR("Failed to listen for client connection");
+        close(server_fd);
+        return;
+    }
+    // Published only once listening: shutdown() wakes accept() only on a listening socket.
+    if (!adopt_socket(server_fd_, server_fd)) {
         return;
     }
 
@@ -93,7 +167,12 @@ void SpiDaemonThread::thread_func()
 
     int sock_fd = accept(server_fd, (struct sockaddr*)&address, &addrlen);
     if (sock_fd < 0) {
-        HSB_LOG_ERROR("Failed to accept client connection");
+        if (!stopping_.load(std::memory_order_acquire)) {
+            HSB_LOG_ERROR("Failed to accept client connection");
+        }
+        return;
+    }
+    if (!adopt_socket(sock_fd_, sock_fd)) {
         return;
     }
 
@@ -106,9 +185,16 @@ void SpiDaemonThread::thread_func()
     }
 
     running_.store(true, std::memory_order_release);
-    while (running_.load(std::memory_order_relaxed)) {
+    while (!stopping_.load(std::memory_order_acquire)) {
         // Read message from the daemon.
         int bytes_read = recv(sock_fd, buffer, sizeof(buffer), 0);
+        if (bytes_read < 0 && errno == EINTR) {
+            continue;
+        }
+        if (bytes_read < 0) {
+            HSB_LOG_ERROR("Failed to read from the SPI daemon: errno={}", errno);
+            break;
+        }
         if (bytes_read == 0) {
             break;
         }
@@ -121,6 +207,11 @@ void SpiDaemonThread::thread_func()
             // Gather the SPI parameters/bytes.
             uint8_t id = (msg->u.spi.id_cs >> 4) & 0xF;
             uint8_t cs = msg->u.spi.id_cs & 0xF;
+            // id is a 4-bit field, so it can name a bus we didn't open.
+            if (static_cast<size_t>(id) >= MAX_SPI_DEVICES) {
+                throw std::runtime_error(fmt::format(
+                    "Invalid SPI device id: {} (have {})", id, MAX_SPI_DEVICES));
+            }
             uint8_t* cmd_bytes_base = ((uint8_t*)buffer) + sizeof(*msg);
             std::vector<uint8_t> cmd_bytes(cmd_bytes_base, cmd_bytes_base + msg->u.spi.cmd_bytes);
             uint8_t* wr_bytes_base = cmd_bytes_base + msg->u.spi.cmd_bytes;
@@ -149,13 +240,10 @@ void SpiDaemonThread::thread_func()
         *((uint16_t*)buffer) = htons(read_bytes.size());
         memcpy(buffer + sizeof(uint16_t), read_bytes.data(), read_bytes.size());
 
-        // Send the response.
+        // Send the response; MSG_NOSIGNAL: a closed or shut-down socket must not raise SIGPIPE.
         size_t response_size = read_bytes.size() + sizeof(uint16_t);
-        send(sock_fd, buffer, response_size, 0);
+        send(sock_fd, buffer, response_size, MSG_NOSIGNAL);
     }
-
-    close(sock_fd);
-    close(server_fd);
 }
 
 int SpiDaemonThread::execute_jesd(int jesd_state)
@@ -187,16 +275,34 @@ AD9986Config::AD9986Config(Hololink& hololink)
 {
 }
 
+AD9986Config::~AD9986Config()
+{
+    // Before the members go: the thread calls back into this object.
+    stop();
+}
+
 void AD9986Config::apply(void)
 {
+    // A previous apply()'s thread must not mark this configuration complete.
+    stop();
+    jesd_configured_.store(false, std::memory_order_release);
     spi_daemon_thread_.reset(new SpiDaemonThread(hololink_, *this));
     spi_daemon_thread_->run();
 
     while (!jesd_configured_.load(std::memory_order_relaxed)) {
+        // The thread sets jesd_configured_ before it can finish, so re-check after seeing it end.
+        if (spi_daemon_thread_->finished() && !jesd_configured_.load(std::memory_order_acquire)) {
+            throw std::runtime_error("SPI daemon connection ended before the JESD configuration completed");
+        }
         HSB_LOG_INFO("Waiting for JESD configuration to complete...");
         std::this_thread::sleep_for(std::chrono::seconds(1));
     }
     HSB_LOG_INFO("JESD configuration complete");
+}
+
+void AD9986Config::stop()
+{
+    spi_daemon_thread_.reset();
 }
 
 void AD9986Config::host_pause_mapping(uint32_t mask)

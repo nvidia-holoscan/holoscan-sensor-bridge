@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef LINUX_HSB_EMULATOR_HPP
 #define LINUX_HSB_EMULATOR_HPP
 

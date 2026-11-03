@@ -1,4 +1,4 @@
-#!/bin/sh
+#!/bin/bash
 
 # SPDX-FileCopyrightText: Copyright (c) 2023 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
@@ -23,6 +23,10 @@
 #
 # DOCKER_OPTS: optional extra flags passed to `docker run` (unset = none).
 
+if [ -z "${BASH_VERSION:-}" ]; then
+    exec bash "$0" "$@"
+fi
+
 set -o errexit
 
 usage() {
@@ -36,9 +40,13 @@ Options:
   --login                Log in to Fern (device-code in Docker; browser on host)
   --no-docker            Run on the host instead of the docs container
   --docker               Use the docs container (default)
-  --with-library-mdx     Generate the Emulation C++ API MDX (requires Fern auth)
+  --with-library-mdx     Generate C++ API MDX from this checkout (requires Docker)
   --skip-library-mdx     Skip C++ API generation
   --skip-fern-check      Pipeline only; skip fern check
+  --archive-dir PATH     Verified v2.7 snapshot or parent directory
+  --archive-ref SHA      Full archive commit; requires --archive-repository
+  --archive-repository R Explicit archive repository URL or local checkout
+  --output-dir PATH      Retain the assembled project in a new directory
   --publish              Publish docs to production (docs.nvidia.com)
   --publish-preview      Publish a remote Fern docs preview (CI)
   --preview-id ID        Preview id for --publish-preview
@@ -57,55 +65,64 @@ Environment:
 EOF
 }
 
-SCRIPT=`realpath "$0"`
-HERE=`dirname "$SCRIPT"`
-ROOT=`cd $HERE && git rev-parse --show-toplevel`
+SCRIPT=$(realpath "$0")
+HERE=$(dirname "$SCRIPT")
+ROOT=$(cd "$HERE" && git rev-parse --show-toplevel)
 
-ARGS=""
+ARGS=()
 CONTAINER_NAME="docs"
 
 while [ $# -ge 1 ]; do
     case "$1" in
         --preview|--dev)
-            ARGS="$ARGS --preview"
+            ARGS+=(--preview)
             ;;
         --login)
-            ARGS="$ARGS --login"
+            ARGS+=(--login)
             ;;
         --no-docker)
-            ARGS="$ARGS --no-docker"
+            ARGS+=(--no-docker)
             ;;
         --docker)
             ;;
         --with-library-mdx)
-            ARGS="$ARGS --with-library-mdx"
+            ARGS+=(--with-library-mdx)
             ;;
         --skip-library-mdx)
-            ARGS="$ARGS --skip-library-mdx"
+            ARGS+=(--skip-library-mdx)
             ;;
         --skip-fern-check)
-            ARGS="$ARGS --skip-fern-check"
+            ARGS+=(--skip-fern-check)
             ;;
         --publish)
-            ARGS="$ARGS --publish"
+            ARGS+=(--publish)
             ;;
         --publish-preview)
-            ARGS="$ARGS --publish-preview"
+            ARGS+=(--publish-preview)
+            ;;
+        --archive-dir|--archive-ref|--archive-repository|--output-dir)
+            option="$1"
+            if [ "$#" -lt 2 ]; then
+                echo "Missing value for $option" >&2
+                exit 2
+            fi
+            shift
+            ARGS+=("$option" "$1")
             ;;
         --preview-id)
             shift
-            ARGS="$ARGS --preview-id $1"
+            ARGS+=(--preview-id "$1")
             ;;
         --delete-preview-id)
             shift
-            ARGS="$ARGS --delete-preview-id $1"
+            ARGS+=(--delete-preview-id "$1")
             ;;
         --force)
-            ARGS="$ARGS --force"
+            ARGS+=(--force)
             ;;
         --port)
             shift
-            ARGS="$ARGS --port $1"
+            ARGS+=(--port "$1")
             ;;
         --container-name)
             shift
@@ -136,4 +153,4 @@ if [ -n "$DOCKER_OPTS" ]; then
     echo "warning: DOCKER_OPTS is not used by build_hololink_docs.py; pass --no-docker and run natively if needed." >&2
 fi
 
-exec python3 "$HERE/scripts/build_hololink_docs.py" --container-name "$CONTAINER_NAME" $ARGS
+exec python3 "$HERE/scripts/build_hololink_docs.py" --container-name "$CONTAINER_NAME" "${ARGS[@]}"

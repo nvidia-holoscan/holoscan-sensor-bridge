@@ -62,7 +62,6 @@ DEMO_PULSE_DOCKER=""
 if [ -S "$DEMO_PULSE_NATIVE" ]; then
     DEMO_ASOUND_CONF="${HERE}/asound.conf.pulse"
     DEMO_PULSE_DOCKER="-v ${DEMO_PULSE_RUNDIR}/pulse:${DEMO_PULSE_RUNDIR}/pulse \
-        -e HOME=${HOME} \
         -e XDG_RUNTIME_DIR=${DEMO_PULSE_RUNDIR} \
         -e XDG_CONFIG_HOME=${DEMO_XDG_CONFIG_HOME} \
         -e PULSE_SERVER=unix:${DEMO_PULSE_NATIVE}"
@@ -73,6 +72,40 @@ if [ -S "$DEMO_PULSE_NATIVE" ]; then
         DEMO_PULSE_DOCKER="${DEMO_PULSE_DOCKER} -v ${DEMO_ASOUND_CONF}:/etc/asound.conf:ro"
     fi
 fi
+
+# On IGX Thor with a dGPU, CUDA's default ordering makes device 0 the dGPU,
+# while IGX OS puts graphics on the iGPU or the dGPU according to
+# NV_DISABLE_IGPU_GRAPHICS / NV_DISABLE_DGPU_GRAPHICS in /etc/environment.
+# Holoviz needs its CUDA device and the display on the same GPU, so CUDA is
+# pinned to the dGPU only when the iGPU's graphics are disabled there
+# (NV_DISABLE_IGPU_GRAPHICS set and not 0); otherwise CUDA_VISIBLE_DEVICES is
+# left unset. IGX Thor Mini has no dGPU and other platforms get no automatic
+# CUDA_VISIBLE_DEVICES setting either.
+PRODUCT_NAME=""
+if [ -r /sys/class/dmi/id/product_name ]; then
+    PRODUCT_NAME=`cat /sys/class/dmi/id/product_name`
+elif [ -r /proc/device-tree/model ]; then
+    PRODUCT_NAME=`tr -d '\000' < /proc/device-tree/model`
+fi
+
+# /etc/environment is pam_env syntax, which the shell reads as assignments; it is
+# sourced in a subshell so that only this one variable is taken from it.
+NV_DISABLE_IGPU_GRAPHICS=`[ -r /etc/environment ] && . /etc/environment; echo "${NV_DISABLE_IGPU_GRAPHICS:-}"`
+
+DEMO_CUDA_OPTION=""
+case "$PRODUCT_NAME" in
+    *IGX*Thor*Mini*)
+        ;;
+    *IGX*Thor*)
+        case "$NV_DISABLE_IGPU_GRAPHICS" in
+            ""|0)
+                ;;
+            *)
+                DEMO_CUDA_OPTION="-e CUDA_VISIBLE_DEVICES=0"
+                ;;
+        esac
+        ;;
+esac
 
 docker run \
     -it \
@@ -100,7 +133,7 @@ docker run \
     -v /var/nvidia/nvcam/settings:/var/nvidia/nvcam/settings \
     -w $PWD \
     -e NVIDIA_DRIVER_CAPABILITIES=graphics,video,compute,utility,display \
-    -e NVIDIA_VISIBLE_DEVICES=all \
+    $DEMO_CUDA_OPTION \
     -e DISPLAY=$DISPLAY \
     -e enableRawReprocess=2 \
     -e rawReprocessModulePartName="A6V26" \

@@ -36,9 +36,14 @@ endif()
 target_link_libraries(fusa_coe_capture_core
   PUBLIC
     hololink
-    holoscan::core
     nvfusacapext
     nvscibuf
+    # The core calls cudaFree/cudaImportExternalMemory/cudaExternalMemoryGetMappedBuffer
+    # (CUDA runtime API) directly. Public so any consumer that links this core without
+    # also linking fusa_coe_capture (the op, which separately links CUDA::cudart PRIVATE)
+    # -- e.g. hololink_module's hololink_operators target -- doesn't depend on getting
+    # cudart transitively from something else.
+    CUDA::cudart
 )
 
 target_include_directories(fusa_coe_capture_core
@@ -48,6 +53,14 @@ target_include_directories(fusa_coe_capture_core
     $<$<EQUAL:${NVSIPL_API_MAJOR_VERSION},1>:/usr/src/jetson_sipl_api/sipl/fusa/include>
     $<$<EQUAL:${NVSIPL_API_MAJOR_VERSION},2>:/usr/src/jetson_sipl_api/sipl/capture/include>
     /usr/src/jetson_sipl_api/sipl/include/nvsci
+)
+
+# The SIPL API major version (1 = JetPack 7.1 / L4T R38, 2 = JetPack 7.2 / L4T R39) selects
+# the NvSciBuf color formats the core allocates with: the R38 nvscibuf.h has no packed
+# NvSciColor_Bayer12<CFA> family (see FusaCoeCaptureCore::color_format()).
+target_compile_definitions(fusa_coe_capture_core
+  PUBLIC
+    NVSIPL_API_MAJOR_VERSION=${NVSIPL_API_MAJOR_VERSION}
 )
 
 set_target_properties(fusa_coe_capture_core PROPERTIES EXPORT_NAME operators::fusa_coe_capture_core)
@@ -71,6 +84,13 @@ add_library(hololink::operators::fusa_coe_capture ALIAS fusa_coe_capture)
 target_link_libraries(fusa_coe_capture
   PUBLIC
     hololink::operators::fusa_coe_capture_core
+    capture_metadata_schema_generated
+    # fusa_coe_capture.hpp includes the generated capture_metadata_traits.hpp, which uses
+    # holoscan::schema types. capture_metadata_schema_generated alone may not carry
+    # holoscan::schema's own usage requirements to an installed consumer (unlike within
+    # this build tree); link it explicitly, matching base_receiver_op's INTERFACE link of
+    # the same for every other receiver (src/hololink/operators/CMakeLists.txt).
+    holoscan::schema
   PRIVATE
     holoscan::core
 )

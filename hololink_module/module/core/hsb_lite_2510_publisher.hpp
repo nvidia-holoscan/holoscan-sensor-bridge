@@ -16,19 +16,17 @@
 #include "hololink/module/logging.hpp"
 #include "hololink/module/publisher.hpp"
 
-#include "hsb_lite_2510_data_channel.hpp"
+#include "hsb_ip_2510_data_channel.hpp"
 #include "hsb_lite_publisher.hpp"
 
 namespace hololink::module::module_core {
 
-/* Concrete Publisher for compat-id 2510 carriers. Inherits the
- * canonical HSB-Lite branch chain + enumeration body from
- * HsbLitePublisher and overrides only the two RoCE branches that
- * need a 2510-specific impl subclass. Future partner supplements
- * targeting pre-0x2602 / pre-0x2603 FPGA revisions instantiate this
- * Publisher directly (or subclass it further to override
- * module_name). Every other canonical service uses the base's
- * default behavior unchanged. */
+/* Concrete Publisher for HSB-Lite carriers built on the pre-0x2602
+ * FPGA. Inherits the canonical HSB-Lite branch chain + enumeration
+ * body from HsbLitePublisher and overrides only the four transport
+ * branches whose memory map and RDMA immediate-data layout differ,
+ * plus the version gate. Every other canonical service uses the
+ * base's default behavior unchanged. */
 class HsbLite2510Publisher : public HsbLitePublisher {
 public:
     /* This module drives HSB-Lite FPGAs with IP version 0x2510 through
@@ -89,14 +87,14 @@ protected:
         const std::string& instance_id,
         const std::string& type_id) override
     {
-        if (!Publisher::has_type_id<HsbLite2510RoceDataChannelV1>(type_id)) {
+        if (!Publisher::has_type_id<HsbIp2510RoceDataChannelV1>(type_id)) {
             return false;
         }
         auto anchor = DataChannelInterfaceV1::get_service(
             this->self_module(), instance_id.c_str());
-        auto impl = std::make_shared<HsbLite2510RoceDataChannelV1>(
+        auto impl = std::make_shared<HsbIp2510RoceDataChannelV1>(
             std::move(anchor));
-        ServicePublisher<HsbLite2510RoceDataChannelV1>(shared_from_this())
+        ServicePublisher<HsbIp2510RoceDataChannelV1>(shared_from_this())
             .publish(instance_id, impl);
         return true;
     }
@@ -105,29 +103,29 @@ protected:
         const std::string& instance_id,
         const std::string& type_id) override
     {
-        if (!Publisher::has_type_id<HsbLite2510LinuxDataChannelV1>(type_id)) {
+        if (!Publisher::has_type_id<HsbIp2510LinuxDataChannelV1>(type_id)) {
             return false;
         }
         auto anchor = DataChannelInterfaceV1::get_service(
             this->self_module(), instance_id.c_str());
-        auto impl = std::make_shared<HsbLite2510LinuxDataChannelV1>(
+        auto impl = std::make_shared<HsbIp2510LinuxDataChannelV1>(
             std::move(anchor));
-        ServicePublisher<HsbLite2510LinuxDataChannelV1>(shared_from_this())
+        ServicePublisher<HsbIp2510LinuxDataChannelV1>(shared_from_this())
             .publish(instance_id, impl);
         return true;
     }
 
-    /* Always declared; defined out-of-line in roce_receiver_construct.cpp.
-     * Publishes the 2510-specific receiver subclass when the build has
-     * RoCE, and is empty (publishes nothing) otherwise. */
+    /* Always declared; defined out-of-line in roce_receiver_construct_2510.cpp.
+     * Publishes the 2510 receiver when the build has RoCE, and is empty
+     * (publishes nothing) otherwise. */
     bool construct_roce_receiver(
         const std::string& instance_id,
         const std::string& type_id) override;
 
     /* Software-transport sibling of construct_roce_receiver; defined
      * out-of-line in linux_receiver_construct_2510.cpp. Unconditional (the
-     * software receiver needs no ibverbs), so it always publishes the
-     * 2510-specific receiver subclass. */
+     * software receiver needs no ibverbs), so it always publishes the 2510
+     * receiver. */
     bool construct_linux_receiver(
         const std::string& instance_id,
         const std::string& type_id) override;

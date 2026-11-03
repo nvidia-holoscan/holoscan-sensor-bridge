@@ -25,7 +25,7 @@ struct PvaCrcFence;
  *
  * - 1D API with parallel computation support
  * - Compute CRC on any contiguous buffer
- * - Support for parallel chunks (results can be XORed)
+ * - Support for parallel chunks (results can be XORed).
  */
 class PvaCrc {
 public:
@@ -36,12 +36,12 @@ public:
     PvaCrc& operator=(const PvaCrc&) = delete;
 
     /**
-     * @brief Initialize with buffer size
-     * @param dataSize Size of buffer in bytes (must be multiple of 4, min 32KB, max 12MB)
-     * @param remainingSize Bytes remaining after this chunk (for parallel computation), default 0
-     * @param isFirstChunk True to apply preconditioning (for first chunk), default true
-     * @param useDualVpu Enable dual VPU parallel processing (auto-splits data across VPU0 and VPU1), default false
-     * @return 0 on success, negative on error
+     * @brief Initialize with buffer size.
+     * @param dataSize Size of buffer in bytes (must be multiple of 4, min 32KB, max 12MB).
+     * @param remainingSize Bytes remaining after this chunk (for parallel computation), default 0.
+     * @param isFirstChunk Use `true` to apply preconditioning to the first chunk; defaults to `true`.
+     * @param useDualVpu Enable dual VPU parallel processing (auto-splits data across VPU0 and VPU1), default false.
+     * @return 0 on success, negative on error.
      *
      * @note For manual parallel computation: split data into chunks, set remainingSize appropriately,
      *       compute each chunk's CRC, then XOR all results for final CRC
@@ -55,9 +55,9 @@ public:
      * Copies input from GPU to PVA memory, submits to PVA hardware, and returns immediately.
      * PVA executes in background while CPU/GPU can do other work.
      *
-     * @param inputBuffer Input data buffer (GPU device memory)
-     * @param outFence Output fence handle for polling completion (caller must free with freeFence)
-     * @return 0 on success, negative on error
+     * @param inputBuffer Input data buffer (GPU device memory).
+     * @param outFence Output fence handle for polling completion (caller must free with freeFence).
+     * @return 0 on success, negative on error.
      *
      * @note This function returns before PVA completes. Use checkResults() to poll.
      */
@@ -68,15 +68,15 @@ public:
      *
      * Polls the fence with specified timeout. If complete, copies results from PVA to GPU memory.
      *
-     * @param fence Fence handle from launchCompute()
-     * @param outputCrc Output CRC32 value (single uint32_t, GPU device memory)
+     * @param fence Fence handle from launchCompute().
+     * @param outputCrc Output CRC32 value (single uint32_t, GPU device memory).
      * @param timeoutUs Timeout in microseconds:
      *                  - 0 = non-blocking poll (return immediately if not ready)
      *                  - -1 = wait forever (blocking mode)
-     *                  - >0 = wait up to N microseconds
+     *                  - >0 = wait up to N microseconds.
      * @return 0 if complete and results copied,
      *         1 if still computing (timeout occurred),
-     *         negative on error
+     *         negative on error.
      *
      * @note Multiple calls with timeout=0 enable polling without blocking
      */
@@ -88,13 +88,13 @@ public:
      * Call this after checkResults() returns 0 to clean up the fence.
      * Safe to call on nullptr.
      *
-     * @param fence Fence handle to free
+     * @param fence Fence handle to free.
      */
     void freeFence(PvaCrcFence* fence);
 
     /**
-     * @brief Check if initialized
-     * @return true if ready to process
+     * @brief Check if initialized.
+     * @return true if ready to process.
      */
     bool isInitialized() const;
 

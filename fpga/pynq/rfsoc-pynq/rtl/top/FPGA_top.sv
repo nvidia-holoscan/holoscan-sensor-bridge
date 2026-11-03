@@ -193,6 +193,7 @@ end
       );
 
 
+  logic [`SENSOR_RX_IF_INST-1:0] sif_rx_clk;
   logic [`SENSOR_TX_IF_INST-1:0] sif_tx_clk;
   logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tvalid;
   logic [`SENSOR_TX_IF_INST-1:0] sif_tx_axis_tlast;
@@ -208,48 +209,31 @@ end
   logic [`DATAUSER_WIDTH-1:0]    sif_rx_axis_tuser [`SENSOR_RX_IF_INST-1:0];
   logic [`SENSOR_RX_IF_INST-1:0] sif_rx_axis_tready;
 
+  assign sif_rx_clk = {`SENSOR_RX_IF_INST{usr_clk[0]}};
+  assign sif_tx_clk = {`SENSOR_TX_IF_INST{usr_clk[0]}};
+  assign sif_tx_axis_tready = '1;
+
 
 
 //------------------------------------------------------------------------------
 // APB
 //------------------------------------------------------------------------------
 
-//Tie off unused APB bus signals. 
-assign apb_pserr[7:5]         = '0;
+//Tie off unused APB bus signals. Drops [7:5] complete with zeros.
 assign apb_pserr[1:0]         = '0;
-assign apb_pready[7:5]        = '1;
 assign apb_pready[1:0]        = '0;
-assign apb_prdata[7]          = 'h017;
-assign apb_prdata[6]          = 'h016;
-assign apb_prdata[5]          = 'h015;
 assign apb_prdata[1]          = 'h011;
 assign apb_prdata[0]          = 'h010;
+assign apb_pserr[7:5]         = '0;
+assign apb_pready[7:5]        = '1;
+assign apb_prdata[5]          = '0;
+assign apb_prdata[6]          = '0;
+assign apb_prdata[7]          = '0;
 
 
 //------------------------------------------------------------------------------
 // Sensor IF
 //------------------------------------------------------------------------------
-
-logic                sof;
-logic                eof;
-logic [79:0]         ptp_ts;
-logic                ptp_ts_en ;
-logic [11:0]         frame_cnt;
-
-always_ff @ (posedge usr_clk) begin
-  if (hif_rst) begin
-    ptp_ts <= '0;
-    ptp_ts_en <= '0;
-    frame_cnt <= '0;
-  end
-  else begin
-    ptp_ts <= (sof) ? sif_tx_axis_tdata[0][79:0] : ptp_ts;
-    frame_cnt <= (sof) ? sif_tx_axis_tdata[0][91:80] : frame_cnt;
-    ptp_ts_en <= sof;
-  end
-end 
-assign sof = (sif_tx_axis_tvalid[0]);
-assign eof = (sif_tx_axis_tlast[0]);
 
 logic [47:0] ptp_sec_sync_usr;
 logic [31:0] ptp_nsec_sync_usr;
@@ -261,7 +245,7 @@ streaming_cdc #(
   .DST_FREQ   ( `HIF_CLK_FREQ                             )
 ) u_ptp_hif_cdc (
   .i_src_clk  ( ptp_clk                                 ),
-  .i_dst_clk  ( usr_clk                                 ),
+  .i_dst_clk  ( usr_clk[0]                              ),
   .i_src_rst  ( ptp_rst                                 ),
   .i_dst_rst  ( hif_rst                                 ),
   .i_src_data ( {ptp_sec, ptp_nsec}                   ),
@@ -271,7 +255,7 @@ streaming_cdc #(
 
 logic [31:0] cnt;
 
-always_ff @ (posedge usr_clk) begin
+always_ff @ (posedge usr_clk[0]) begin
   if (hif_rst) begin
     cnt <= '0;
   end
@@ -281,143 +265,140 @@ always_ff @ (posedge usr_clk) begin
 end
 
 
-localparam ILA_DATA_WIDTH = 256;
-logic [ILA_DATA_WIDTH-1:0] ila_wr_data;
-assign ila_wr_data[63:0] = ptp_ts[63:0];
-assign ila_wr_data[127:64] = {ptp_sec_sync_usr[31:0], ptp_nsec_sync_usr[31:0]};
-assign ila_wr_data[139:128] = frame_cnt;
-assign ila_wr_data[140] = sof;
-assign ila_wr_data[141] = eof;
-assign ila_wr_data[223:142] = 'h123456789ABCDEF;
-assign ila_wr_data[255:224] = cnt;
+localparam NUM_SENSOR = `SENSOR_RX_IF_INST;
+localparam SENSOR_APB_W_OFSET = 21;
+localparam SENSOR_APB_W_SW = $clog2(NUM_SENSOR);
 
-apb_m2s ila_apb_m2s;
-apb_s2m ila_apb_s2m;
+// Every sensor uses the original 1-SIF capture depths and address map.
+localparam ILA_DEPTH          = 16384;
+localparam SIF_ILA_DEPTH      = 8192;
 
-s_apb_ila #(
-  .DEPTH            ( 16384                          ),
-  .W_DATA           ( ILA_DATA_WIDTH                 )
-) u_apb_ila (
-  .i_aclk           ( apb_clk                        ),
-  .i_arst           ( apb_rst                        ),
-  .i_apb_m2s        ( ila_apb_m2s                    ),
-  .o_apb_s2m        ( ila_apb_s2m                    ),
-  .i_pclk           ( usr_clk                        ),
-  .i_prst           ( hif_rst                        ),
-  .i_trigger        ( '1                             ),
-  .i_enable         ( '1                             ),
-  .i_wr_data        ( ila_wr_data                    ),
-  .i_wr_en          ( ptp_ts_en                      ),
-  .o_ctrl_reg       (                                )
+apb_m2s ila_sw_apb_m2s [1];
+apb_s2m ila_sw_apb_s2m [1];
+apb_m2s ila_apb_m2s    [NUM_SENSOR];
+apb_s2m ila_apb_s2m    [NUM_SENSOR];
+
+assign ila_sw_apb_m2s[0].psel    = apb_psel[2];
+assign ila_sw_apb_m2s[0].penable = apb_penable;
+assign ila_sw_apb_m2s[0].paddr   = apb_paddr;
+assign ila_sw_apb_m2s[0].pwdata  = apb_pwdata;
+assign ila_sw_apb_m2s[0].pwrite  = apb_pwrite;
+assign apb_pready[2]             = ila_sw_apb_s2m[0].pready;
+assign apb_prdata[2]             = ila_sw_apb_s2m[0].prdata;
+assign apb_pserr[2]              = ila_sw_apb_s2m[0].pserr;
+
+apb_switch #(
+  .N_MPORT             ( 1                 ),
+  .N_SPORT             ( NUM_SENSOR        ),
+  .W_OFSET             ( SENSOR_APB_W_OFSET ),
+  .W_SW                ( SENSOR_APB_W_SW    ),
+  .MERGE_COMPLETER_SIG ( 0                 )
+) u_ila_apb_switch (
+  .i_apb_clk           ( apb_clk           ),
+  .i_apb_reset         ( apb_rst           ),
+  .i_apb_m2s           ( ila_sw_apb_m2s    ),
+  .o_apb_s2m           ( ila_sw_apb_s2m    ),
+  .i_apb_s2m           ( ila_apb_s2m       ),
+  .o_apb_m2s           ( ila_apb_m2s       ),
+  .i_apb_timeout       ( 1'b0              )
 );
 
+apb_m2s sif_ila_sw_apb_m2s [1];
+apb_s2m sif_ila_sw_apb_s2m [1];
+apb_m2s sif_ila_apb_m2s    [NUM_SENSOR];
+apb_s2m sif_ila_apb_s2m    [NUM_SENSOR];
 
+assign sif_ila_sw_apb_m2s[0].psel    = apb_psel[3];
+assign sif_ila_sw_apb_m2s[0].penable = apb_penable;
+assign sif_ila_sw_apb_m2s[0].paddr   = apb_paddr;
+assign sif_ila_sw_apb_m2s[0].pwdata  = apb_pwdata;
+assign sif_ila_sw_apb_m2s[0].pwrite  = apb_pwrite;
+assign apb_pready[3]                 = sif_ila_sw_apb_s2m[0].pready;
+assign apb_prdata[3]                 = sif_ila_sw_apb_s2m[0].prdata;
+assign apb_pserr[3]                  = sif_ila_sw_apb_s2m[0].pserr;
 
-assign ila_apb_m2s.psel   = apb_psel     [2];
-assign ila_apb_m2s.penable= apb_penable     ;
-assign ila_apb_m2s.paddr  = apb_paddr       ;
-assign ila_apb_m2s.pwdata = apb_pwdata      ;
-assign ila_apb_m2s.pwrite = apb_pwrite      ;
-assign apb_pready [2]        = ila_apb_s2m.pready; 
-assign apb_prdata [2]        = ila_apb_s2m.prdata; 
-assign apb_pserr  [2]        = ila_apb_s2m.pserr;
-
-
+apb_switch #(
+  .N_MPORT             ( 1                 ),
+  .N_SPORT             ( NUM_SENSOR        ),
+  .W_OFSET             ( SENSOR_APB_W_OFSET ),
+  .W_SW                ( SENSOR_APB_W_SW    ),
+  .MERGE_COMPLETER_SIG ( 0                 )
+) u_sif_ila_apb_switch (
+  .i_apb_clk           ( apb_clk            ),
+  .i_apb_reset         ( apb_rst            ),
+  .i_apb_m2s           ( sif_ila_sw_apb_m2s ),
+  .o_apb_s2m           ( sif_ila_sw_apb_s2m ),
+  .i_apb_s2m           ( sif_ila_apb_s2m    ),
+  .o_apb_m2s           ( sif_ila_apb_m2s    ),
+  .i_apb_timeout       ( 1'b0               )
+);
 
 //------------------------------------------------------------------------------
-// SIF Latch
+// Per-sensor RAM Player and ILAs
 //------------------------------------------------------------------------------
 
-localparam SIF_ILA_DATA_WIDTH = 512 + 2 + 7 + 64;
+apb_m2s ram_apb_m2s [NUM_SENSOR];
+apb_s2m ram_apb_s2m [NUM_SENSOR];
+apb_m2s ram_sw_apb_m2s [1];
+apb_s2m ram_sw_apb_s2m [1];
 
-localparam SIF_ILA_WSTRB = $clog2(`DATAPATH_WIDTH/8);
+assign ram_sw_apb_m2s[0].psel    = apb_psel[4];
+assign ram_sw_apb_m2s[0].penable = apb_penable;
+assign ram_sw_apb_m2s[0].paddr   = apb_paddr;
+assign ram_sw_apb_m2s[0].pwdata  = apb_pwdata;
+assign ram_sw_apb_m2s[0].pwrite  = apb_pwrite;
+assign apb_pready[4]             = ram_sw_apb_s2m[0].pready;
+assign apb_prdata[4]             = ram_sw_apb_s2m[0].prdata;
+assign apb_pserr[4]              = ram_sw_apb_s2m[0].pserr;
 
-logic [SIF_ILA_DATA_WIDTH-1:0] sif_ila_wr_data;
-logic [SIF_ILA_WSTRB-1:0] sif_ila_wr_tcnt;
+apb_switch #(
+  .N_MPORT             ( 1                  ),
+  .N_SPORT             ( NUM_SENSOR         ),
+  .W_OFSET             ( SENSOR_APB_W_OFSET ),
+  .W_SW                ( SENSOR_APB_W_SW    ),
+  .MERGE_COMPLETER_SIG ( 0                  )
+) u_ram_apb_switch (
+  .i_apb_clk           ( apb_clk            ),
+  .i_apb_reset         ( apb_rst            ),
+  .i_apb_m2s           ( ram_sw_apb_m2s     ),
+  .o_apb_s2m           ( ram_sw_apb_s2m     ),
+  .i_apb_s2m           ( ram_apb_s2m        ),
+  .o_apb_m2s           ( ram_apb_m2s        ),
+  .i_apb_timeout       ( 1'b0               )
+);
 
-
-assign sif_ila_wr_data[511:0]   = sif_tx_axis_tdata[0];
-assign sif_ila_wr_data[512]     = sif_tx_axis_tvalid[0];
-assign sif_ila_wr_data[513]     = sif_tx_axis_tlast[0];
-assign sif_ila_wr_data[520:514] = sif_ila_wr_tcnt;
-assign sif_ila_wr_data[584:521] = {ptp_sec_sync_usr[31:0], ptp_nsec_sync_usr[31:0]};
-
-integer j;
-always_comb begin
-  sif_ila_wr_tcnt = '0;
-  for (j=0;j<(`DATAPATH_WIDTH/8);j=j+1) begin
-    if (sif_tx_axis_tkeep[0][j]) begin
-      sif_ila_wr_tcnt = j;
-    end
+generate
+  for (i=0; i<NUM_SENSOR; i=i+1) begin: gen_sensor_if
+    sensor_if_path #(
+      .ILA_DEPTH              ( ILA_DEPTH          ),
+      .SIF_ILA_DEPTH          ( SIF_ILA_DEPTH      )
+    ) u_sensor_if_path (
+      .i_apb_clk              ( apb_clk                        ),
+      .i_apb_rst              ( apb_rst                        ),
+      .i_sif_clk              ( usr_clk[0]                     ),
+      .i_sif_rst              ( hif_rst                        ),
+      .i_ila_apb_m2s          ( ila_apb_m2s[i]                 ),
+      .o_ila_apb_s2m          ( ila_apb_s2m[i]                 ),
+      .i_sif_ila_apb_m2s      ( sif_ila_apb_m2s[i]             ),
+      .o_sif_ila_apb_s2m      ( sif_ila_apb_s2m[i]             ),
+      .i_ram_apb_m2s          ( ram_apb_m2s[i]                 ),
+      .o_ram_apb_s2m          ( ram_apb_s2m[i]                 ),
+      .i_ptp_sec              ( ptp_sec_sync_usr               ),
+      .i_ptp_nsec             ( ptp_nsec_sync_usr              ),
+      .i_cnt                  ( cnt                            ),
+      .i_sif_tx_axis_tvalid   ( sif_tx_axis_tvalid [i]         ),
+      .i_sif_tx_axis_tlast    ( sif_tx_axis_tlast  [i]         ),
+      .i_sif_tx_axis_tdata    ( sif_tx_axis_tdata  [i]         ),
+      .i_sif_tx_axis_tkeep    ( sif_tx_axis_tkeep  [i]         ),
+      .o_sif_rx_axis_tvalid   ( sif_rx_axis_tvalid [i]         ),
+      .o_sif_rx_axis_tlast    ( sif_rx_axis_tlast  [i]         ),
+      .o_sif_rx_axis_tdata    ( sif_rx_axis_tdata  [i]         ),
+      .o_sif_rx_axis_tkeep    ( sif_rx_axis_tkeep  [i]         ),
+      .o_sif_rx_axis_tuser    ( sif_rx_axis_tuser  [i]         ),
+      .i_sif_rx_axis_tready   ( sif_rx_axis_tready [i]         )
+    );
   end
-end
-
-apb_m2s sif_ila_apb_m2s;
-apb_s2m sif_ila_apb_s2m;
-
-s_apb_ila #(
-  .DEPTH            ( 8192                           ),
-  .W_DATA           ( SIF_ILA_DATA_WIDTH             )
-) u_apb_sif_ila (
-  .i_aclk           ( apb_clk                        ),
-  .i_arst           ( apb_rst                        ),
-  .i_apb_m2s        ( sif_ila_apb_m2s                ),
-  .o_apb_s2m        ( sif_ila_apb_s2m                ),
-  .i_pclk           ( usr_clk                        ),
-  .i_prst           ( hif_rst                        ),
-  .i_trigger        ( '1                             ),
-  .i_enable         ( '1                             ),
-  .i_wr_data        ( sif_ila_wr_data                ),
-  .i_wr_en          ( sif_tx_axis_tvalid[0]          ),
-  .o_ctrl_reg       (                                )
-);
-
-
-
-assign sif_ila_apb_m2s.psel   = apb_psel     [3];
-assign sif_ila_apb_m2s.penable= apb_penable     ;
-assign sif_ila_apb_m2s.paddr  = apb_paddr       ;
-assign sif_ila_apb_m2s.pwdata = apb_pwdata      ;
-assign sif_ila_apb_m2s.pwrite = apb_pwrite      ;
-assign apb_pready [3]        = sif_ila_apb_s2m.pready; 
-assign apb_prdata [3]        = sif_ila_apb_s2m.prdata; 
-assign apb_pserr  [3]        = sif_ila_apb_s2m.pserr;
-
-
-//------------------------------------------------------------------------------
-// RAM Player
-//------------------------------------------------------------------------------
-
-apb_m2s ram_apb_m2s;
-apb_s2m ram_apb_s2m;
-
-ram_player #(
-  .W_DATA           ( 512                                   )
-) u_ram_player (
-  .i_apb_clk        ( apb_clk                               ),
-  .i_apb_rst        ( apb_rst                               ),
-  .i_sif_clk        ( usr_clk                               ),
-  .i_sif_rst        ( hif_rst                               ),
-  .i_apb_m2s        ( ram_apb_m2s                           ),
-  .o_apb_s2m        ( ram_apb_s2m                           ),
-  .o_ram_axis_mux   (                                       ),
-  .i_ptp            ( {ptp_sec_sync_usr, ptp_nsec_sync_usr} ),
-  .o_axis_tvalid    ( sif_rx_axis_tvalid [0]                ),
-  .o_axis_tdata     ( sif_rx_axis_tdata  [0]                ),
-  .o_axis_tkeep     ( sif_rx_axis_tkeep  [0]                ),
-  .o_axis_tuser     ( sif_rx_axis_tuser  [0]                ),
-  .o_axis_tlast     ( sif_rx_axis_tlast  [0]                ),
-  .i_axis_tready    ( sif_rx_axis_tready [0]                )
-);
-
-assign ram_apb_m2s.psel    = apb_psel     [4];
-assign ram_apb_m2s.penable = apb_penable;
-assign ram_apb_m2s.paddr   = apb_paddr;
-assign ram_apb_m2s.pwdata  = apb_pwdata;
-assign ram_apb_m2s.pwrite  = apb_pwrite;
-assign apb_pready [4]      = ram_apb_s2m.pready; 
-assign apb_prdata [4]      = ram_apb_s2m.prdata; 
-assign apb_pserr  [4]      = ram_apb_s2m.pserr;
+endgenerate
 
 //------------------------------------------------------------------------------
 // HOLOLINK Top Instantiation
@@ -454,9 +435,9 @@ logic [47:0] mac_addr [`HOST_IF_INST];
   // Sensor IF
   //------------------------------------------------------------------------------
   // Sensor Interface Clock and Reset
-    .i_sif_rx_clk      ( usr_clk            ),
+    .i_sif_rx_clk      ( sif_rx_clk         ),
     .o_sif_rx_rst      ( sif_rx_rst         ),
-    .i_sif_tx_clk      ( usr_clk            ),
+    .i_sif_tx_clk      ( sif_tx_clk         ),
     .o_sif_tx_rst      ( sif_tx_rst         ),
     // Sensor Rx Streaming Interface
     .i_sif_axis_tvalid ( sif_rx_axis_tvalid ),
@@ -471,14 +452,14 @@ logic [47:0] mac_addr [`HOST_IF_INST];
     .o_sif_axis_tdata  ( sif_tx_axis_tdata  ),
     .o_sif_axis_tkeep  ( sif_tx_axis_tkeep  ),
     .o_sif_axis_tuser  ( sif_tx_axis_tuser  ),
-    .i_sif_axis_tready ( '1 ),
+    .i_sif_axis_tready ( sif_tx_axis_tready ),
     // Sensor Event
     .i_sif_event       ( '0         ),
   //------------------------------------------------------------------------------
   // Host IF
   //------------------------------------------------------------------------------
   // Host Interface Clock and Reset
-    .i_hif_clk         ( usr_clk            ),
+    .i_hif_clk         ( usr_clk[0]         ),
     .o_hif_rst         ( hif_rst            ),
     // Host Rx Interface
     .i_hif_axis_tvalid ( hif_rx_axis_tvalid ),

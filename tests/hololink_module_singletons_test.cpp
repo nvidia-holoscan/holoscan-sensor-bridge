@@ -5,22 +5,24 @@
  * Loads a stub module that fetches the host's Reactor + Logging
  * singletons, schedules a Reactor callback, and emits a log line
  * from inside that callback. Verifies (a) the callback executes on
- * the host's Reactor thread and (b) the log line arrives at the
- * host-installed sink with its file/line/function decoration intact.
+ * the host's Reactor thread and (b) the log line arrives at the host's
+ * stderr sink with its file/line/function decoration intact.
  */
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <mutex>
+#include <stdexcept>
 #include <string>
-#include <vector>
+#include <thread>
 
-#include "hololink/core/logging.hpp"
+#include <unistd.h>
+
 #include "hololink/module/adapter.hpp"
 
 static std::filesystem::path module_path(const char* basename)
@@ -34,44 +36,101 @@ static std::filesystem::path module_path(const char* basename)
 
 namespace {
 
-struct CapturedLog {
-    std::string file;
-    unsigned line;
-    std::string function;
-    hololink::logging::HsbLogLevel level;
-    std::string message;
+class StderrCapture {
+public:
+    StderrCapture()
+    {
+        int pipe_fds[2];
+        if (::pipe(pipe_fds) != 0) {
+            throw std::runtime_error("Unable to create stderr capture pipe");
+        }
+        read_fd_ = pipe_fds[0];
+        saved_stderr_ = ::dup(STDERR_FILENO);
+        if (saved_stderr_ < 0) {
+            ::close(pipe_fds[0]);
+            ::close(pipe_fds[1]);
+            throw std::runtime_error("Unable to duplicate stderr");
+        }
+        if (::dup2(pipe_fds[1], STDERR_FILENO) != STDERR_FILENO) {
+            ::close(saved_stderr_);
+            saved_stderr_ = -1;
+            ::close(pipe_fds[0]);
+            ::close(pipe_fds[1]);
+            throw std::runtime_error("Unable to redirect stderr");
+        }
+        ::close(pipe_fds[1]);
+        try {
+            reader_ = std::thread(&StderrCapture::drain, this);
+        } catch (...) {
+            ::dup2(saved_stderr_, STDERR_FILENO);
+            ::close(saved_stderr_);
+            saved_stderr_ = -1;
+            ::close(read_fd_);
+            read_fd_ = -1;
+            throw;
+        }
+    }
+
+    ~StderrCapture()
+    {
+        std::fflush(stderr);
+        if (saved_stderr_ >= 0) {
+            ::dup2(saved_stderr_, STDERR_FILENO);
+            ::close(saved_stderr_);
+        }
+        if (reader_.joinable()) {
+            reader_.join();
+        }
+        if (read_fd_ >= 0) {
+            ::close(read_fd_);
+        }
+    }
+
+    std::string read_until(const std::string& marker,
+        std::chrono::milliseconds timeout)
+    {
+        std::unique_lock<std::mutex> lock(mutex_);
+        condition_.wait_for(lock, timeout, [this, &marker] {
+            return captured_.find(marker) != std::string::npos || reader_done_;
+        });
+        return captured_;
+    }
+
+private:
+    void drain()
+    {
+        char buffer[512];
+        ssize_t count;
+        while ((count = ::read(read_fd_, buffer, sizeof(buffer))) > 0) {
+            {
+                std::lock_guard<std::mutex> lock(mutex_);
+                captured_.append(buffer, static_cast<std::size_t>(count));
+            }
+            condition_.notify_all();
+        }
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+            reader_done_ = true;
+        }
+        condition_.notify_all();
+    }
+
+    int read_fd_ = -1;
+    int saved_stderr_ = -1;
+    std::thread reader_;
+    std::mutex mutex_;
+    std::condition_variable condition_;
+    std::string captured_;
+    bool reader_done_ = false;
 };
 
 } // namespace
-
-static std::mutex g_log_mutex;
-static std::condition_variable g_log_cv;
-static std::vector<CapturedLog> g_log_records;
-
-static void capture_logger(char const* file, unsigned line, const char* function,
-    hololink::logging::HsbLogLevel level, const char* message)
-{
-    std::lock_guard<std::mutex> guard(g_log_mutex);
-    g_log_records.push_back(CapturedLog { file, line, function, level, message });
-    g_log_cv.notify_all();
-}
 
 TEST(HololinkAdapterSingletons, ReactorCallbackEmitsLog)
 {
     using hololink::module::Adapter;
 
-    // Install a capture sink on the host's logger and ensure the
-    // level lets info lines through. Save the previous values to
-    // restore at the end.
-    auto previous_logger = hololink::logging::hsb_logger;
-    auto previous_level = hololink::logging::hsb_log_level;
-    hololink::logging::hsb_logger = &capture_logger;
-    hololink::logging::hsb_log_level = hololink::logging::HSB_LOG_LEVEL_INFO;
-
-    {
-        std::lock_guard<std::mutex> guard(g_log_mutex);
-        g_log_records.clear();
-    }
+    StderrCapture capture;
 
     auto module = Adapter::get_adapter().load_module(
         module_path("hololink_module_singletons_stub_module.so"));
@@ -81,30 +140,12 @@ TEST(HololinkAdapterSingletons, ReactorCallbackEmitsLog)
     // Reactor thread should run it shortly after. Wait up to a few
     // seconds for the marker line to appear.
     constexpr auto MARKER = "hololink_module_test::singletons-marker";
-    bool got_marker = false;
-    {
-        std::unique_lock<std::mutex> lock(g_log_mutex);
-        got_marker = g_log_cv.wait_for(lock, std::chrono::seconds(5), []() {
-            return std::any_of(g_log_records.begin(), g_log_records.end(),
-                [](const CapturedLog& r) {
-                    return r.message.find(MARKER) != std::string::npos;
-                });
-        });
-    }
-    EXPECT_TRUE(got_marker);
+    const std::string captured = capture.read_until(MARKER, std::chrono::seconds(5));
+    EXPECT_NE(captured.find(MARKER), std::string::npos);
 
-    // The line arrived through the wrapped sink, so file / function
-    // are populated by the HSB_LOG_INFO macro in the .so source.
-    if (got_marker) {
-        std::lock_guard<std::mutex> guard(g_log_mutex);
-        const auto record = std::find_if(g_log_records.begin(), g_log_records.end(),
-            [](const CapturedLog& r) { return r.message.find(MARKER) != std::string::npos; });
-        ASSERT_NE(record, g_log_records.end());
-        EXPECT_EQ(record->level, hololink::logging::HSB_LOG_LEVEL_INFO);
-        EXPECT_NE(record->file, std::string());
-        EXPECT_NE(record->function, std::string());
-    }
-
-    hololink::logging::hsb_logger = previous_logger;
-    hololink::logging::hsb_log_level = previous_level;
+    // The host logger decorates the line with severity, source, and function.
+    EXPECT_NE(captured.find("INFO"), std::string::npos);
+    EXPECT_NE(captured.find("hololink_module_singletons_stub_module.cpp"),
+        std::string::npos);
+    EXPECT_NE(captured.find("operator()"), std::string::npos);
 }

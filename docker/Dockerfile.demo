@@ -18,10 +18,10 @@
 # See README.md for detailed information.
 
 ARG CONTAINER_VERSION=invalid
-ARG APT_CACHE_MOUNT="--mount=type=cache,target=/var/cache/apt,sharing=locked \
-    --mount=type=cache,target=/var/lib/apt,sharing=locked"
 
 FROM ${CONTAINER_VERSION} AS base
+ARG CONTAINER_TYPE=invalid
+ARG TARGETARCH
 
 # build container
 FROM base AS builder
@@ -49,24 +49,72 @@ WORKDIR /opt/hololink
 # RoCE receiver: GPU VRAM frame buffers require working GPUDirect RDMA.
 # Set OFF via docker/build.sh --disable-roce-gpu-vram when the PCIe path does not support it.
 ARG HOLOLINK_ROCE_USE_GPU_VRAM=ON
-# Semicolon-separated list of CUDA architectures to target by default during the wheel build below.
-# https://cmake.org/cmake/help/latest/envvar/CUDAARCHS.html
-# Allowable values:
-#   https://cmake.org/cmake/help/latest/prop_tgt/CUDA_ARCHITECTURES.html
-#   https://developer.nvidia.com/cuda-gpus
-ARG CUDAARCHS=native
+# CUDA architectures (CMAKE_CUDA_ARCHITECTURES) for the wheel and tools builds below.
+# https://cmake.org/cmake/help/latest/prop_tgt/CUDA_ARCHITECTURES.html, https://developer.nvidia.com/cuda-gpus
+# CUDAARCHS is the semicolon-separated list docker/build.sh detected on the host (nvidia-smi
+# compute_cap, or a host nvcc) or was given with --cuda-archs=; it may be empty. The image build
+# itself has no GPU, so "native" is NOT usable here: nvcc -arch=native silently falls back to its
+# oldest architecture (sm_75) when it sees no GPU. The RUN below resolves the final list against
+# this image's nvcc: entries nvcc does not know are dropped with a warning, a GPU visible to the
+# build (e.g. an nvidia default runtime) is probed as a second source, and CUDAARCHS_DEFAULT is
+# the last resort -- the GPUs of the supported hosts: AGX Orin (87), AGX/IGX Thor (110),
+# DGX Spark (121).
+ARG CUDAARCHS=
+ARG CUDAARCHS_DEFAULT="87;110;121"
+RUN command -v nvcc >/dev/null || { echo "ERROR: nvcc not found in the build image; cannot compile CUDA code" >&2; exit 1; } \
+    && SUPPORTED=$(nvcc --list-gpu-arch | sed 's/compute_//' | paste -sd ' ' -) \
+    && ARCHS="" \
+    && if [ -n "${CUDAARCHS}" ] && [ "${CUDAARCHS}" != "native" ]; then \
+        for a in $(echo "${CUDAARCHS}" | tr ';,' '  '); do \
+            case " ${SUPPORTED} " in \
+                *" ${a%%[-a-z]*} "*) ARCHS="${ARCHS:+${ARCHS};}${a}" ;; \
+                *) echo "WARNING: CUDA architecture ${a} is not supported by $(nvcc --version | grep -oE 'release [0-9.]+' | head -n1) in this image (supported: ${SUPPORTED}); dropping it" >&2 ;; \
+            esac; \
+        done; \
+    fi \
+    && if [ -z "${ARCHS}" ]; then \
+        NATIVE=$(echo -n "int main(void) { return 0; }" | nvcc -arch=native --verbose -x cu -o /tmp/native_probe - 2>&1 || true); \
+        rm -f /tmp/native_probe; \
+        if ! echo "${NATIVE}" | grep -q "Cannot find valid GPU"; then \
+            ARCHS=$(echo "${NATIVE}" | grep -oE "__CUDA_ARCH__=[0-9]+" | cut -d= -f2 | sed 's/.$//' | sort -un | paste -sd ';' -); \
+            [ -z "${ARCHS}" ] || echo "CUDA architectures from a GPU visible to the build: ${ARCHS}"; \
+        fi; \
+    fi \
+    && if [ -z "${ARCHS}" ]; then \
+        ARCHS="${CUDAARCHS_DEFAULT}"; \
+        echo "" >&2; \
+        echo "##############################################################################" >&2; \
+        echo "# WARNING: no usable CUDA architecture list for this build" >&2; \
+        echo "#   CUDAARCHS='${CUDAARCHS}' from docker/build.sh (host detection or --cuda-archs=)" >&2; \
+        echo "#   and no GPU is visible to the image build. Building for the default set" >&2; \
+        echo "#   ${ARCHS} (AGX Orin, Thor, DGX Spark); other GPUs need --cuda-archs=LIST." >&2; \
+        echo "##############################################################################" >&2; \
+        echo "" >&2; \
+    fi \
+    && echo "${ARCHS}" > /opt/hololink_cuda_archs \
+    && echo "CMAKE_CUDA_ARCHITECTURES=${ARCHS}"
+
+# TODO(HSDK5 port): the sipl_capture operator, its Python binding and sipl_player still emit GXF
+# VideoBuffer entities, which HSDK5 does not provide. Keep HOLOLINK_BUILD_SIPL off until it is
+# ported the way fusa_coe_capture was; python/setup.py otherwise turns it on whenever COE_OFFLOAD=1.
+ARG HOLOLINK_BUILD_SIPL=OFF
 
 # See build.sh for why INSTALL_ENVIRONMENT is here.
 ARG INSTALL_ENVIRONMENT=""
-RUN --mount=type=cache,target=/sccache,sharing=locked \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-sccache,target=/sccache,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-pip,target=/root/.cache/pip \
     cd python \
     && env HOLOLINK_ROCE_USE_GPU_VRAM=${HOLOLINK_ROCE_USE_GPU_VRAM} \
+        CUDAARCHS="$(cat /opt/hololink_cuda_archs)" \
         $INSTALL_ENVIRONMENT pip3 wheel -v . \
     && if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then sccache --show-stats; fi
 
 # Build tools with CMake. When sccache is enabled the compiler launchers route
 # C/C++/CUDA through it, reusing the object cache populated by the wheel build above.
-RUN --mount=type=cache,target=/sccache,sharing=locked \
+# Only the tools (and the core libraries they link) are wanted here: the operators and the
+# examples are built and shipped by the wheel above, so they are switched off to keep this
+# build small.
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-sccache,target=/sccache,sharing=locked \
     if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then \
         SCCACHE_ARGS="-D CMAKE_C_COMPILER_LAUNCHER=sccache \
             -D CMAKE_CXX_COMPILER_LAUNCHER=sccache \
@@ -74,9 +122,12 @@ RUN --mount=type=cache,target=/sccache,sharing=locked \
     fi \
     && cmake -S . -B build -G Ninja \
         -D HOLOLINK_BUILD_ONLY_NATIVE=ON \
+        -D HOLOLINK_BUILD_OPERATORS=OFF \
+        -D HOLOLINK_BUILD_EXAMPLES=OFF \
         -D CMAKE_LINKER_TYPE=LLD \
+        -D CMAKE_CUDA_ARCHITECTURES="$(cat /opt/hololink_cuda_archs)" \
         $SCCACHE_ARGS
-RUN --mount=type=cache,target=/sccache,sharing=locked \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-sccache,target=/sccache,sharing=locked \
     cmake --build build -j \
     && if [ "$HOLOLINK_USE_SCCACHE" != "OFF" ]; then sccache --show-stats; fi
 RUN cmake --install build --prefix /opt/hololink/tools
@@ -84,24 +135,75 @@ RUN cmake --install build --prefix /opt/hololink/tools
 # demo container
 FROM base AS demo
 
-RUN python3 -m pip install --no-cache-dir --upgrade pip
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-pip,target=/root/.cache/pip \
+    python3 -m pip install --upgrade pip
 
 # pytest: for Python testing
 # pytest-timeout: for test timeouts
 # pyserial: for UART tests (e.g. test_uart_ftdi)
-RUN pip3 install --no-cache-dir pytest pytest-timeout pyserial
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-pip,target=/root/.cache/pip \
+    pip3 install pytest pytest-timeout pyserial
 
 # python3-requests: for Python test HTTP requests
 # python3-yaml: for Python test YAML parsing
-# libnvinfer-bin (and dependencies): for tensorrt examples. Done here to reduce diskspace pressure on prototype image
-RUN ${APT_CACHE_MOUNT} apt-get update \
-    && apt-get install -y \
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    rm -f /etc/apt/apt.conf.d/docker-clean \
+    && printf 'Binary::apt::APT::Keep-Downloaded-Packages "true";\n' > /etc/apt/apt.conf.d/99-keep-downloaded-packages \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
         python3-requests \
         python3-yaml \
-        libnvinfer-bin="10.*" \
         python3-alsaaudio \
-        libasound2-plugins \
-    && rm -rf /var/lib/apt/lists/*
+        libasound2-plugins
+
+# holoscan-inference and TensorRT live in this image only. hololink-prototype is kept free of
+# them so the build-environment image, its BuildKit snapshots and its export stay ~3 GB smaller
+# (libnvinfer10 alone is ~2.9 GB, hard-wired as a dependency of the holoscan-inference deb);
+# only the tao_peoplenet / body_pose_estimation examples need them. OFF (docker/build.sh
+# --no-inference) skips this layer.
+# The deb comes from the same public local APT repository that installed holoscan-core in the
+# base image (HOLOLINK_HSDK_VERSION is an ENV of that image), set up
+# and purged within this layer as there; libnvinfer10 itself comes from the CUDA online
+# repository. libnvinfer-bin adds trtexec for building the examples' engines. The wheel is pinned
+# to the exact holoscan-core-cu${CUDA_VERSION_MAJOR} version already installed, so pip cannot
+# pull a newer core wheel from PyPI to satisfy it.
+# NOTE: for tensorrt 10.3 on JP 6.1+, engine building frequently fails within the container with
+# memory limits due to a bug; the suggestion is to build the engine outside the container:
+# https://forums.developer.nvidia.com/t/tensorrt-has-insufficent-memory-in-container/318948
+# Because the hololink path is mounted in the container, the build must happen within the
+# hololink/holoscan-sensor-bridge directory and --engine must be given to the example application.
+ARG HOLOLINK_INSTALL_INFERENCE=ON
+ENV HOLOLINK_INSTALL_INFERENCE=${HOLOLINK_INSTALL_INFERENCE}
+ENV PATH="/usr/src/tensorrt/bin:$PATH"
+RUN --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-archives,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-apt-lists,target=/var/lib/apt,sharing=locked \
+    --mount=type=cache,id=hololink-${CONTAINER_TYPE}-${TARGETARCH}-pip,target=/root/.cache/pip \
+    if [ "${HOLOLINK_INSTALL_INFERENCE}" = "OFF" ]; then \
+        echo "HOLOLINK_INSTALL_INFERENCE=OFF: skipping holoscan-inference and TensorRT"; \
+        exit 0; \
+    fi \
+    && UBUNTU_VERSION=$(cat /etc/os-release | grep "VERSION_ID" | awk -F'=' '{print $2}' | sed 's/[."]//g') \
+    && HSDK_LOCAL_REPO="holoscan-local-repo-ubuntu${UBUNTU_VERSION}-${HOLOLINK_HSDK_VERSION}" \
+    && HSDK_LOCAL_REPO_URL="https://developer.download.nvidia.com/compute/holoscan/${HOLOLINK_HSDK_VERSION}/local_installers/${HSDK_LOCAL_REPO}_${HOLOLINK_HSDK_VERSION}-1_${TARGETARCH}.deb" \
+    && echo "Fetching HSDK local APT repository: ${HSDK_LOCAL_REPO_URL}" \
+    && curl -fsSL -O "${HSDK_LOCAL_REPO_URL}" \
+    && dpkg -i ${HSDK_LOCAL_REPO}_${HOLOLINK_HSDK_VERSION}-1_${TARGETARCH}.deb \
+    && rm -f ${HSDK_LOCAL_REPO}_${HOLOLINK_HSDK_VERSION}-1_${TARGETARCH}.deb \
+    && cp /var/${HSDK_LOCAL_REPO}/holoscan-*-keyring.gpg /usr/share/keyrings/ \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install --no-install-recommends -y --allow-downgrades \
+        "holoscan-inference=${HOLOLINK_HSDK_VERSION}.*" \
+        'libnvinfer-bin=10.*' \
+    && apt-get purge -y ${HSDK_LOCAL_REPO} \
+    && rm -rf /var/${HSDK_LOCAL_REPO} /etc/apt/sources.list.d/holoscan-local-*.list \
+    && HOLOSCAN_CORE_VERSION=$(pip3 show holoscan-core-cu${CUDA_VERSION_MAJOR} | awk '/^Version:/ {print $2}') \
+    && pip3 install "holoscan-inference-cu${CUDA_VERSION_MAJOR}==${HOLOSCAN_CORE_VERSION}" \
+    && ldconfig \
+    && ldconfig -p | grep -q "libnvinfer.so.10" || (echo "TensorRT libraries not found" && exit 1)
+
+# The CUDA architectures the wheel and tools were compiled for, for reference.
+COPY --from=builder /opt/hololink_cuda_archs /opt/hololink/CUDA_ARCHITECTURES
 
 # Install the HoloLink Python wheel built above
 COPY --from=builder /opt/hololink/python/hololink-*.whl /tmp/wheel/

@@ -23,6 +23,7 @@
 
 #include <nvrtc.h>
 
+#include "hololink/common/shutdown_signal_disposition_guard.hpp"
 #include "hololink/module/cuda_unique.hpp" // HOLOLINK_MODULE_CUDA_CHECK
 #include "hololink/module/logging.hpp" // HSB_LOG_ERROR
 
@@ -97,7 +98,14 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
     }
     compile_options.push_back("--include-path=/usr/local/cuda/include");
     compile_options.push_back("--include-path=/usr/local/cuda/include/cccl");
-    if (nvrtcCompileProgram(prog, compile_options.size(), compile_options.data()) != NVRTC_SUCCESS) {
+    nvrtcResult compiled;
+    {
+        // NVRTC changes SIGINT's and SIGTERM's dispositions, which fails a run with managed
+        // shutdown signals; see ShutdownSignalDispositionGuard.
+        hololink::common::ShutdownSignalDispositionGuard signal_dispositions;
+        compiled = nvrtcCompileProgram(prog, compile_options.size(), compile_options.data());
+    }
+    if (compiled != NVRTC_SUCCESS) {
         // Obtain compilation log from the program.
         size_t logSize;
         NvRTCCheck(nvrtcGetProgramLogSize(prog, &logSize));

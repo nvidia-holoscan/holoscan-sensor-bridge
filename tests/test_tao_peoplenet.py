@@ -15,34 +15,50 @@
 
 # See README.md for detailed information.
 
+import os
 import sys
-from os.path import exists
+import tempfile
 from unittest import mock
 from urllib.request import urlretrieve
 
 import pytest
 import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
 from examples import linux_tao_peoplenet, tao_peoplenet
 
 
 @pytest.fixture
 def peoplenet_onnx_file():
     # Download the PeopleNet ONNX model
-    file_name = "examples/resnet34_peoplenet_int8.onnx"
-    if not exists(file_name):
+    model_directory = os.environ.get("HSB_PEOPLENET_CACHE_DIR") or "examples"
+    os.makedirs(model_directory, exist_ok=True)
+    file_name = os.path.join(model_directory, "resnet34_peoplenet_int8.onnx")
+    if not os.path.exists(file_name):
         url = "https://api.ngc.nvidia.com/v2/models/org/nvidia/team/tao/peoplenet/pruned_quantized_decrypted_v2.3.3/files?redirect=true&path=resnet34_peoplenet_int8.onnx"
-        urlretrieve(url, file_name)
+        temporary_file = tempfile.NamedTemporaryFile(
+            dir=model_directory,
+            prefix="resnet34_peoplenet_int8.onnx.",
+            suffix=".download",
+            delete=False,
+        )
+        temporary_file.close()
+        try:
+            urlretrieve(url, temporary_file.name)
+            os.replace(temporary_file.name, file_name)
+        finally:
+            if os.path.exists(temporary_file.name):
+                os.unlink(temporary_file.name)
     yield file_name
 
 
+@utils.requires_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
     ],
 )
 def test_tao_peoplenet(
@@ -61,6 +77,8 @@ def test_tao_peoplenet(
         str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
+        "--engine",
+        peoplenet_onnx_file,
         "--hololink",
         hololink_address,
         "--ibv-name",
@@ -71,19 +89,23 @@ def test_tao_peoplenet(
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        tao_peoplenet.main()
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = tao_peoplenet.main()
 
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    assert result == 0
+    # The app ends the run with request_stop() at its frame limit.
+    monitor.assert_ok(allow_stopped=True)
+
+    # check for errors
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
 @pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
     ],
 )
 def test_linux_tao_peoplenet(
@@ -95,22 +117,22 @@ def test_linux_tao_peoplenet(
         str(camera_mode.value),
         "--frame-limit",
         str(frame_limit),
+        "--engine",
+        peoplenet_onnx_file,
         "--hololink",
         hololink_address,
     ]
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        with mock.patch(
-            "hololink.operators.LinuxReceiverOperator",
-            utils.MockedLinuxReceiverOperator,
-        ):
-            linux_tao_peoplenet.main()
+    # RunMonitor counts the frames the receiver emits, which v2.7 did with a
+    # subclass of the receiver operator.
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = linux_tao_peoplenet.main()
 
-    # Make sure we actually did receive something;
-    # see utils.py to see how this is set
-    assert utils.receiver_count > 10
+    assert result == 0
+    # The app ends the run with request_stop() at its frame limit.
+    monitor.assert_ok(allow_stopped=True)
 
     # check for errors
     captured = capsys.readouterr()

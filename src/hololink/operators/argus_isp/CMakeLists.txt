@@ -33,7 +33,11 @@ set_property(TARGET argus_isp PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 add_library(hololink::operators::argus_isp ALIAS argus_isp)
 
+add_dependencies(argus_isp capture_metadata_schema_generated)
+
 target_include_directories(argus_isp
+  PUBLIC
+    $<BUILD_INTERFACE:${CAPTURE_METADATA_SCHEMA_GENERATED_DIR}>
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -48,9 +52,22 @@ target_include_directories(argus_isp
 set(ARGUS_LIBRARY_DIR "/usr/lib/aarch64-linux-gnu/nvidia")
 
 target_link_libraries(argus_isp
+  PUBLIC
+    # argus_isp.hpp includes the generated capture_metadata_traits.hpp, which uses
+    # holoscan::schema types. capture_metadata_schema_generated alone may not carry
+    # holoscan::schema's own usage requirements to an installed consumer (unlike
+    # within this build tree); link it explicitly, matching base_receiver_op's
+    # INTERFACE link of the same (src/hololink/operators/CMakeLists.txt).
+    holoscan::schema
+    # argus_isp.hpp's input/output ports are now schema::ImageT (the image-domain payload),
+    # which pulls in holoscan/sensor_io/sensor_schema_package.hpp for schema::ImageT itself.
+    # holoscan::schema alone does not carry sensor_io's own usage requirements to an installed
+    # consumer; link it explicitly, same reasoning as holoscan::schema above.
+    holoscan::sensor_io
   PRIVATE
     hololink
     holoscan::core
+    holoscan::schema
     CUDA::nvrtc
     CUDA::nppicc
     ${ARGUS_LIBRARY_DIR}/libnvargus.so

@@ -18,174 +18,196 @@
 #ifndef SRC_OPERATORS_COMPUTE_CRC
 #define SRC_OPERATORS_COMPUTE_CRC
 
+#include <functional>
 #include <memory>
+#include <type_traits>
 
+#include <capture_metadata_traits.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
+#include <holoscan/core/domain/tensor.hpp>
 #include <holoscan/core/operator.hpp>
-#include <holoscan/core/parameter.hpp>
+#include <holoscan/core/port.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/sensor_io/sensor_schema_package.hpp>
+
+#include "crc_channel.hpp"
 
 #include <cuda.h>
 #include <nvcomp/crc32.h>
 
 namespace hololink::operators {
 
+namespace detail {
+    // The only thing that differs per payload type: how to reach the tensor the CRC is actually
+    // computed over. holoscan::Tensor IS the tensor; a descriptor-schema type like
+    // holoscan::schema::ImageT wraps its real payload in its own .data tensor field.
+    template <typename PayloadT>
+    const holoscan::Tensor& crc_payload_tensor(const PayloadT& value);
+
+    template <>
+    inline const holoscan::Tensor& crc_payload_tensor<holoscan::Tensor>(const holoscan::Tensor& value)
+    {
+        return value;
+    }
+
+    template <>
+    inline const holoscan::Tensor& crc_payload_tensor<holoscan::schema::ImageT>(const holoscan::schema::ImageT& value)
+    {
+        return *value.data;
+    }
+} // namespace detail
+
 /**
  * @class ComputeCrcOp
  * @brief Operator that computes CRC32 checksums on GPU tensors using nvCOMP.
  *
- * This operator receives a tensor on the "input" port, computes a CRC32 checksum
- * using the nvcomp library on the GPU, and emits the tensor unchanged on the "output"
- * port. The computed CRC can be retrieved via get_computed_crc() for validation;
- * normally this is done by making a CheckCrcOp instance and adding it into the
- * application pipeline at the point where the CRC value is needed.
+ * Receives a tensor/metadata pair on the "in_tensor"/"in_metadata" ports, starts a CRC32 of the
+ * tensor on the GPU using nvcomp, and emits both unchanged on the "tensor"/"metadata" ports.
+ * The CRC is handed to the CheckCrcOp that shares its CrcChannel, which waits for it only when
+ * it validates that frame, so the GPU CRC overlaps the work between the two operators.
+ * With emit_crc=true, compute waits for that frame's result and emits it on "crc" before
+ * forwarding the tensor and metadata. This supports validation graphs carrying a completed
+ * scalar per frame, without a CheckCrcOp/channel callback side branch.
+ *
+ * The "tensor" output forwards the received tensor. HSDK5 gives an operator a CUDA stream only
+ * when it allocates tensors or receives them from an operator that does, so the tensor must go
+ * on to an operator that allocates its own (a converter such as CsiToBayerOp), not straight to
+ * CheckCrcOp, which takes only the metadata.
+ *
+ * @tparam PayloadT The tensor-carrying payload type for the "in_tensor"/"tensor" ports --
+ * either holoscan::Tensor (a plain Tensor-domain pipeline) or holoscan::schema::ImageT (an
+ * image-domain pipeline). This is a pass-through CRC operator with no opinion on which side
+ * of the Tensor-to-ImageT boundary it sits, so it is instantiated for whichever payload type
+ * the app actually wires in (see the ComputeCrcTensorOp/ComputeCrcImageOp aliases below).
  *
  * Uses the CRC-32/JAMCRC algorithm (bit-inverted CRC32) which matches the format
  * recorded from HSB.
- *
- * @param cuda_device_ordinal, the CUDA device to use (default: 0)
- * @param frame_size, Upper bound for data size; used to tune CRC algorithm.  The
- *      actual CRC block size is always taken from the received tensor.
- *
- * @code{.py}
- * # In your Application.compose() method:
- * compute_crc = hololink.operators.ComputeCrcOp(
- *     self,
- *     name="compute_crc",
- *     frame_size=width * height * bytes_per_pixel,
- * )
- *
- * # Connect in pipeline
- * self.add_flow(source_op, compute_crc, {("output", "input")})
- * self.add_flow(compute_crc, check_crc_op, {("output", "input")})
- * @endcode
  */
-class ComputeCrcOp : public holoscan::Operator {
+template <typename PayloadT>
+class ComputeCrcOp : public holoscan::Operator<> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(ComputeCrcOp);
-
-    void start() override;
-    void stop() override;
-    void setup(holoscan::OperatorSpec& spec) override;
-    void compute(holoscan::InputContext&, holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext&) override;
-
     /**
-     * @brief Retrieves the computed CRC value.
-     *
-     * Synchronizes on the CUDA stream used for CRC computation,
-     * then returns the CRC value computed by the nvcomp kernel.
-     * Normally this is done by CheckCrcOp, but you can call this
-     * directly if desired.
-     *
-     * @return uint32_t The computed CRC32 value in JAMCRC format.
-     * @note This call blocks until the GPU CRC computation completes.
+     * @param crc_channel Shared with the CheckCrcOp that validates this operator's CRCs.
+     * @param cuda_device_ordinal The GPU to compute on.
+     * @param frame_size Upper bound of the tensor size, to tune the nvcomp kernel.
      */
-    uint32_t get_computed_crc();
+    // emit_crc completes the GPU read before forwarding and emits a frame-paired scalar,
+    // matching the synchronous validation pipeline. The default keeps channel handoff.
+    ComputeCrcOp(std::shared_ptr<CrcChannel> crc_channel, int cuda_device_ordinal = 0,
+        uint64_t frame_size = 0, bool emit_crc = false);
+
+    void setup(holoscan::OperatorSpec& spec) override;
+    [[nodiscard]] holoscan::Contract contract() const override;
+    void start() override;
+    holoscan::expected<void, holoscan::Error> compute(holoscan::ExecutionContext& context) override;
+
+    holoscan::Input<PayloadT> input_tensor { "in_tensor" };
+    holoscan::Input<hololink::CaptureMetadataT> input_metadata { "in_metadata" };
+    holoscan::Output<PayloadT> output_tensor { "tensor" };
+    holoscan::Output<hololink::CaptureMetadataT> output_metadata { "metadata" };
+    holoscan::Output<uint32_t> output_crc { "crc" };
 
 protected:
-    holoscan::Parameter<int> cuda_device_ordinal_; ///< CUDA device ordinal for computation
-    /**
-     * @brief Upper bound for the size of data to compute CRC over.
-     * @note Used to tune the CRC calculation algorithm performance.
-     */
-    holoscan::Parameter<uint64_t> frame_size_;
+    holoscan::expected<void, holoscan::Error> compute_impl(holoscan::ExecutionContext& context);
 
-    bool is_integrated_ = false; ///< True if running on integrated GPU
-    bool host_memory_warning_ = false; ///< Tracks if host memory warning was issued
-    cudaEvent_t event_ = 0; ///< CUDA event for synchronization
-    size_t* message_size_dptr_ = nullptr; ///< Device pointer to message size
-    void** message_dptr_ = nullptr; ///< Device pointer to message pointer
-    uint32_t* result_dptr_ = nullptr; ///< Device pointer to CRC result
-    uint32_t computed_crc_ = 0; ///< Most recently computed CRC value
-    nvcompBatchedCRC32Opts_t crc_opts_; ///< nvcomp CRC configuration
+    std::shared_ptr<CrcChannel> crc_channel_;
+    int cuda_device_ordinal_;
+    uint64_t frame_size_;
+    bool emit_crc_;
+    bool is_integrated_ = false;
+    bool host_memory_warning_ = false;
+    nvcompBatchedCRC32Opts_t crc_opts_;
+    // Frames dropped because downstream was behind, reported at most once per second.
+    hololink::operators::DropCounter dropped_frames_;
+    // Frames whose payload and metadata were stamped as different frames, reported at most once
+    // per second.
+    hololink::operators::DropCounter mismatched_frames_;
 };
+
+using ComputeCrcTensorOp = ComputeCrcOp<holoscan::Tensor>;
+using ComputeCrcImageOp = ComputeCrcOp<holoscan::schema::ImageT>;
 
 /**
  * @class CheckCrcOp
- * @brief Operator which 1) copies it's input parameter to it's output,
- * so it can be applied to a pipeline wherever necessary; and 2) fetches the result from
- * ComputeCrcOp, stalling the pipeline if necessary until the CRC value is computed.  This
- * second function is the primary job of this operator.
+ * @brief Operator that validates the CRC its ComputeCrcOp computed for each frame.
  *
- * This operator works in conjunction with ComputeCrcOp,
- * retrieving the computed CRC from a linked ComputeCrcOp instance and calls
- * the virtual check_crc() method for validation. Subclass this operator to
- * implement custom CRC validation logic.  By default, check_crc() will save
- * the computed value in the pipeline metadata under the name "computed_crc"
- * (or by any name you pass in with the `computed_crc_metadata_name' parameter).
- *
- * @param compute_crc_op points to the ComputeCrcOp that computed the CRC
- * @param computed_crc_metadata_name provides the metadata key for storing computed CRC
- *   (default: "computed_crc").  This value is ignored when a subclass overrides
- *  the check_crc method.
- *
- * @code{.py}
- * # Subclass CheckCrcOp to implement custom validation
- * class CrcValidationOp(hololink.operators.CheckCrcOp):
- *     def __init__(self, *args, compute_crc_op=None, crc_metadata_name="crc", **kwargs):
- *         hololink.operators.CheckCrcOp.__init__(
- *             self, *args, compute_crc_op=compute_crc_op, **kwargs
- *         )
- *         self._crc_metadata_name = crc_metadata_name
- *         self._error_count = 0
- *
- *     def check_crc(self, computed_crc):
- *         # Called by base class with the GPU-computed CRC
- *         received_crc = self.metadata.get(self._crc_metadata_name, 0)
- *         if computed_crc != received_crc:
- *             self._error_count += 1
- *             print(f"CRC error: computed={computed_crc:#x}, received={received_crc:#x}")
- *
- * # In compose():
- * compute_crc = hololink.operators.ComputeCrcOp(self, name="compute_crc", ...)
- * validator = CrcValidationOp(self, name="validator", compute_crc_op=compute_crc)
- * self.add_flow(compute_crc, validator, {("output", "input")})
- * @endcode
- *
- * or
- *
- * @code{.py}
- * # In compose():
- * compute_crc = hololink.operators.ComputeCrcOp(self, name="compute_crc", ...)
- * validator = hololink.operators.CheckCrcOp(self, name="validator", compute_crc_op=compute_crc)
- * self.add_flow(compute_crc, validator, {("output", "input")})
- * @endcode
- *
- * Then, at any point after `validator` is run, the computed CRC value can be found
- * at `metadata["computed_crc"]`.
+ * Receives a frame's metadata from anywhere downstream of ComputeCrcOp that keeps the
+ * frame_number ComputeCrcOp saw: the converter after it, for instance, unless that converter cuts
+ * sub-frame bands, which it renumbers (then take the metadata ahead of the converter). Takes that
+ * frame's CRC from the shared CrcChannel (waiting for the GPU to finish it), calls check_crc()
+ * with it, and emits the metadata unchanged on the "metadata" port, which may be left
+ * unconnected. Derive from it and override check_crc() to validate.
  */
-class CheckCrcOp : public holoscan::Operator {
+class CheckCrcOp : public holoscan::Operator<> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(CheckCrcOp);
-
-    /// Virtual destructor for proper polymorphic cleanup.
+    /// @param crc_channel The CrcChannel its ComputeCrcOp was given.
+    explicit CheckCrcOp(std::shared_ptr<CrcChannel> crc_channel);
     virtual ~CheckCrcOp() = default;
 
     void setup(holoscan::OperatorSpec& spec) override;
+    [[nodiscard]] holoscan::Contract contract() const override;
+    holoscan::expected<void, holoscan::Error> compute(holoscan::ExecutionContext& context) override;
+
+    holoscan::Input<hololink::CaptureMetadataT> input_metadata { "in_metadata" };
+    holoscan::Output<hololink::CaptureMetadataT> output_metadata { "metadata" };
 
     /**
-     * Passes the "input" tensor to "output", and fetches the CRC
-     * results computed by the ComputeCrcOp we were constructed with,
-     * and passing that value to the `check_crc` method.  Note that this
-     * operator can possibly stall the pipeline (via a CUDA stream synchronization)
-     * if the CRC value is not ready yet.
+     * @brief Returns the most recently validated CRC value.
      */
-    void compute(holoscan::InputContext&, holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext&) override;
+    uint32_t get_last_crc() const { return last_computed_crc_; }
 
     /**
-     * @brief Virtual method called with the computed CRC for validation.
+     * @brief Virtual method called with each frame's computed CRC (JAMCRC, as the HSB reports it).
      *
-     * Override this method in derived classes to implement custom CRC validation
-     * logic. The default implementation stores the computed CRC in metadata
-     * with the metadata name stored in `computed_crc_metadata_name_`.
-     *
-     * @param computed_crc The CRC32 value computed by the linked ComputeCrcOp.
+     * Override in derived classes to implement custom CRC validation logic. The default
+     * implementation stores the value, accessible via get_last_crc().
      */
     virtual void check_crc(uint32_t computed_crc);
 
+    /**
+     * @brief As above, with the frame's metadata (its frame_number, and the HSB's own crc).
+     *
+     * The default implementation calls check_crc(computed_crc).
+     */
+    virtual void check_crc(uint32_t computed_crc, const hololink::CaptureMetadataT& metadata);
+
 protected:
-    holoscan::Parameter<std::shared_ptr<ComputeCrcOp>> compute_crc_op_; ///< Linked CRC compute operator
-    holoscan::Parameter<std::string> computed_crc_metadata_name_; ///< Metadata key for CRC
+    std::shared_ptr<CrcChannel> crc_channel_;
+    uint32_t last_computed_crc_ = 0;
+    // Frames whose CRC never arrived (dropped before ComputeCrcOp), and frames dropped because
+    // downstream was behind, each reported at most once per second.
+    hololink::operators::DropCounter missing_crcs_;
+    hololink::operators::DropCounter dropped_frames_;
+};
+
+/**
+ * @brief A CrcChannel together with a check to run for each frame: what a ComputeCrcOp and a
+ * CheckCrcOp built from the operator catalog share (Python's hololink.CrcChannel). Python cannot
+ * subclass CheckCrcOp, so the catalog's CheckCrcOp calls `check` instead of an override.
+ */
+struct CrcCheckChannel : std::enable_shared_from_this<CrcCheckChannel> {
+    /// Called with the frame's GPU CRC, the HSB's CRC (metadata.crc) and metadata.frame_number.
+    using Check = std::function<void(uint32_t computed_crc, int64_t received_crc, int64_t frame_number)>;
+
+    explicit CrcCheckChannel(Check check_crc = {}, size_t max_pending = 16)
+        : channel(std::make_shared<CrcChannel>(max_pending))
+        , check(std::move(check_crc))
+    {
+    }
+
+    std::shared_ptr<CrcChannel> channel;
+    Check check;
+};
+
+/// A CheckCrcOp that runs a CrcCheckChannel's check for each frame it checks.
+class CallbackCheckCrcOp : public CheckCrcOp {
+public:
+    explicit CallbackCheckCrcOp(std::shared_ptr<CrcCheckChannel> crc_channel);
+
+    void check_crc(uint32_t computed_crc, const hololink::CaptureMetadataT& metadata) override;
+
+private:
+    std::shared_ptr<CrcCheckChannel> crc_check_;
 };
 
 } // namespace hololink::operators

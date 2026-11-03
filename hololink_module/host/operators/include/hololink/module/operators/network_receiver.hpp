@@ -13,7 +13,8 @@
 #include <string>
 
 #include <cuda.h>
-#include <holoscan/holoscan.hpp>
+
+#include <hololink/core/metadata.hpp>
 
 #include "hololink/module/data_channel.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
@@ -39,8 +40,6 @@ public:
         // Invoked by the monitor thread when a frame is ready (wakes the
         // operator's compute condition).
         std::function<void()> frame_ready;
-        // Per-key renaming for stamp_metadata; identity by default.
-        std::function<std::string(const std::string&)> rename_metadata;
     };
 
     virtual ~NetworkReceiver() = default;
@@ -71,9 +70,18 @@ public:
     virtual bool get_next_frame(unsigned timeout_ms, CUstream cuda_stream) = 0;
     virtual bool frames_ready() = 0;
 
+    /* True once the receive path has failed for good (a RoCE receiver after a
+     * fatal CQ/QP event): no frame arrives until a fresh construct(), though
+     * frames_ready() may report one, so that no waiter is left waiting. */
+    virtual bool receive_path_failed() { return false; }
+
     virtual CUdeviceptr frame_memory() = 0;
     virtual std::shared_ptr<void> frame_buffer_owner() = 0;
-    virtual void stamp_metadata(holoscan::MetadataDictionary& metadata) = 0;
+    // Writes this frame's hardware metadata into `metadata` by fixed key name (the same
+    // vocabulary BaseReceiverOp's derived receivers use -- see its .inl), for translation
+    // into the typed CaptureMetadataT schema by the shared BaseReceiverOp machinery
+    // HsbControllerOp (like RoceReceiverOp/LinuxReceiverOp) is built on.
+    virtual void stamp_metadata(hololink::Metadata& metadata) = 0;
 
     /* The transport-agnostic DataChannelInterfaceV1 for this channel — the
      * device_lost() target on loss. Null until construct() has run. */
@@ -87,8 +95,10 @@ public:
  * through Holoscan's Arg/Parameter system intact like SensorFactory — a
  * std::function returning non-void is silently convertible to
  * std::function<void()>, which Holoscan's callback-arg overload would grab and
- * strip the return type from. */
-class NetworkReceiverFactory {
+ * strip the return type from. enable_shared_from_this lets Python's handle
+ * pass the factory's own owner to HsbControllerOp as a constructor handle. */
+class NetworkReceiverFactory
+    : public std::enable_shared_from_this<NetworkReceiverFactory> {
 public:
     virtual ~NetworkReceiverFactory() = default;
     virtual std::shared_ptr<NetworkReceiver> create() = 0;

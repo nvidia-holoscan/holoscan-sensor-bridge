@@ -610,6 +610,7 @@ vec_to_axis #(
   .rst              ( i_prst                             ),
   .trigger          ( resp_trigger && ecb_is_roce        ),
   .data             ( roce_hdr_data                      ),
+  .tuser            ( 1'b0                               ),
   .is_busy          ( roce_hdr_is_busy                   ),
 //AXIS Interface        
   .o_axis_tx_tvalid ( roce_axis_tvalid                   ),
@@ -653,7 +654,7 @@ data_sync #(
   .SYNC_DEPTH     ( 2                   )
 ) u_apb_stat_sync (
   .clk            ( i_pclk              ),
-  .rst_n          ( !i_prst             ),
+  .rst            ( i_prst              ),
   .sync_in        ( {apb_cmd_done, cmd_err}      ),
   .sync_out       ( {apb_cmd_done_sync, cmd_err_sync} )
 );
@@ -664,7 +665,7 @@ data_sync #(
   .SYNC_DEPTH     ( 2                   )
 ) u_apb_ctrl_sync (
   .clk            ( i_aclk              ),
-  .rst_n          ( !i_arst             ),
+  .rst            ( i_arst              ),
   .sync_in        ( {apb_send_cmd}      ),
   .sync_out       ( {apb_send_cmd_sync} )
 );
@@ -675,7 +676,7 @@ data_sync #(
   .SYNC_DEPTH     ( 2                   )
 ) u_rddata_sync (
   .clk            ( i_pclk              ),
-  .rst_n          ( !i_prst             ),
+  .rst            ( i_prst              ),
   .sync_in        ( cmd_rddata          ),
   .sync_out       ( cmd_rddata_sync     )
 );
@@ -686,7 +687,7 @@ data_sync #(
   .SYNC_DEPTH     ( 2                   )
 ) u_cmd_addr_sync (
   .clk            ( i_aclk              ),
-  .rst_n          ( !i_arst             ),
+  .rst            ( i_arst              ),
   .sync_in        ( cmd_addr            ),
   .sync_out       ( cmd_addr_sync       )
 );

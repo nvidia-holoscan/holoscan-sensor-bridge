@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 730 340" width="730" height="340" role="img" aria-labelledby="t d">
+<title id="t">IGX Thor T7000 to Holoscan Sensor Bridge</title>
+<desc id="d">IGX Thor T7000 to Holoscan Sensor Bridge: IGX Thor T7000 (IGX SW 2.0.1, Thor iGPU, optional RTX PRO 5000 Blackwell dGPU) connected to a Holoscan Sensor Bridge board. enP4p3s0f0np0 * 192.168.0.101/24 to SFP+ 0 192.168.0.2; enP4p3s0f1np1 * 192.168.0.102/24 to SFP+ 1 192.168.0.3</desc>
+<rect x="0" y="0" width="730" height="340" fill="#ffffff"/>
+<text x="365.0" y="30" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">IGX Thor T7000 to Holoscan Sensor Bridge</text>
+<rect x="20" y="55" width="300" height="230" rx="10" fill="#f2f7e8" stroke="#76b900" stroke-width="2"/>
+<text x="35" y="83" font-family="sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="#1a1a1a">IGX Thor T7000</text>
+<text x="35" y="105" font-family="sans-serif" font-size="13" font-weight="normal" text-anchor="start" fill="#4a4a4a">IGX SW 2.0.1, ConnectX-7</text>
+<text x="35" y="148" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="start" fill="#4a4a4a">Thor iGPU</text>
+<text x="35" y="166" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="start" fill="#4a4a4a">Optional dGPU:</text>
+<text x="35" y="181" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="start" fill="#4a4a4a">RTX PRO 5000</text>
+<text x="35" y="196" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="start" fill="#4a4a4a">Blackwell</text>
+<rect x="520" y="55" width="190" height="230" rx="10" fill="#eef3fb" stroke="#3b6ea8" stroke-width="2"/>
+<text x="615.0" y="83" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Holoscan Sensor</text>
+<text x="615.0" y="102" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Bridge board</text>
+<text x="615.0" y="119" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">RoCE or Linux sockets</text>
+<rect x="170" y="130" width="145" height="54" rx="6" fill="#ffffff" stroke="#76b900" stroke-width="1.5"/>
+<text x="178" y="148" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">CX7 QSFP port 0</text>
+<text x="178" y="163" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">enP4p3s0f0np0 *</text>
+<text x="178" y="178" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.101/24</text>
+<rect x="525" y="130" width="120" height="54" rx="6" fill="#ffffff" stroke="#3b6ea8" stroke-width="1.5"/>
+<text x="533" y="148" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">SFP+ 0</text>
+<text x="533" y="168" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.2</text>
+<line x1="315" y1="160" x2="525" y2="160" stroke="#1a1a1a" stroke-width="3"/>
+<circle cx="315" cy="160" r="4" fill="#1a1a1a"/><circle cx="525" cy="160" r="4" fill="#1a1a1a"/>
+<rect x="170" y="210" width="145" height="54" rx="6" fill="#ffffff" stroke="#76b900" stroke-width="1.5"/>
+<text x="178" y="228" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">CX7 QSFP port 1</text>
+<text x="178" y="243" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">enP4p3s0f1np1 *</text>
+<text x="178" y="258" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.102/24</text>
+<rect x="525" y="210" width="120" height="54" rx="6" fill="#ffffff" stroke="#3b6ea8" stroke-width="1.5"/>
+<text x="533" y="228" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">SFP+ 1</text>
+<text x="533" y="248" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.3</text>
+<line x1="315" y1="240" x2="525" y2="240" stroke="#1a1a1a" stroke-width="3"/>
+<circle cx="315" cy="240" r="4" fill="#1a1a1a"/><circle cx="525" cy="240" r="4" fill="#1a1a1a"/>
+<text x="420.0" y="104" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">QSFP to SFP+ cables</text>
+<text x="420.0" y="118" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">MTU 4200, RoCE</text>
+<text x="365.0" y="322" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">* Example interface names from the setup page. Names on your system can be different.</text>
+</svg>

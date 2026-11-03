@@ -48,47 +48,30 @@ include("${HOLOLINK_REL_PATH}/cmake/hololink_deps/dlpack.cmake")
 if (HSB_EMULATOR_BUILD_PYTHON AND NOT HSB_EMULATOR_TOT_BUILD)
     # we only need to find CUDAToolkit above, but if Python bindings are required, it will be required
     find_package(CUDAToolkit REQUIRED)
-    # Find pybind11 for Python extension modules when building standalone
-    find_package(Python3 REQUIRED COMPONENTS Interpreter Development)
-    find_package(pybind11 REQUIRED)
-    add_library(_emulation SHARED python/hololink/emulation/_emulation.cpp)
 
-    target_include_directories(_emulation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/.. ${pybind11_INCLUDE_DIRS})
-    
-    # Link _emulation with the core emulation libraries
-    target_link_libraries(_emulation PRIVATE hololink::emulation ${pybind11_LIBRARIES})
-    target_link_libraries(_emulation PRIVATE hololink::emulation::coe)
+    # The Python module is one nanobind extension, `_emulation`, built from the same source
+    # and with the same nanobind as the full hololink build (python/hololink/emulation):
+    # hololink_deps/nanobind.cmake takes an installed nanobind 3.0.1 (`pip install
+    # nanobind==3.0.1` + -Dnanobind_DIR=$(python3 -m nanobind --cmake_dir)) and otherwise
+    # fetches it. NB_STATIC/STABLE_ABI match the full build, so the module file is
+    # _emulation.abi3.so and works with any Python >= 3.12.
+    include("${HOLOLINK_REL_PATH}/cmake/hololink_deps/nanobind.cmake")
+    nanobind_add_module(_emulation NB_STATIC STABLE_ABI
+        python/hololink/emulation/_emulation.cpp)
+    target_include_directories(_emulation PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/..)
+    target_link_libraries(_emulation
+        PRIVATE
+            hololink::emulation
+            hololink::emulation::coe
+            hololink::emulation::sensors
+    )
     if (ZLIB_FOUND)
         target_link_libraries(_emulation PRIVATE hololink::emulation::roce)
     endif()
-    
-    # Set target properties for _emulation
-    set_target_properties(_emulation PROPERTIES
-        OUTPUT_NAME "_emulation"
-        PREFIX ""
-        SUFFIX "${PYTHON_MODULE_EXTENSION}"
-    )
-    set_property(TARGET _emulation PROPERTY POSITION_INDEPENDENT_CODE ON)
-    
-    # Create _sensors Python extension module (renamed to _emulation_sensors to match Makefile)
-    add_library(_emulation_sensors SHARED python/hololink/emulation/sensors/_sensors.cpp)
 
-    target_include_directories(_emulation_sensors PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${pybind11_INCLUDE_DIRS})
-    
-    # Link _sensors with the sensors library and _emulation
-    target_link_libraries(_emulation_sensors PRIVATE hololink::emulation::sensors _emulation ${pybind11_LIBRARIES})
-    
-    # Set target properties for _sensors
-    set_target_properties(_emulation_sensors PROPERTIES
-        OUTPUT_NAME "_emulation_sensors"
-        PREFIX ""
-        SUFFIX "${PYTHON_MODULE_EXTENSION}"
-    )
-    set_property(TARGET _emulation_sensors PROPERTY POSITION_INDEPENDENT_CODE ON)
-    
-    add_custom_command(TARGET _emulation_sensors POST_BUILD
-        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/build_pyvenv.sh $<TARGET_FILE_NAME:_emulation> $<TARGET_FILE_NAME:_emulation_sensors> "${CMAKE_CURRENT_SOURCE_DIR}/python" "${CMAKE_BINARY_DIR}/${HSB_EMULATOR_PYTHON_VENV}" ${CUDAToolkit_VERSION_MAJOR}
+    add_custom_command(TARGET _emulation POST_BUILD
+        COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/build_pyvenv.sh $<TARGET_FILE:_emulation> "${CMAKE_CURRENT_SOURCE_DIR}/python" "${CMAKE_BINARY_DIR}/${HSB_EMULATOR_PYTHON_VENV}" ${CUDAToolkit_VERSION_MAJOR}
         COMMENT "Building standalone hololink python environment"
     )
-    
+
 endif()

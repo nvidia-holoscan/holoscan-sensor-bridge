@@ -19,11 +19,14 @@
 
 #include <arpa/inet.h>
 #include <assert.h>
+#include <ifaddrs.h>
 #include <net/if.h>
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 
 #include <algorithm>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <stdexcept>
@@ -176,11 +179,82 @@ std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_from_socket(in
     return { inet_ntoa(ip.sin_addr), binterface, mac };
 }
 
+std::tuple<std::string, std::string, MacAddress> local_ip_and_mac_for_interface(
+    const std::string& interface, const std::string& destination_ip)
+{
+    if (interface.empty()) {
+        return local_ip_and_mac(destination_ip);
+    }
+
+    in_addr peer {};
+    const bool have_peer = (inet_pton(AF_INET, destination_ip.c_str(), &peer) == 1);
+
+    ifaddrs* ifa_list = nullptr;
+    if (getifaddrs(&ifa_list) != 0) {
+        HSB_LOG_DEBUG("getifaddrs failed with errno={}: \"{}\"; falling back to a "
+                      "routing-table lookup for {}.",
+            errno, strerror(errno), destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+    std::unique_ptr<ifaddrs, decltype(&freeifaddrs)> ifa_guard(ifa_list, &freeifaddrs);
+
+    // An interface may hold several IPv4 addresses. Prefer the one whose subnet
+    // contains the board -- that is the address the board can actually reach,
+    // and the one the kernel would have put in ipi_spec_dst. Otherwise take the
+    // first, which is the single-address case.
+    std::string first_ipv4;
+    std::string subnet_ipv4;
+    for (ifaddrs* ifa = ifa_list; ifa != nullptr; ifa = ifa->ifa_next) {
+        if ((ifa->ifa_addr == nullptr) || (ifa->ifa_addr->sa_family != AF_INET)) {
+            continue;
+        }
+        if ((ifa->ifa_name == nullptr) || (interface != ifa->ifa_name)) {
+            continue;
+        }
+        const in_addr addr = reinterpret_cast<const sockaddr_in*>(ifa->ifa_addr)->sin_addr;
+        char addr_buffer[INET_ADDRSTRLEN] = {};
+        inet_ntop(AF_INET, &addr, addr_buffer, sizeof(addr_buffer));
+        if (first_ipv4.empty()) {
+            first_ipv4 = addr_buffer;
+        }
+        if (have_peer && (ifa->ifa_netmask != nullptr)) {
+            const in_addr mask
+                = reinterpret_cast<const sockaddr_in*>(ifa->ifa_netmask)->sin_addr;
+            if ((addr.s_addr & mask.s_addr) == (peer.s_addr & mask.s_addr)) {
+                subnet_ipv4 = addr_buffer;
+                break;
+            }
+        }
+    }
+
+    const std::string local_ip = subnet_ipv4.empty() ? first_ipv4 : subnet_ipv4;
+    if (local_ip.empty()) {
+        HSB_LOG_DEBUG("Interface \"{}\" has no IPv4 address; falling back to a "
+                      "routing-table lookup for {}.",
+            interface, destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+
+    MacAddress mac {};
+    try {
+        mac = local_mac(interface);
+    } catch (const std::exception& e) {
+        HSB_LOG_DEBUG("No MAC for interface \"{}\" ({}); falling back to a "
+                      "routing-table lookup for {}.",
+            interface, e.what(), destination_ip);
+        return local_ip_and_mac(destination_ip);
+    }
+
+    HSB_LOG_TRACE("local_ip_and_mac_for_interface interface={} destination_ip={} -> local_ip={}",
+        interface, destination_ip, local_ip);
+    return { local_ip, interface, mac };
+}
+
 /**
  * @brief
  *
  * @param interface
- * @return MacAddress
+ * @return MacAddress.
  */
 MacAddress local_mac(const std::string& interface)
 {
@@ -203,6 +277,79 @@ MacAddress local_mac(const std::string& interface)
         mac.begin());
 
     return mac;
+}
+
+namespace {
+
+    // The entries of a directory, in name order; none if it can't be read.
+    std::vector<std::filesystem::path> sorted_entries(const std::filesystem::path& directory)
+    {
+        std::vector<std::filesystem::path> entries;
+        std::error_code ec;
+        for (std::filesystem::directory_iterator it(directory, ec), end; !ec && (it != end); it.increment(ec)) {
+            entries.push_back(it->path());
+        }
+        std::sort(entries.begin(), entries.end());
+        return entries;
+    }
+
+} // namespace
+
+std::optional<std::pair<std::string, uint32_t>> infiniband_device_for_interface(
+    const std::string& interface, const std::string& sysfs_root)
+{
+    if (interface.empty()) {
+        return std::nullopt;
+    }
+    const auto devices = sorted_entries(sysfs_root);
+    // RoCE: a port whose GID table is bound to the interface.
+    for (const auto& device : devices) {
+        for (const auto& port : sorted_entries(device / "ports")) {
+            uint32_t port_number = 0;
+            try {
+                port_number = static_cast<uint32_t>(std::stoul(port.filename().string()));
+            } catch (const std::exception&) {
+                continue;
+            }
+            for (const auto& ndev : sorted_entries(port / "gid_attrs" / "ndevs")) {
+                // Unused GID indexes read as an error, which leaves the name empty.
+                std::ifstream file(ndev);
+                std::string name;
+                std::getline(file, name);
+                if (name == interface) {
+                    return std::make_pair(device.filename().string(), port_number);
+                }
+            }
+        }
+    }
+    // Otherwise the device whose PCI function owns the interface.
+    for (const auto& device : devices) {
+        std::error_code ec;
+        if (std::filesystem::exists(device / "device" / "net" / interface, ec)) {
+            return std::make_pair(device.filename().string(), uint32_t { 1 });
+        }
+    }
+    return std::nullopt;
+}
+
+// Same rule as the module host's own hololink::module::ibv_device_for_peer(), except that this one
+// uses the routing table for an interface without IPv4, tries device/net, and sorts sysfs.
+std::pair<std::string, uint32_t> infiniband_device_for_peer(
+    const std::string& peer_ip, const std::string& interface, const std::string& sysfs_root)
+{
+    // The interface DataChannel programs the board with, so the board's frames arrive where the
+    // device's queue pair listens.
+    const auto [local_ip, local_interface, local_mac] = local_ip_and_mac_for_interface(interface, peer_ip);
+    const auto device = infiniband_device_for_interface(local_interface, sysfs_root);
+    if (!device) {
+        throw std::runtime_error(fmt::format(
+            "No InfiniBand device is bound to interface \"{}\" (local IP {}), which reaches the "
+            "board at {}",
+            local_interface, local_ip, peer_ip));
+    }
+    HSB_LOG_DEBUG("infiniband_device_for_peer peer_ip={} interface={} -> local_interface={} device={} port={}",
+        peer_ip, interface, local_interface, device->first, device->second);
+    return *device;
 }
 
 } // namespace hololink::core

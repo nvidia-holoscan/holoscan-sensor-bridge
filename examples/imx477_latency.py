@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,295 +13,355 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+# Measures and reports end-to-end pipeline latency for a single IMX477 sensor via
+# RoceReceiverOp (RDMA/InfiniBand). Python port of this repo's own previous (HSDK4-era) Python
+# version of this app, via the HSDK5 Python bindings -- there is no examples/imx477_latency.cpp
+# sibling to mirror, so this follows the same HSDK5 shape already established by
+# examples/imx274_latency.py instead.
+#
+#   RoceReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> LatencyReportSinkOp
+#
+# The old Python app's InstrumentedTimeProfiler/MonitorOperator pair measured latency by
+# stamping wall-clock times into each frame's Python-side metadata dict as it flowed through a
+# full visualization pipeline (ending at HolovizOp's camera_pose_output). HSDK5 has no
+# equivalent implicit per-pipeline metadata-dict propagation mechanism -- this port instead
+# reads the same FPGA/receiver timing fields the old app used, but off of the typed
+# hololink.CaptureMetadataT payload each receiver/operator already stamps, in a single native
+# Python sink operator at the end of a minimal (no Holoviz) pipeline -- adding a visualizer
+# would add its own latency and distort the very thing being measured. --headless/--fullscreen
+# are dropped accordingly (no visualizer left to control); --resolution/--flip/--cam/--pattern
+# remain since they configure the sensor itself, not the visualizer (the old app's own
+# --pattern survives here too, even though examples/imx274_latency.py's own template dropped
+# its equivalent -- camera.set_pattern() is unrelated to the visualizer removal).
+#
+# The old app attempted PTP sync and raised an unhandled ValueError on failure; this port keeps
+# PTP sync mandatory but fails gracefully (prints to stderr, releases CUDA, returns 1), matching
+# examples/imx274_latency.py's own established pattern.
+#
+# Usage:
+#   imx477_latency.py [OPTIONS]
+#
+# Options:
+#   --hololink IP      IP address of Hololink board (default: 192.168.0.2)
+#   --cam {0,1}        Which camera to stream: 0 for j14, 1 for j17 (default: 0)
+#   --ibv-name NAME    IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N       Port number of IBV device (default: 1)
+#   --pattern          Configure to display a test pattern
+#   --resolution       4k, 1080p, or 720p (default: 4k)
+#   --exposure N       Configure exposure (default: 0x05)
+#   --flip             none, h, v, or hv (default: none)
+#   --frame-limit N    Number of frames to collect before reporting (default: 300)
+#   --log-interval N   Progress log every N frames (default: 30)
+#   --log-level N      Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
-import datetime
 import logging
-import math
+import sys
+import time
+from datetime import timedelta
 
-import cuda.bindings.driver as cuda
-import cupy as cp
-import holoscan
+import capture_metadata
+import hololink.sensors.imx477  # noqa: F401 -- makes hl.sensors.imx477.X resolve below
+import holoscan as hs
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
 
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
+# (hololink/__init__.py doesn't import the sensors subpackage itself, and Python doesn't expose
+# an unimported submodule as a parent-package attribute).
 
+# Matches hololink::operators::kMetadataPairingWindow (capture_metadata_utils.hpp): the
+# receiver/CsiToBayerOp/ImageProcessorOp chain stamps every port pair with an identical
+# capture_time, so this zero-width OnAligned+Exact{} pairs them precisely.
+_METADATA_PAIRING_WINDOW = timedelta(0)
 
-def get_timestamp(metadata, name):
-    s = metadata[f"{name}_s"]
-    f = metadata[f"{name}_ns"]
-    f *= SEC_PER_NS
-    return s + f
-
-
-def record_times(recorder_queue, metadata):
-    #
-    now = datetime.datetime.utcnow()
-    #
-    frame_number = metadata.get("frame_number", 0)
-
-    # frame_start_s is the time that the first data arrived at the FPGA;
-    # the network receiver calls this "timestamp".
-    frame_start_s = get_timestamp(metadata, "timestamp")
-
-    # After the FPGA sends the last sensor data packet for a frame, it follows
-    # that with a 128-byte metadata packet.  This timestamp (which the network
-    # receiver calls "metadata") is the time at which the FPGA sends that
-    # packet; so it's the time immediately after the the last byte of sensor
-    # data in this window.  The difference between frame_start_s and frame_end_s
-    # is how long it took for the sensor to produce enough data for a complete
-    # frame.
-    frame_end_s = get_timestamp(metadata, "metadata")
-
-    # received_timestamp_s is the host time after the background thread woke up
-    # with the nofication that a frame of data was available.  This shows how long
-    # it took for the CPU to actually run the backtground user-mode thread where it observes
-    # the end-of-frame.  This background thread sets a flag that will wake up
-    # the pipeline network receiver operator.
-    received_timestamp_s = get_timestamp(metadata, "received")
-
-    # operator_timestamp_s is the time when the next pipeline element woke up--
-    # the next operator after the network receiver.  This is used to compute
-    # how much time overhead is required for the pipeline to actually receive
-    # sensor data.
-    operator_timestamp_s = get_timestamp(metadata, "operator_timestamp")
-
-    # complete_timestamp_s is the time when visualization finished.
-    complete_timestamp_s = get_timestamp(metadata, "complete_timestamp")
-
-    recorder_queue.append(
-        (
-            now,
-            frame_start_s,
-            frame_end_s,
-            received_timestamp_s,
-            operator_timestamp_s,
-            complete_timestamp_s,
-            frame_number,
-        )
-    )
+NS_PER_S = 1_000_000_000
 
 
-def save_timestamp(metadata, name, timestamp):
-    # This method works around the fact that we can't store
-    # datetime objects in metadata.
-    f, s = math.modf(timestamp.timestamp())
-    metadata[f"{name}_s"] = int(s)
-    metadata[f"{name}_ns"] = int(f * NS_PER_SEC)
+class LatencyReportSinkOp(hs.Operator):
+    """Terminal sink: reads hololink.CaptureMetadataT fields, prints a latency report."""
 
+    tensor = hs.Input("tensor", hs.schema.Image)
+    metadata = hs.Input("metadata", capture_metadata.CaptureMetadata)
 
-class InstrumentedTimeProfiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        recorder_queue=None,
-        operator_name="operator",
-        **kwargs,
-    ):
+    frame_limit = hs.Param(300)
+    warmup_frames = hs.Param(5)
+    log_interval = hs.Param(30)
+
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._recorder_queue = recorder_queue
-        self._operator_name = operator_name
+        self._frame_count = 0
+        self._samples = []
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.tensor, queue_depth=4)
+        spec.input(self.metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        # What time is it now?
-        operator_timestamp = datetime.datetime.utcnow()
-
-        in_message = op_input.receive("input")
-        cp_frame = cp.asarray(in_message.get(""))
-        #
-        save_timestamp(
-            self.metadata, self._operator_name + "_timestamp", operator_timestamp
-        )
-        op_output.emit({"": cp_frame}, "output")
-
-
-class MonitorOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        recorder_queue=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._recorder_queue = recorder_queue
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-
-    def compute(self, op_input, op_output, context):
-        # What time is it now?
-        complete_timestamp = datetime.datetime.utcnow()
-
-        _ = op_input.receive("input")
-        #
-        save_timestamp(self.metadata, "complete_timestamp", complete_timestamp)
-        record_times(self._recorder_queue, self.metadata)
-
-
-class MicroApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        frame_limit,
-        recorder_queue,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._frame_limit = frame_limit
-        self._recorder_queue = recorder_queue
-        # This is a control for HSDK
-        self.is_metadata_enabled = True
-
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.tensor, self.metadata],
+                    window=_METADATA_PAIRING_WINDOW,
+                )
             )
-            condition = self._count
+            .input(self.tensor, hs.Exact())
+            .input(self.metadata, hs.Exact())
+        )
+
+    def compute(self, context):
+        # Capture host wall-clock at the very start of this compute call -- this is our
+        # "pipeline complete" timestamp.
+        complete_ns = time.time_ns()
+
+        tensor_sample = self.tensor.receive()
+        metadata_sample = self.metadata.receive()
+        if tensor_sample.is_missing or metadata_sample.is_missing:
+            return
+        frame = metadata_sample.data
+        if tensor_sample.metadata.frame_id != frame.frame_number:
+            logging.warning("Dropping mismatched tensor/metadata frame identities")
+            return
+
+        self._frame_count += 1
+
+        if self._frame_count % self.log_interval == 0:
+            logging.info(
+                f"[latency] frames={self._frame_count} frame_number={frame.frame_number}"
+            )
+
+        # Collect settled frames (skip warmup at both ends).
+        in_warmup = self._frame_count <= self.warmup_frames or (
+            self._frame_count > self.frame_limit - self.warmup_frames
+        )
+        if not in_warmup:
+            frame_start_ns = frame.timestamp_s * NS_PER_S + frame.timestamp_ns
+            frame_end_ns = frame.metadata_s * NS_PER_S + frame.metadata_ns
+            received_ns = frame.received_s * NS_PER_S + frame.received_ns
+            entry_ns = frame.operator_entry_ns
+
+            self._samples.append(
+                (
+                    frame_end_ns - frame_start_ns,  # sensor frame time
+                    received_ns - frame_end_ns,  # DMA + CPU wakeup
+                    (
+                        (entry_ns - received_ns) if entry_ns > 0 else 0
+                    ),  # operator dispatch
+                    complete_ns - received_ns,  # SW pipeline latency
+                    complete_ns - frame_start_ns,  # end-to-end latency
+                )
+            )
+
+        if self._frame_count >= self.frame_limit:
+            _print_report(self._samples)
+            context.request_stop()
+
+
+def _ns_to_ms(ns):
+    return ns / 1.0e6
+
+
+def _print_stat(label, values):
+    mn = _ns_to_ms(min(values))
+    mx = _ns_to_ms(max(values))
+    avg = _ns_to_ms(sum(values)) / len(values)
+    print(f"{label:<32}{mn:>10.3f} ms{mx:>10.3f} ms{avg:>10.3f} ms")
+
+
+def _print_report(samples):
+    if not samples:
+        print("No settled frames collected -- nothing to report.")
+        return
+
+    labels = [
+        "Sensor frame time",
+        "DMA + CPU wakeup",
+        "Operator dispatch",
+        "SW pipeline latency",
+        "End-to-end latency",
+    ]
+
+    print(f"\n=== Latency Report ({len(samples)} frames) ===")
+    print(f"{'Metric':<32}{'Min':>12}{'Max':>12}{'Avg':>12}")
+    print("-" * 68)
+    clock_alignment_valid = all(sample[1] >= 0 and sample[4] >= 0 for sample in samples)
+    for index, label in enumerate(labels):
+        if index in (1, 4) and not clock_alignment_valid:
+            print(f"{label:<32} unavailable (negative cross-clock timing)")
         else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
+            _print_stat(label, [sample[index] for sample in samples])
+    print("-" * 68 + "\n")
+    if not clock_alignment_valid:
+        logging.warning(
+            "Host/board clock alignment needs checking; cross-clock latencies are unavailable."
+        )
+
+
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
+
+
+def run(
+    hololink_ip,
+    cam,
+    ibv_name,
+    ibv_port,
+    pattern,
+    resolution,
+    exposure,
+    flip,
+    frame_limit,
+    log_interval,
+):
+    cuda_device_ordinal = 0
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    hololink_dev = None
+    try:
+        cuda_driver.cuCtxSetCurrent(cu_context)
+
+        print(f"Enumerating HSB board at {hololink_ip}...")
+        metadata = hl.find_channel(hololink_ip)
+        hl.use_sensor(metadata, cam)
+        channel = hl.DataChannel(metadata)
+
+        hololink_dev = channel.hololink()
+        hololink_dev.start()
+        hololink_dev.reset()
+
+        print("Waiting for PTP synchronization...")
+        if not hololink_dev.ptp_synchronize():
+            print(
+                "PTP synchronization failed -- cannot measure latency without a synced clock.",
+                file=sys.stderr,
             )
-            condition = self._ok
+            return 1
+        print("PTP synchronized.")
 
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
+        camera = hl.sensors.imx477.Imx477(
+            channel, camera_id=cam, resolution=resolution, img_flip=flip
         )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
+        # Configures the camera for the requested resolution, 60fps.
+        camera.configure()
+        # IMX477 analog gain settings function. Analog gain value range is 0-1023 in decimal
+        # (10 bits). Users are free to experiment with the register values.
+        camera.set_analog_gain(0x2FF)
+        camera.set_exposure_reg(exposure)
+        if pattern:
+            camera.set_pattern()
 
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.info(f"{frame_size=}")
-        frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
+        pixel_format = camera.pixel_format()
+        bayer_format = camera.bayer_format()
+        geometry = hl.resolve_generic_geometry_from_dimensions(
+            int(pixel_format), camera._width, camera._height
+        )
+        frame_size = (
+            geometry["start_byte"]
+            + geometry["bytes_per_line"] * geometry["pixel_height"]
+            + geometry["trailing_bytes"]
+        )
+
+        # Build the graph.
+        graph = hs.Graph("imx477_hsdk5_latency")
+
+        rx = graph.op(
+            hl.operators.RoceReceiverOp,
+            "rx",
+            data_channel=channel,
+            frame_context=int(cu_context),
+            device_start=camera.start,
+            device_stop=camera.stop,
             frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
-        )
-        profiler = InstrumentedTimeProfiler(
-            self,
-            name="profiler",
-            recorder_queue=self._recorder_queue,
+            ibv_name=ibv_name,
+            ibv_port=ibv_port,
         )
 
-        bayer_format = self._camera.bayer_format()
-        pixel_format = self._camera.pixel_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx274 is 50
+        csi = graph.op(
+            hl.operators.CsiToBayerOp,
+            "csi_to_bayer",
+            cuda_device_ordinal=cuda_device_ordinal,
+            geometry=geometry,
+            bayer_format=bayer_format.name.lower(),
+        )
+        graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+        graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+
+        image_processor = graph.op(
+            hl.operators.ImageProcessorOp,
+            "image_processor",
+            pixel_format=int(pixel_format),
+            pixel_width=geometry["pixel_width"],
+            pixel_height=geometry["pixel_height"],
+            bayer_format=int(bayer_format),
+            # Optical black value for imx477 is 50 (matches this app's own HSDK4-era default).
             optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
+            cuda_device_ordinal=cuda_device_ordinal,
         )
+        graph.add_flow(csi.tensor, image_processor.in_tensor, queue_depth=4)
+        graph.add_flow(csi.metadata, image_processor.in_metadata, queue_depth=4)
 
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
+        sink = graph.op(
+            LatencyReportSinkOp,
+            "sink",
+            frame_limit=frame_limit,
+            warmup_frames=5,
+            log_interval=log_interval,
         )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
+        graph.add_flow(image_processor.tensor, sink.tensor, queue_depth=4)
+        graph.add_flow(image_processor.metadata, sink.metadata, queue_depth=4)
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            framebuffer_srgb=True,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-        #
-        monitor = MonitorOperator(
-            self,
-            name="monitor",
-            recorder_queue=self._recorder_queue,
-        )
-        #
-        self.add_flow(receiver_operator, profiler, {("output", "input")})
-        self.add_flow(profiler, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
 
-    def _terminate(self, recorded_timestamps):
-        self._ok.disable_tick()
-        global timestamps
-        timestamps = recorded_timestamps
+        options = hs.CompileOptions()
+        for operator_path in ("rx", "csi_to_bayer", "image_processor"):
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="tensor",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+
+        plan = hs.compile(graph, options)
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+
+        print(f"Collecting {frame_limit} frames (Ctrl+C to abort)...")
+
+        with hs.run_async(plan) as session:
+            try:
+                session.wait()
+            except KeyboardInterrupt:
+                pass
+        if session.diagnostics:
+            print(session.summary(), file=sys.stderr)
+        if session.termination == hs.RunTermination.FAILED:
+            return 1
+
+        print("Done.")
+        return 0
+    finally:
+        try:
+            if hololink_dev is not None:
+                hololink_dev.stop()
+        finally:
+            _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--headless", action="store_true", help="Run in headless mode")
-    parser.add_argument(
-        "--fullscreen", action="store_true", help="Run in fullscreen mode"
-    )
     parser.add_argument(
         "--hololink",
         default="192.168.0.2",
@@ -310,10 +370,9 @@ def main():
     parser.add_argument(
         "--frame-limit",
         type=int,
-        default=None,
-        help="Exit after receiving this many frames",
+        default=300,
+        help="Number of frames to collect before reporting (default: 300)",
     )
-
     parser.add_argument(
         "--log-level",
         type=int,
@@ -338,17 +397,16 @@ def main():
         default=0x05,
         help="Configure exposure.",
     )
-    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=infiniband_devices[0],
-        help="IBV device to use",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
     )
     parser.add_argument(
         "--ibv-port",
         type=int,
         default=1,
-        help="Port number of IBV device",
+        help="Port number of IBV device (with --ibv-name)",
     )
     parser.add_argument(
         "--resolution",
@@ -361,172 +419,29 @@ def main():
         choices=["none", "h", "v", "hv"],
         help="Choose between none, h, v or hv (for horizontal, vertical, or both)",
     )
-    args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-    # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    # Get a handle to the camera
-    md = hololink_module.Metadata(channel_metadata)
-    hololink_module.DataChannel.use_sensor(md, args.cam)
-    hololink_channel = hololink_module.DataChannel(md)
-    camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.cam, args.resolution, img_flip=args.flip
+    parser.add_argument(
+        "--log-interval",
+        type=int,
+        default=30,
+        help="Progress log every N frames (default: 30)",
     )
+    args = parser.parse_args()
 
-    recorder_queue = []
+    logging.basicConfig(level=args.log_level)
 
-    # Set up the application
-    application = MicroApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
+    return run(
+        args.hololink,
+        args.cam,
         args.ibv_name,
         args.ibv_port,
-        camera,
+        args.pattern,
+        args.resolution,
+        args.exposure,
+        args.flip,
         args.frame_limit,
-        recorder_queue,
-    )
-
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    try:
-        hololink.reset()
-        ptp_sync_timeout_s = 10
-        ptp_sync_timeout = hololink_module.Timeout(ptp_sync_timeout_s)
-        logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize(ptp_sync_timeout):
-            raise ValueError(
-                f"Failed to synchronize PTP after {ptp_sync_timeout_s} seconds; ignoring."
-            )
-        else:
-            logging.debug("PTP synchronized.")
-        # Configures the camera for 3840x2160, 60fps
-        camera.configure()
-        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-        camera.set_analog_gain(0x2FF)
-        camera.set_exposure_reg(args.exposure)
-        if args.pattern:
-            camera.set_pattern()
-        application.run()
-    finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-    # Report stats at the end of the application
-    frame_time_dts = []
-    cpu_latency_dts = []
-    operator_latency_dts = []
-    processing_time_dts = []
-    overall_time_dts = []
-
-    settled_timestamps = recorder_queue[5:-5]
-    assert len(settled_timestamps) >= 100
-    for (
-        now,
-        frame_start_s,
-        frame_end_s,
-        received_timestamp_s,
-        operator_timestamp_s,
-        complete_timestamp_s,
-        frame_number,
-    ) in settled_timestamps:
-
-        frame_start = datetime.datetime.fromtimestamp(frame_start_s).isoformat()
-        frame_end = datetime.datetime.fromtimestamp(frame_end_s).isoformat()
-        received_timestamp = datetime.datetime.fromtimestamp(
-            received_timestamp_s
-        ).isoformat()
-        operator_timestamp = datetime.datetime.fromtimestamp(
-            operator_timestamp_s
-        ).isoformat()
-        complete_timestamp = datetime.datetime.fromtimestamp(
-            complete_timestamp_s
-        ).isoformat()
-
-        frame_time_dt = frame_end_s - frame_start_s
-        frame_time_dts.append(round(frame_time_dt, 4))
-
-        cpu_latency_dt = received_timestamp_s - frame_end_s
-        cpu_latency_dts.append(round(cpu_latency_dt, 4))
-
-        operator_latency_dt = operator_timestamp_s - received_timestamp_s
-        operator_latency_dts.append(round(operator_latency_dt, 4))
-
-        processing_time_dt = complete_timestamp_s - operator_timestamp_s
-        processing_time_dts.append(round(processing_time_dt, 4))
-
-        overall_time_dt = complete_timestamp_s - frame_start_s
-        overall_time_dts.append(round(overall_time_dt, 4))
-        logging.debug(f"** Frame Information  for Frame Number = {frame_number}**")
-        logging.debug(f"Frame Start          : {frame_start}")
-        logging.debug(f"Frame End            : {frame_end}")
-        logging.debug(f"Received Timestamp   : {received_timestamp}")
-        logging.debug(f"Operator Timestamp   : {operator_timestamp}")
-        logging.debug(f"Complete Timestamp   : {complete_timestamp}")
-        logging.debug(f"Frame Time (dt)      : {frame_time_dt:.6f} s")
-        logging.debug(f"CPU Latency (dt)     : {cpu_latency_dt:.6f} s")
-        logging.debug(f"Operator Latency (dt): {operator_latency_dt:.6f} s")
-        logging.debug(f"Processing Time (dt) : {processing_time_dt:.6f} s")
-        logging.debug(f"Overall Time (dt)    : {overall_time_dt:.6f} s")
-
-    logging.info("** Complete report: **")
-    logging.info(f"{'Metric':<30}{'Min':<15}{'Max':<15}{'Avg':<15}")
-    #
-    ft_min_time_difference = min(frame_time_dts)
-    ft_max_time_difference = max(frame_time_dts)
-    ft_avg_time_difference = sum(frame_time_dts) / len(frame_time_dts)
-    logging.info("Frame Time (in sec):")
-    logging.info(
-        f"{'Frame Time':<30}{ft_min_time_difference:<15}{ft_max_time_difference:<15}{ft_avg_time_difference:<15}"
-    )
-    #
-    cl_min_time_difference = min(cpu_latency_dts)
-    cl_max_time_difference = max(cpu_latency_dts)
-    cl_avg_time_difference = sum(cpu_latency_dts) / len(cpu_latency_dts)
-    logging.info("FGPA frame transfer latency (in sec):")
-    logging.info(
-        f"{'Frame Transfer Latency':<30}{cl_min_time_difference:<15}{cl_max_time_difference:<15}{cl_avg_time_difference:<15}"
-    )
-    #
-    ol_min_time_difference = min(operator_latency_dts)
-    ol_max_time_difference = max(operator_latency_dts)
-    ol_avg_time_difference = sum(operator_latency_dts) / len(operator_latency_dts)
-    logging.info("FGPA to Operator after network operator latency (in sec):")
-    logging.info(
-        f"{'Operator Latency':<30}{ol_min_time_difference:<15}{ol_max_time_difference:<15}{ol_avg_time_difference:<15}"
-    )
-    #
-    pt_min_time_difference = min(processing_time_dts)
-    pt_max_time_difference = max(processing_time_dts)
-    pt_avg_time_difference = sum(processing_time_dts) / len(processing_time_dts)
-    logging.info("Processing of frame latency (in sec):")
-    logging.info(
-        f"{'Processing Latency':<30}{pt_min_time_difference:<15}{pt_max_time_difference:<15}{pt_avg_time_difference:<15}"
-    )
-    #
-    ot_min_time_difference = min(overall_time_dts)
-    ot_max_time_difference = max(overall_time_dts)
-    ot_avg_time_difference = sum(overall_time_dts) / len(overall_time_dts)
-    logging.info("Frame start till end of SW pipeline latency (in sec):")
-    logging.info(
-        f"{'SW Pipeline Latency':<30}{ot_min_time_difference:<15}{ot_max_time_difference:<15}{ot_avg_time_difference:<15}"
+        args.log_interval,
     )
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

@@ -46,7 +46,7 @@ namespace core {
     class Reactor {
     public:
         /**
-         * @brief Alarm entry for the reactor
+         * @brief Alarm entry for the reactor.
          */
         struct AlarmEntry {
             struct timespec when;
@@ -59,79 +59,79 @@ namespace core {
         using AlarmHandle = std::shared_ptr<AlarmEntry>;
 
         /**
-         * @brief Get the singleton reactor instance
-         * @return Shared pointer to the reactor instance
+         * @brief Get the singleton reactor instance.
+         * @return Shared pointer to the reactor instance.
          */
         static std::shared_ptr<Reactor> get_reactor();
 
     protected:
         /**
-         * @brief Constructor - creates a new reactor instance
+         * @brief Constructor - creates a new reactor instance.
          */
         Reactor();
 
     public:
         /**
-         * @brief Destructor - stops the reactor thread
+         * @brief Destructor - stops the reactor thread.
          */
         ~Reactor();
 
         /**
-         * @brief Get current monotonic time
-         * @return Current time as struct timespec
+         * @brief Get current monotonic time.
+         * @return Current time as struct timespec.
          */
         struct timespec now() const;
 
         /**
-         * @brief Add a callback to be executed immediately
-         * @param callback Function to call
+         * @brief Add a callback to be executed immediately.
+         * @param callback Function to call.
          */
         void add_callback(Callback callback);
 
         /**
-         * @brief Add a file descriptor callback for poll events
-         * @param fd File descriptor to monitor
-         * @param callback Function to call when events occur
-         * @param events Poll events to monitor (POLLIN by default)
+         * @brief Add a file descriptor callback for poll events.
+         * @param fd File descriptor to monitor.
+         * @param callback Function to call when events occur.
+         * @param events Poll events to monitor (POLLIN by default).
          */
         void add_fd_callback(int fd, FdCallback callback, short events = 0x001); // POLLIN
 
         /**
-         * @brief Remove a file descriptor callback
-         * @param fd File descriptor to stop monitoring
+         * @brief Remove a file descriptor callback.
+         * @param fd File descriptor to stop monitoring.
          */
         void remove_fd_callback(int fd);
 
         /**
-         * @brief Add an alarm to fire after specified seconds from now
-         * @param seconds Seconds to wait before calling callback
-         * @param callback Function to call
-         * @return Handle that can be used to cancel the alarm
+         * @brief Add an alarm to fire after specified seconds from now.
+         * @param seconds Seconds to wait before calling callback.
+         * @param callback Function to call.
+         * @return Handle that can be used to cancel the alarm.
          */
         AlarmHandle add_alarm_s(float seconds, Callback callback);
 
         /**
-         * @brief Add an alarm to fire at a specific time
-         * @param when Time to fire the alarm
-         * @param callback Function to call
-         * @return Handle that can be used to cancel the alarm
+         * @brief Add an alarm to fire at a specific time.
+         * @param when Time to fire the alarm.
+         * @param callback Function to call.
+         * @return Handle that can be used to cancel the alarm.
          */
         AlarmHandle add_alarm(const struct timespec& when, Callback callback);
 
         /**
-         * @brief Cancel a previously scheduled alarm
-         * @param handle Handle returned from add_alarm or add_alarm_s
+         * @brief Cancel a previously scheduled alarm.
+         * @param handle Handle returned from add_alarm or add_alarm_s.
          */
         void cancel_alarm(AlarmHandle handle);
 
         /**
-         * @brief Stop the reactor (gracefully)
+         * @brief Stop the reactor (gracefully).
          */
         void stop();
 
         /**
-         * @brief Check if the current thread is the reactor thread
-         * @return True if called from within the reactor thread
+         * @brief Check if the current thread is the reactor thread.
+         * @return true if called from within the reactor thread.
          */
         bool is_current_thread() const;
 
@@ -144,17 +144,17 @@ namespace core {
 
     private:
         /**
-         * @brief Main reactor loop (runs in background thread)
+         * @brief Main reactor loop (runs in background thread).
          */
         void run();
 
         /**
-         * @brief Stop callback for graceful shutdown
+         * @brief Stop callback for graceful shutdown.
          */
         void stop_impl();
 
         /**
-         * @brief Wake up the reactor thread by writing to the wakeup pipe
+         * @brief Wake up the reactor thread by writing to the wakeup pipe.
          */
         void wakeup();
 

@@ -14,7 +14,7 @@
 // limitations under the License.
 
 //==============================================================================
-// Package Include File for Hololink Simple Testbench
+// Package Include File for NV HSB IP Simple Testbench
 // Contains parameter definitions and interface signal widths
 //==============================================================================
 

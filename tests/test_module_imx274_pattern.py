@@ -17,9 +17,7 @@
 #
 # The capture path is built entirely on the hololink_module V1 surface
 # (Adapter discovery, Imx274Cam, RoceReceiverOp / LinuxReceiverOp,
-# CsiToBayerOp), and validation uses the module's own CRC operators
-# (hololink_module.operators.ComputeCrcOp / CheckCrcOp), plus the shared
-# test helpers in operators.py.
+# CsiToBayerOp), plus the shared test helpers in operators.py.
 #
 # Notable differences from the legacy test, all driven by the module API:
 #   * Discovery is Adapter.wait_for_channel(peer_ip, timeout) rather than
@@ -28,17 +26,29 @@
 #   * The module RoceReceiverOp selects its IB device from the peer, so
 #     there is no ibv_name parameter; the RoCE-vs-Linux choice is simply
 #     which receiver class the application instantiates.
+#
+# HSDK5 differences:
+#   * The frame CRC is checked by hololink's ComputeCrcOp and CheckCrcOp
+#     through an hl.CrcChannel (operators.add_crc_check); the module's
+#     ComputeCrcOp has no CRC channel and the module has no CheckCrcOp. The
+#     bayer (color) CRC of the demosaiced image is checked the same way, by
+#     hololink's ComputeCrcImageOp (operators.add_image_crc_check).
+#   * There is no FrameAlignerOp in the graph: each leg runs on its own, with its
+#     own watchdog, and the legs are paired by timestamp after the run. As v2.7's
+#     watchdog after the aligner did, operators.assert_aligned() needs a pair
+#     within allowable_dt at least every 0.5 s.
+#   * HSDK5 has no selectable schedulers, so the tests no longer take one.
+#   * The receivers end the run at the frame limit.
 
-import ctypes
 import dataclasses
 import logging
 import math
 import weakref
 
-import cuda.bindings.driver as cuda
+import applications
 import hololink_module.operators
 import hololink_module.sensors.imx274 as imx274
-import holoscan
+import holoscan_vision as hv
 import operators
 import pytest
 import utils
@@ -51,28 +61,16 @@ SKIP_INITIAL_FRAMES = 15
 # Seconds to wait for each bootp announcement before giving up.
 DISCOVERY_TIMEOUT_S = 30.0
 
-
-# Each receiver renames its emitted frame metadata with a per-leg prefix
-# (rename_metadata=lambda name: f"left_"/"right_" + name), so the received
-# "crc", "imm_data", and "bytes_written" fields arrive as left_/right_
-# variants. The bayer and received-CRC comparison fields are stamped by the
-# CRC operators under per-side names (check_crc_left, bayer_crc_left, …).
-@dataclasses.dataclass
-class LeftMetadataRecord:
-    left_crc: int
-    check_crc_left: int
-    bayer_crc_left: int
-    left_imm_data: int
-    left_bytes_written: int
+# Each run captures this many frames per leg.
+FRAME_LIMIT = 100
 
 
 @dataclasses.dataclass
-class RightMetadataRecord:
-    right_crc: int
-    check_crc_right: int
-    bayer_crc_right: int
-    right_imm_data: int
-    right_bytes_written: int
+class FrameRecord:
+    frame_number: int
+    timestamp_s: int
+    timestamp_ns: int
+    bytes_written: int
 
 
 class CameraWrapper(imx274.Imx274Cam):
@@ -99,439 +97,166 @@ class CameraWrapper(imx274.Imx274Cam):
         logging.info(f"{self._reset_callbacks=}")
 
 
-class PatternTestApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        metadata_left,
-        camera_left,
-        camera_mode_left,
-        metadata_right,
-        camera_right,
-        camera_mode_right,
-        use_roce,
-        allowable_dt,
-        watchdog,
-        frame_limit,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._metadata_left = metadata_left
-        self._camera_left = camera_left
-        self._camera_mode_left = camera_mode_left
-        self._metadata_right = metadata_right
-        self._camera_right = camera_right
-        self._camera_mode_right = camera_mode_right
-        self._use_roce = use_roce
-        self._allowable_dt = allowable_dt
-        self._watchdog = watchdog
-        self._frame_limit = frame_limit
-        # These are HSDK controls-- because we have stereo
-        # camera paths going into the same visualizer, don't
-        # raise an error when each path presents metadata
-        # with the same names. Because we don't use that metadata,
-        # it's easiest to just ignore new items with the same
-        # names as existing items.
-        self.is_metadata_enabled = True
-        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
+class Leg:
+    """One camera of the stereo pair, and what the run records for it."""
 
-    def _make_receiver(
-        self,
-        condition,
-        name,
-        metadata,
-        camera,
-        frame_size,
-        affinity,
-        rename_metadata,
-        out_tensor_name,
-    ):
-        # The module RoceReceiverOp resolves its IB device from the
-        # peer in the enumeration metadata, so (unlike the legacy op)
-        # there is no ibv_name/ibv_port to pass; device_start/device_stop
-        # arm and disarm the sensor at pipeline start/stop. rename_metadata
-        # adds a per-leg prefix to the emitted frame metadata so the two
-        # legs don't collide when both feed the visualizer.
-        MAX_PAGES = 5
-        if self._use_roce:
-            return hololink_module.operators.RoceReceiverOp(
-                self,
-                condition,
-                name=name,
-                enumeration_metadata=metadata,
-                frame_context=self._cuda_context,
-                frame_size=frame_size,
-                device_start=camera.start,
-                device_stop=camera.stop,
-                rename_metadata=rename_metadata,
-                out_tensor_name=out_tensor_name,
-                pages=MAX_PAGES,
-                queue_size=MAX_PAGES,
+    def __init__(self, name, metadata, camera, camera_mode, affinity):
+        self.name = name
+        self.metadata = metadata
+        self.camera = camera
+        self.camera_mode = camera_mode
+        self.affinity = affinity
+        self.records = []
+        self.crc_checker = None
+        self.image_crc_checker = None
+        self.frame_size = None
+
+
+def add_leg(test_graph, leg, cu_context, use_roce, watchdog_token):
+    leg.camera.set_mode(leg.camera_mode)
+    converter = hololink_module.CsiToBayerConverter()
+    leg.camera.configure_converter(converter)
+    leg.frame_size = converter.get_csi_length()
+    logging.info(f"{leg.name} frame_size={leg.frame_size}")
+    bayer_name = leg.camera.bayer_format().name.lower()
+
+    # The module RoceReceiverOp resolves its IB device from the peer in the
+    # enumeration metadata, so (unlike the legacy op) there is no
+    # ibv_name/ibv_port to pass; device_start/device_stop arm and disarm the
+    # sensor at pipeline start/stop.
+    MAX_PAGES = 5
+    receiver_kwargs = {}
+    if use_roce:
+        receiver = hololink_module.operators.RoceReceiverOp
+    else:
+        receiver = hololink_module.operators.LinuxReceiverOp
+        receiver_kwargs["receiver_affinity"] = leg.affinity
+    rx = test_graph.op(
+        receiver,
+        f"receiver_{leg.name}",
+        metadata=leg.metadata,
+        frame_context=int(cu_context),
+        frame_size=leg.frame_size,
+        device_start=leg.camera.start,
+        device_stop=leg.camera.stop,
+        pages=MAX_PAGES,
+        queue_size=MAX_PAGES,
+        frame_limit=FRAME_LIMIT,
+        frame_limit_ends_run=True,
+        **receiver_kwargs,
+    )
+
+    # Compute and capture each raw-frame CRC on a branch from the receiver.
+    leg.crc_checker = operators.add_crc_check(
+        test_graph, leg.name, rx, leg.frame_size, test_graph.cuda_device_ordinal
+    )
+    record = test_graph.op(
+        operators.RecordMetadataOp,
+        f"record_metadata_{leg.name}",
+        record_token=operators.register((FrameRecord, leg.records)),
+    )
+    operators.metadata_flow(test_graph, rx.metadata, record.metadata)
+
+    csi = test_graph.op(
+        hololink_module.operators.CsiToBayerOp,
+        f"csi_to_bayer_{leg.name}",
+        cuda_device_ordinal=test_graph.cuda_device_ordinal,
+        geometry=converter.geometry(),
+        bayer_format=bayer_name,
+    )
+    test_graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+    test_graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+    test_graph.bind(f"receiver_{leg.name}", "tensor")
+    demosaic = test_graph.op(
+        hv.operators.BayerDemosaicOp,
+        f"demosaic_{leg.name}",
+        bayer_grid_pos=bayer_name,
+        generate_alpha=True,
+        alpha_value=65535,
+    )
+    test_graph.add_flow(csi.tensor, demosaic.input, queue_depth=4)
+    test_graph.bind(f"csi_to_bayer_{leg.name}", "tensor")
+    # Compute the CRC of the bayer image and use that to
+    # determine if we're receiving the expected image.
+    rgba_image_size = leg.camera._width * leg.camera._height * 4 * 2  # 16-bit RGBA
+    leg.image_crc_checker = operators.add_image_crc_check(
+        test_graph,
+        f"bayer_crc_{leg.name}",
+        demosaic.output,
+        csi.metadata,
+        rgba_image_size,
+        test_graph.cuda_device_ordinal,
+    )
+    test_graph.bind(f"demosaic_{leg.name}", "output")
+    watchdog_operator = test_graph.op(
+        operators.WatchdogOp,
+        f"watchdog_{leg.name}",
+        watchdog_token=watchdog_token,
+    )
+    operators.metadata_flow(test_graph, csi.metadata, watchdog_operator.metadata)
+    return applications.Image(demosaic.output, leg.camera._width, leg.camera._height)
+
+
+def check_leg(leg, expected):
+    """Count the short frames, bad CRCs and bad bayer CRCs of a RoCE leg, without
+    the first SKIP_INITIAL_FRAMES frames and the last one."""
+    records = sorted(leg.records, key=lambda record: record.frame_number)
+    logging.info(f"{leg.name} camera captured {len(records)} frames")
+    settled = records[SKIP_INITIAL_FRAMES : len(records) - 1]
+    short_frames = 0
+    for record in settled:
+        if record.bytes_written != leg.frame_size:
+            logging.error(
+                f"{leg.name} short CSI frame: frame_number={record.frame_number:#x}, "
+                f"bytes_written={record.bytes_written:#x}, "
+                f"expected={leg.frame_size:#x}, "
+                f"missing_bytes={leg.frame_size - record.bytes_written}"
             )
-        return hololink_module.operators.LinuxReceiverOp(
-            self,
-            condition,
-            name=name,
-            enumeration_metadata=metadata,
-            frame_context=self._cuda_context,
-            frame_size=frame_size,
-            receiver_affinity=affinity,
-            device_start=camera.start,
-            device_stop=camera.stop,
-            rename_metadata=rename_metadata,
-            out_tensor_name=out_tensor_name,
-            pages=MAX_PAGES,
-            queue_size=MAX_PAGES,
+            short_frames += 1
+    crc_result = leg.crc_checker.result(skip_first=SKIP_INITIAL_FRAMES, skip_last=1)
+    for frame_number, reason in crc_result.bad:
+        logging.error(f"{leg.name} CRC mismatch at frame {frame_number:#x}: {reason}")
+    if settled:
+        first, last = settled[0].frame_number, settled[-1].frame_number
+        image_crcs = [
+            (number, crc)
+            for number, (crc, _) in sorted(leg.image_crc_checker.by_frame().items())
+            if first <= number <= last
+        ]
+    else:
+        first = last = None
+        image_crcs = []
+    bad_images = [(number, crc) for number, crc in image_crcs if crc != expected]
+    bad_color_crcs = len(bad_images)
+    if bad_color_crcs:
+        logging.error(
+            f"{leg.name}: {bad_color_crcs} of {len(image_crcs)} bayer CRCs aren't "
+            f"{expected:#x} (checked frames {first}..{last}); bad (frame_number, "
+            f"crc): {[(number, f'{crc:#x}') for number, crc in bad_images]}"
         )
-
-    def compose(self):
-        logging.info("compose")
-        # The receivers free-run; the sink (watchdog_operator) owns the frame
-        # budget and disables these tick conditions once it has seen
-        # frame_limit aligned frames. Counting on the receivers instead would
-        # starve the sink, because the frame aligner drops unpaired/misaligned
-        # frames between the receivers and the sink.
-        self._condition_left = holoscan.conditions.BooleanCondition(
-            self,
-            name="enable_left",
-            enable_tick=True,
-        )
-        self._condition_right = holoscan.conditions.BooleanCondition(
-            self,
-            name="enable_right",
-            enable_tick=True,
-        )
-        self._camera_left.set_mode(self._camera_mode_left)
-        self._camera_right.set_mode(self._camera_mode_right)
-
-        #
-        csi_to_bayer_pool_left = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera_left._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer_left",
-            allocator=csi_to_bayer_pool_left,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera_left.configure_converter(csi_to_bayer_operator_left)
-
-        #
-        csi_to_bayer_pool_right = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera_right._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_right._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator_right = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer_right",
-            allocator=csi_to_bayer_pool_right,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera_right.configure_converter(csi_to_bayer_operator_right)
-
-        #
-        frame_size = csi_to_bayer_operator_left.get_csi_length()
-        logging.info(f"left {frame_size=}")
-        receiver_operator_left = self._make_receiver(
-            self._condition_left,
-            "receiver_left",
-            self._metadata_left,
-            self._camera_left,
-            frame_size,
-            [2],
-            lambda name: f"left_{name}",
-            "left",
-        )
-
-        #
-        frame_size = csi_to_bayer_operator_right.get_csi_length()
-        logging.info(f"right {frame_size=}")
-        receiver_operator_right = self._make_receiver(
-            self._condition_right,
-            "receiver_right",
-            self._metadata_right,
-            self._camera_right,
-            frame_size,
-            [3],
-            lambda name: f"right_{name}",
-            "right",
-        )
-
-        # Frame aligner. The two IMX274 sensors free-run (no hardware
-        # frame-sync), so their frames drift relative to each other. The
-        # aligner pairs them frame-for-frame, dropping a group whenever the
-        # two legs' timestamps differ by more than allowable_dt (one full
-        # frame period). It sits first, before the CRC stage, so CRC and
-        # everything downstream only run on aligned frames. It tells the
-        # legs apart by tensor name (the receivers name their tensors
-        # "left"/"right" via out_tensor_name) and reads the per-leg
-        # timestamp metadata the receivers stamp (left_/right_timestamp_s,
-        # left_/right_timestamp_ns).
-        self._frame_aligner = operators.FrameAlignerOp(
-            self,
-            name="frame_aligner",
-            allowable_dt=self._allowable_dt,
-            input_tensors=["left", "right"],
-            rename_metadata=[
-                lambda name: f"left_{name}",
-                lambda name: f"right_{name}",
-            ],
-            outputs=["output_left", "output_right"],
-        )
-
-        #
-        # CRC operators (hololink_module.operators). They compute a CRC
-        # over the frame bytes; the received CRC the receiver reports is
-        # compared in Python below.
-        compute_crc_left = hololink_module.operators.ComputeCrcOp(
-            self,
-            name="compute_crc_left",
-            frame_size=csi_to_bayer_operator_left.get_csi_length(),
-        )
-        check_crc_left = hololink_module.operators.CheckCrcOp(
-            self,
-            compute_crc_op=compute_crc_left,
-            name="check_crc_left",
-            computed_crc_metadata_name="check_crc_left",
-        )
-
-        compute_crc_right = hololink_module.operators.ComputeCrcOp(
-            self,
-            name="compute_crc_right",
-            frame_size=csi_to_bayer_operator_right.get_csi_length(),
-        )
-        check_crc_right = hololink_module.operators.CheckCrcOp(
-            self,
-            compute_crc_op=compute_crc_right,
-            name="check_crc_right",
-            computed_crc_metadata_name="check_crc_right",
-        )
-
-        #
-        rgba_components_per_pixel = 4
-        bayer_size_left = (
-            self._camera_left._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left._height
-        )
-        bayer_pool_left = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=bayer_size_left,
-            num_blocks=8,
-        )
-        bayer_format = self._camera_left.bayer_format()
-        demosaic_left = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic_left",
-            pool=bayer_pool_left,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-        bayer_size_right = (
-            self._camera_right._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_right._height
-        )
-        bayer_pool_right = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=bayer_size_right,
-            num_blocks=8,
-        )
-        bayer_format = self._camera_right.bayer_format()
-        demosaic_right = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic_right",
-            pool=bayer_pool_right,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-
-        # Compute the CRC of the bayer image and use that to
-        # determine if we're receiving the expected image.
-        bayer_crc_left = hololink_module.operators.ComputeCrcOp(
-            self,
-            name="bayer_crc_left",
-            frame_size=bayer_size_left,
-        )
-        bayer_check_crc_left = hololink_module.operators.CheckCrcOp(
-            self,
-            compute_crc_op=bayer_crc_left,
-            name="bayer_check_crc_left",
-            computed_crc_metadata_name="bayer_crc_left",
-        )
-        # the tensor name directs which pane on the visualizer is updated
-        rename_left_tensor = operators.PassThroughOperator(
-            self,
-            name="rename_left_tensor",
-            out_tensor_name="left",
-        )
-
-        bayer_crc_right = hololink_module.operators.ComputeCrcOp(
-            self,
-            name="bayer_crc_right",
-            frame_size=bayer_size_right,
-        )
-        bayer_check_crc_right = hololink_module.operators.CheckCrcOp(
-            self,
-            compute_crc_op=bayer_crc_right,
-            name="bayer_check_crc_right",
-            computed_crc_metadata_name="bayer_crc_right",
-        )
-
-        self._record_metadata_left = operators.RecordMetadataOp(
-            self,
-            name="record_metadata_left",
-            metadata_class=LeftMetadataRecord,
-        )
-        self._record_metadata_right = operators.RecordMetadataOp(
-            self,
-            name="record_metadata_right",
-            metadata_class=RightMetadataRecord,
-        )
-
-        # the tensor name directs which pane on the visualizer is updated
-        rename_right_tensor = operators.PassThroughOperator(
-            self,
-            name="rename_right_tensor",
-            out_tensor_name="right",
-        )
-        #
-        left_spec = holoscan.operators.HolovizOp.InputSpec(
-            "left", holoscan.operators.HolovizOp.InputType.COLOR
-        )
-        left_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-        left_spec_view.offset_x = 0
-        left_spec_view.offset_y = 0
-        left_spec_view.width = 0.5
-        left_spec_view.height = 1
-        left_spec.views = [left_spec_view]
-
-        right_spec = holoscan.operators.HolovizOp.InputSpec(
-            "right", holoscan.operators.HolovizOp.InputType.COLOR
-        )
-        right_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-        right_spec_view.offset_x = 0.5
-        right_spec_view.offset_y = 0
-        right_spec_view.width = 0.5
-        right_spec_view.height = 1
-        right_spec.views = [right_spec_view]
-
-        window_height = 200
-        window_width = 600  # for the pair
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            tensors=[left_spec, right_spec],
-            height=window_height,
-            width=window_width,
-            window_title="IMX274 pattern test (module)",
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-        #
-        # The sink owns the frame budget: it ticks frame_limit times (once per
-        # aligned frame reaching the visualizer) and then disables the
-        # receivers' tick conditions so the application drains and exits.
-        watchdog_count = holoscan.conditions.CountCondition(
-            self,
-            name="watchdog_count",
-            count=self._frame_limit,
-        )
-        watchdog_operator = operators.WatchdogOp(
-            self,
-            watchdog_count,
-            name="watchdog_operator",
-            watchdog=self._watchdog,
-            frame_limit=self._frame_limit,
-            stop_conditions=[self._condition_left, self._condition_right],
-        )
-
-        # Frame aligner is the first hop: both receivers feed its single
-        # input, and it fans out paired frames to each leg's CRC stage.
-        self.add_flow(
-            receiver_operator_left, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(
-            receiver_operator_right, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(self._frame_aligner, compute_crc_left, {("output_left", "input")})
-        self.add_flow(
-            self._frame_aligner, compute_crc_right, {("output_right", "input")}
-        )
-
-        # Add CRC checking to the pipeline
-        self.add_flow(compute_crc_left, check_crc_left, {("output", "input")})
-        self.add_flow(check_crc_left, csi_to_bayer_operator_left, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator_left, demosaic_left, {("output", "receiver")}
-        )
-        self.add_flow(demosaic_left, bayer_crc_left, {("transmitter", "input")})
-        self.add_flow(bayer_crc_left, bayer_check_crc_left, {("output", "input")})
-        self.add_flow(
-            bayer_check_crc_left, self._record_metadata_left, {("output", "input")}
-        )
-        self.add_flow(
-            self._record_metadata_left, rename_left_tensor, {("output", "input")}
-        )
-        self.add_flow(rename_left_tensor, visualizer, {("output", "receivers")})
-
-        self.add_flow(compute_crc_right, check_crc_right, {("output", "input")})
-        self.add_flow(
-            check_crc_right, csi_to_bayer_operator_right, {("output", "input")}
-        )
-        self.add_flow(
-            csi_to_bayer_operator_right, demosaic_right, {("output", "receiver")}
-        )
-        self.add_flow(demosaic_right, bayer_crc_right, {("transmitter", "input")})
-        self.add_flow(bayer_crc_right, bayer_check_crc_right, {("output", "input")})
-        self.add_flow(
-            bayer_check_crc_right, self._record_metadata_right, {("output", "input")}
-        )
-        self.add_flow(
-            self._record_metadata_right, rename_right_tensor, {("output", "input")}
-        )
-        self.add_flow(rename_right_tensor, visualizer, {("output", "receivers")})
-
-        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
+    logging.info(
+        f"{leg.name}: {crc_result.checked} frame CRCs and {len(image_crcs)} "
+        "bayer CRCs checked"
+    )
+    minimum = max(11, math.ceil(len(settled) * operators.CRC_COVERAGE))
+    assert (
+        crc_result.checked >= minimum
+    ), f"{leg.name}: only {crc_result.checked} of {len(settled)} frame CRCs checked"
+    assert (
+        len(image_crcs) >= minimum
+    ), f"{leg.name}: only {len(image_crcs)} of {len(settled)} bayer CRCs checked"
+    return short_frames, len(crc_result.bad), bad_color_crcs
 
 
-# A board that hosts a stereo pair exposes the two sensors as two data
-# planes that share one control-plane HololinkInterface; bring that unit
-# up once.
+@pytest.fixture(scope="module")
+def cuda_primary_context():
+    """Keep one primary-context retain across all parametrized cases."""
+    with applications.CudaContext() as cuda_context:
+        yield cuda_context.device_ordinal, cuda_context.cu_context
+
+
 def run_test(
-    headless,
-    module_dir,
+    cuda_primary_context,
     metadata_left,
     metadata_right,
     use_roce,
@@ -542,19 +267,12 @@ def run_test(
     pattern_right,
     expected_right,
     allowable_dt,
-    scheduler,
+    headless,
 ):
     #
     logging.info("Initializing.")
-    #
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    cu_device_ordinal, cu_context = cuda_primary_context
+
     #
     # The two sensors share the board's expander; select output 0 for the
     # left sensor and output 1 for the right one (the metadata-based
@@ -563,31 +281,19 @@ def run_test(
     imx274.Imx274Cam.use_expander_configuration(metadata_right, 1)
     camera_left = CameraWrapper(metadata_left)
     camera_right = CameraWrapper(metadata_right)
-    frame_limit = 100
+    left = Leg("left", metadata_left, camera_left, camera_mode_left, [2])
+    right = Leg("right", metadata_right, camera_right, camera_mode_right, [3])
     ready_frame = 15  # ignore this many initial frames while the pipeline initializes
     initial_timeout = utils.timeout_sequence(
-        [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
+        # The last 10 frames have the long timeout: a leg can end a few frames
+        # short of FRAME_LIMIT (frames dropped on the way), and teardown follows.
+        [(30, ready_frame), (0.5, FRAME_LIMIT - ready_frame - 10), (30, 1)]
     )
-    with utils.Watchdog(
-        "watchdog",
+    with utils.leg_watchdogs(
+        (left.name, right.name),
         initial_timeout=initial_timeout,
-    ) as watchdog:
-        # Set up the application
-        application = PatternTestApplication(
-            headless,
-            cu_context,
-            cu_device_ordinal,
-            metadata_left,
-            camera_left,
-            camera_mode_left,
-            metadata_right,
-            camera_right,
-            camera_mode_right,
-            use_roce,
-            allowable_dt,
-            watchdog,
-            frame_limit=frame_limit,
-        )
+        min_taps=utils.frame_floor(FRAME_LIMIT),
+    ) as watchdogs, utils.RunMonitor() as monitor:
         # Both sensors on a stereo board share the same control-plane
         # HololinkInterface, so bring the unit up just once.
         hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
@@ -595,114 +301,72 @@ def run_test(
             metadata_right
         )
         hololink.start()
-        try:
-            assert camera_left._reset_callbacks == 0
-            assert camera_right._reset_callbacks == 0
-            hololink.reset()
-            assert camera_left._reset_callbacks == 1
-            assert camera_right._reset_callbacks == 1
-            camera_left.configure(camera_mode_left)
-            camera_left.test_pattern(pattern_left)
-            camera_right.configure(camera_mode_right)
-            camera_right.test_pattern(pattern_right)
+        with utils.AbortHook(hololink.reset):
+            try:
+                assert camera_left._reset_callbacks == 0
+                assert camera_right._reset_callbacks == 0
+                hololink.reset()
+                assert camera_left._reset_callbacks == 1
+                assert camera_right._reset_callbacks == 1
+                camera_left.configure(camera_mode_left)
+                camera_left.test_pattern(pattern_left)
+                camera_right.configure(camera_mode_right)
+                camera_right.test_pattern(pattern_right)
 
-            # For testing, make sure we call the get_register method.
-            STANDBY = 0x3000
-            camera_left.get_register(STANDBY)
-            # Configure scheduler.
-            if scheduler == "event":
-                app_scheduler = holoscan.schedulers.EventBasedScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="event_scheduler",
+                # For testing, make sure we call the get_register method.
+                STANDBY = 0x3000
+                camera_left.get_register(STANDBY)
+                #
+                test_graph = applications.TestGraph(
+                    "imx274_pattern", cuda_device_ordinal=cu_device_ordinal
                 )
-                application.scheduler(app_scheduler)
-            elif scheduler == "multithread":
-                app_scheduler = holoscan.schedulers.MultiThreadScheduler(
-                    application,
-                    worker_thread_number=4,
-                    name="multithread_scheduler",
+                images = [
+                    add_leg(
+                        test_graph,
+                        leg,
+                        cu_context,
+                        use_roce,
+                        operators.register(watchdogs[leg.name]),
+                    )
+                    for leg in (left, right)
+                ]
+                applications.show_images(
+                    test_graph, "holoviz", images, headless, "IMX274 pattern test"
                 )
-                application.scheduler(app_scheduler)
-            elif scheduler == "greedy":
-                app_scheduler = holoscan.schedulers.GreedyScheduler(
-                    application,
-                    name="greedy_scheduler",
-                )
-                application.scheduler(app_scheduler)
-            elif scheduler == "default":
-                # Use the default one.
-                pass
-            else:
-                raise Exception(f"Unexpected {scheduler=}")
-            #
-            application.run()
-        finally:
-            hololink.stop()
+                test_graph.run()
+            finally:
+                hololink.stop()
 
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    monitor.assert_ok()
+    operators.assert_aligned(
+        [(r.timestamp_s + r.timestamp_ns * 1e-9, r) for r in left.records],
+        [(r.timestamp_s + r.timestamp_ns * 1e-9, r) for r in right.records],
+        allowable_dt,
+        min_pairs=utils.frame_floor(FRAME_LIMIT),
+        skip_first=ready_frame,
+    )
 
     # Verify CRCs match. Only the RoCE path delivers a lossless frame
     # whose CRC we can trust; the Linux-socket path expects packet loss,
     # so its image data is not evaluated.
-    skip_frames = SKIP_INITIAL_FRAMES
-    left_bad_crcs = 0
-    left_bad_color_crcs = 0
-    right_bad_crcs = 0
-    right_bad_color_crcs = 0
+    left_short_frames = left_bad_crcs = left_bad_color_crcs = 0
+    right_short_frames = right_bad_crcs = right_bad_color_crcs = 0
     if use_roce:
-        crcs_left = application._record_metadata_left.get_record()
-        logging.info(f"Left camera captured {len(crcs_left)} frames")
-        for frame_idx, record in enumerate(crcs_left):
-            logging.trace(
-                f"{record.left_crc=:#x} {record.check_crc_left=:#x} {record.bayer_crc_left=:#x} {record.left_imm_data=:#x} {record.left_bytes_written=:#x}"
-            )
-            # Skip validation for first N frames (initialization artifacts)
-            if frame_idx < skip_frames:
-                continue
-            # Don't include the last frame, when the pipeline is shutting down.
-            if frame_idx >= (frame_limit - 1):
-                continue
-            if record.left_crc != record.check_crc_left:
-                logging.error(
-                    f"Left CRC mismatch at frame {frame_idx}: "
-                    f"received={record.left_crc:#x}, computed={record.check_crc_left:#x}"
-                )
-                left_bad_crcs += 1
-            if record.bayer_crc_left != expected_left:
-                left_bad_color_crcs += 1
-        if left_bad_crcs == 0:
-            logging.info(f"Validated {len(crcs_left) - skip_frames} left CRCs")
+        left_short_frames, left_bad_crcs, left_bad_color_crcs = check_leg(
+            left, expected_left
+        )
+        right_short_frames, right_bad_crcs, right_bad_color_crcs = check_leg(
+            right, expected_right
+        )
 
-        crcs_right = application._record_metadata_right.get_record()
-        logging.info(f"Right camera captured {len(crcs_right)} frames")
-        for frame_idx, record in enumerate(crcs_right):
-            logging.trace(
-                f"{record.right_crc=:#x} {record.check_crc_right=:#x} {record.bayer_crc_right=:#x} {record.right_imm_data=:#x} {record.right_bytes_written=:#x}"
-            )
-            # Skip validation for first N frames (initialization artifacts)
-            if frame_idx < skip_frames:
-                continue
-            # Don't include the last frame, when the pipeline is shutting down.
-            if frame_idx >= (frame_limit - 1):
-                continue
-            if record.right_crc != record.check_crc_right:
-                logging.error(
-                    f"Right CRC mismatch at frame {frame_idx}: "
-                    f"received={record.right_crc:#x}, computed={record.check_crc_right:#x}"
-                )
-                right_bad_crcs += 1
-            if record.bayer_crc_right != expected_right:
-                right_bad_color_crcs += 1
-        if right_bad_crcs == 0:
-            logging.info(f"Validated {len(crcs_right) - skip_frames} right CRCs")
+    assert (left_short_frames + right_short_frames) == 0, (
+        f"Captured {left_short_frames} short left CSI frames and "
+        f"{right_short_frames} short right CSI frames"
+    )
     assert (left_bad_crcs + right_bad_crcs) == 0
     # Make sure the colors are as expected.
-    if expected_left is not None:
-        assert left_bad_color_crcs == 0
-    if expected_right is not None:
-        assert right_bad_color_crcs == 0
+    assert left_bad_color_crcs == 0
+    assert right_bad_color_crcs == 0
 
 
 def _wait_for_channel(module_dir, peer_ip):
@@ -712,8 +376,8 @@ def _wait_for_channel(module_dir, peer_ip):
     return adapter.wait_for_channel(peer_ip, DISCOVERY_TIMEOUT_S)
 
 
-# Each tuple carries an allowable_dt: the largest skew the frame aligner
-# tolerates between the two legs. IMX274 cannot hardware-sync, so the
+# Each tuple carries an allowable_dt: the largest skew between the two legs
+# for which their frames are paired. IMX274 cannot hardware-sync, so the
 # acceptance window is one full frame period (here 1/60 s at 60 FPS).
 def round_up(f, decimal_places):
     factor = 10**decimal_places
@@ -776,8 +440,29 @@ expected_1080p_results = [
     ),
 ]
 
+# RAW12 exercises Imx274Cam.configure_converter's 210-byte (175 + 35) embedded
+# data offset and the packed12bitTo16bit kernel; a wrong start byte shifts the
+# image and changes the bayer CRC.
+#
+# The expected CRCs were captured on hardware with the 210-byte offset in place.
+expected_4k_12bit_results = [
+    (
+        # left
+        imx274.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS,
+        10,
+        0x9D48B11B,
+        # right
+        imx274.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS,
+        11,
+        0x42559C42,
+        # allowable_dt
+        ONE_FRAME_AT_60FPS,
+    ),
+]
+
 expected_results = []
 expected_results.extend(expected_4k_results)
+expected_results.extend(expected_4k_12bit_results)
 expected_results.extend(expected_1080p_results)
 
 mtus = [
@@ -787,7 +472,28 @@ mtus = [
     4096,
 ]
 
+full_mtu_pairs = [(mtu_left, mtu_right) for mtu_left in mtus for mtu_right in mtus]
+reduced_mtu_pairs = [
+    (None, None),
+    (hololink_module.DEFAULT_MTU, hololink_module.DEFAULT_MTU),
+    (330, 330),
+    (4096, 4096),
+    (330, 4096),
+    (4096, 330),
+]
 
+
+def pytest_generate_tests(metafunc):
+    if "mtu_left" in metafunc.fixturenames and "mtu_right" in metafunc.fixturenames:
+        mtu_pairs = (
+            reduced_mtu_pairs
+            if metafunc.config.getoption("--reduced-mtu-matrix")
+            else full_mtu_pairs
+        )
+        metafunc.parametrize("mtu_left,mtu_right", mtu_pairs)
+
+
+@utils.requires_module_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
@@ -803,8 +509,8 @@ def test_imx274_pattern(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
-    scheduler,
     module_dir,
 ):
     if len(channel_ips) < 2:
@@ -814,8 +520,7 @@ def test_imx274_pattern(
     channel_metadata_left = _wait_for_channel(module_dir, hololink_left)
     channel_metadata_right = _wait_for_channel(module_dir, hololink_right)
     run_test(
-        headless,
-        module_dir,
+        cuda_primary_context,
         channel_metadata_left,
         channel_metadata_right,
         True,  # use_roce
@@ -826,23 +531,16 @@ def test_imx274_pattern(
         pattern_right,
         expected_right,
         allowable_dt,
-        scheduler,
+        headless,
     )
 
 
+@utils.requires_module_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode_left, pattern_left, expected_left, camera_mode_right, pattern_right, expected_right, allowable_dt",  # noqa: E501
     [expected_4k_results[0]],  # No need to do lots of these
-)
-@pytest.mark.parametrize(
-    "mtu_left",
-    mtus,
-)
-@pytest.mark.parametrize(
-    "mtu_right",
-    mtus,
 )
 def test_imx274_pattern_with_various_mtus(
     camera_mode_left,
@@ -853,6 +551,7 @@ def test_imx274_pattern_with_various_mtus(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
     module_dir,
     mtu_left,
@@ -870,8 +569,7 @@ def test_imx274_pattern_with_various_mtus(
     if mtu_right is not None:
         adapter.use_mtu(channel_metadata_right, mtu_right)
     run_test(
-        headless,
-        module_dir,
+        cuda_primary_context,
         channel_metadata_left,
         channel_metadata_right,
         True,  # use_roce
@@ -882,10 +580,11 @@ def test_imx274_pattern_with_various_mtus(
         pattern_right,
         expected_right,
         allowable_dt,
-        scheduler="default",
+        headless,
     )
 
 
+@utils.requires_module_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
@@ -907,8 +606,8 @@ def test_imx274_multicast(
     expected_right,
     allowable_dt,
     headless,
+    cuda_primary_context,
     channel_ips,
-    scheduler,
     module_dir,
     multicast_left,
     multicast_left_port,
@@ -928,8 +627,7 @@ def test_imx274_multicast(
     channel_metadata_right = _wait_for_channel(module_dir, hololink_right)
     adapter.use_multicast(channel_metadata_right, multicast_right, multicast_right_port)
     run_test(
-        headless,
-        module_dir,
+        cuda_primary_context,
         channel_metadata_left,
         channel_metadata_right,
         True,  # use_roce
@@ -940,7 +638,7 @@ def test_imx274_multicast(
         pattern_right,
         expected_right,
         allowable_dt,
-        scheduler,
+        headless,
     )
 
 
@@ -948,6 +646,7 @@ def test_imx274_multicast(
 # (channel_index selects channel_ips[channel_index]) so that each interface is
 # verified to carry both of its sensors. The module resolves the IB device
 # from the peer metadata, so there's no ibv_name to pair with the index.
+@utils.requires_module_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
@@ -967,7 +666,7 @@ def test_imx274_stereo_single_interface(
     expected_right,
     allowable_dt,
     headless,
-    scheduler,
+    cuda_primary_context,
     channel_ips,
     module_dir,
     channel_index,
@@ -991,8 +690,7 @@ def test_imx274_stereo_single_interface(
     adapter.use_sensor(channel_metadata_right, 1)
     #
     run_test(
-        headless,
-        module_dir,
+        cuda_primary_context,
         channel_metadata_left,
         channel_metadata_right,
         True,  # use_roce
@@ -1003,7 +701,7 @@ def test_imx274_stereo_single_interface(
         pattern_right,
         expected_right,
         allowable_dt,
-        scheduler,
+        headless,
     )
 
 
@@ -1023,7 +721,7 @@ def test_linux_imx274_stereo_single_interface(
     expected_right,
     allowable_dt,
     headless,
-    scheduler,
+    cuda_primary_context,
     channel_ip,
     module_dir,
 ):
@@ -1040,17 +738,16 @@ def test_linux_imx274_stereo_single_interface(
     adapter.use_sensor(channel_metadata_right, 1)
     #
     run_test(
-        headless,
-        module_dir,
+        cuda_primary_context,
         channel_metadata_left,
         channel_metadata_right,
         False,  # use_roce -> Linux sockets; image data not evaluated
         camera_mode_left,
         pattern_left,
-        None,  # expected_left
+        expected_left,  # unused: image data not evaluated over Linux sockets
         camera_mode_right,
         pattern_right,
-        None,  # expected_right
+        expected_right,  # unused: image data not evaluated over Linux sockets
         allowable_dt,
-        scheduler,
+        headless,
     )

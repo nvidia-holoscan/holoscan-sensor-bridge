@@ -19,21 +19,21 @@ import sys
 from unittest import mock
 
 import pytest
+import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
 from examples import imx274_player, native_imx274_player
 
 
-@pytest.mark.skip_unless_imx274
-@pytest.mark.accelerated_networking
-@pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
-    [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
-    ],
-)
-def test_imx274_player(
-    camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, capsys
+def _run_player(
+    player,
+    camera_mode,
+    headless,
+    frame_limit,
+    hololink_address,
+    ibv_name,
+    ibv_port,
+    capsys,
 ):
     arguments = [
         sys.argv[0],
@@ -51,51 +51,64 @@ def test_imx274_player(
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        imx274_player.main()
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = player.main()
 
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    assert result == 0
+    monitor.assert_ok()
+
+    # check for errors
+    captured = capsys.readouterr()
+    assert captured.err == ""
 
 
+@utils.requires_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.camera.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+    ],
+)
+def test_imx274_player(
+    camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, capsys
+):
+    _run_player(
+        imx274_player,
+        camera_mode,
+        headless,
+        frame_limit,
+        hololink_address,
+        ibv_name,
+        ibv_port,
+        capsys,
+    )
+
+
+@utils.requires_roce
+@pytest.mark.skip_unless_imx274
+@pytest.mark.accelerated_networking
+@pytest.mark.parametrize(
+    "camera_mode",
+    [
+        Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
     ],
 )
 def test_native_imx274_player(
     camera_mode, headless, frame_limit, hololink_address, ibv_name, ibv_port, capsys
 ):
     """
-    This is the test function for the IMX274 player using the C++ implementation.
-    It is used to test the C++ implementation of the IMX274 player.
-    `camera_mode` parameter is updated to use the C++ implementation (Python binding):
-    - hololink_module.sensors.camera.imx274.imx274_mode.Imx274_Mode
+    This is the test function for the IMX274 player using the C++ implementation
+    of the sensor (hl.NativeImx274Sensor).
     """
-    arguments = [
-        sys.argv[0],
-        "--camera-mode",
-        str(camera_mode.value),
-        "--frame-limit",
-        str(frame_limit),
-        "--hololink",
+    _run_player(
+        native_imx274_player,
+        camera_mode,
+        headless,
+        frame_limit,
         hololink_address,
-        "--ibv-name",
         ibv_name,
-        "--ibv-port",
-        str(ibv_port),
-    ]
-    if headless:
-        arguments.extend(["--headless"])
-
-    with mock.patch("sys.argv", arguments):
-        # use the C++ implementation of the IMX274 player
-        native_imx274_player.main()
-
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+        ibv_port,
+        capsys,
+    )

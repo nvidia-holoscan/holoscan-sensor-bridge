@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -30,6 +30,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 
 namespace hololink {
@@ -96,12 +97,25 @@ namespace args {
             return default_value_.has_value();
         }
 
+        // Throws std::invalid_argument when the token isn't a valid T.
         void parse(std::any& value_store, const std::string& token) const override
         {
-            T value {};
-            std::istringstream iss(token);
-            iss >> value;
-            value_store = value;
+            if constexpr (std::is_same_v<T, std::string>) {
+                // The whole token: operator>> would stop at its first space.
+                value_store = token;
+            } else {
+                T value {};
+                std::istringstream iss(token);
+                // operator>> would wrap a negative number around for an unsigned T.
+                if constexpr (std::is_unsigned_v<T>) {
+                    if ((iss >> std::ws).peek() == '-')
+                        throw std::invalid_argument(token);
+                }
+                // The token must parse completely: "abc" or "10x" used to give T{} or 10.
+                if (!(iss >> value) || !(iss >> std::ws).eof())
+                    throw std::invalid_argument(token);
+                value_store = value;
+            }
         }
 
         const std::type_info& value_type() const override

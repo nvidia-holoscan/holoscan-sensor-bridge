@@ -132,7 +132,10 @@ logic                                 cdc_axis_tready;
 logic   [CENTER_KEEP_CNT_WIDTH-1:0]   cdc_axis_tkcnt;
 logic                                 cdc_tvalid_hold;
 
-logic                                 in_pkt_done;
+localparam PKT_CNT_WIDTH = $clog2(BUF_DEPTH) + 1;
+
+logic   [PKT_CNT_WIDTH-1:0]           in_pkt_cnt;
+logic   [PKT_CNT_WIDTH-1:0]           in_pkt_cnt_gray;
 
 generate
   if (DUAL_CLOCK == 1) begin
@@ -209,14 +212,11 @@ assign cdc_axis_tlast = (w_cdc_axis_tlast && cdc_axis_tvalid);
 assign cdc_axis_tvalid = (fifo_rdval || cdc_tvalid_hold);
 assign fifo_wren = gbx_axis_tvalid && gbx_axis_tready;
 
-// In Pkt Counter
 always_ff @(posedge in_clk) begin
   if (in_rst) begin
-    in_pkt_done          <= '0;
     gbx_axis_tready      <= '0;
   end
   else begin
-    in_pkt_done     <= fifo_wren && fifo_din[$left(fifo_din)];
     gbx_axis_tready <= !fifo_afull || NO_BACKPRESSURE;
   end
 end
@@ -230,39 +230,95 @@ assign o_fifo_full = fifo_full;
 // Packet Logic
 //------------------------------------------------------------------------------------------------//
 
-logic  [$clog2(BUF_DEPTH):0]          pkt_cnt;
+logic  [PKT_CNT_WIDTH-1:0]            in_pkt_cnt_gray_sync;
+logic  [PKT_CNT_WIDTH-1:0]            out_pkt_cnt;
+logic  [PKT_CNT_WIDTH-1:0]            out_pkt_cnt_nxt;
+logic  [PKT_CNT_WIDTH-1:0]            out_pkt_cnt_gray_nxt;
 logic                                 clear_to_send;
+logic                                 packet_available;
 logic                                 out_pkt_done;
-logic                                 in_pkt_done_sync;
 logic                                 prefetch;
 
 logic wait_latency;
 
-//Keep track of how many packets are in the buffer
+// Output staging is required regardless of WAIT2SEND.
 always_ff @(posedge out_clk) begin
   if (out_rst) begin
-    pkt_cnt                 <= 'b0;
     cdc_tvalid_hold         <= '0;
-    clear_to_send           <= '0;
   end
   else begin
-    pkt_cnt              <= pkt_cnt + in_pkt_done_sync - out_pkt_done;
-    cdc_tvalid_hold      <= cdc_axis_tvalid && !cdc_axis_tready; // Hold tvalid on next cycle
-    clear_to_send        <= !WAIT2SEND      ? 1'b1                                :
-                            (pkt_cnt == '0) ? (in_pkt_done_sync && !out_pkt_done) :
-                            (pkt_cnt =='d1) ? !(!in_pkt_done_sync && out_pkt_done):
-                                             1'b1;
+    cdc_tvalid_hold <= cdc_axis_tvalid && !cdc_axis_tready; // Hold tvalid on next cycle
   end
 end
 
-pulse_sync u_pkt_cnt_sync (
-  .src_clk        ( in_clk                      ),
-  .src_rst        ( in_rst                      ),
-  .dst_clk        ( out_clk                     ),
-  .dst_rst        ( out_rst                     ),
-  .i_src_pulse    ( in_pkt_done                 ),
-  .o_dst_pulse    ( in_pkt_done_sync            )
-);
+generate
+  if (WAIT2SEND) begin : g_wait2send
+    // Use the destination count after the current output beat completes.
+    // This prevents a partial following packet from being prefetched after
+    // the final beat of the last complete packet is accepted.
+    assign out_pkt_cnt_nxt = out_pkt_cnt + out_pkt_done;
+
+    always_ff @(posedge in_clk) begin
+      if (in_rst) begin
+        in_pkt_cnt <= '0;
+      end
+      else  begin
+        in_pkt_cnt <= in_pkt_cnt + (fifo_wren && fifo_din[$left(fifo_din)]);
+      end
+    end
+
+    // A complete packet is available when the synchronized source sequence
+    // count differs from the local destination sequence count.
+    always_ff @(posedge out_clk) begin
+      if (out_rst) begin
+        out_pkt_cnt   <= '0;
+        clear_to_send <= '0;
+      end
+      else begin
+        out_pkt_cnt   <= out_pkt_cnt_nxt;
+        clear_to_send <= packet_available;
+      end
+    end
+
+    if (DUAL_CLOCK == 1) begin : g_dual_clock
+      // Gray encoding is needed only for the multi-bit CDC.
+      logic [PKT_CNT_WIDTH-1:0] in_pkt_cnt_gray_r;
+      assign in_pkt_cnt_gray  = in_pkt_cnt ^ (in_pkt_cnt >> 1);
+      assign out_pkt_cnt_gray_nxt = out_pkt_cnt_nxt ^ (out_pkt_cnt_nxt >> 1);
+
+      // Register the Gray-coded pointer in the in_clk domain before crossing
+      // into out_clk so the synchronizer input is not raw combinational
+      // logic (avoids sampling a glitch).
+      always_ff @(posedge in_clk) begin
+        if (in_rst) begin
+          in_pkt_cnt_gray_r <= '0;
+        end
+        else begin
+          in_pkt_cnt_gray_r <= in_pkt_cnt_gray;
+        end
+      end
+
+      data_sync #(
+        .DATA_WIDTH     ( PKT_CNT_WIDTH               ),
+        .RESET_VALUE    ( 1'b0                        ),
+        .SYNC_DEPTH     ( 2                            )
+      ) u_pkt_cnt_sync (
+        .clk            ( out_clk                     ),
+        .rst            ( out_rst                     ),
+        .sync_in        ( in_pkt_cnt_gray_r           ),
+        .sync_out       ( in_pkt_cnt_gray_sync        )
+      );
+      assign packet_available = (in_pkt_cnt_gray_sync != out_pkt_cnt_gray_nxt);
+    end
+    else begin : g_single_clock
+      // The single-clock FIFO requires in_clk and out_clk to be the same clock.
+      assign packet_available = (in_pkt_cnt != out_pkt_cnt_nxt);
+    end
+  end
+  else begin
+    assign clear_to_send = 1'b1;
+  end
+endgenerate
 
 //If WAIT2SEND is set, then a full packet must be in the buffer before it can be read out.
 //I put this here in case we are talking to some interface that doesn't like the valid signal

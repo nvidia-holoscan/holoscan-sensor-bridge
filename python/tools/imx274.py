@@ -35,9 +35,8 @@ def _set_register(args, camera, hololink):
 
 
 def _configure(args, camera, hololink):
-    mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(args.mode)
     camera.setup_clock()
-    camera.configure(mode)
+    camera.configure(args.mode)
     if args.start:
         camera.start()
 
@@ -128,8 +127,9 @@ def main():
     sp.add_argument(
         "--mode",
         type=int,
-        default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS.value,
-        help="IMX274 mode",
+        choices=(0, 1, 2),
+        default=0,
+        help="IMX274 mode: 0 = 3840x2160@60fps, 1 = 1920x1080@60fps, 2 = 3840x2160@30fps 12-bit",
     )
     sp.add_argument(
         "--start",
@@ -181,7 +181,7 @@ def main():
     args = parser.parse_args()
 
     if args.trace:
-        logging.basicConfig(level=logging.TRACE)
+        logging.basicConfig(level=5)  # below DEBUG, as HSDK4's logging.TRACE was
     elif args.debug:
         logging.basicConfig(level=logging.DEBUG)
     else:
@@ -190,7 +190,7 @@ def main():
     #
     channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
     hololink_channel = hololink_module.DataChannel(channel_metadata)
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
+    camera = hololink_module.NativeImx274Sensor(
         hololink_channel, expander_configuration=args.expander_configuration
     )
     hololink = hololink_channel.hololink()

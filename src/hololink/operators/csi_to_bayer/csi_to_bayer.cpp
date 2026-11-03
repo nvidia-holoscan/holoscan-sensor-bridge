@@ -17,10 +17,18 @@
 
 #include "csi_to_bayer.hpp"
 
+#include <chrono>
+#include <time.h>
+
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/logging_internal.hpp>
 #include <hololink/core/networking.hpp>
-#include <holoscan/holoscan.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
+#include <hololink/operators/image_encoding_utils.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
 
 namespace {
 
@@ -93,36 +101,126 @@ __global__ void frameReconstruction12(unsigned short * out,
 
 namespace hololink::operators {
 
+holoscan::Contract CsiToBayerOp::contract() const
+{
+    // Upstream stamps both ports with an identical capture_time, so OnAligned pairs them on an
+    // exact match (see kMetadataPairingWindow).
+    holoscan::Contract result;
+    result
+        .trigger(holoscan::OnAligned {
+            .ports = holoscan::ports(input_tensor, input_metadata),
+            .window = hololink::operators::kMetadataPairingWindow,
+        })
+        .input(input_tensor, holoscan::Exact {})
+        .input(input_metadata, holoscan::Exact {});
+    return result;
+}
+
+namespace {
+
+    // The bytes of one full frame of 16-bit samples: the output tensor pool's slot size. The compiler
+    // evaluates it once, against the Params given to graph.op(); HSDK5 wants the geometry's nested
+    // fields read through a projection like this one, not as parameter_byte_span() operands.
+    holoscan::expected<std::uint64_t, holoscan::Error> output_frame_bytes(
+        const CsiToBayerParams& params) noexcept
+    {
+        // Without a geometry, keep the ceiling of earlier releases so that the run compiles and
+        // start() reports the missing geometry, as it always has.
+        static constexpr std::uint64_t kDefaultMaxOutputBytes = 64ULL * 1024 * 1024;
+        const auto& geometry = params.geometry;
+        if (geometry.pixel_width == 0 || geometry.pixel_height == 0) {
+            return kDefaultMaxOutputBytes;
+        }
+        return std::uint64_t { geometry.pixel_width } * geometry.pixel_height * sizeof(uint16_t);
+    }
+
+} // namespace
+
 void CsiToBayerOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.input<holoscan::gxf::Entity>("input");
-    spec.output<holoscan::gxf::Entity>("output");
+    static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
+    static constexpr DLDataType kUInt16 { static_cast<uint8_t>(kDLUInt), 16, 1 };
 
-    spec.param(allocator_, "allocator", "Allocator",
-        "Allocator used to allocate the output Bayer image, defaults to BlockMemoryPool");
-    spec.param(cuda_device_ordinal_, "cuda_device_ordinal", "CudaDeviceOrdinal",
-        "Device to use for CUDA operations", 0);
-    spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
-        "Name of the output tensor", std::string(""));
-    spec.param(sub_frame_rows_, "sub_frame_rows", "SubFrameRows",
-        "Number of rows in a sub-frame, if 0 (the default), the full frame will be used", 0U);
+    // Input and output declaration names share one namespace per operator (Holoscan rejects
+    // reusing a name across inputs/outputs/readiness sources), so the input ports here use an
+    // "input_" prefix while the outputs keep the bare "tensor"/"metadata" names that downstream
+    // consumers (add_flow, bind_tensor_output_device) wire against.
+    spec.input(input_tensor, "in_tensor")
+        .expects_tensor(holoscan::TensorInputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                .dtype = kUInt8,
+            },
+        });
+    spec.input(input_metadata, "in_metadata");
+
+    spec.output(output_tensor, "tensor")
+        .max_emits_per_compute(1U)
+        .tensor_field(holoscan::schema::ImageTensorFields::data)
+        .produces_tensor(holoscan::TensorOutputSpec {
+                             .representation = holoscan::TensorRepresentation {
+                                 .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                                 .dtype = kUInt16,
+                             },
+                             .bounds = holoscan::TensorBounds {
+                                 .max_rank = 3U,
+                             },
+                             .storage = holoscan::TensorOutputStorage::kRuntimePool,
+                         },
+            // One slot holds one full frame of 16-bit samples (a sub-frame band is smaller), so
+            // the pool is sized by the configured geometry rather than by a fixed ceiling: the
+            // compiler resolves this expression from the Params each graph.op() call supplies.
+            holoscan::parameter_projected_byte_span<&output_frame_bytes>("com.nvidia.hololink.operators.CsiToBayerOp.output_frame_bytes", holoscan::param_ref<&CsiToBayerParams::geometry, &hololink::csi::CsiGeometry::pixel_width>(), holoscan::param_ref<&CsiToBayerParams::geometry, &hololink::csi::CsiGeometry::pixel_height>()));
+    spec.output(output_metadata, "metadata").max_emits_per_compute(1U);
 }
 
 void CsiToBayerOp::start()
 {
+    const auto& p = params();
+    cuda_device_ordinal_ = p.cuda_device_ordinal;
+    sub_frame_rows_ = p.sub_frame_rows;
+    bayer_format_ = p.bayer_format;
+    header_included_ = p.header_included;
+    drop_incomplete_ = p.drop_incomplete;
+
+    // Apply geometry from params if provided (HSDK5 path via configure_converter(CsiGeometry&)).
+    if (p.geometry.pixel_width != 0) {
+        const auto& g = p.geometry;
+        configure(g.start_byte, g.bytes_per_line, g.pixel_width, g.pixel_height,
+            g.pixel_format, g.trailing_bytes);
+    }
+
     if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");
     }
+    // configure() may have run before the parameters were bound (legacy configure_converter());
+    // size the frame from the final sub_frame_rows_ either way.
+    frame_size_ = sub_frame_rows_ > 0 ? bytes_per_line_ * sub_frame_rows_ : csi_length_;
 
-    if (sub_frame_rows_.get() > 0) {
-        if (pixel_height_ % sub_frame_rows_.get() != 0) {
+    sub_frame_bands_.reset();
+    if (sub_frame_rows_ > 0) {
+        if (pixel_height_ % sub_frame_rows_ != 0) {
             throw std::runtime_error(fmt::format("Height of {} is not evenly divisible by sub_frame_rows of {}",
-                pixel_height_, sub_frame_rows_.get()));
+                pixel_height_, sub_frame_rows_));
         }
+        if (sub_frame_rows_ % 2 != 0) {
+            // Every band is stamped with the frame's Bayer phase, which a band that starts on an
+            // odd row doesn't have.
+            throw std::runtime_error(fmt::format("sub_frame_rows of {} is odd; it must be even, so that "
+                                                 "every band starts on the frame's Bayer phase",
+                sub_frame_rows_));
+        }
+        sub_frame_bands_.emplace(SubFrameBands::Geometry {
+            .csi_length = csi_length_,
+            .band_bytes = size_t(bytes_per_line_) * sub_frame_rows_,
+            .start_byte = start_byte_,
+            .band_rows = sub_frame_rows_,
+            .pixel_height = pixel_height_,
+        });
     }
 
     CudaCheck(cuInit(0));
-    CudaCheck(cuDeviceGet(&cuda_device_, cuda_device_ordinal_.get()));
+    CudaCheck(cuDeviceGet(&cuda_device_, cuda_device_ordinal_));
     CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
     int integrated = 0;
     CudaCheck(cuDeviceGetAttribute(&integrated, CU_DEVICE_ATTRIBUTE_INTEGRATED, cuda_device_));
@@ -133,9 +231,8 @@ void CsiToBayerOp::start()
     cuda_function_launcher_.reset(new hololink::common::CudaFunctionLauncher(
         source, { "frameReconstruction8", "frameReconstruction10", "frameReconstruction12" }));
 
-    if (sub_frame_rows_.get() > 0) {
-        // allocate memory for combined sub-frame data
-        sub_frame_memory_size_ = bytes_per_line_ * sub_frame_rows_.get();
+    if (sub_frame_rows_ > 0) {
+        sub_frame_memory_size_ = bytes_per_line_ * sub_frame_rows_;
         sub_frame_memory_.reset([this]() {
             CUdeviceptr ptr;
             CudaCheck(cuMemAlloc(&ptr, sub_frame_memory_size_));
@@ -154,170 +251,315 @@ void CsiToBayerOp::stop()
     cuda_context_ = nullptr;
 }
 
-void CsiToBayerOp::compute(holoscan::InputContext& input, holoscan::OutputContext& output,
+void CsiToBayerOp::carry_over_sub_frame_tail(const uint8_t* in_base, size_t in_total_size,
+    size_t tail_size, CUstream cuda_stream)
+{
+    // The bytes of the chunk past the band just completed start the next band.
+    if (tail_size > 0) {
+        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get(),
+            (CUdeviceptr)(uintptr_t)(in_base + in_total_size - tail_size), tail_size, cuda_stream));
+    }
+}
+
+void CsiToBayerOp::count_incomplete_frame(int64_t sub_frame_offset)
+{
+    if (const uint64_t count = incomplete_frames_.count()) {
+        HSB_LOG_WARN("CsiToBayerOp: {} {} frame(s)/sub-frame(s) in the last second whose data was "
+                     "partly lost upstream (latest sub_frame_offset={})",
+            drop_incomplete_ ? "withheld" : "passed on, marked degraded,", count, sub_frame_offset);
+    }
+}
+
+void CsiToBayerOp::count_oversized_chunk(size_t chunk_size)
+{
+    if (const uint64_t count = oversized_chunks_.count()) {
+        HSB_LOG_ERROR("CsiToBayerOp: dropped {} received chunk(s) in the last second larger than a "
+                      "sub-frame band ({} > {} bytes): the receiver's frame_size must be "
+                      "bytes_per_line * sub_frame_rows",
+            count, chunk_size, sub_frame_memory_size_);
+    }
+}
+
+void CsiToBayerOp::count_backpressure_drop(int64_t sub_frame_offset)
+{
+    // Report once per second so sustained drops are visible.
+    ++backpressure_drops_;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - backpressure_report_time_ >= std::chrono::seconds(1)) {
+        HSB_LOG_WARN("CsiToBayerOp: dropped {} frame(s)/sub-frame(s) in the last second because "
+                     "downstream was behind (latest sub_frame_offset={})",
+            backpressure_drops_, sub_frame_offset);
+        backpressure_drops_ = 0;
+        backpressure_report_time_ = now;
+    }
+}
+
+holoscan::expected<void, holoscan::Error> CsiToBayerOp::compute(
     holoscan::ExecutionContext& context)
 {
-    auto maybe_entity = input.receive<holoscan::gxf::Entity>("input");
-    if (!maybe_entity) {
-        throw std::runtime_error("Failed to receive input");
+    // kNotReady is a normal, expected outcome from any call in compute_impl() below (a
+    // clock-driven downstream consumer, e.g. HolovizOp, can trigger this operator's activation
+    // -- or contend for its output pool -- before new data/capacity has actually arrived) --
+    // drop this activation instead of failing the whole pipeline over it.
+    auto result = compute_impl(context);
+    if (!result && result.error().code == holoscan::ErrorCode::kNotReady) {
+        return {};
     }
+    return result;
+}
 
-    auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
+holoscan::expected<void, holoscan::Error> CsiToBayerOp::compute_impl(
+    holoscan::ExecutionContext& context)
+{
+    // Capture wall-clock immediately on operator entry — measures scheduler dispatch latency.
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    const int64_t operator_entry_ns = int64_t(ts.tv_sec) * 1'000'000'000LL + ts.tv_nsec;
 
-    const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
-    if (!maybe_tensor) {
-        throw std::runtime_error("Tensor not found in message");
+    auto maybe_paired = hololink::operators::receive_paired_tensor_metadata(input_tensor, input_metadata);
+    if (!maybe_paired) {
+        return holoscan::make_unexpected(std::move(maybe_paired).error());
     }
+    if (!*maybe_paired) {
+        if (const uint64_t dropped = mismatched_frames_.count()) {
+            HSB_LOG_WARN("CsiToBayerOp: dropped {} frame(s) in the last second whose payload and metadata "
+                         "were stamped as different frames",
+                dropped);
+        }
+        return {};
+    }
+    auto& paired = **maybe_paired;
+    const holoscan::Tensor& in_tensor = paired.tensor.data;
+    const hololink::CaptureMetadataT& in_frame = paired.metadata.data;
 
-    const auto input_tensor = maybe_tensor.value();
-
-    if (input_tensor->storage_type() == nvidia::gxf::MemoryStorageType::kHost) {
+    const DLDeviceType device_type = in_tensor.device().device_type;
+    if (device_type == kDLCPU || device_type == kDLCUDAHost) {
         if (!is_integrated_ && !host_memory_warning_) {
             host_memory_warning_ = true;
             HSB_LOG_WARN(
                 "The input tensor is stored in host memory, this will reduce performance of this "
                 "operator. For best performance store the input tensor in device memory.");
         }
-    } else if (input_tensor->storage_type() != nvidia::gxf::MemoryStorageType::kDevice) {
-        throw std::runtime_error(
-            fmt::format("Unsupported storage type {}", (int)input_tensor->storage_type()));
+    } else if (device_type != kDLCUDA) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("Unsupported device type {}", static_cast<int>(device_type)) });
     }
 
-    if (input_tensor->rank() != 1) {
-        throw std::runtime_error("Tensor must be one dimensional");
+    if (in_tensor.shape_span().size() != 1) {
+        return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+            "Tensor must be one dimensional" });
     }
 
     hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
-    // Get the CUDA stream from the input message if present, otherwise generate one.
-    // This stream will also be transmitted on the output port.
-    cudaStream_t cuda_stream = input.receive_cuda_stream();
+    const CUstream cuda_stream = context.cuda_stream().get();
 
-    byte* input_pointer;
-    uint32_t cur_pixel_height;
+    const uint8_t* const in_base = static_cast<const uint8_t*>(in_tensor.data());
+    const size_t in_total_size = static_cast<size_t>(in_tensor.nbytes());
+
+    const uint8_t* input_pointer = nullptr;
+    uint32_t cur_pixel_height = 0;
     size_t sub_frame_copy_size = 0;
-    if (sub_frame_rows_.get() > 0) {
-        // sub-frame handling
-        input_pointer = input_tensor->pointer();
+    uint64_t output_frame_id = static_cast<uint64_t>(in_frame.frame_number);
+    int64_t sub_frame_row_offset = 0;
+    // Rows of the output that the input actually holds, and whether part of it was lost.
+    uint32_t valid_rows = 0;
+    bool incomplete = false;
 
-        const int64_t receiver_frame_number = metadata()->get<int64_t>("frame_number");
-        const int64_t receiver_sub_frames_per_frame = (csi_length_ + sub_frame_memory_size_ - 1) / sub_frame_memory_size_;
-        const int64_t receiver_sub_frame = receiver_frame_number % receiver_sub_frames_per_frame;
-        const int64_t receiver_sub_frame_offset = int64_t(receiver_sub_frame * sub_frame_memory_size_);
+    if (sub_frame_rows_ > 0) {
+        const SubFrameBands::Step step = sub_frame_bands_->next(SubFrameBands::Chunk {
+            .frame_number = in_frame.frame_number,
+            .size = in_total_size,
+            .bytes_written = in_frame.bytes_written,
+            .bytes_received = in_frame.frame_bytes_received,
+        });
+        if (step.oversized) {
+            // Larger than a band: the receiver's frame_size isn't the band size. Dropped.
+            count_oversized_chunk(in_total_size);
+            return {};
+        }
+        if (step.band == SubFrameBands::Band::kHeaderOnly) {
+            // Entire chunk is still within the header — nothing to copy yet.
+            return {};
+        }
+        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get() + step.band_offset,
+            (CUdeviceptr)(uintptr_t)(in_base + step.payload_offset), step.copy_size, cuda_stream));
+        if (step.band == SubFrameBands::Band::kPending) {
+            return {};
+        }
+        sub_frame_copy_size = step.tail_size;
+        sub_frame_row_offset = step.row_offset;
 
-        size_t input_size = input_tensor->size();
-        int64_t sub_frame_offset;
-        if (receiver_sub_frame == 0) {
-            // skip the start offset of the first sub-frame
-            if (input_size < start_byte_) {
-                throw std::runtime_error(
-                    fmt::format("Input tensor size {} is smaller than configured start_byte_ {}",
-                        input_size, start_byte_));
+        if (step.band == SubFrameBands::Band::kTrailingOnly) {
+            // A band made only of the frame's trailing bytes (the sensor's status lines after
+            // the image, when they add up to a whole band): no image rows in it.
+            carry_over_sub_frame_tail(in_base, in_total_size, sub_frame_copy_size, cuda_stream);
+            return {};
+        }
+        if (step.incomplete) {
+            // Part of this band was lost: its head with an earlier chunk (dropped, short or with
+            // a hole), so sub_frame_memory_ holds stale bytes ahead of this chunk's, or a packet
+            // of this chunk itself. Pass it on marked degraded, or with drop_incomplete withhold
+            // it -- SubFrameCombinerOp then discards its frame, SubFrameVisualizerOp keeps the
+            // previous frame's band -- and only carry this chunk's tail over to the next band
+            // (which the hole also marks incomplete).
+            count_incomplete_frame(sub_frame_row_offset);
+            if (drop_incomplete_) {
+                carry_over_sub_frame_tail(in_base, in_total_size, sub_frame_copy_size, cuda_stream);
+                return {};
             }
-            input_pointer += start_byte_;
-            input_size -= start_byte_;
-            sub_frame_offset = 0;
-        } else {
-            sub_frame_offset = receiver_sub_frame_offset - start_byte_;
+            incomplete = true;
         }
-        const size_t sub_frame_memory_offset = sub_frame_offset % sub_frame_memory_size_;
-        const size_t remaining_size = sub_frame_memory_size_ - sub_frame_memory_offset;
 
-        const size_t copy_size = std::min(input_size, remaining_size);
-        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get() + sub_frame_memory_offset, (CUdeviceptr)input_pointer, copy_size, cuda_stream));
+        output_frame_id = step.frame_id;
 
-        if (sub_frame_memory_offset + copy_size != sub_frame_memory_size_) {
-            // partial sub-frame, wait for the rest
-            return;
-        }
-        sub_frame_copy_size = input_size - copy_size;
-
-        // replace the byte based sub-frame offset with the line based sub-frame offset
-        metadata()->erase("sub_frame_offset");
-        const int64_t sub_frame = sub_frame_offset / sub_frame_memory_size_;
-        metadata()->set<int64_t>("sub_frame_offset", sub_frame * sub_frame_rows_);
-
-        // replace the sub-frame number with the full frame number
-        metadata()->erase("frame_number");
-        metadata()->set<int64_t>("frame_number", receiver_frame_number / receiver_sub_frames_per_frame);
-
-        input_pointer = reinterpret_cast<byte*>((CUdeviceptr)(sub_frame_memory_.get()));
-        cur_pixel_height = sub_frame_rows_.get();
+        input_pointer = reinterpret_cast<const uint8_t*>((uintptr_t)(sub_frame_memory_.get()));
+        cur_pixel_height = sub_frame_rows_;
+        valid_rows = sub_frame_rows_;
     } else {
-        input_pointer = input_tensor->pointer() + start_byte_;
+        // This operator is fed by two different kinds of upstream: BaseReceiverOp-derived
+        // receivers (LinuxReceiverOp/RoceReceiverOp) emit the full raw buffer including the
+        // start_byte_ header region, so it must be skipped here; FusaCoeCaptureOp already
+        // strips it before emitting its tensor (see fusa_coe_capture.cpp's
+        // `src = buffer.cuda_device_ptr + core_.start_byte()` and
+        // `frame_data_size = bytes_per_line * pixel_height`, with no header region included) --
+        // skipping it again here would double-skip into an already-stripped buffer, shifting
+        // every row's read position and running past the true end of valid data (visible as a
+        // wrapped/shifted, corrupted image). Which case this is is a fixed fact about the
+        // upstream producer wired to this instance (params().header_included, set by the app at
+        // compose time), not something to infer per frame from the buffer's size: a
+        // BaseReceiverOp-derived receiver trims its emitted tensor to the frame's actual
+        // bytes_written (see BaseReceiverOp::compute()), so an ordinary dropped-packet frame can
+        // legitimately be smaller than start_byte_ + payload size while still including the
+        // header, which a size-based guess would misclassify.
+        input_pointer = header_included_ ? (in_base + start_byte_) : in_base;
         cur_pixel_height = pixel_height_;
+
+        // A frame the HSB wrote only part of (the receiver trims it to bytes_written) or that
+        // lost packets on the way (fewer bytes received than written) is incomplete. Only the
+        // lines that arrived are converted -- never reading past the tensor -- and the rest of
+        // the image is zeroed.
+        const size_t header = header_included_ ? start_byte_ : 0;
+        const size_t written = in_frame.bytes_written > 0
+            ? std::min(in_total_size, static_cast<size_t>(in_frame.bytes_written))
+            : in_total_size;
+        const size_t line_bytes = transmitted_line_bytes(pixel_format_, pixel_width_);
+        valid_rows = written >= header + line_bytes
+            ? static_cast<uint32_t>(std::min<size_t>(pixel_height_, (written - header - line_bytes) / bytes_per_line_ + 1))
+            : 0;
+        const bool has_hole = in_frame.frame_bytes_received != 0
+            && in_frame.frame_bytes_received < in_frame.bytes_written;
+        if (valid_rows < pixel_height_ || has_hole) {
+            count_incomplete_frame(0);
+            if (drop_incomplete_) {
+                return {};
+            }
+            incomplete = true;
+        }
     }
 
-    // get handle to underlying nvidia::gxf::Allocator from std::shared_ptr<holoscan::Allocator>
-    auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
-        fragment()->executor().context(), allocator_->gxf_cid());
-
-    // create the output
-    nvidia::gxf::Shape shape { int(cur_pixel_height), int(pixel_width_), 1 };
-    nvidia::gxf::Expected<nvidia::gxf::Entity> out_message
-        = CreateTensorMap(context.context(), allocator.value(),
-            { { out_tensor_name_.get(), nvidia::gxf::MemoryStorageType::kDevice, shape,
-                nvidia::gxf::PrimitiveType::kUnsigned16, 0,
-                nvidia::gxf::ComputeTrivialStrides(shape,
-                    nvidia::gxf::PrimitiveTypeSize(nvidia::gxf::PrimitiveType::kUnsigned16)) } },
-            false);
-
-    if (!out_message) {
-        throw std::runtime_error("failed to create out_message");
-    }
-    const auto tensor = out_message.value().get<nvidia::gxf::Tensor>(out_tensor_name_.get().c_str());
-    if (!tensor) {
-        throw std::runtime_error(
-            fmt::format("failed to create out_tensor with name \"{}\"", out_tensor_name_.get()));
+    // Allocate output tensor via the HSDK5 pool declared in setup().
+    static constexpr DLDataType kUInt16 { static_cast<uint8_t>(kDLUInt), 16, 1 };
+    const std::array<int64_t, 3> shape_arr { int64_t(cur_pixel_height), int64_t(pixel_width_), 1 };
+    auto loan = output_tensor.allocate_tensor(
+        holoscan::TensorLoanRequest { .shape = shape_arr, .dtype = kUInt16 });
+    if (!loan) {
+        if (loan.error().code == holoscan::ErrorCode::kResourceExhausted) {
+            // Every pool slot is still held downstream: drop this frame/sub-frame like a full
+            // downstream queue (below), keeping the next band's carried-over bytes.
+            carry_over_sub_frame_tail(in_base, in_total_size, sub_frame_copy_size, cuda_stream);
+            count_backpressure_drop(sub_frame_row_offset);
+            return {};
+        }
+        return holoscan::make_unexpected(std::move(loan).error());
     }
 
-    switch (pixel_format_) {
-    case hololink::csi::PixelFormat::RAW_8:
-        cuda_function_launcher_->launch("frameReconstruction8", { pixel_width_, cur_pixel_height, 1 }, cuda_stream,
-            tensor.value()->pointer(),
-            input_pointer, bytes_per_line_, pixel_width_,
-            cur_pixel_height);
-        break;
-    case hololink::csi::PixelFormat::RAW_10:
-        cuda_function_launcher_->launch("frameReconstruction10",
-            { pixel_width_ / 4, // outputs 4 pixels per shader invocation
-                cur_pixel_height, 1 },
-            cuda_stream, tensor.value()->pointer(),
-            input_pointer, bytes_per_line_, pixel_width_ / 4,
-            cur_pixel_height);
-        break;
-    case hololink::csi::PixelFormat::RAW_12:
-        cuda_function_launcher_->launch("frameReconstruction12",
-            { pixel_width_ / 2, // outputs 2 pixels per shader invocation
-                cur_pixel_height, 1 },
-            cuda_stream, tensor.value()->pointer(),
-            input_pointer, bytes_per_line_, pixel_width_ / 2,
-            cur_pixel_height);
-        break;
-    default:
-        throw std::runtime_error("Unsupported bits per pixel value");
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        return holoscan::make_unexpected(std::move(writer).error());
+    }
+    void* const out_ptr = writer->data();
+
+    // Convert the rows that arrived (all of them, unless the frame is incomplete).
+    if (valid_rows > 0) {
+        switch (pixel_format_) {
+        case hololink::csi::PixelFormat::RAW_8:
+            cuda_function_launcher_->launch("frameReconstruction8", { pixel_width_, valid_rows, 1 }, cuda_stream,
+                out_ptr, input_pointer, bytes_per_line_, pixel_width_, valid_rows);
+            break;
+        case hololink::csi::PixelFormat::RAW_10:
+            cuda_function_launcher_->launch("frameReconstruction10",
+                { pixel_width_ / 4, valid_rows, 1 },
+                cuda_stream, out_ptr, input_pointer, bytes_per_line_, pixel_width_ / 4, valid_rows);
+            break;
+        case hololink::csi::PixelFormat::RAW_12:
+            cuda_function_launcher_->launch("frameReconstruction12",
+                { pixel_width_ / 2, valid_rows, 1 },
+                cuda_stream, out_ptr, input_pointer, bytes_per_line_, pixel_width_ / 2, valid_rows);
+            break;
+        default:
+            return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kInvalidArgument,
+                "Unsupported bits per pixel value" });
+        }
+    }
+    if (valid_rows < cur_pixel_height) {
+        // The rows that never arrived are zeroed rather than left as stale pool memory.
+        CudaCheck(cuMemsetD16Async(reinterpret_cast<CUdeviceptr>(out_ptr)
+                + std::size_t(valid_rows) * pixel_width_ * sizeof(uint16_t),
+            0, std::size_t(cur_pixel_height - valid_rows) * pixel_width_, cuda_stream));
     }
 
-    if (sub_frame_copy_size > 0) {
-        // copy the remaining data to the beginning of the sub-frame memory
-        CudaCheck(cuMemcpyAsync(sub_frame_memory_.get(),
-            (CUdeviceptr)(input_tensor->pointer() + input_tensor->size() - sub_frame_copy_size),
-            sub_frame_copy_size, cuda_stream));
+    // After the reconstruction above, which reads sub_frame_memory_ on the same stream.
+    carry_over_sub_frame_tail(in_base, in_total_size, sub_frame_copy_size, cuda_stream);
+
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        return holoscan::make_unexpected(std::move(committed).error());
     }
 
-    // Emit the tensor
-    auto result = holoscan::gxf::Entity(std::move(out_message.value()));
-    output.emit(result);
+    // Pass most metadata through unchanged; frame_number/sub_frame_offset/
+    // sub_frame_rows/operator_entry_ns are this operator's own recomputed values,
+    // not copies of the input's (see comments above: sub-frame division,
+    // per-sub-frame offset, this operator's configured sub_frame_rows_, and the
+    // wall-clock captured at compute() entry).
+    hololink::CaptureMetadataT out_metadata = hololink::operators::forward_metadata(in_frame);
+    out_metadata.frame_number = static_cast<int64_t>(output_frame_id);
+    out_metadata.sub_frame_offset = sub_frame_row_offset;
+    out_metadata.sub_frame_rows = sub_frame_rows_;
+    out_metadata.operator_entry_ns = operator_entry_ns;
+
+    // Both emits below share the ORIGINAL capture_time this frame arrived with (propagated,
+    // not re-minted -- see propagate_emit_options()), so downstream consumers' own bounded
+    // OnAligned pairing windows stay meaningful and capture_time keeps reflecting the real
+    // capture instant all the way through the pipeline.
+    holoscan::EmitOptions emit_opts = hololink::operators::propagate_emit_options(
+        paired.tensor.metadata, output_frame_id);
+    if (incomplete) {
+        emit_opts.flags = emit_opts.flags | holoscan::SampleFlags::kDegraded;
+    }
+    holoscan::schema::ImageT out_descriptor;
+    out_descriptor.height = static_cast<int32_t>(cur_pixel_height);
+    out_descriptor.width = static_cast<int32_t>(pixel_width_);
+    out_descriptor.encoding = hololink::operators::bayer_image_encoding(bayer_format_);
+    auto emitted = hololink::operators::emit_tensor_and_metadata(
+        [&] { return output_tensor.emit_tensor(std::move(*loan), out_descriptor, emit_opts); },
+        output_metadata, out_metadata, emit_opts);
+    if (!emitted) {
+        return holoscan::make_unexpected(std::move(emitted).error());
+    }
+    if (*emitted == hololink::operators::PairedEmit::kDropped) {
+        // A downstream queue is full: the frame is dropped rather than failing the session.
+        count_backpressure_drop(out_metadata.sub_frame_offset);
+    }
+    return {};
 }
 
 uint32_t CsiToBayerOp::receiver_start_byte()
 {
-    // HSB, in this mode, doesn't insert any stuff in the front of received data.
     return 0;
 }
 
 uint32_t CsiToBayerOp::received_line_bytes(uint32_t transmitted_line_bytes)
 {
-    // Bytes are padded to 8.
     return hololink::core::round_up(transmitted_line_bytes, 8);
 }
 
@@ -346,14 +588,11 @@ void CsiToBayerOp::configure(uint32_t start_byte, uint32_t bytes_per_line, uint3
     pixel_format_ = pixel_format;
     csi_length_ = start_byte + bytes_per_line * pixel_height + trailing_bytes;
 
-    // the operator is not yet initialized when this function is called, so we need to find the
-    // sub_frame_rows argument from the args() vector.
-    uint32_t sub_frame_rows = sub_frame_rows_.default_value();
-    for (auto& arg : args()) {
-        if (arg.name() == "sub_frame_rows") {
-            sub_frame_rows = std::any_cast<uint32_t>(arg.value());
-        }
-    }
+    // sub_frame_rows_ is latched in start(); before that (a camera driver's configure_converter()
+    // at graph-construction time, when get_sub_frame_size() already sizes the receiver's pages)
+    // read the authored parameter directly, so legacy and geometry-struct callers both see the
+    // per-band size.
+    const uint32_t sub_frame_rows = sub_frame_rows_ != 0 ? sub_frame_rows_ : params().sub_frame_rows;
     if (sub_frame_rows != 0) {
         frame_size_ = bytes_per_line_ * sub_frame_rows;
     } else {
@@ -363,7 +602,7 @@ void CsiToBayerOp::configure(uint32_t start_byte, uint32_t bytes_per_line, uint3
     configured_ = true;
 }
 
-size_t CsiToBayerOp::get_csi_length()
+size_t CsiToBayerOp::get_csi_length() const
 {
     if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");
@@ -372,7 +611,7 @@ size_t CsiToBayerOp::get_csi_length()
     return csi_length_;
 }
 
-size_t CsiToBayerOp::get_sub_frame_size()
+size_t CsiToBayerOp::get_sub_frame_size() const
 {
     if (!configured_) {
         throw std::runtime_error("CsiToBayerOp is not configured.");

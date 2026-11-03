@@ -7,13 +7,16 @@
 #define HOLOLINK_MODULE_OPERATORS_HSB_CONTROLLER_HPP
 
 #include <atomic>
+#include <condition_variable>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <mutex>
 
 #include <cuda.h>
-#include <holoscan/holoscan.hpp>
+
+#include <hololink/core/metadata.hpp>
 
 #include "hololink/module/enumeration_metadata.hpp"
 
@@ -51,7 +54,7 @@ namespace hololink::module::operators {
  *       Ctrl.get_next_frame(...)
  *         Receiver.get_next_frame; Factory.tap()  // refresh watchdog
  *         Receiver.stamp_metadata; frame_memory; frame_buffer_owner
- *       Op wraps the buffer as the output tensor and emits
+ *       Op copies the frame into a pool slot on the activation's stream and emits
  *   · · · stall: Watchdog fires (reactor thread) · · ·
  *     Factory.on_loss
  *       sensor.stop_sensor()
@@ -64,7 +67,9 @@ namespace hololink::module::operators {
  *   App.stop -> Op.stop -> Ctrl.stop -> Factory.stop; Receiver.destruct
  *
  * Threading: found/lost run on the reactor thread, get_next_frame on the
- * scheduler thread, so the NetworkReceiver is guarded by receiver_mutex_. */
+ * scheduler thread, so the NetworkReceiver is guarded by receiver_mutex_.
+ * get_next_frame waits for a frame without holding it (see frame_waiter_),
+ * so a disconnect never waits for a compute(). */
 class HsbController {
 public:
     HsbController(std::shared_ptr<SensorFactory> sensor_factory,
@@ -80,12 +85,14 @@ public:
     void stop();
 
     /* Pull the next frame (scheduler thread). On true, `metadata` is
-     * stamped and out_frame/out_size/out_owner describe the buffer to wrap
-     * as the output tensor; the factory watchdog is tapped. `cuda_stream` is
-     * the operator's per-compute pipeline stream, passed to the receiver so a
-     * software transport places its host->device copy on it. */
+     * stamped, out_frame is the frame's device memory and out_size its
+     * size, and out_owner keeps that memory alive until the operator's copy
+     * of the frame has finished; the factory watchdog is tapped.
+     * `cuda_stream` is the operator's per-compute pipeline stream, passed to
+     * the receiver so a software transport places its host->device copy on
+     * it. */
     bool get_next_frame(unsigned timeout_ms,
-        holoscan::MetadataDictionary& metadata, CUstream cuda_stream,
+        hololink::Metadata& metadata, CUstream cuda_stream,
         CUdeviceptr& out_frame, size_t& out_size,
         std::shared_ptr<void>& out_owner);
     bool frames_ready();
@@ -98,6 +105,8 @@ public:
 private:
     void found(const hololink::module::EnumerationMetadata& metadata);
     void lost();
+    // Wakes a get_next_frame() waiting for a frame.
+    void wake_frame_waiter();
 
     std::shared_ptr<SensorFactory> sensor_factory_;
     std::shared_ptr<NetworkReceiverFactory> network_receiver_factory_;
@@ -109,6 +118,13 @@ private:
     std::mutex receiver_mutex_;
     std::shared_ptr<NetworkReceiver> network_receiver_;
     std::atomic<bool> connected_ { false };
+
+    // get_next_frame() waits on frame_waiter_ rather than in the receiver's own
+    // get_next_frame() under receiver_mutex_, which lost() needs on the reactor thread.
+    // The receiver's frame-ready callback, lost() and stop() bump frame_wakes_ to wake it.
+    std::mutex frame_wait_mutex_;
+    std::condition_variable frame_waiter_;
+    uint64_t frame_wakes_ = 0;
 };
 
 } // namespace hololink::module::operators

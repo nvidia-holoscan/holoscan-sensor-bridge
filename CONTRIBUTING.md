@@ -3,9 +3,9 @@
 ## Table of Contents
 
 - [Introduction](#introduction)
-- [Types of Contributions](#types-of-contributions)
-- [Developer Workflow](#developer-workflow)
-- [Preparing your submission](#preparing-your-submission)
+- [Where to Contribute](#where-to-contribute)
+- [Bug Fixes to Holoscan Sensor Bridge](#bug-fixes-to-holoscan-sensor-bridge)
+- [Signing Your Contribution](#signing-your-contribution)
 - [Reporting issues](#reporting-issues)
 
 ## Introduction
@@ -16,29 +16,28 @@ overview of the project.
 Please read this guide if you are interested in contributing open source code to
 Holoscan Sensor Bridge.
 
-## Types of Contributions
+## Where to Contribute
 
-Before getting started, assess how your idea or project may best benefit the Holoscan
-community.
+There are two repositories for Holoscan Sensor Bridge (HSB) contributions:
 
-If your code is:
+| Contribution                                                                                      | Repository                                                                                            |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| A bug fix for the HSB code                                                                        | [Holoscan Sensor Bridge](https://github.com/nvidia-holoscan/holoscan-sensor-bridge) (this repository) |
+| A new sensor, application, operator, FPGA design, demo, tutorial, utility, AI skill, or benchmark | [Holoscan Sensor Bridge Hub](https://github.com/nvidia-holoscan/holoscan-sensor-bridge-hub/tree/main) |
 
-- _feature-complete and tested_: Submit a
-  [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request)
-  to contribute your work to Holoscan Sensor Bridge.
-- _a work in progress:_ We recommend to
-  [fork](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/working-with-forks/fork-a-repo)
-  Holoscan Sensor Bridge and track your local development there, then submit to Holoscan
-  Sensor Bridge when ready. Alternatively, open pull request and indicate that it is a
-  "work-in-progress" with the prefix "WIP".
-- _a patch for an existing application or operator_: Submit a
-  [pull request](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/proposing-changes-to-your-work-with-pull-requests/creating-a-pull-request)
-  and request a review from the original author of the contribution you are patching.
+The HSB repository accepts a pull request only for a bug fix. Send all other
+contributions to the Holoscan Sensor Bridge Hub, see the
+[Hub contributing instructions](https://github.com/nvidia-holoscan/holoscan-sensor-bridge-hub/tree/main?tab=contributing-ov-file).
 
-We recommend referring to contributing guidelines for testing and styling goals
-throughout your development process.
+## Bug Fixes to Holoscan Sensor Bridge
 
-## Developer Workflow
+A bug-fix pull request must obey these rules:
+
+- The pull request fixes a bug in the HSB code. It does not add a feature, a sensor, or
+  an application.
+- Each commit has a DCO sign-off. See
+  [Signing Your Contribution](#signing-your-contribution).
+- The code passes the lint checks in `scripts/lint/lint.sh`.
 
 ### Requirements
 
@@ -61,9 +60,22 @@ before making their first contribution.
    git push -u origin <local-branch>:<remote-branch>
    ```
 
-1. All code submissions must be formatted according to the rules in `ci/lint.sh`. You
-   can run `ci/lint.sh --format` to automatically format all C++, Python, and Markdown
-   files-- usually that's enough to get `ci/lint.sh` to pass.
+1. All code submissions must be formatted according to the rules in
+   `scripts/lint/lint.sh`. You can run `scripts/lint/lint.sh --format` to automatically
+   format all C++, Python, and Markdown files-- usually that's enough to get
+   `scripts/lint/lint.sh` to pass.
+
+1. Make sure that the lint checks pass: `scripts/lint/lint.sh --lint`.
+
+1. Sign off each commit:
+
+   ```bash
+   git commit -s
+   ```
+
+   The `-s` option adds the DCO sign-off line (see below). We also recommend that you
+   sign each commit with your GPG or SSH key (`git commit -s -S`). Add the key to your
+   GitHub account, so that GitHub shows the commit as "Verified".
 
 1. Once the code changes are staged on the fork and ready for review, please
    [submit](https://help.github.com/en/articles/creating-a-pull-request) a
@@ -71,8 +83,7 @@ before making their first contribution.
    the changes from a branch of the fork into a selected branch of upstream.
 
    - Exercise caution when selecting the source and target branches for the PR.
-   - Creation of a PR creation kicks off the [code review](#preparing-your-submission)
-     process.
+   - In the PR description, describe the bug, the fix, and how you tested the fix.
 
 1. Holoscan Sensor Bridge maintainers will review the PR and accept the proposal if
    changes meet Holoscan Sensor Bridge standards.
@@ -97,7 +108,7 @@ them!
 - All source code contributions must strictly adhere to the Holoscan Sensor Bridge
   coding style.
 
-### Signing Your Contribution
+## Signing Your Contribution
 
 - We require that all contributors "sign-off" on their commits. This certifies that the
   contribution is your original work, or you have rights to submit it under the same
@@ -150,4 +161,6 @@ them!
 
 Please open a
 [Holoscan Sensor Bridge Issue Request](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/issues)
-to request an enhancement, bug fix, or other change in Holoscan Sensor Bridge.
+to request an enhancement, bug fix, or other change in Holoscan Sensor Bridge. Report a
+problem in a Hub project on the
+[Hub issue tracker](https://github.com/nvidia-holoscan/holoscan-sensor-bridge-hub/issues).

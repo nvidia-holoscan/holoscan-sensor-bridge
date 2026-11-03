@@ -1,0 +1,60 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+//
+// FlatBuffer schema for per-capture hardware metadata, carried on its own port
+// alongside (not embedded in) the captured Tensor/schema::ImageT payload.
+// Named CaptureMetadata rather than HololinkMetadata/FrameMetadata: it lives in
+// the hololink namespace already (no need to repeat that), and "frame" would be
+// misleading for non-image sensors (e.g. opaque byte-blob captures) that use
+// this same type. Field names mirror the non-tensor fields of the former
+// HololinkFrame schema exactly, but ids are renumbered consecutively from 0
+// (FlatBuffers requires consecutive ids; HololinkFrame's tensor field occupied
+// id 0, which has no counterpart here) -- otherwise this is a mechanical
+// extraction, not a redesign. All scalar metadata fields are int64 so that they can hold the
+// widest value produced by any receiver without lossy conversion.
+//
+// Fields use explicit `id` attributes so the schema can be extended later
+// without breaking existing consumers.
+
+namespace hololink;
+
+table CaptureMetadata {
+  // board-level counters
+  frame_number:           int64 (id: 0);
+  received_frame_number:  int64 (id: 1);
+
+  // timestamps
+  timestamp_s:            int64 (id: 2);
+  timestamp_ns:           int64 (id: 3);
+  metadata_s:             int64 (id: 4);
+  metadata_ns:            int64 (id: 5);
+  received_s:             int64 (id: 6);
+  received_ns:            int64 (id: 7);
+
+  // data integrity
+  crc:                    int64 (id: 8);
+  bytes_written:          int64 (id: 9);
+
+  // transport accounting
+  packets_dropped:        int64 (id: 10);
+  psn:                    int64 (id: 11);
+  frame_packets_received: int64 (id: 12);
+  frame_bytes_received:   int64 (id: 13);
+  /// always 0: no receiver reads the NIC's write-request counter any more (it cost a sysfs read
+  /// per frame); kept so that the ids stay consecutive
+  rx_write_requests:      int64 (id: 14);
+  imm_data:               int64 (id: 15);
+  page_number:            int64 (id: 16);
+
+  // sub-frame fields — both are 0 when not in sub-frame mode
+  /// row offset of this sub-frame in the full frame
+  sub_frame_offset:       int64 (id: 17);
+  /// rows per sub-frame (0 = full-frame mode)
+  sub_frame_rows:         uint32 (id: 18);
+  /// host wall-clock (CLOCK_REALTIME ns) when the first processing operator
+  /// (CsiToBayerOp) entered compute() for this frame; 0 if not measured
+  operator_entry_ns:      int64 (id: 19);
+}
+
+root_type CaptureMetadata;
+file_identifier "CPMD";

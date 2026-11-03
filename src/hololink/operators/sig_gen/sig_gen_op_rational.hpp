@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,11 +17,13 @@
 #ifndef SRC_HOLOLINK_OPERATORS_SIG_GEN_SIG_GEN_OP_RATIONAL_HPP
 #define SRC_HOLOLINK_OPERATORS_SIG_GEN_SIG_GEN_OP_RATIONAL_HPP
 
+#include <istream>
 #include <numeric>
+#include <ostream>
 #include <regex>
 #include <sstream>
-
-#include <yaml-cpp/yaml.h>
+#include <stdexcept>
+#include <string>
 
 namespace hololink::operators {
 
@@ -85,26 +87,4 @@ struct Rational {
 
 } // namespace hololink::operators
 
-namespace YAML {
-
-template <>
-struct convert<hololink::operators::Rational> {
-    static Node encode(const hololink::operators::Rational& rhs)
-    {
-        Node node;
-        node = static_cast<std::string>(rhs);
-        return node;
-    }
-
-    static bool decode(const Node& node, hololink::operators::Rational& rhs)
-    {
-        if (!node.IsScalar()) {
-            return false;
-        }
-        rhs = hololink::operators::Rational(node.as<std::string>());
-        return true;
-    }
-};
-
-} // namespace YAML
 #endif // SRC_HOLOLINK_OPERATORS_SIG_GEN_SIG_GEN_OP_RATIONAL_HPP

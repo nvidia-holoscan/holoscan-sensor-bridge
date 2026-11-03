@@ -36,7 +36,7 @@ namespace hololink::sensors {
  * 1. Create concrete sensor instance
  * 2. Call start() to begin sensor operations
  * 3. Use sensor-specific methods to interact with data
- * 4. Call stop() when done
+ * 4. Call stop() when done.
  */
 class Sensor {
 public:

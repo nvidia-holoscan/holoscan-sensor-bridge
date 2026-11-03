@@ -22,10 +22,10 @@ module delayed_io
   parameter W_OFSET      = 8     // APB address offset width
 )(
   // Clock and Reset
-  input  logic                  cmd_clk,      // APB clock domain
-  input  logic                  cmd_rst_n,    // APB reset
-  input  logic                  proc_clk,     // Processing clock domain
-  input  logic                  proc_rst_n,   // Processing reset
+  input  logic                  cmd_clk,    // APB clock domain
+  input  logic                  cmd_rst,    // APB reset
+  input  logic                  proc_clk,   // Processing clock domain
+  input  logic                  proc_rst,   // Processing reset
   
   // APB interface
   input  apb_m2s                i_apb_m2s,
@@ -94,8 +94,23 @@ assign cancel_delayed_pulse  = (apb_write && (reg_addr == 8'h20)) ? i_apb_m2s.pw
 // APB Register Write Logic
 //------------------------------------------------------------------------------
 
-always_ff @(posedge cmd_clk or negedge cmd_rst_n) begin
-  if (!cmd_rst_n) begin
+// Valid register addresses for write/read accesses
+function automatic logic addr_is_valid_write(logic [7:0] addr);
+  return addr inside {8'h04, 8'h08, 8'h0C, 8'h14, 8'h18, 8'h20, 8'hF0};
+endfunction
+
+function automatic logic addr_is_valid_read(logic [7:0] addr);
+  return addr inside {8'h04, 8'h80, 8'h84, 8'hF0, 8'hF8};
+endfunction
+
+// A write is only an error if the address is neither writable nor a known
+// read-only status register; writes to read-only registers (e.g. 0x80,
+// 0x84, 0xF8) are silently ignored, leaving the register unmodified.
+logic write_err;
+assign write_err = apb_write && !addr_is_valid_write(reg_addr) && !addr_is_valid_read(reg_addr);
+
+always_ff @(posedge cmd_clk) begin
+  if (cmd_rst) begin
     global_ctrl <= 32'h0;
     delay_value_us <= 32'd1000;  // Default 1000 microseconds
   end else begin
@@ -115,13 +130,16 @@ end
 
 logic [31:0] read_data;
 logic        read_valid;
+logic        read_err;
 
-always_ff @(posedge cmd_clk or negedge cmd_rst_n) begin
-  if (!cmd_rst_n) begin
+always_ff @(posedge cmd_clk) begin
+  if (cmd_rst) begin
     read_data  <= 32'h0;
     read_valid <= 1'b0;
+    read_err   <= 1'b0;
   end else begin
     read_valid <= apb_read;
+    read_err   <= apb_read && !addr_is_valid_read(reg_addr);
     if (apb_read) begin
       case (reg_addr)
         8'h04: read_data <= delay_value_us;
@@ -140,7 +158,7 @@ end
 // For reads: ready when read_data is valid (2 cycles total)
 assign o_apb_s2m.pready = apb_write || read_valid;
 assign o_apb_s2m.prdata = read_data;
-assign o_apb_s2m.pserr  = 1'b0;
+assign o_apb_s2m.pserr  = write_err || read_err;
 
 //------------------------------------------------------------------------------
 // Internal signals and state
@@ -175,8 +193,8 @@ logic        global_enable_proc;
 logic [31:0] delay_value_us_proc;
 
 // Simple 2FF synchronizers for CDC
-always_ff @(posedge proc_clk or negedge proc_rst_n) begin
-  if (!proc_rst_n) begin
+always_ff @(posedge proc_clk) begin
+  if (proc_rst) begin
     global_enable_proc <= 1'b0;
     delay_value_us_proc <= 32'd1000;
   end else begin
@@ -192,8 +210,8 @@ logic [31:0] cancel_delayed_sync;
 logic [31:0] delayed_set_sync;
 logic [31:0] delayed_clear_sync;
 
-always_ff @(posedge proc_clk or negedge proc_rst_n) begin
-  if (!proc_rst_n) begin
+always_ff @(posedge proc_clk) begin
+  if (proc_rst) begin
     immediate_set_sync <= 32'h0;
     immediate_clear_sync <= 32'h0;
     cancel_delayed_sync <= 32'h0;
@@ -224,8 +242,8 @@ generate
   for (i = 0; i < NUM_OUTPUTS; i++) begin : gen_outputs
     
     // Per-output control logic
-    always_ff @(posedge proc_clk or negedge proc_rst_n) begin
-      if (!proc_rst_n) begin
+    always_ff @(posedge proc_clk) begin
+      if (proc_rst) begin
         output_states_bits[i] <= 1'b0;
         delayed_op_type[i] <= DELAYED_NONE;
         fsm_start[i] <= 1'b0;
@@ -285,7 +303,7 @@ generate
       .NUM_OUTPUTS ( 1 )
     ) u_fsm (
       .clk              ( proc_clk           ),
-      .rst_n            ( proc_rst_n         ),
+      .rst              ( proc_rst           ),
       .i_start          ( fsm_start[i]       ),
       .i_delay_cycles   ( fsm_delay_cycles   ),
       .o_busy           ( fsm_busy[i]        ),
@@ -312,8 +330,8 @@ endgenerate
 // Status register updates (sync back to APB clock domain)
 //------------------------------------------------------------------------------
 
-always_ff @(posedge cmd_clk or negedge cmd_rst_n) begin
-  if (!cmd_rst_n) begin
+always_ff @(posedge cmd_clk) begin
+  if (cmd_rst) begin
     output_states <= 32'h0;
     countdown_active <= 32'h0;
   end else begin

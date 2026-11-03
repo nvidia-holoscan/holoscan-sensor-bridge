@@ -1,6 +1,5 @@
 #!/usr/bin/env python3
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION &
-# AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -25,28 +24,48 @@ The FuSa CoE wire format delivers a 256 B payload of 32 interleaved stereo S32 p
 (slot 0 -> left, slot 1 -> right), identical in layout to the RoCE transport.
 
 ``FusaCoeCaptureOp`` is configured with ``cpu_output=True`` so the output tensor is
-backed by the CPU-accessible NvSciBuf VA (kHost memory).  ``bytes_written`` and the
-PCM payload are read directly from that buffer — no CUDA driver involvement.  Keepalive
+backed by an SDK-owned host buffer. ``bytes_written`` arrives on the metadata
+port, while PCM is read from the tensor. Keepalive
 frames (164 B) are skipped.
+
+Three real gaps this port needed, all genuinely missing rather than renamed (confirmed by
+grepping the current tree, not assumed):
+  - FusaCoeCaptureOp's own cpu_output support was a real, working feature on this repo's
+    `internal` branch and was dropped during the HSDK5 rewrite (setup()/compute() hardcoded
+    kCudaDevice) -- restored as part of this port, along with wiring frame_size_bytes (an
+    already-present C++ Params field the catalog row never parsed) so this app can skip CSI
+    geometry entirely, matching its own raw-byte-capture need.
+  - hololink.get_i2s()/get_hsb_ip_version()/get_fpga_date()/hololink.round_up() were not
+    exposed to Python at all -- added as part of this port.
+  - FusaCoeCaptureOp takes its device start/stop as callbacks, so a plain Python device object
+    like AudioRxDevice below passes its own methods (device_start=device.start).
+
+Valid payload length comes from the capture metadata port, paired with the copied
+host tensor. The SDK tensor does not include the NvSciBuf metadata trailer.
+
+See audio_recorder.py's module docstring for the shared rationale (both apps' AudioAlsaPlaybackOp
+is independently duplicated, matching this whole porting effort's established convention) behind
+porting AudioAlsaPlaybackOp mechanically to hs.Operator's declarative style.
 """
 
 import argparse
-import ctypes
 import logging
 import os
 import queue
-import struct
+import sys
 import threading
 import time
 import wave
+from datetime import timedelta
 
-import cuda.bindings.driver as cuda
-import holoscan
+import capture_metadata
+import cuda.bindings.driver as cuda_driver
+import holoscan as hs
 import numpy as np
 
-import hololink as hololink_module
+import hololink as hl
 
-# FuSa capture page (4096 B). Do not use 256 — NvSciBuf MGBE pitch is 4 KiB.
+# FuSa capture page (4096 B). Do not use 256 -- NvSciBuf MGBE pitch is 4 KiB.
 FUSA_CAPTURE_PAGE_BYTES = 4096
 
 PCM_BYTES = 256
@@ -55,8 +74,6 @@ SAMPLES_PER_FRAME = PCM_BYTES // 4 // 2  # 32 stereo pairs
 
 DEFAULT_FRAME_SIZE = FUSA_CAPTURE_PAGE_BYTES
 DEFAULT_TIMEOUT_MS = 1500
-
-_HSB_METADATA_BYTES_WRITTEN_OFFSET = 24
 
 ALSA_CHANNELS = 2
 ALSA_SAMPLE_BYTES = 4
@@ -85,34 +102,17 @@ def _default_alsa_device() -> str:
     return "default"
 
 
-def _read_bytes_written_from_cpu(cpu_ptr: int, capture_frame_bytes: int) -> int:
-    """Read bytes_written from the HSB metadata block appended after the capture payload."""
-    offset = (
-        hololink_module.round_up(capture_frame_bytes, 128)
-        + _HSB_METADATA_BYTES_WRITTEN_OFFSET
-    )
-    raw = bytes((ctypes.c_uint8 * 8).from_address(cpu_ptr + offset))
-    (bytes_written,) = struct.unpack(">Q", raw)
-    return int(bytes_written)
-
-
-def _extract_pcm_payload(raw: np.ndarray, valid_bytes: int) -> np.ndarray | None:
+def _extract_pcm_payload(raw, valid_bytes):
     """Return 256 B PCM payload, or None for keepalive/invalid frames."""
     if valid_bytes == KEEPALIVE_BYTES or valid_bytes <= 0:
         return None
-    if valid_bytes < PCM_BYTES:
+    if valid_bytes < PCM_BYTES or len(raw) < PCM_BYTES:
         logging.debug("skip frame: valid_bytes=%d too short for PCM", valid_bytes)
         return None
     return raw[:PCM_BYTES]
 
 
-def _pcm_to_alsa_bytes(
-    pcm: np.ndarray,
-    *,
-    dc_x_prev: list[int],
-    dc_y_prev: list[int],
-    alsa_endianness: str = "BE",
-) -> bytes:
+def _pcm_to_alsa_bytes(pcm, *, dc_x_prev, dc_y_prev, alsa_endianness="BE"):
     """Decode one 256 B CoE PCM block and apply the DC blocker."""
     x_arr = np.frombuffer(pcm, dtype=">i4").reshape(-1, ALSA_CHANNELS)
     y_arr = np.empty_like(x_arr)
@@ -136,11 +136,7 @@ def _pcm_to_alsa_bytes(
 class AudioRxDevice:
     """Minimal device handle for ``FusaCoeCaptureOp``; no per-frame state needed."""
 
-    def __init__(
-        self,
-        hololink: hololink_module.Hololink,
-        enumeration_metadata: hololink_module.Metadata,
-    ):
+    def __init__(self, hololink, enumeration_metadata):
         self._hololink = hololink
         self._enumeration_metadata = enumeration_metadata
 
@@ -151,41 +147,50 @@ class AudioRxDevice:
         pass
 
 
-class AudioAlsaPlaybackOp(holoscan.core.Operator):
+class AudioAlsaPlaybackOp(hs.Operator):
     """Decode FuSa CoE I2S audio frames and forward to ALSA and/or a WAV file.
 
     Decoding runs inline in ``compute()``.  Two worker threads decouple ALSA
     writes and WAV I/O from the capture path.
     """
 
-    def __init__(
-        self,
-        fragment,
-        *,
-        alsa_device: str,
-        sample_rate: int = DEFAULT_SAMPLE_RATE,
-        alsa_endianness: str = "BE",
-        output_path: str | None = None,
-        no_playback: bool = False,
-        frame_size: int = DEFAULT_FRAME_SIZE,
-        log_every: int = 128,
-        **kwargs,
-    ):
-        super().__init__(fragment, **kwargs)
-        self._frame_size = frame_size
-        self._alsa_device = alsa_device
-        self._sample_rate = sample_rate
-        self._output_path = output_path
-        self._no_playback = no_playback
-        if self._no_playback and not self._output_path:
+    in_tensor = hs.Input("in_tensor", hs.payload.Tensor)
+    in_metadata = hs.Input("in_metadata", capture_metadata.CaptureMetadata)
+
+    alsa_device = hs.Param("default")
+    sample_rate = hs.Param(DEFAULT_SAMPLE_RATE)
+    alsa_endianness = hs.Param("BE")
+    output_path = hs.Param("")
+    no_playback = hs.Param(False)
+    log_every = hs.Param(128)
+
+    def setup(self, spec):
+        spec.input(self.in_tensor, queue_depth=4)
+        spec.input(self.in_metadata, queue_depth=4)
+
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.in_tensor, self.in_metadata],
+                    window=timedelta(microseconds=500),
+                )
+            )
+            .input(self.in_tensor, hs.Exact())
+            .input(self.in_metadata, hs.Exact())
+        )
+
+    def start(self):
+        if self.no_playback and not self.output_path:
             raise ValueError("--no-playback requires --output")
-        self._alsa_endianness = alsa_endianness.upper()
+        self._alsa_endianness = self.alsa_endianness.upper()
         if self._alsa_endianness not in ("BE", "LE"):
             raise ValueError("alsa_endianness must be BE or LE")
-        self._log_every = max(1, log_every)
+        self._log_every = max(1, self.log_every)
         self._frames = 0
         self._skipped = 0
-        self._first_frame_time: float | None = None
+        self._first_frame_time = None
         self._dc_x_prev = [0, 0]
         self._dc_y_prev = [0, 0]
         self._alsa_pcm = None
@@ -193,60 +198,34 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
         self._alsa_write_bytes = (
             self._alsa_period_frames * ALSA_CHANNELS * ALSA_SAMPLE_BYTES
         )
-        self._play_queue: queue.Queue[bytes | None] = queue.Queue(
-            maxsize=PLAYBACK_QUEUE_CHUNKS
-        )
-        self._play_thread: threading.Thread | None = None
+        self._play_queue = queue.Queue(maxsize=PLAYBACK_QUEUE_CHUNKS)
+        self._play_thread = None
         self._dropped = 0
-        self._wav_queue: queue.Queue[bytes | None] = queue.Queue(
-            maxsize=WAV_QUEUE_CHUNKS
-        )
-        self._wav_thread: threading.Thread | None = None
+        self._wav_queue = queue.Queue(maxsize=WAV_QUEUE_CHUNKS)
+        self._wav_thread = None
         self._wav_writes = 0
         self._wav_dropped = 0
-        self._wav_file: wave.Wave_write | None = None
-        self._alsa_error_cls: type[Exception] = Exception
+        self._wav_file = None
+        self._alsa_error_cls = Exception
         self._alsaaudio = None
         self._alsa_fail_streak = 0
         self._alsa_writes = 0
 
-    def setup(self, spec):
-        spec.input("input")
-
-    def _create_alsa_pcm(self):
-        """Open the playback PCM handle."""
-        assert self._alsaaudio is not None
-        fmt = (
-            self._alsaaudio.PCM_FORMAT_S32_LE
-            if self._alsa_endianness == "LE"
-            else self._alsaaudio.PCM_FORMAT_S32_BE
-        )
-        return self._alsaaudio.PCM(
-            self._alsaaudio.PCM_PLAYBACK,
-            self._alsaaudio.PCM_NORMAL,
-            device=self._alsa_device,
-            channels=ALSA_CHANNELS,
-            rate=self._sample_rate,
-            format=fmt,
-            periodsize=self._alsa_period_frames,
-        )
-
-    def start(self):
         try:
-            if self._output_path:
-                self._wav_file = wave.open(self._output_path, "wb")
+            if self.output_path:
+                self._wav_file = wave.open(self.output_path, "wb")
                 self._wav_file.setnchannels(ALSA_CHANNELS)
                 self._wav_file.setsampwidth(ALSA_SAMPLE_BYTES)
-                self._wav_file.setframerate(self._sample_rate)
+                self._wav_file.setframerate(self.sample_rate)
                 logging.info(
                     "WAV open: %s rate=%d channels=%d sampwidth=%d",
-                    self._output_path,
-                    self._sample_rate,
+                    self.output_path,
+                    self.sample_rate,
                     ALSA_CHANNELS,
                     ALSA_SAMPLE_BYTES,
                 )
 
-            if self._no_playback:
+            if self.no_playback:
                 logging.info("ALSA playback disabled (--no-playback)")
             else:
                 try:
@@ -261,8 +240,8 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
                 logging.info(
                     "ALSA open: device=%s rate=%d period_frames=%d (%d B/write) "
                     "stereo S32 %s",
-                    self._alsa_device,
-                    self._sample_rate,
+                    self.alsa_device,
+                    self.sample_rate,
                     self._alsa_period_frames,
                     self._alsa_write_bytes,
                     self._alsa_endianness,
@@ -287,9 +266,28 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             )
             self._play_thread.start()
 
-    def _process_host_page(
-        self, host_page: np.ndarray, bytes_written: int | None
-    ) -> None:
+    def _create_alsa_pcm(self):
+        """Open the playback PCM handle."""
+        if self._alsaaudio is None:
+            raise RuntimeError(
+                "alsaaudio is unavailable; cannot open the playback device."
+            )
+        fmt = (
+            self._alsaaudio.PCM_FORMAT_S32_LE
+            if self._alsa_endianness == "LE"
+            else self._alsaaudio.PCM_FORMAT_S32_BE
+        )
+        return self._alsaaudio.PCM(
+            self._alsaaudio.PCM_PLAYBACK,
+            self._alsaaudio.PCM_NORMAL,
+            device=self.alsa_device,
+            channels=ALSA_CHANNELS,
+            rate=self.sample_rate,
+            format=fmt,
+            periodsize=self._alsa_period_frames,
+        )
+
+    def _process_host_page(self, host_page, bytes_written):
         valid = len(host_page) if bytes_written is None else int(bytes_written)
         pcm_block = _extract_pcm_payload(host_page, valid)
         if pcm_block is None:
@@ -308,7 +306,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             self._skipped += 1
             return
 
-        if not self._no_playback and self._enqueue_drop_oldest(self._play_queue, pcm):
+        if not self.no_playback and self._enqueue_drop_oldest(self._play_queue, pcm):
             self._dropped += 1
         if self._wav_file is not None and self._enqueue_drop_oldest(
             self._wav_queue, pcm
@@ -334,9 +332,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
                 self._wav_dropped,
             )
 
-    def _stop_worker(
-        self, thread: threading.Thread, q: queue.Queue, timeout: float | None = 2.0
-    ) -> None:
+    def _stop_worker(self, thread, q, timeout=2.0):
         # Send None sentinel so the worker drains and exits, then join.
         try:
             q.put(None, timeout=timeout)  # sentinel: drain remainder and exit
@@ -367,7 +363,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             samples = self._wav_writes * SAMPLES_PER_FRAME
             logging.info(
                 "WAV closed: %s (%d frames written, %d samples/channel, %d dropped)",
-                self._output_path,
+                self.output_path,
                 self._wav_writes,
                 samples,
                 self._wav_dropped,
@@ -391,7 +387,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             self._dropped,
         )
 
-    def _playback_worker(self) -> None:
+    def _playback_worker(self):
         pending = bytearray()
         while True:
             item = self._play_queue.get()
@@ -407,7 +403,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             except Exception as e:
                 logging.warning("ALSA playback: %s", e)
 
-    def _reopen_alsa(self) -> None:
+    def _reopen_alsa(self):
         if self._alsaaudio is None:
             return
         if self._alsa_pcm is not None:
@@ -417,12 +413,12 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
                 pass
         try:
             self._alsa_pcm = self._create_alsa_pcm()
-            logging.info("ALSA reopened: device=%s", self._alsa_device)
+            logging.info("ALSA reopened: device=%s", self.alsa_device)
         except Exception as e:
             logging.error("ALSA reopen failed: %s", e)
             self._alsa_pcm = None
 
-    def _enqueue_drop_oldest(self, q: queue.Queue, pcm: bytes) -> bool:
+    def _enqueue_drop_oldest(self, q, pcm):
         try:
             q.put_nowait(pcm)
             return False
@@ -437,13 +433,13 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
         q.put_nowait(pcm)
         return dropped
 
-    def _pcm_for_wav(self, pcm: bytes) -> bytes:
+    def _pcm_for_wav(self, pcm):
         """Return PCM bytes in WAV's required little-endian layout."""
         if self._alsa_endianness == "LE":
             return pcm
         return np.frombuffer(pcm, dtype=">i4").astype("<i4", copy=False).tobytes()
 
-    def _wav_writer(self) -> None:
+    def _wav_writer(self):
         while True:
             item = self._wav_queue.get()
             if item is None:
@@ -456,7 +452,7 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
             except Exception as e:
                 logging.warning("WAV write: %s", e)
 
-    def _alsa_write(self, data: bytes) -> None:
+    def _alsa_write(self, data):
         if self._alsa_pcm is None:
             return
         try:
@@ -508,94 +504,146 @@ class AudioAlsaPlaybackOp(holoscan.core.Operator):
                     pass
                 self._alsa_pcm = None
 
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        # FusaCoeCaptureOp is configured with cpu_output=True, so the tensor is
-        # backed by the CPU-accessible NvSciBuf VA (kHost).  np.asarray() gives a
-        # zero-copy view; .ctypes.data is the raw address for HSB metadata reading.
-        host_buf = np.asarray(in_message.get(""), dtype=np.uint8)
-        cpu_ptr = host_buf.ctypes.data
-        raw_bw = _read_bytes_written_from_cpu(cpu_ptr, self._frame_size)
-        bytes_written = 0 if raw_bw is None else raw_bw
-        copy_len = max(0, min(int(bytes_written), PCM_BYTES))
+    def compute(self, context):
+        tensor = self.in_tensor.receive_data()
+        metadata = self.in_metadata.receive_data()
+        bytes_written = metadata.bytes_written
+        # Only the payload is copied into the SDK tensor; metadata is on its own port.
+        host_buf = np.asarray(tensor, dtype=np.uint8)
+        copy_len = max(0, min(int(bytes_written), PCM_BYTES, host_buf.size))
         host_page = host_buf[:copy_len].copy()
-        del host_buf, in_message  # release FuSa buffer pool entry
 
         self._process_host_page(host_page, bytes_written)
 
 
-class AudioFusaPlaybackApp(holoscan.core.Application):
-    def __init__(
-        self,
-        hololink_channel: hololink_module.DataChannel,
-        *,
-        frame_size: int,
-        interface: str | None,
-        timeout_ms: int,
-        frame_limit: int | None,
-        alsa_device: str,
-        sample_rate: int,
-        alsa_endianness: str,
-        output_path: str | None,
-        no_playback: bool,
-        enumeration_metadata: hololink_module.Metadata,
-        hololink: hololink_module.Hololink,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self.enable_metadata(True)
-        self._hololink_channel = hololink_channel
-        self._frame_size = frame_size
-        self._interface = interface
-        self._timeout_ms = timeout_ms
-        self._frame_limit = frame_limit
-        self._alsa_device = alsa_device
-        self._sample_rate = sample_rate
-        self._alsa_endianness = alsa_endianness
-        self._output_path = output_path
-        self._no_playback = no_playback
-        self._enumeration_metadata = enumeration_metadata
-        self._hololink = hololink
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            condition = holoscan.conditions.CountCondition(
-                self, name="rx_count", count=self._frame_limit
-            )
-        else:
-            condition = holoscan.conditions.BooleanCondition(
-                self, name="rx_run", enable_tick=True
-            )
 
-        interface = self._interface or self._enumeration_metadata.get("interface")
-        hsb_mac = self._enumeration_metadata.get("mac_id")
+def run(
+    hololink_ip,
+    sensor,
+    skip_reset,
+    frame_size,
+    timeout_ms,
+    frame_limit,
+    interface_override,
+    alsa_device,
+    sample_rate,
+    alsa_endianness,
+    output_path,
+    no_playback,
+):
+    output_path = (
+        output_path or ""
+    )  # hs.Param can't default/bind to None; "" means "unset"
+
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(0))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    hololink_dev = None
+    try:
+        cuda_driver.cuCtxSetCurrent(cu_context)
+
+        metadata = hl.find_channel(hololink_ip)
+        hl.use_sensor(metadata, sensor)
+        channel = hl.DataChannel(metadata)
+        hololink_dev = channel.hololink()
+        hololink_dev.start()
+        if not skip_reset:
+            hololink_dev.reset()
+
+        logging.info(
+            "HSB version=%#x FPGA datecode=%#x",
+            hololink_dev.get_hsb_ip_version(),
+            hololink_dev.get_fpga_date(),
+        )
+
+        hololink_dev.get_i2s(metadata, enable_tx=False)
+        logging.info("I2S audio path configured")
+
+        interface = interface_override or metadata.get_string("interface")
+        hsb_mac = metadata.get_string("mac_id")
         mac_addr = list(bytes.fromhex(hsb_mac.replace(":", "")))
 
-        device = AudioRxDevice(self._hololink, self._enumeration_metadata)
-        receiver = hololink_module.operators.FusaCoeCaptureOp(
-            self,
-            condition,
-            name="fusa_receiver",
+        device = AudioRxDevice(hololink_dev, metadata)
+
+        graph = hs.Graph("audio_recorder_fusa")
+        receiver = graph.op(
+            hl.operators.FusaCoeCaptureOp,
+            "receiver",
+            data_channel=channel,
+            device_start=device.start,
+            device_stop=device.stop,
             interface=interface,
             mac_addr=mac_addr,
-            hololink_channel=self._hololink_channel,
-            timeout=self._timeout_ms,
-            device=device,
+            timeout=timeout_ms,
             cpu_output=True,
+            frame_size_bytes=frame_size,
+            frame_limit=frame_limit or 0,
         )
-        receiver.configure_frame_size(self._frame_size)
-        playback = AudioAlsaPlaybackOp(
-            self,
-            name="alsa_playback",
-            alsa_device=self._alsa_device,
-            sample_rate=self._sample_rate,
-            alsa_endianness=self._alsa_endianness,
-            output_path=self._output_path,
-            no_playback=self._no_playback,
-            frame_size=self._frame_size,
+        playback = graph.op(
+            AudioAlsaPlaybackOp,
+            "alsa_playback",
+            alsa_device=alsa_device,
+            sample_rate=sample_rate,
+            alsa_endianness=alsa_endianness,
+            output_path=output_path,
+            no_playback=no_playback,
         )
-        self.add_flow(receiver, playback, {("output", "input")})
+        graph.add_flow(receiver.tensor, playback.in_tensor, queue_depth=4)
+
+        graph.add_flow(receiver.metadata, playback.in_metadata, queue_depth=4)
+
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+
+        # receiver's "tensor" output is cpu_output=True (kHost) -- no CUDA device binding needed or
+        # wanted, unlike every kCudaDevice receiver elsewhere in this porting effort.
+        plan = hs.compile(graph, hs.CompileOptions())
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+
+        logging.info(
+            "Starting: alsa=%s output=%s no_playback=%s frame_limit=%s interface=%s "
+            "endianness=%s",
+            alsa_device if not no_playback else "(disabled)",
+            output_path or "(none)",
+            no_playback,
+            frame_limit or "unlimited",
+            interface,
+            alsa_endianness,
+        )
+        with hs.run_async(plan) as session:
+            try:
+                session.wait()
+            except KeyboardInterrupt:
+                session.request_stop()
+                session.wait()
+            failed = any(
+                diag.severity == hs.diagnostics.DiagnosticSeverity.ERROR
+                for diag in session.diagnostics
+            )
+        if failed:
+            print("Run failed; see runtime diagnostics above.", file=sys.stderr)
+            return 1
+        print("Done.")
+        return 0
+    finally:
+        try:
+            if hololink_dev is not None:
+                hololink_dev.stop()
+        finally:
+            _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
 
 def main() -> None:
@@ -672,77 +720,26 @@ def main() -> None:
         help="Capture-only mode; skip ALSA playback. Requires --output.",
     )
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
+
+    logging.basicConfig(level=args.log_level)
     logging.info("Initializing.")
 
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"{channel_metadata=}")
-
-    hololink_module.DataChannel.use_sensor(channel_metadata, args.sensor)
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    cu_dev = None
-    cu_ctx = None
-    try:
-        (r,) = cuda.cuInit(0)
-        if r != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"cuInit failed: {r}")
-        r, cu_dev = cuda.cuDeviceGet(0)
-        if r != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"cuDeviceGet failed: {r}")
-        r, cu_ctx = cuda.cuDevicePrimaryCtxRetain(cu_dev)
-        if r != cuda.CUresult.CUDA_SUCCESS:
-            raise RuntimeError(f"cuDevicePrimaryCtxRetain failed: {r}")
-
-        if not args.skip_reset:
-            hololink.reset()
-
-        logging.info(
-            "HSB version=%#x FPGA datecode=%#x",
-            hololink.get_hsb_ip_version(),
-            hololink.get_fpga_date(),
-        )
-
-        hololink.get_i2s(channel_metadata, enable_tx=False)
-        logging.info("I2S audio path configured")
-
-        app = AudioFusaPlaybackApp(
-            hololink_channel=hololink_channel,
-            frame_size=args.frame_size,
-            interface=args.interface,
-            timeout_ms=args.timeout,
-            frame_limit=args.frame_limit,
-            alsa_device=args.alsa_device,
-            sample_rate=args.sample_rate,
-            alsa_endianness=args.endianness,
-            output_path=args.output,
-            no_playback=args.no_playback,
-            enumeration_metadata=channel_metadata,
-            hololink=hololink,
-        )
-        config = os.path.join(os.path.dirname(__file__), "example_configuration.yaml")
-        if os.path.isfile(config):
-            app.config(config)
-
-        logging.info(
-            "Starting: alsa=%s output=%s no_playback=%s frame_limit=%s interface=%s "
-            "endianness=%s",
-            args.alsa_device if not args.no_playback else "(disabled)",
-            args.output or "(none)",
-            args.no_playback,
-            args.frame_limit or "unlimited",
-            args.interface or channel_metadata.get("interface"),
+    sys.exit(
+        run(
+            args.hololink,
+            args.sensor,
+            args.skip_reset,
+            args.frame_size,
+            args.timeout,
+            args.frame_limit,
+            args.interface,
+            args.alsa_device,
+            args.sample_rate,
             args.endianness,
+            args.output,
+            args.no_playback,
         )
-        logging.info("Calling run")
-        app.run()
-    finally:
-        hololink.stop()
-        if cu_ctx is not None:
-            (r,) = cuda.cuDevicePrimaryCtxRelease(cu_dev)
-            if r != cuda.CUresult.CUDA_SUCCESS:
-                logging.warning("cuDevicePrimaryCtxRelease failed: %s", r)
+    )
 
 
 if __name__ == "__main__":

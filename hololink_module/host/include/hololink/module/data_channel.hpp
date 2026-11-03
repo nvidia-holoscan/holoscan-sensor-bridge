@@ -19,40 +19,37 @@ namespace hololink::module {
 
 class HololinkInterfaceV1;
 
-/* Per-channel anchor — transport-agnostic. Identifies the channel by
- * "serial=<serial_number>;data_channel=<n>" and caches the two values
- * every per-channel service in the system reads off: the channel's
- * enumeration metadata, and the parent per-board HololinkInterfaceV1.
+/**
+ * @brief Handle to a single data path on an HSB device.
  *
- * The `data_channel` index is per-sensor — distinct from `data_plane`,
- * which is the bootp-side per-data-plane index. On HSB-Lite (1:1
- * sensor:data_plane) the two coincide; on N-sensors-per-data-plane
- * boards (Leopard VB1940-AIO) the same data_plane carries multiple
- * sensors and only `data_channel` separates them.
+ * DataChannel represents the path that sensor or actuator data
+ * travels between the host system (usually via RDMA) and the device
+ * itself.
  *
- * Primary EnumerationMetadata cache. This is the per-channel
- * EnumerationMetadata snapshot for the V1 service surface. Every
- * per-channel V1 service that needs configuration data from the
- * metadata holds a shared_ptr<DataChannelInterfaceV1> and reads it
- * back through enumeration_metadata() rather than caching its own
- * copy. Per-board services use HololinkInterfaceV1::enumeration_metadata()
- * the same way.
+ * - A single HSB device can support any number of DataChannel instances.
+ * - Data producers or consumers use this object to find enumeration metadata
+ *    provided by the application at construction time.  This data is configured
+ *    by the application per application requirements (e.g. using a specific
+ *    sensor number or configuration)-- enumeration metadata found just by
+ *    listening to BOOTP messages may not have this application-specific setup.
+ * - Channel specific objects are invalidated when `device_lost` is called here,
+ *    so later calls to get_service will reinitialize these-- supporting
+ *    device reconnection.
  *
- * A transport-specific service (e.g. RoceDataChannelInterfaceV1) is a
- * separate ConfigurableService — has-a, not is-a — that holds a
- * shared_ptr to this anchor and adds its own surface (attach_receiver,
- * etc.). A channel with no transport-specific service is still a valid
- * DataChannelInterfaceV1: the anchor stands on its own.
- *
- * Construct order. Application code drives anchor materialization
- * either directly (DataChannelInterfaceV1::get_service(metadata)) or
- * transitively (e.g. RoceDataChannelInterfaceV1::get_service(metadata)
- * configures its anchor first). Sibling per-channel services do a
- * cache-only lookup of this anchor and throw if it isn't configured. */
+ * @code
+ *  auto& adapter = hololink::module::Adapter::get_adapter();
+ *  auto metadata = adapter.wait_for_channel(hololink_ip, discovery_timeout);
+ *  auto channel = hololink::module::DataChannelInterfaceV1::get_service(metadata);
+ *  // Reach the device this channel runs on.
+ *  channel->hololink()->start();
+ * @endcode
+ */
 class DataChannelInterfaceV1
     : public ConfigurableService<DataChannelInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "data_channel.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* Per-channel instance_id derivation used by the metadata-form
      * get_service. Throws if the metadata is missing 'serial_number'
@@ -64,20 +61,36 @@ public:
     }
 
     virtual ~DataChannelInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* The per-channel enumeration metadata the impl was configured
-     * with. Sibling per-channel services read every metadata field
-     * they need off this snapshot. */
+    /**
+     * @brief The enumeration metadata this channel was configured with.
+     *
+     * Every service on this channel is configured from this snapshot.
+     *
+     * @return The metadata describing this channel.
+     */
     virtual const EnumerationMetadata& enumeration_metadata() const = 0;
 
-    /* The per-board HololinkInterfaceV1 this channel belongs to. The
-     * impl resolves it via HololinkInterfaceV1::get_service(module,
-     * metadata) at configure time and caches the shared_ptr. */
+    /**
+     * @brief The device this channel runs on.
+     *
+     * The same device an application gets by fetching HololinkInterfaceV1
+     * with this channel's enumeration metadata.
+     *
+     * @return The device.
+     */
     virtual std::shared_ptr<HololinkInterfaceV1> hololink() const = 0;
 
-    /* Channel-level entry point for HololinkInterfaceV1::device_lost, so the
-     * reconnection path can invalidate a lost device through a data channel
-     * it already holds rather than resolving the Hololink. */
+    /**
+     * @brief Invalidate the services cached for the device this channel
+     *      runs on, following loss of contact with it.
+     *
+     * Does what HololinkInterfaceV1::device_lost() does, for applications
+     * that hold a channel and not the device it runs on.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t device_lost() = 0;
 };
 

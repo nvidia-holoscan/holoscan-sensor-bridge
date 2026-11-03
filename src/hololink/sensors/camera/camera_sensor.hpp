@@ -53,6 +53,19 @@ public:
 
     virtual void configure_converter(std::shared_ptr<hololink::csi::CsiConverter> converter);
 
+    // HSDK5 path: fill a CsiGeometry struct (used to populate CsiToBayerParams)
+    // without needing a mutable pointer to the operator.
+    void configure_converter(hololink::csi::CsiGeometry& geom);
+
+    // HSDK5 path: build the same generic (8-byte line alignment) CsiConverter adapter
+    // configure_converter(CsiGeometry&) above drives, for callers with no CameraSensor
+    // instance to drive it through -- e.g. a pure-Python sensor driver with no C++-bound
+    // camera type, resolving geometry from plain (pixel_format, width, height) scalars
+    // instead. See FusaCoeCaptureOp::make_geometry_adapter() for the equivalent FUSA
+    // (64-byte-aligned) precedent this mirrors.
+    static std::shared_ptr<hololink::csi::CsiConverter> make_generic_geometry_adapter(
+        hololink::csi::CsiGeometry& out);
+
     virtual int64_t get_width() const;
     virtual int64_t get_height() const;
     virtual hololink::csi::PixelFormat get_pixel_format() const;

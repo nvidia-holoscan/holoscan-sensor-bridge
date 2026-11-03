@@ -22,7 +22,7 @@
 
 namespace hololink::module::module_core {
 
-/* RoceReceiverInterfaceV1 backed by hololink::operators::RoceReceiver.
+/* RoceReceiverInterfaceV2 (and so V1) backed by hololink::operators::RoceReceiver.
  * Constructed by the per-board supplement as a shell at enumerate
  * time; start(...) is when the underlying legacy receiver actually
  * comes up.
@@ -32,13 +32,13 @@ namespace hololink::module::module_core {
  * legacy receiver — `module/hsb_lite_2510/` uses this seam to attach
  * the 2510-specific behavior the FPGA needs (the legacy class already
  * has virtual hooks for metadata copy / decode). */
-class RoceReceiverV1 : public RoceReceiverInterfaceV1,
+class RoceReceiverV1 : public RoceReceiverInterfaceV2,
                        public Service<RoceReceiverV1> {
 public:
     static constexpr const char* type_id = "roce_receiver.module_core.v1";
     using Service<RoceReceiverV1>::get_service;
     using Service<RoceReceiverV1>::for_each_type_id;
-    using ServiceAlias = RoceReceiverInterfaceV1;
+    using ServiceAlias = RoceReceiverInterfaceV2;
 
     RoceReceiverV1() = default;
 
@@ -151,7 +151,7 @@ public:
         info.imm_data = legacy.imm_data;
         info.received_s = legacy.received_s;
         info.received_ns = legacy.received_ns;
-        info.rx_write_requests = legacy.rx_write_requests;
+        info.rx_write_requests = 0;
         info.dropped = legacy.dropped;
         return true;
     }
@@ -159,6 +159,11 @@ public:
     bool frames_ready() override
     {
         return backing_ ? backing_->frames_ready() : false;
+    }
+
+    bool receive_path_failed() override
+    {
+        return backing_ && backing_->receive_path_failed();
     }
 
     void set_frame_ready(std::function<void()> callback) override

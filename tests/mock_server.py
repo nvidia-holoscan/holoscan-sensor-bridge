@@ -33,7 +33,92 @@ import numpy as np
 import nvtx
 import utils
 
-import hololink as hololink_module
+import hololink
+
+
+def _local_ip(peer_ip, peer_port):
+    """The local IP address the host uses to reach peer_ip."""
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+        s.connect((peer_ip, peer_port))
+        return s.getsockname()[0]
+
+
+class _Hololink:
+    """The HSB protocol constants and helpers this mock server uses. HSDK5 doesn't
+    bind them to Python; the values are the C++ ones, from
+    src/hololink/core/hololink.hpp (control plane, I2C, events, sequencer,
+    METADATA_SIZE), src/hololink/core/networking.hpp (UDP_PACKET_SIZE) and
+    src/hololink/core/data_channel.hpp (data plane). Other names come from the
+    hololink package."""
+
+    # src/hololink/core/hololink.hpp
+    APB_RAM = 0x2000
+    HSB_IP_VERSION = 0x80
+    FPGA_DATE = 0x84
+    CTRL_EVENT = 0x0000_0200
+    CTRL_EVT_SW_EVENT = CTRL_EVENT + 0x2C
+    WR_DWORD = 0x04
+    WR_BLOCK = 0x09
+    RD_DWORD = 0x14
+    REQUEST_FLAGS_ACK_REQUEST = 0b0000_0001
+    RESPONSE_SUCCESS = 0x00
+    RESPONSE_INVALID_CMD = 0x04
+    METADATA_SIZE = 128
+    # src/hololink/core/networking.hpp
+    UDP_PACKET_SIZE = 10240
+    # src/hololink/core/hololink.hpp
+    I2C_CTRL = 0x0300_0200
+    I2C_REG_CONTROL = 0
+    I2C_REG_BUS_EN = 4
+    I2C_REG_NUM_BYTES = 8
+    I2C_REG_STATUS = 0x80
+    I2C_REG_DATA_BUFFER = 0x100
+    I2C_START = 0b0000_0000_0000_0001
+    I2C_10B_ADDRESS = 0b0000_0000_0000_0010
+    I2C_BUSY = 0b0000_0000_0000_0001
+    I2C_DONE = 0b0000_0000_0001_0000
+
+    class Hololink:
+        class Event:
+            SW_EVENT = 2
+            SIF_0_FRAME_END = 16
+            SIF_1_FRAME_END = 17
+
+    class Sequencer:
+        class Op:
+            POLL = 0
+            WR = 1
+            RD = 2
+
+    # src/hololink/core/data_channel.hpp
+    DP_PACKET_SIZE = 0x04
+    DP_VP_MASK = 0x0C
+    DP_QP = 0x00
+    DP_RKEY = 0x04
+    DP_PAGE_LSB = 0x08
+    DP_PAGE_MSB = 0x0C
+    DP_PAGE_INC = 0x10
+    DP_MAX_BUFF = 0x14
+    DP_BUFFER_LENGTH = 0x18
+    DP_HOST_MAC_LOW = 0x20
+    DP_HOST_MAC_HIGH = 0x24
+    DP_HOST_IP = 0x28
+    DP_HOST_UDP_PORT = 0x2C
+
+    @staticmethod
+    def local_ip_and_mac(peer_ip, peer_port):
+        # Only the IP is used here.
+        return _local_ip(peer_ip, peer_port), None, None
+
+    @staticmethod
+    def logging_level(level):
+        logging.basicConfig(level=level)
+
+    def __getattr__(self, name):
+        return getattr(hololink, name)
+
+
+hololink_module = _Hololink()
 
 # How much shared memory for the generated image
 # should be allocated?  We'll fault if we try to create an
@@ -398,9 +483,15 @@ class MockServer:
                 if (self._i2c_trigger is not None) and (self._i2c_trigger < trigger):
                     trigger = self._i2c_trigger
                 now = time.monotonic()
-                timeout = None
-                if trigger > now:
-                    timeout = trigger - now
+                # Never pass None here: to select() that means "block until a
+                # control message arrives", not "don't wait".  Once the host is
+                # streaming, the only control traffic is the watchdog tap the
+                # host sends after it processes a frame -- so blocking here
+                # while a frame is already due stops frames forever, the host
+                # never taps again, and both sides deadlock in silence.  An
+                # overdue trigger has to poll (0) and let the loop below emit
+                # the frame and re-arm frame_trigger.
+                timeout = max(0.0, trigger - now)
                 cr = [control_socket, self._control_r]
                 cw = []
                 cx = []
@@ -411,14 +502,14 @@ class MockServer:
 
                     if self._control_r in r:
                         message = os.read(self._control_r, len(message))
-                        logging.trace("got control message=%s" % (message,))
+                        logging.debug("got control message=%s" % (message,))
                         if message == b"exit":
                             break
 
                     if control_socket in r:
                         with nvtx.annotate("udp-request"):
                             length, peer = control_socket.recvfrom_into(message)
-                            logging.trace('Received "%s".' % (message[:length],))
+                            logging.debug('Received "%s".' % (message[:length],))
                             deserializer = hololink_module.Deserializer(message)
                             cmd_code = deserializer.next_uint8()
                             flags = deserializer.next_uint8()
@@ -706,7 +797,7 @@ class MockServer:
             self._camera_watchdog_trigger = time.monotonic() + value
         elif register_id == mock_camera.FRAMES_PER_MINUTE:
             self._frame_time_s = 60.0 / value
-            logging.trace(f"{self._frame_time_s=}")
+            logging.debug(f"{self._frame_time_s=}")
         elif register_id == mock_camera.INITIALIZE:
 
             self._csi_image_data = generate_image(
@@ -795,6 +886,7 @@ class TestServer:
         self._thread = None
         self._lock = threading.Lock()
         self._server = MockServer()
+        self._error = None
 
     def __enter__(self):
         logging.debug("__enter__")
@@ -806,7 +898,13 @@ class TestServer:
             )
             self._server_address = "127.0.0.1"
             self._thread.start()
+            # The server releases the lock when it's ready, or _run() does if it fails.
             self._lock.acquire()
+            if self._error is not None:
+                self._thread.join()
+                raise RuntimeError(
+                    "The mock camera server didn't start"
+                ) from self._error
         else:
             self._server_address = self._mock_camera
         self._control_udp_port = self._server._control_udp_port
@@ -826,6 +924,15 @@ class TestServer:
             tb = "".join(traceback.format_exc())
             for s in tb.split("\n"):
                 logging.error(s)
+            # Wake __enter__ if it still waits for the server to be ready (for
+            # example without the privilege for its raw socket). If the server was
+            # ready, __enter__ holds the lock again and nothing waits for it, so
+            # releasing it is harmless.
+            self._error = e
+            try:
+                self._lock.release()
+            except RuntimeError:
+                pass  # Released when the server was ready, and not taken back yet.
 
     def address(self):
         return self._server_address
@@ -846,8 +953,15 @@ class TestServer:
         return r
 
     def channel_metadata(self):
+        # The mock server answers on 127.0.0.1 (or whatever --mock-camera
+        # named), so there is no enumerated NIC to name. An empty "interface"
+        # resolves to ifindex 0, which leaves egress selection to the routing
+        # table. from_enumeration_metadata treats a missing key the same way,
+        # so this is optional; it is spelled out to mirror the metadata that
+        # real enumeration records.
         metadata = {
             "peer_ip": self._server_address,
+            "interface": "",
             "control_port": self._control_udp_port,
             "hsb_ip_version": self._server._hsb_ip_version,
             "fpga_uuid": "a0578d60-9353-41ec-9278-d56544eebbe3",

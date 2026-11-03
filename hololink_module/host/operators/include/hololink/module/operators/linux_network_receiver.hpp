@@ -16,6 +16,8 @@
 
 #include <cuda.h>
 
+#include <hololink/core/metadata.hpp>
+
 #include "hololink/module/data_channel.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/frame_metadata.hpp"
@@ -59,29 +61,12 @@ public:
     bool frames_ready() override;
     CUdeviceptr frame_memory() override;
     std::shared_ptr<void> frame_buffer_owner() override;
-    void stamp_metadata(holoscan::MetadataDictionary& metadata) override;
+    void stamp_metadata(hololink::Metadata& metadata) override;
     std::shared_ptr<hololink::module::DataChannelInterfaceV1>
     data_channel() override;
 
 private:
     Config config_ {};
-
-    std::string frame_packets_received_key_;
-    std::string frame_bytes_received_key_;
-    std::string frame_number_key_;
-    std::string received_frame_number_key_;
-    std::string received_s_key_;
-    std::string received_ns_key_;
-    std::string timestamp_s_key_;
-    std::string timestamp_ns_key_;
-    std::string metadata_s_key_;
-    std::string metadata_ns_key_;
-    std::string packets_dropped_key_;
-    std::string crc_key_;
-    std::string psn_key_;
-    std::string imm_data_key_;
-    std::string page_number_key_;
-    std::string bytes_written_key_;
 
     std::shared_ptr<hololink::module::LinuxDataChannelInterfaceV1> channel_;
     std::shared_ptr<hololink::module::DataChannelInterfaceV1> data_channel_;

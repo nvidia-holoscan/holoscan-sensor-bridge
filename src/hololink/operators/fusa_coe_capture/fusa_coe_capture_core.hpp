@@ -20,12 +20,14 @@
 #include <vector>
 
 #include <hololink/core/csi_controller.hpp>
+#include <hololink/core/ingress_stall.hpp>
+#include <hololink/core/newest_frame_slot.hpp>
 
 #include <NvFusaCaptureExternal.hpp>
 #include <nvscibuf.h>
 
 #include <cuda.h>
-#include <holoscan/holoscan.hpp>
+#include <cuda_runtime_api.h>
 
 namespace hololink::operators::fusa_coe_capture {
 
@@ -36,6 +38,7 @@ struct CoeFrameMetadata {
     int64_t metadata_ns = 0;
     int64_t crc = 0;
     int64_t frame_number = 0;
+    int64_t bytes_written = 0;
 };
 
 /**
@@ -55,6 +58,10 @@ struct CoeFrameMetadata {
  *   RAW_10    | disabled   | NvSciColor_X6Bayer10<CFA>
  *   RAW_8     | enabled    | rejected -- no packed 8-bit format exists
  *   RAW_8     | disabled   | NvSciColor_Bayer8<CFA>
+ *
+ * Built against the SIPL API v1 (JetPack 7.1 / L4T R38) headers, whose nvscibuf.h has no
+ * NvSciColor_Bayer12<CFA>, packetized RAW_12 is named NvSciColor_Bayer16<CFA> instead and
+ * that name means the packed 12-bit layout throughout this core (NVSIPL_API_MAJOR_VERSION).
  *
  * Throws std::runtime_error for any triple with no correct representation.
  */
@@ -90,11 +97,15 @@ public:
 
     /**
      * Bytes from the start of one received line to the start of the next. HSB pads lines to
-     * 64 bytes when the packetizer is repacking them, and to 8 bytes when it is passing
+     * 64 bytes when the packetizer is enabled (whether or not it repacked the line: the
+     * embedded-data lines it bypasses are padded too), and to 8 bytes when it is passing
      * CSI-2 through untouched, so this depends on the packetizer just as
-     * transmitted_line_bytes() does.
+     * transmitted_line_bytes() does. Static (and packetizer_enabled taken explicitly rather
+     * than read from request_format() state) so a geometry-capture CsiConverter adapter can
+     * call it before any FusaCoeCaptureCore instance exists -- see
+     * hololink::operators::FusaCoeCaptureOp::make_geometry_adapter().
      */
-    uint32_t received_line_bytes(uint32_t line_bytes) const;
+    static uint32_t received_line_bytes(uint32_t line_bytes, bool packetizer_enabled);
 
     /**
      * State the capture format as a whole: bit depth, sensor CFA, and whether the HSB
@@ -103,24 +114,44 @@ public:
      * format. An unrepresentable combination throws here, at request time, rather than
      * failing later during buffer allocation.
      *
-     * Must be called before transmitted_line_bytes(), configure() or start(): the line
-     * geometry depends on the packetizer state.
+     * Must be called before configure() or start().
      */
     void request_format(hololink::csi::PixelFormat pixel_format,
         hololink::csi::BayerFormat bayer_format,
         bool packetizer_enabled);
 
     /**
-     * Bytes on the wire for one line. Depends on the packetizer: enabled, HSB emits the
-     * NvSciBuf packed layouts; disabled, the stream stays CSI-2 MIPI packed.
+     * Bytes on the wire for one line, before received_line_bytes()'s padding. Depends on
+     * the packetizer: disabled, the stream stays CSI-2 MIPI packed; enabled, HSB runs the
+     * pixel format's packetizer program (hololink::csi::get_packetizer_program()) on the
+     * CSI-2 line, and the program's schedule sizes the output -- a whole number of its
+     * loops, so a line may carry padding pixels before the 64-byte pad. Static for the
+     * same reason as received_line_bytes() above.
      */
-    uint32_t transmitted_line_bytes(
-        hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) const;
+    static uint32_t transmitted_line_bytes(
+        hololink::csi::PixelFormat pixel_format, uint32_t pixel_width, bool packetizer_enabled);
 
+    /**
+     * Image capture mode: state the CSI geometry (start byte, line stride, dimensions,
+     * pixel format, trailing bytes) for a real image. Mutually exclusive with
+     * configure_frame_size() below -- whichever is called last wins (sets image_mode_
+     * accordingly). Requires request_format() to have been called first (throws
+     * otherwise): the capture format it states there feeds this call's own validation
+     * and the eventual NvSciBuf color-format resolution.
+     */
     void configure(uint32_t start_byte, uint32_t received_bytes_per_line,
         uint32_t pixel_width, uint32_t pixel_height,
         hololink::csi::PixelFormat pixel_format,
         uint32_t trailing_bytes);
+
+    /**
+     * Opaque byte-blob capture mode: state a flat frame_size_bytes payload with no CSI
+     * image structure -- no CFA, no packetizer, allocated as plain NvSciColor_R8.
+     * Mutually exclusive with configure() above. Does not require request_format()
+     * first (the blob carries no (bit depth, CFA, packetizer) triple to validate).
+     * See FusaCoeCaptureParams::frame_size_bytes / examples/fusa_coe_test_sensor_receiver.cpp
+     * for the sensor-side use case this exists for.
+     */
     void configure_frame_size(uint32_t frame_size_bytes);
 
     bool is_configured() const { return configured_; }
@@ -133,13 +164,26 @@ public:
     hololink::csi::BayerFormat bayer_format() const { return bayer_format_; }
     bool packetizer_enabled() const { return packetizer_enabled_; }
 
+    // frame_ready_callback: called from the acquire thread to have compute() run once more:
+    // when it stores a frame and compute() has taken the one before (see
+    // hololink::core::NewestFrameSlot), so that compute() runs once per frame it can take,
+    // and once to wake compute() after a stall or a capture failure. Returns true once the
+    // notification is durably handled (posted, or failed for a reason no retry would fix);
+    // false means "not accepted yet, call again shortly" -- the acquire thread retries in
+    // that case, until stop(), since nothing else will re-signal that frame.
+    //
+    // label: names this capture (e.g. the operator's name, capture_0) in its log
+    // messages, so a stall in a stereo run says which camera stopped.
     void start(
         const std::string& interface,
         const std::vector<uint8_t>& mac_addr,
         uint32_t capture_timeout_ms,
         CoeChannelConfig& channel,
         std::function<void()> device_start,
-        std::function<void()> device_stop);
+        std::function<void()> device_stop,
+        std::function<bool()> frame_ready_callback = {},
+        uint32_t stall_timeout_ms = 0,
+        std::string label = {});
 
     void stop(
         CoeChannelConfig& channel,
@@ -150,17 +194,33 @@ public:
         void* cuda_device_ptr = nullptr;
     };
 
-    // Blocks until a frame is acquired or the timeout elapses.
-    //   returns true  -> a buffer was acquired; `out` is populated.
-    //   returns false -> timed out with no frame; not an error, the caller may
-    //                    simply retry (e.g. skip a tick, or loop in a monitor).
+    // Takes the newest acquired frame, without waiting: compute() runs once per frame it
+    // can take (see frame_ready_callback above), so a frame is there unless the capture
+    // has stalled.
+    //   returns true  -> a buffer was taken; `out` is populated.
+    //   returns false -> no frame: the acquire thread woke compute() to report a stall
+    //                    (stalled(), below).
     //   throws         -> the capture path failed, i.e. any state that is neither
     //                    OK nor a plain timeout. This is deliberately fatal: a
     //                    caller that lets it escape terminates the process,
     //                    surfacing the failure loudly (and landing on the fault
     //                    under a debugger) rather than stalling silently.
-    bool wait_for_acquired_buffer(
-        uint32_t timeout_ms, const char* out_tensor_name, BufferView& out);
+    bool take_acquired_buffer(BufferView& out);
+
+    // Frames the acquire thread replaced with a newer one before compute() took them,
+    // since the last call: frames lost because compute() did not run before the next
+    // frame arrived. Those that arrived before compute() first ran, while the run was
+    // starting, are not counted.
+    uint64_t take_replaced_frame_count();
+
+    // True once the acquire thread has declared a hard stall (stall_timeout_ms
+    // of consecutive empty capture-status polls, if that was set nonzero in
+    // start()). Set at most once per start()/stop() cycle; the caller should
+    // check this whenever take_acquired_buffer() returns false, and fail
+    // its compute() if it is true -- only compute() can end the run, so the
+    // acquire thread cannot do it directly.
+    bool stalled() const { return stalled_.load(); }
+    uint64_t stall_duration_ms() const { return stall_duration_ms_.load(); }
 
     size_t metadata_offset() const;
 
@@ -171,7 +231,9 @@ public:
 
     void register_pending_output(void* tensor_device_ptr);
 
-    static nvidia::gxf::Expected<void> buffer_release_callback(void* pointer);
+    // Called (via cudaLaunchHostFunc) after the device copy of the buffer data
+    // completes. Returns the buffer to the available pool and re-arms the capture.
+    static void buffer_release_callback(void* pointer);
 
 private:
     bool alloc_buffers();
@@ -181,6 +243,9 @@ private:
     void unregister_buffers(NvFusaCaptureExternal::INvFusaCaptureCoeHandler* handler);
     bool issue_capture();
     void acquire_buffer_thread_func();
+    // Has compute() run once more (frame_ready_callback_), retrying until the run takes the
+    // notification or stop() is called.
+    void notify_compute();
     void rollback_failed_start(
         CoeChannelConfig& channel,
         const std::function<void()>& device_stop,
@@ -268,7 +333,6 @@ private:
     std::mutex capture_error_mutex_;
     std::string capture_error_message_;
     std::mutex buffer_mutex_;
-    std::condition_variable buffer_acquired_;
     std::condition_variable buffer_available_;
 
     struct BufferInfo {
@@ -299,8 +363,11 @@ private:
 
     std::deque<BufferInfo*> available_buffers_;
     std::queue<BufferInfo*> in_flight_captures_;
-    BufferInfo* acquired_buffer_ = nullptr;
+    // The newest acquired frame, waiting for compute(); guarded by buffer_mutex_.
+    hololink::core::NewestFrameSlot<BufferInfo> acquired_buffer_;
     BufferInfo* buffer_in_compute_ = nullptr;
+    // Whether compute() has taken a frame since start(); guarded by buffer_mutex_.
+    bool frame_taken_ = false;
 
     std::unordered_set<BufferInfo*> collect_all_buffer_infos();
 
@@ -311,10 +378,22 @@ private:
 
     uint32_t next_reissue_index_ = 0;
     uint32_t capture_timeout_ms_ = 0;
+    std::function<bool()> frame_ready_callback_;
+    // Set by start() before the acquire thread is spawned; read-only afterwards.
+    std::string label_;
 
     // Count of frames successfully received (acquired) by the acquire thread.
     // Touched only from that thread, so no synchronization is needed.
     uint64_t received_frame_count_ = 0;
+
+    // Ingress-stall detection (see stalled()/stall_duration_ms() above). Both
+    // ingress_stall_ and stall_timeout_ms_ are touched only from the acquire
+    // thread; stalled_/stall_duration_ms_ are written once from that thread
+    // and read from the caller of take_acquired_buffer(), hence atomic.
+    hololink::core::IngressStall ingress_stall_;
+    uint32_t stall_timeout_ms_ = 0;
+    std::atomic<bool> stalled_ { false };
+    std::atomic<uint64_t> stall_duration_ms_ { 0 };
 
     // Declared last so it is destroyed first: on reset it unregisters every buffer
     // (needs the handle and buffer_storage_ both alive) before closing the channel.

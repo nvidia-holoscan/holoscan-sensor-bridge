@@ -18,7 +18,7 @@
 #----------------------------------------------------------------------------------------------
 
 set prj_name    fpga_clnx
-set fpga_version 2606
+set fpga_version 2609
 set date        [clock format [clock seconds] -format "%m%d%Y"]
 
 #----------------------------------------------------------------------------------------------
@@ -36,14 +36,14 @@ prj_create -name $prj_name \
            -performance "9_High-Performance_1.0V" \
            -synthesis "synplify"
 
-prj_set_strategy_value -strategy Strategy1 {syn_pipelining_retiming=Pipelining and Retiming \
-										                        syn_arrange_vhdl_files=False \
-											                      syn_critical_path_num=100 \
-											                      syn_start_end_pt_num=20 \
-											                      syn_frequency=157 \
+prj_set_strategy_value -strategy Strategy1 syn_pipelining_retiming=Pipelining and Retiming \
+                                            syn_arrange_vhdl_files=False \
+                                            syn_critical_path_num=100 \
+                                            syn_start_end_pt_num=20 \
+                                            syn_frequency=157 \
                                             par_core_number=8 \
                                             par_place_iterator=8 \
-											                      par_stop_zero=True}
+                                            par_stop_zero=True
 
 prj_set_strategy_value -strategy Strategy1 syn_ram_rw_check=False
 
@@ -160,16 +160,16 @@ set dateTime [format %x $dateTime]
 
 prj_set_impl_opt -impl "impl_1" "HDL_PARAM" "FPGA_VERSION=16'h$fpga_version" 
 
-prj_set_strategy_value -strategy Strategy1 tmchk_enable_check=False
-prj_set_strategy_value -strategy Strategy1 syn_arrange_vhdl_files=True syn_force_gsr=False syn_critical_path_num= syn_start_end_pt_num= syn_frequency=200 syn_res_sharing=False par_prioritize_hldcorrection=True
+
+prj_set_strategy_value -strategy Strategy1 syn_arrange_vhdl_files=True syn_force_gsr=False syn_critical_path_num= syn_start_end_pt_num= syn_frequency=200 syn_res_sharing=False par_prioritize_hldcorrection=True par_core_number=8 par_place_iterator=8 par_stop_zero=True
 
 #----------------------------------------------------------------------------------------------
 # Run Project
 #----------------------------------------------------------------------------------------------	
 
-prj_run Synthesis -impl impl_1
-prj_run Map -impl impl_1
-prj_run PAR -impl impl_1 
+prj_run Synthesis -impl impl_1 -task SynTrace
+prj_run Map -impl impl_1 -task MapTrace
+prj_run PAR -impl impl_1 -task PARTrace
 prj_run Export -impl impl_1 -task Bitgen
 prj_save
 prj_close

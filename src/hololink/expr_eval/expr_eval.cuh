@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -23,8 +23,7 @@
 #include <unordered_map>
 #include <vector>
 
-#include <hololink/common/cuda_error.hpp>
-#include <hololink/core/logging_internal.hpp>
+#include <cuda_runtime_api.h>
 
 namespace hololink::expr_eval {
 
@@ -88,8 +87,10 @@ class Expression {
    * count       - The number of evaluations to perform. Also the size of device_output
    * device_data - An optional pointer to user defined data. This pointer can be used by
    *               the user defined variables. See VariablesSymbolTable for more details.
+   * stream      - The CUDA stream the evaluation is enqueued on.
    */
-  void evaluate(float* device_output, size_t count, size_t stride = 1, void* device_data = nullptr) const;
+  void evaluate(float* device_output, size_t count, size_t stride = 1, void* device_data = nullptr,
+                cudaStream_t stream = nullptr) const;
 
   // Returns true if expression is valid
   explicit operator bool() const;

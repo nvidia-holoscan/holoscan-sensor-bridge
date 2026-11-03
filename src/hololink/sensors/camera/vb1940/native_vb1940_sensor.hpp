@@ -80,6 +80,7 @@ public:
     void configure(CameraMode mode) override;
     void set_mode(CameraMode mode) override;
 
+    using CameraSensor::configure_converter;
     void configure_converter(std::shared_ptr<hololink::csi::CsiConverter> converter) override;
 
     // Additional methods
@@ -136,7 +137,6 @@ private:
     std::shared_ptr<Hololink> hololink_;
     std::shared_ptr<Hololink::I2c> i2c_;
 
-    mutable std::mutex mutex_;
     std::shared_ptr<Synchronizer> synchronizer_;
 };
 

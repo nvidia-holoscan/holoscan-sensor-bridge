@@ -1,5 +1,12 @@
 ## Building the Holoscan Sensor Bridge container
 
+You can build the Holoscan Sensor Bridge software in two ways. Most users build and use
+the demo container. Use the native build only when you must run applications outside a
+container, for example the C++ FuSa CoE examples on AGX Thor. AGX Orin with a full SDK
+Manager JetPack 7.2.1 installation does not have enough space to build the container and
+should follow the [native build steps](build.mdx#NativeBuildTarget) rather than the
+container.
+
 Holoscan sensor bridge host software includes instructions for building a demo
 container. This container is used to run all holoscan tests and examples.
 
@@ -10,40 +17,234 @@ container. This container is used to run all holoscan tests and examples.
    $ git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge
    ```
 
-1. Build the sensor bridge demonstration container. Use **dGPU** for IGX Orin with a
-   discrete GPU and OS configured as dGPU, and for x86_64 Linux hosts with an NVIDIA
-   discrete GPU (see the **x86 Linux** tab in
-   [host setup](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget)).
-   For remaining platforms listed
-   [here](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget), use
-   **iGPU** below.
+1. Build the sensor bridge demonstration container. Use the same command on all
+   platforms listed
+   [here](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget):
 
-<Tabs>
+   ```none
+     $ cd holoscan-sensor-bridge
+     $ sh docker/build.sh
+   ```
 
-<Tab title="iGPU">
+   The script finds the container type from the host. All container types use the same
+   CUDA 13 base image. You do not select iGPU or dGPU. The script accepts the old
+   `--igpu` and `--dgpu` options, but it ignores them.
 
-```none
-  $ cd holoscan-sensor-bridge
-  $ sh docker/build.sh --igpu
-```
+   The host must have CUDA 13 or newer. On Jetson and IGX Thor hosts, the script also
+   requires L4T R38.4.0 or newer. The script also accepts L4T versions older than
+   JetPack 7.2.1. But Holoscan Sensor Bridge 3.0 supports only JetPack 7.2.1 (AGX Orin
+   and AGX Thor) and IGX SW 2.0.1 (IGX Thor).
 
-</Tab>
-<Tab title="dGPU">
+   To build Holoscan Sensor Bridge on the host, outside the container, see
+   [Build outside the container](#NativeBuildTarget).
 
-```none
-  $ cd holoscan-sensor-bridge
-  $ sh docker/build.sh --dgpu
-```
+   The script builds two images: `hololink-prototype` and `hololink-demo`.
 
-Note: If RoCE with GPUDirect RDMA fails at runtime (black image, or errors from
-`roce_receiver.cpp` such as mismatched PSN metadata), rebuild to force the use of pinned
-host memory instead by adding `--disable-roce-gpu-vram` to the command above. Details
-are in the
+`docker/build.sh` accepts these options:
+
+| Option                               | Function                                                                                                                                                                                                                                                                                |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `--no-inference`                     | Leaves Holoscan inference and TensorRT (approximately 3 GB of packages) out of `hololink-demo`. The `hololink-demo` image is then approximately 5 GB smaller. The `tao_peoplenet`, `body_pose_estimation`, `dual_inference_body_pose` and `depth_anything_v2` examples then cannot run. |
+| `--disable-roce-gpu-vram`            | Uses pinned host memory instead of GPU memory for the RoCE receiver frame buffers.                                                                                                                                                                                                      |
+| `--sipl`                             | Forces the SIPL/FuSa (CoE offload) container type. Use it on L4T hosts only.                                                                                                                                                                                                            |
+| `--hsdk=VERSION`                     | Selects a different Holoscan SDK release. The default is `5.0.0`.                                                                                                                                                                                                                       |
+| `--cuda-archs=LIST`                  | Sets `CMAKE_CUDA_ARCHITECTURES` (for example `87` or `87;110`). By default, the script reads the GPU architectures of the host.                                                                                                                                                         |
+| `--prune-cache`, `--no-prune-cache`  | Removes, or keeps, the build cache records that this build makes. By default, the script removes them when less than 30 GiB is free on the Docker data root.                                                                                                                            |
+| `--use-sccache=0`, `--use-sccache=1` | Disables or enables the compiler cache. By default, it is off on AGX Orin and on for other platforms.                                                                                                                                                                                   |
+| `--no-cache`                         | Builds the images without the Docker build cache.                                                                                                                                                                                                                                       |
+| `-f`                                 | Continues the build when the script finds a `connmand` network configuration problem.                                                                                                                                                                                                   |
+
+RoCE with GPUDirect RDMA can fail at runtime. The symptoms are a black image or errors
+from `roce_receiver.cpp`, for example mismatched PSN metadata. In this case, add
+`--disable-roce-gpu-vram` to the build command. The receiver then uses pinned host
+memory. Details are in the
 [x86 Linux](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget) host
 setup tab.
 
-</Tab>
-</Tabs>
+### Disk space on AGX Orin
+
+A JetPack 7.2.1 installation on AGX Orin leaves approximately 24 GB to 28 GB free. This
+space is small for the container images:
+
+- `hololink-prototype` and `hololink-demo` use approximately 25 GB together.
+- With `--no-inference`, the two images use approximately 16 GB together.
+
+On AGX Orin, use these steps:
+
+1. When you install JetPack with SDK Manager, clear the "CUDA X-AI SDK" check box in
+   Step 02.
+
+1. Before each rebuild of the container, remove the old images and the build cache:
+
+   ```none
+     $ docker system prune -a
+   ```
+
+   This command removes all Docker images, containers, networks and build cache that no
+   container uses. This includes the images of other projects.
+
+1. If the build stops because the disk is full, build with `--no-inference`.
+
+The inference examples (`tao_peoplenet`, `body_pose_estimation`) need more memory and
+disk space than AGX Orin has free after the container build.
+
+<Anchor id="NativeBuildTarget" />
+
+## Build outside the container (native build)
+
+These steps install the build dependencies on the host and build Holoscan Sensor Bridge
+from the repository directory. The steps are for AGX Orin and AGX Thor, and use the
+arm64 packages. On the CX7 platforms (IGX Thor T7000 and DGX Spark) and on x86_64 hosts,
+use the demo container.
+
+Run all the steps below in the same shell. Step 6 uses the variables that step 2 sets.
+
+1. Get the source code and go to the repository directory:
+
+   ```none
+     git clone https://github.com/nvidia-holoscan/holoscan-sensor-bridge.git
+     cd holoscan-sensor-bridge
+   ```
+
+1. Set the versions and install the nvCOMP 5.2.0, CMake 4 (Kitware APT repository) and
+   Holoscan SDK 5.0.0 packages, and the Slang 2026.14 shader compiler:
+
+   ```none
+     . /etc/os-release
+     UBUNTU_VERSION="`echo ${VERSION_ID} | sed 's/\.//g'`"
+     SLANG_VERSION=2026.14
+     HSDK_VERSION=5.0.0
+     NVCOMP_VERSION=5.2.0
+     sudo apt-get install -y ca-certificates gpg wget python3-pip
+     wget https://developer.download.nvidia.com/compute/nvcomp/${NVCOMP_VERSION}/local_installers/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}_${NVCOMP_VERSION}-1_arm64.deb
+     sudo dpkg -i nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}_${NVCOMP_VERSION}-1_arm64.deb
+     sudo cp /var/nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}/nvcomp-*-keyring.gpg /usr/share/keyrings/
+     rm nvcomp-local-repo-ubuntu${UBUNTU_VERSION}-${NVCOMP_VERSION}_${NVCOMP_VERSION}-1_arm64.deb
+     test -f /usr/share/doc/kitware-archive-keyring/copyright ||
+         wget -O - https://apt.kitware.com/keys/kitware-archive-latest.asc 2>/dev/null | gpg --dearmor - | sudo tee /usr/share/keyrings/kitware-archive-keyring.gpg >/dev/null
+     echo "deb [signed-by=/usr/share/keyrings/kitware-archive-keyring.gpg] https://apt.kitware.com/ubuntu/ ${VERSION_CODENAME} main" | sudo tee /etc/apt/sources.list.d/kitware.list >/dev/null
+     sudo apt-get update
+     test -f /usr/share/doc/kitware-archive-keyring/copyright ||
+         sudo rm /usr/share/keyrings/kitware-archive-keyring.gpg
+     sudo apt-get install -y kitware-archive-keyring
+     wget https://developer.download.nvidia.com/compute/holoscan/${HSDK_VERSION}/local_installers/holoscan-local-repo-ubuntu${UBUNTU_VERSION}-${HSDK_VERSION}_${HSDK_VERSION}-1_arm64.deb
+     sudo dpkg -i holoscan-local-repo-ubuntu${UBUNTU_VERSION}-${HSDK_VERSION}_${HSDK_VERSION}-1_arm64.deb
+     sudo cp /var/holoscan-local-repo-ubuntu${UBUNTU_VERSION}-${HSDK_VERSION}/holoscan-*-keyring.gpg /usr/share/keyrings/
+     rm holoscan-local-repo-ubuntu${UBUNTU_VERSION}-${HSDK_VERSION}_${HSDK_VERSION}-1_arm64.deb
+     sudo apt-get update
+     sudo apt-get install -y cmake libfmt-dev libssl-dev libcurlpp-dev libyaml-cpp-dev python3-dev \
+         "libnvcomp5-cuda-13=${NVCOMP_VERSION}.*" "libnvcomp5-dev-cuda-13=${NVCOMP_VERSION}.*" \
+         "nvcomp-cuda-13=${NVCOMP_VERSION}.*" "holoscan-core=${HSDK_VERSION}.*" \
+         "holoscan-vision=${HSDK_VERSION}.*" "holoscan-visualization=${HSDK_VERSION}.*" \
+         "holoscan-inference=${HSDK_VERSION}.*"
+     SLANG_SHA256=7acbfe80260009263346f72efaadabfa7666248a045e720b573ba78fb008ac42
+     SLANG_ARCHIVE="slang-${SLANG_VERSION}-linux-aarch64.tar.gz"
+     curl -fsSL --retry 5 --retry-delay 3 \
+       "https://github.com/shader-slang/slang/releases/download/v${SLANG_VERSION}/${SLANG_ARCHIVE}" \
+       -o "/tmp/${SLANG_ARCHIVE}"
+     echo "${SLANG_SHA256}  /tmp/${SLANG_ARCHIVE}" | sha256sum -c -
+     sudo mkdir -p /opt/slang
+     sudo tar -xzf "/tmp/${SLANG_ARCHIVE}" -C /opt/slang bin lib
+     sudo rm -rf "/tmp/${SLANG_ARCHIVE}" /opt/slang/lib/cmake /opt/slang/lib/pkgconfig
+     sudo chmod -R a+rX /opt/slang
+     test "$(/opt/slang/bin/slangc -v 2>&1)" = "${SLANG_VERSION}" && echo "Slang OK"
+     for line in 'export PATH=/usr/local/cuda/bin:/opt/slang/bin:$PATH' \
+        'export LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH'; do \
+         grep -qxF "$line" ~/.bashrc || echo "$line" >> ~/.bashrc
+     done
+     source ~/.bashrc
+   ```
+
+   Pin all three nvCOMP packages, as `docker/Dockerfile` does. The `nvcomp-cuda-13`
+   metapackage alone installs the 5.2.0 static library with the newer, incompatible
+   runtime shared libraries.
+
+   Make sure that `cmake --version` shows version 4.0 or newer. Holoscan SDK 5 needs
+   CMake 4.0 or newer. Ubuntu 24.04 includes CMake 3.28.
+
+   The `export` lines put CUDA and Slang on `PATH`. Without CUDA on `PATH`, CMake stops
+   with the message `No CMAKE_CUDA_COMPILER could be found`.
+
+1. Configure the C++ build. Use the CMake options for your platform:
+
+   ```none
+     # on AGX Orin
+     cmake -S . -B build -DHOLOLINK_BUILD_ROCE=0
+     # on AGX Thor
+     cmake -S . -B build -DHOLOLINK_BUILD_ROCE=0 -DHOLOLINK_BUILD_FUSA=1
+   ```
+
+1. Build the C++ code:
+
+   ```none
+     cmake --build build -j"$(nproc)"
+   ```
+
+   The example programs are in `build/examples`.
+
+1. (Optional) Install the C++ binaries:
+
+   ```none
+    sudo cmake --install build
+   ```
+
+1. Build and install the Python packages:
+
+   ```none
+     export PIP_BREAK_SYSTEM_PACKAGES=1
+     # python3-numpy from the Ubuntu APT repository is not compatible with the transitive dependencies of the Holoscan SDK
+     sudo apt remove --purge python3-numpy
+     python3 -m pip install --user "holoscan-cu13==${HSDK_VERSION}.*"
+     python3 -m pip install --user ./python
+     python3 -m pip install --user pytest pytest-timeout pyserial
+     sudo apt-get install -y python3-requests python3-yaml python3-alsaaudio
+   ```
+
+   `pip install ./python` is a separate CMake build. It does not use the `build`
+   directory or the CMake options above. It finds the FuSa, RoCE and Argus ISP support
+   on the host. It also builds the emulator and its Python module
+   (`hololink.emulation`). The last two commands install `pytest` and the test
+   dependencies.
+
+1. Make sure that the Python installation works:
+
+   ```none
+     python3 -c "import hololink as hl, holoscan, numpy; print('hololink OK, numpy', numpy.__version__)"
+   ```
+
+You can now run the C++ and Python examples outside the container. Run the Linux CoE
+(`linux_coe_`) Python examples and `pytest` as root. Some examples' setup steps include
+`apt install <third-party package>`, which also requires `sudo`. Keep your `PATH` and
+`HOME` values:
+
+```none
+  sudo -E env "PATH=$PATH" "HOME=$HOME" python3 examples/linux_coe_<example>.py <args>
+  sudo -E env "PATH=$PATH" "HOME=$HOME" python3 -m pytest <args>
+```
+
+After you run a Holoscan SDK application with `sudo`, an application that you start
+without `sudo` can fail with `RUNTIME_PORT_BINDING_UNAVAILABLE`. For the recovery steps,
+see [troubleshooting](troubleshooting.mdx).
+
+<Warning>
+JetPack includes the `python3-numpy` package. Holoscan SDK 5 needs a different version of
+numpy, and the two versions can conflict. Removing `python3-numpy` with
+`apt remove --purge` also removes `nvidia-l4t-bsp`,
+`nvidia-l4t-jetsonpower-gui-tools` and other Python packages. If you removed it, you can
+install the removed L4T packages again, but the Holoscan SDK examples may then warn or
+fail because of the `python3-numpy` dependency:
+
+```none
+  sudo apt install nvidia-l4t-bsp nvidia-l4t-jetsonpower-gui-tools
+```
+
+</Warning>
+
+<Note>
+The native Python installation puts packages in `~/.local`. If you also use an HSB 2.7
+container on this host, set `export PYTHONNOUSERSITE=1` in that container. For more
+information, see [troubleshooting](troubleshooting.mdx).
+</Note>
 
 <Anchor id="RunningTestsTarget" />
 
@@ -61,6 +262,29 @@ This brings you to a shell prompt inside the Holoscan sensor bridge demo contain
 message "Failed to detect NVIDIA driver version": this can be ignored.) Now you're ready
 to run sensor bridge applications.
 
+`docker/demo.sh` starts the `hololink-demo` image with host networking and access to the
+GPUs, the display and your home directory. To run one command in the container, give the
+command after `docker/demo.sh`:
+
+```none
+sh docker/demo.sh python3 examples/linux_imx274_player.py
+```
+
+The container name is `demo`. To start a second container at the same time, give a
+different name with `--name=NAME`:
+
+```none
+sh docker/demo.sh --name=demo2
+```
+
+On IGX Thor T7000 with a dGPU, `docker/demo.sh` sets `CUDA_VISIBLE_DEVICES=0` (the dGPU)
+only when the graphics output is on the dGPU. This is the case when
+`NV_DISABLE_IGPU_GRAPHICS` in `/etc/environment` has a value that is not `0`. In all
+other cases and on all other platforms, `docker/demo.sh` does not set
+`CUDA_VISIBLE_DEVICES`. To move the graphics output to the other GPU, see
+[Enabling dGPU display and graphics](https://docs.nvidia.com/igx/user-guide/latest/SW/gpu/dgpu-support.html#enabling-dgpu-display-and-graphics)
+in the IGX user guide.
+
 ## Holoscan sensor bridge software loopback tests
 
 Sensor bridge host software includes a test fixture that runs in loopback mode, where no
@@ -73,10 +297,33 @@ In the shell in the demo container:
 pytest
 ```
 
-Note that the test fixture intentionally introduces errors into the software stack. As
-long as pytest indicates that all test have passed, any error messages published by
-individual tests can be ignored. If pytest itself reports failures, see the
+The test fixture intentionally introduces errors into the software stack. Thus, the
+tests can show error messages. If pytest shows that all tests passed, you can ignore the
+error messages of individual tests. If pytest itself reports failures, see the
 [troubleshooting page](troubleshooting.mdx).
+
+In this release, pytest reports three test files as skipped, because they are not ported
+to Holoscan SDK 5 yet: `test_hololink_acks.py`, `test_hsb_sequence_checking.py` and
+`test_module_imx274_reconnect.py`. For more information, see the
+[release notes](release_notes.mdx#known-anomalies).
+
+To run `pytest` outside the container, after the [native build](#NativeBuildTarget), run
+it as root. The native build steps install `pytest` and the test dependencies.
+
+```none
+sudo -E env "PATH=$PATH" "HOME=$HOME" python3 -m pytest
+```
+
+You can also run the C++ tests with CTest, in the shell in the demo container:
+
+```none
+export BUILD_DIR=/tmp/build
+cmake -S . -B $BUILD_DIR -G Ninja -DHOLOLINK_BUILD_PYTHON=OFF
+cmake --build $BUILD_DIR -j $(nproc)
+Xvfb :99 -screen 0 1920x1080x24 -nolisten tcp &
+export DISPLAY=:99
+ctest --test-dir $BUILD_DIR --output-on-failure
+```
 
 For systems with a sensor bridge device and IMX274, the test fixture can execute
 additional tests that prove that the device and network connections are working as
@@ -85,7 +332,7 @@ expected.
 First, ensure that the
 [sensor bridge firmware is up to date](sensor_bridge_firmware_setup.mdx).
 
-For IGX configurations,
+For IGX Thor configurations,
 [connect both SFP+ connections on the sensor bridge device to the QSFP connectors](sensor_bridge_hardware_setup.mdx#connecting-holoscan-sensor-bridge-to-the-host),
 then
 

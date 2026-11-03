@@ -37,5 +37,7 @@ def test_udpcam_version(mock_camera_ip):
             camera.reset()
             version = camera.get_version()
             logging.info("version=%s" % (version,))
+            # The version the mock camera reports (MockCamera.configure checks it too).
+            assert version == 12344312
         finally:
             hololink.stop()

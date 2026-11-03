@@ -15,9 +15,15 @@
 
 add_subdirectory(core)
 add_subdirectory(sensors)
+# A native-only build (the tools, without Holoscan or CUDA) needs only the two above.
 if (NOT HOLOLINK_BUILD_ONLY_NATIVE)
 add_subdirectory(common)
 add_subdirectory(expr_eval)
+if(HOLOLINK_BUILD_ROCE)
+  add_subdirectory(transport/roce)
+endif()
+if(HOLOLINK_BUILD_OPERATORS)
 add_subdirectory(operators)
+endif()
 add_subdirectory(emulation)
 endif()

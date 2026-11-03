@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,50 +20,80 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <cstdint>
 #include <mutex>
 #include <queue>
+#include <string>
 #include <thread>
 #include <vector>
 
-#include <hololink/core/smart_object_pool.hpp>
-#include <holoscan/holoscan.hpp>
+#include <holoscan/core/domain/tensor.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/parameter_schema.hpp>
+#include <holoscan/core/payload_options.hpp>
+#include <holoscan/core/sample.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
 
 #include <arpa/inet.h>
 
 namespace hololink::operators {
 
-class UdpTransmitterOp : public holoscan::Operator {
-public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(UdpTransmitterOp)
+struct UdpTransmitterParams {
+    std::string ip { "" };
+    uint16_t port { 5000 };
+    uint16_t max_buffer_size { 65507 };
+    uint16_t queue_size { 1 };
+    bool lossy { true };
+};
 
+HOLOSCAN_PARAM_SCHEMA(
+    UdpTransmitterParams,
+    holoscan::param_schema("com.nvidia.hololink.operators.UdpTransmitterParams", 1),
+    holoscan::field<&UdpTransmitterParams::ip>("ip")
+        .description("Destination IPv4 address."),
+    holoscan::field<&UdpTransmitterParams::port>("port")
+        .description("Destination UDP port."),
+    holoscan::field<&UdpTransmitterParams::max_buffer_size>("max_buffer_size")
+        .description("Maximum bytes sent in one UDP datagram."),
+    holoscan::field<&UdpTransmitterParams::queue_size>("queue_size")
+        .description("Depth of the background-thread transmit queue."),
+    holoscan::field<&UdpTransmitterParams::lossy>("lossy")
+        .description("Drop new samples instead of blocking when the queue is full."));
+
+// Receives a CUDA tensor and sends it over UDP from a background thread.
+// The worker thread establishes its own CUDA context to copy device→host
+// (via synchronize_for_host + cudaMemcpy) before transmitting via sendto().
+class UdpTransmitterOp : public holoscan::Operator<UdpTransmitterParams> {
+public:
     UdpTransmitterOp() = default;
 
     void setup(holoscan::OperatorSpec& spec) override;
-
+    [[nodiscard]] holoscan::Contract contract() const override;
     void start() override;
     void stop() override;
-
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute(
         holoscan::ExecutionContext& context) override;
+
+    // Public: graph wiring (add_flow) and contract() both reference this by address.
+    holoscan::Input<holoscan::Tensor> input;
 
 private:
     std::mutex mutex_;
     std::condition_variable cv_;
-    std::atomic<bool> running_;
+    std::atomic<bool> running_ { false };
     std::thread thread_;
     ::sockaddr_in destination_address_ {};
-    int socket_ {};
-    using Tensor = std::shared_ptr<holoscan::Tensor>;
-    std::queue<Tensor> tensor_queue_;
+    int socket_ { -1 };
+    // Sample<Tensor> keeps the runtime tensor buffer alive until the worker
+    // thread is done with it — no device→host copy needed on the compute thread.
+    std::queue<holoscan::Sample<holoscan::Tensor>> tensor_queue_;
     std::vector<uint8_t> host_buffer_;
-    void queue_buffer(Tensor buffer);
 
-    // Parameters
-    holoscan::Parameter<std::string> destination_ip_;
-    holoscan::Parameter<uint16_t> destination_port_;
-    holoscan::Parameter<uint16_t> max_buffer_size_;
-    holoscan::Parameter<uint16_t> queue_size_;
-    holoscan::Parameter<bool> lossy_;
+    void enqueue(holoscan::Sample<holoscan::Tensor> sample);
 };
 
 } // namespace hololink::operators

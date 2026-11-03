@@ -7,22 +7,20 @@
 #
 #     http://www.apache.org/licenses/LICENSE-2.0
 
-# Leopard VB1940 module. Documented exception to the "modules should
-# not use NO_COMPAT_SUFFIX" rule: the Leopard VB1940 implementation
-# does not currently publish a compat-id over bootp, so the bare
-# `hololink_<UUID>.so` filename is what Adapter::load_module_for
-# resolves to for these boards (via its no-compat-id fallback path).
-# `module/hsb_lite_2510/` is the other documented exception. Switch
-# to the compat-suffixed form once the FPGA reports a compat-id.
+# Leopard VB1940 module for the current FPGA, which reports
+# compat_id=2603 over bootp — so this builds as the compat-suffixed
+# `hololink_<UUID>_2603.so` that Adapter::load_module_for resolves for
+# those boards. Boards on the pre-0x2602 FPGA report compat_id=0 and
+# fall through the loader to the bare-UUID `module/leopard_vb1940_2510/`.
 #
-# Inherits the canonical HSB-shape service chain from
-# module_core::HsbLitePublisher via LeopardVb1940Publisher; swaps in
-# the Bajoran TS2 oscillator and the LeopardVb1940V1 supplement.
+# Inherits the canonical HSB-IP service chain from
+# module_core::HsbIpPublisher via LeopardVb1940Publisher; adds the
+# CertusPro-NX D-PHY, the Bajoran TS2 oscillator, the AIO sensor
+# layout, and the LeopardVb1940V1 supplement.
 
 add_hololink_module(
     NAME leopard_vb1940
     UUID f1627640-b4dc-48af-a360-c55b09b3d230
-    NO_COMPAT_SUFFIX
     SOURCES
         module_entry.cpp
 )
@@ -31,7 +29,6 @@ target_include_directories(leopard_vb1940
     PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
-        $<TARGET_PROPERTY:hololink::hsb_lite::headers,INTERFACE_INCLUDE_DIRECTORIES>
         $<TARGET_PROPERTY:hololink::module_core,INCLUDE_DIRECTORIES>)
 
 target_link_libraries(leopard_vb1940

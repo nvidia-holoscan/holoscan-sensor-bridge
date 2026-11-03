@@ -212,7 +212,7 @@ if (RST_SYNC == "TRUE") begin
     .RST_SYNC   ( RST_SYNC       )
   ) rd_ptr_sync_inst (
     .clk        ( wrclk          ),
-    .rst_n      ( !wrrst         ),
+    .rst        ( wrrst          ),
     .sync_in    ( rd_gray        ),
     .sync_out   ( rd_gray_wrsync )
   );
@@ -223,7 +223,7 @@ if (RST_SYNC == "TRUE") begin
     .RST_SYNC   ( RST_SYNC       )
   ) wr_ptr_sync_inst (
     .clk        ( rdclk          ),
-    .rst_n      ( !rdrst         ),
+    .rst        ( rdrst          ),
     .sync_in    ( wr_gray        ),
     .sync_out   ( wr_gray_rdsync )
   );
@@ -235,7 +235,7 @@ else begin
     .RST_SYNC   ( RST_SYNC       )
   ) rd_ptr_sync_inst (
     .clk        ( wrclk          ),
-    .rst_n      ( !rst           ),
+    .rst        ( rst            ),
     .sync_in    ( rd_gray        ),
     .sync_out   ( rd_gray_wrsync )
   );
@@ -246,7 +246,7 @@ else begin
     .RST_SYNC   ( RST_SYNC       )
   ) wr_ptr_sync_inst (
     .clk        ( rdclk          ),
-    .rst_n      ( !rst           ),
+    .rst        ( rst            ),
     .sync_in    ( wr_gray        ),
     .sync_out   ( wr_gray_rdsync )
   );

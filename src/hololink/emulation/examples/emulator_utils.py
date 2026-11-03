@@ -57,13 +57,46 @@ def load_kernels(kernel_map):
 load_kernels(kernel_map)
 
 
+# The HSB packetizer's programs, by pixel bit depth: the CSI-2 bytes of a line of pixels
+# and the (input bytes, output bytes) of one loop of the program the host loads for that
+# bit depth (hololink.PacketizerProgram). Csi10ToPacked10 (control word 0x11f1fff7) takes
+# 15 input beats (120 bytes, 96 pixels) per 16 output beats (128 bytes); Csi12ToPacked12
+# (0x11210007) takes 3 input beats per 3 output beats (24 bytes, 16 pixels).
+_PACKETIZER_PROGRAMS = {
+    10: (lambda pixel_width: pixel_width * 5 // 4, 15 * 8, 16 * 8),
+    12: (lambda pixel_width: pixel_width * 3 // 2, 3 * 8, 3 * 8),
+}
+
+
+# the bytes HSB puts on the wire for one packetized line of pixel_width pixels of pixel_bits
+# (10 or 12) each. The packetizer knows nothing of pixel formats: it runs the host's program,
+# a loop that consumes input bytes and emits output bytes, and a line always completes its
+# last loop (with zero input) before the 64-byte line pad, so the line is a whole number of
+# loops -- not the pixel arithmetic (3 RAW_10 pixels per 4 bytes) that agrees only when the
+# CSI-2 line is a multiple of the loop. This mirrors
+# hololink.PacketizerProgram.padded_output_size(), which the emulator-only build lacks.
+def packetized_line_bytes(pixel_bits, pixel_width):
+    if pixel_bits not in _PACKETIZER_PROGRAMS:
+        raise ValueError(
+            "the HSB packetizer has programs for 10- and 12-bit pixels only"
+        )
+    csi_line_bytes, input_bytes_per_loop, output_bytes_per_loop = _PACKETIZER_PROGRAMS[
+        pixel_bits
+    ]
+    loops = (
+        csi_line_bytes(pixel_width) + input_bytes_per_loop - 1
+    ) // input_bytes_per_loop
+    return (loops * output_bytes_per_loop + 63) & ~63
+
+
 # convert 8-bit bayer pattern to 10-bit bayer pattern with T_X2Rc10Rb10Ra10 encoding (3 pixels per 4 bytes)
 def bayer8p_to_T_X2Rc10Rb10Ra10(src):
     if src.ndim != 2:
         raise ValueError("src must be a 2D array")
     pixel_height, pixel_width = src.shape
-    line_bytes = (pixel_width + 2) // 3 * 4
-    line_bytes = ((line_bytes + 63) >> 6) << 6
+    # every 3 pixels gets packed into 4 bytes, but the line is sized by the packetizer
+    # program's loops (see packetized_line_bytes), so it may end in padding pixels
+    line_bytes = packetized_line_bytes(10, pixel_width)
     dest = cp.zeros((pixel_height, line_bytes), dtype=cp.uint8)
     threads_per_block = (32, 32)
     blocks_per_grid = (
@@ -104,8 +137,9 @@ def bayer8p_to_T_R12_PK_ISP(src):
     if src.ndim != 2:
         raise ValueError("src must be a 2D array")
     pixel_height, pixel_width = src.shape
-    line_bytes = (pixel_width + 1) // 2 * 3
-    line_bytes = ((line_bytes + 63) >> 6) << 6
+    # every 2 pixels gets packed into 3 bytes, but the line is sized by the packetizer
+    # program's loops (see packetized_line_bytes), so it may end in padding pixels
+    line_bytes = packetized_line_bytes(12, pixel_width)
     dest = cp.zeros((pixel_height, line_bytes), dtype=cp.uint8)
     threads_per_block = (32, 32)
     blocks_per_grid = (
@@ -338,10 +372,14 @@ def generate_imx274_frame(is_gpu, imx274, packetize):
     image_size = proto_frame.shape[1] * proto_frame.shape[0]
     if packetize:
         line_bytes = image_size // pixel_height
+        # The embedded-data line (175 bytes for RAW_10, 210 for RAW_12) bypasses the
+        # packetizer and is only padded to 64 bytes, then the optical-black lines (8 for
+        # RAW_10, 16 for RAW_12) are full packetized lines: what the host's
+        # NativeImx274Sensor::configure_converter() computes with the packetizer enabled.
         if imx274.get_pixel_bits() == 12:
-            start_byte = 256 + line_bytes * 16
+            start_byte = ((210 + 63) & ~63) + line_bytes * 16
         else:
-            start_byte = 256 + line_bytes * 8
+            start_byte = ((175 + 63) & ~63) + line_bytes * 8
     frame = cp.zeros((start_byte + image_size,), dtype=cp.uint8)
     frame[start_byte : start_byte + image_size] = proto_frame.flatten()
 

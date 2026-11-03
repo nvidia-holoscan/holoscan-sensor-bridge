@@ -17,7 +17,6 @@
 
 #include "native_vb1940_sensor.hpp"
 
-#include <cassert>
 #include <cstdint>
 #include <cstring>
 #include <iomanip>
@@ -128,7 +127,10 @@ void NativeVb1940Sensor::configure(CameraMode mode)
     // Make sure this is a version we know about.
     uint32_t version = get_version();
     HSB_LOG_INFO("version={}", version);
-    assert(version == VERSION);
+    if (version != VERSION) {
+        throw std::runtime_error("Unsupported VB1940 version:" + std::to_string(version)
+            + ", expected " + std::to_string(VERSION) + ".");
+    }
 
     // Get device id
     HSB_LOG_DEBUG("##1.get device id");
@@ -192,17 +194,16 @@ void NativeVb1940Sensor::configure(CameraMode mode)
 
 void NativeVb1940Sensor::set_mode(CameraMode mode)
 {
-    if (mode >= 0 && mode < vb1940_mode::VB1940_MODE_COUNT) {
-        mode_ = mode;
-        // Set the width, height, pixel format, and bayer format
-        auto frame_format = mode_frame_formats_[mode_.value()];
-        width_ = frame_format->width();
-        height_ = frame_format->height();
-        pixel_format_ = frame_format->pixel_format();
-        bayer_format_ = hololink::csi::BayerFormat::GBRG;
-    } else {
-        HSB_LOG_ERROR("Incorrect mode for VB1940");
+    if (mode < 0 || mode >= vb1940_mode::VB1940_MODE_COUNT) {
+        throw std::runtime_error("Incorrect mode for VB1940: requested mode is out of range");
     }
+    mode_ = mode;
+    // Set the width, height, pixel format, and bayer format
+    auto frame_format = mode_frame_formats_[mode_.value()];
+    width_ = frame_format->width();
+    height_ = frame_format->height();
+    pixel_format_ = frame_format->pixel_format();
+    bayer_format_ = hololink::csi::BayerFormat::GBRG;
 }
 
 void NativeVb1940Sensor::setup_clock()
@@ -515,6 +516,10 @@ void NativeVb1940Sensor::stop()
 
 void NativeVb1940Sensor::configure_converter(std::shared_ptr<hololink::csi::CsiConverter> converter)
 {
+    if (!converter) {
+        throw std::runtime_error("Invalid converter passed to NativeVb1940Sensor::configure_converter.");
+    }
+
     // Get starting byte position
     uint32_t start_byte = converter->receiver_start_byte();
 
@@ -524,12 +529,20 @@ void NativeVb1940Sensor::configure_converter(std::shared_ptr<hololink::csi::CsiC
 
     // Status lines are not converted
     uint32_t status_line_bytes = 0;
-    if (pixel_format_ == csi::PixelFormat::RAW_8) {
+    switch (pixel_format_) {
+    case csi::PixelFormat::RAW_8:
         status_line_bytes = width_;
-    } else if (pixel_format_ == csi::PixelFormat::RAW_10) {
+        break;
+    case csi::PixelFormat::RAW_10:
         status_line_bytes = width_ * 10 / 8;
-    } else if (pixel_format_ == csi::PixelFormat::RAW_12) {
+        break;
+    case csi::PixelFormat::RAW_12:
         status_line_bytes = width_ * 12 / 8;
+        break;
+    default:
+        throw std::runtime_error(
+            "While configuring the CSI converter for NativeVb1940Sensor: pixel format "
+            "is not supported");
     }
     status_line_bytes = converter->received_line_bytes(status_line_bytes);
 

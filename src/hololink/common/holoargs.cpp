@@ -1,5 +1,5 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,6 +16,7 @@
  */
 #include "holoargs.hpp"
 
+#include <cerrno>
 #include <optional>
 #include <vector>
 
@@ -105,10 +106,20 @@ namespace args {
         auto iter = options_description.options_.find(key);
         if (iter == options_description.options_.end())
             return ARGP_ERR_UNKNOWN;
-        if (arg)
+        if (arg) {
+            // Check the value here, so that a bad one is reported, and ends the program, the way
+            // argp reports its own errors.
+            std::any value;
+            try {
+                iter->second.value_semantic_->parse(value, arg);
+            } catch (const std::exception&) {
+                ::argp_error(state, "invalid value '%s' for option '--%s'", arg, iter->second.name_.c_str());
+                return EINVAL;
+            }
             parsed_options.emplace(key, std::optional<std::string>(arg));
-        else
+        } else {
             parsed_options.emplace(key, std::optional<std::string>());
+        }
         return 0;
     }
 

@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@
 #define SRC_HOLOLINK_OPERATORS_LINUX_RECEIVER_LINUX_RECEIVER
 
 #include <atomic>
+#include <chrono>
 #include <queue>
 #include <semaphore.h>
 #include <stdint.h>
@@ -80,9 +81,9 @@ public:
 
     /**
      * Block until the next complete frame arrives.
-     * @returns false if timeout_ms elapses before
+     * @return false if timeout_ms elapses before
      * the complete frame is observed.
-     * @param metadata is updated with statistics
+     * @param metadata Output metadata updated with statistics
      * collected with the video frame.
      */
     bool get_next_frame(unsigned timeout_ms, LinuxReceiverMetadata& metadata, CUstream cuda_stream);
@@ -117,10 +118,19 @@ protected:
     const int socket_;
     const uint64_t received_address_offset_;
     const unsigned queue_size_;
-    bool volatile exit_;
+    std::atomic<bool> exit_;
     pthread_mutex_t ready_mutex_;
     pthread_cond_t ready_condition_;
     std::atomic<bool> consumer_ready_;
+    // Rate-limited "dropping oldest ready frame" diagnostics (see signal()).
+    uint32_t dropped_ready_frames_ { 0 };
+    std::chrono::steady_clock::time_point dropped_report_time_ {};
+    // HOLOLINK_RX_TRACE=1: once-per-second receiver-thread statistics (see signal()).
+    uint32_t trace_pages_ { 0 };
+    size_t trace_max_ready_ { 0 };
+    std::chrono::microseconds trace_max_sync_ { 0 };
+    std::string trace_dropped_phase_;
+    std::chrono::steady_clock::time_point trace_report_time_ {};
     uint32_t qp_number_;
     uint32_t rkey_;
     uint8_t* local_;

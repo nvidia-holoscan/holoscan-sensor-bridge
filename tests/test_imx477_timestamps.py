@@ -15,175 +15,39 @@
 
 # See README.md for detailed information.
 
-import ctypes
+# HSDK5 differences from v2.7: v2.7 ran examples/imx477_player.main() with its
+# HoloscanApplication class patched; the HSDK5 example has no such class, so the
+# test builds the same pipeline (sensor set-up as in that example, test pattern,
+# PTP sync) as an hs.Graph. The receiver ends the run at the frame limit, and
+# TimeProfiler takes the metadata after CsiToBayerOp.
+
 import datetime
 import logging
-import sys
 import threading
-from unittest import mock
 
-import holoscan
+import applications
 import operators
 import pytest
 import utils
 
 import hololink as hololink_module
-from examples import imx477_player
-
-timestamps = None
-network_mode = None
-roce_network_mode = "ROCE"
-linux_network_mode = "Linux"
 
 
-class TimestampTestApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        frame_limit,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._frame_limit = frame_limit
-        self._lock = threading.Lock()
-        self._timestamps = []
-        self.enable_metadata(True)
-
-    def compose(self):
-        logging.info("compose")
-        self._condition = holoscan.conditions.BooleanCondition(
-            self, name="ok", enable_tick=True
-        )
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.info(f"{frame_size=}")
-        frame_context = self._cuda_context
-
-        global network_mode, roce_network_mode, linux_network_mode
-        if network_mode == roce_network_mode:
-            receiver_operator = hololink_module.operators.RoceReceiverOp(
-                self,
-                self._condition,
-                name="receiver",
-                frame_size=frame_size,
-                frame_context=frame_context,
-                ibv_name=self._ibv_name,
-                ibv_port=self._ibv_port,
-                hololink_channel=self._hololink_channel,
-                device=self._camera,
-            )
-        elif network_mode == linux_network_mode:
-            receiver_operator = hololink_module.operators.LinuxReceiverOperator(
-                self,
-                self._condition,
-                name="receiver",
-                frame_size=frame_size,
-                frame_context=frame_context,
-                hololink_channel=self._hololink_channel,
-                device=self._camera,
-            )
-        else:
-            assert False and f"Invalid {network_mode=}"
-
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        bayer_format = self._camera.bayer_format()
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-        profiler = operators.TimeProfiler(
-            self,
-            name="profiler",
-            callback=self.time_profile,
-        )
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-        initial_timeout = utils.timeout_sequence(
-            [(30, 20), (0.5, self._frame_limit - 40), (30, 1)]
-        )
-        self._watchdog = utils.Watchdog(
-            name="watchdog",
-            initial_timeout=initial_timeout,
-        )
-        watchdog_operator = operators.WatchdogOp(
-            self,
-            name="watchdog_operator",
-            watchdog=self._watchdog,
-        )
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(csi_to_bayer_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, profiler, {("transmitter", "input")})
-        self.add_flow(profiler, visualizer, {("output", "receivers")})
-        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
-        #
-        self._watchdog.start()
+def run_timestamp_test(
+    hololink_address, receiver, receiver_kwargs, frame_limit, headless
+):
+    lock = threading.Lock()
+    timestamps = []
 
     def time_profile(
-        self,
         image_timestamp_s,
         metadata_timestamp_s,
         received_timestamp_s,
         pipeline_timestamp_s,
         frame_number,
     ):
-        with self._lock:
-            self._timestamps.append(
+        with lock:
+            timestamps.append(
                 (
                     image_timestamp_s,
                     metadata_timestamp_s,
@@ -192,11 +56,55 @@ class TimestampTestApplication(holoscan.core.Application):
                     frame_number,
                 )
             )
-            if len(self._timestamps) >= self._frame_limit:
-                self._watchdog.stop()
-                self._condition.disable_tick()
-                global timestamps
-                timestamps = self._timestamps
+
+    initial_timeout = utils.timeout_sequence(
+        [(30, 20), (0.5, frame_limit - 40), (30, 1)]
+    )
+    with applications.CudaContext() as cuda_context, applications.imx477_camera(
+        hololink_address, camera_id=0, pattern=True, ptp=True
+    ) as camera, utils.Watchdog(
+        "watchdog",
+        initial_timeout=initial_timeout,
+        min_taps=utils.frame_floor(frame_limit),
+    ) as watchdog, utils.RunMonitor() as monitor:
+        test_graph = applications.TestGraph("imx477_timestamps")
+        rx = applications.add_receiver(
+            test_graph,
+            "receiver",
+            receiver,
+            camera,
+            cuda_context.cu_context,
+            frame_limit,
+            **receiver_kwargs,
+        )
+        isp = applications.add_isp(
+            test_graph, "", rx, camera, image_processor=False, demosaic=False
+        )
+        demosaic = applications.add_demosaic(test_graph, "", isp["csi"], camera)
+        applications.show_images(
+            test_graph,
+            "holoviz",
+            [applications.Image(demosaic.output, camera.width, camera.height)],
+            headless,
+            "IMX477 timestamps",
+        )
+        profiler = test_graph.op(
+            operators.TimeProfiler,
+            "profiler",
+            callback_token=operators.register(time_profile),
+        )
+        operators.metadata_flow(test_graph, isp["csi"].metadata, profiler.metadata)
+        watchdog_operator = test_graph.op(
+            operators.WatchdogOp,
+            "watchdog_operator",
+            watchdog_token=operators.register(watchdog),
+        )
+        operators.metadata_flow(
+            test_graph, isp["csi"].metadata, watchdog_operator.metadata
+        )
+        test_graph.run()
+    monitor.assert_ok()
+    return timestamps
 
 
 # frame_time represents the constant time difference between when the
@@ -232,36 +140,19 @@ def test_imx477_timestamps(
     ibv_port,
     frame_limit,
 ):
-    arguments = [
-        sys.argv[0],
-        "--hololink",
-        hololink_address,
-        "--ibv-name",
-        ibv_name,
-        "--ibv-port",
-        str(ibv_port),
-        "--pattern",
-        "--ptp-sync",
-        f"--frame-limit={frame_limit}",
-    ]
-    if headless:
-        arguments.extend(["--headless"])
-
-    global network_mode, roce_network_mode, linux_network_mode
     if roce_mode:
-        network_mode = roce_network_mode
+        if not hasattr(hololink_module.operators, "RoceReceiverOp"):
+            pytest.skip("RoceReceiverOp isn't built (HOLOLINK_BUILD_ROCE=OFF)")
+        receiver = hololink_module.operators.RoceReceiverOp
+        receiver_kwargs = {"ibv_name": ibv_name, "ibv_port": ibv_port}
     else:
-        network_mode = linux_network_mode
-
-    with mock.patch("sys.argv", arguments):
-        with mock.patch(
-            "examples.imx477_player.HoloscanApplication", TimestampTestApplication
-        ):
-            with utils.PriorityScheduler():
-                imx477_player.main()
+        receiver = hololink_module.operators.LinuxReceiverOp
+        receiver_kwargs = {}
+    timestamps = run_timestamp_test(
+        hololink_address, receiver, receiver_kwargs, frame_limit, headless
+    )
 
     # check for errors
-    global timestamps
     pipeline_dts, receiver_dts = [], []
     metadata_receiver_dts = []
     # Allow for startup times to be a bit longer

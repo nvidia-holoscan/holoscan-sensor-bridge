@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cerrno>
+#include <cstdint>
 #include <cstring>
 #include <ctime>
 #include <fcntl.h>
@@ -135,7 +136,7 @@ public:
         short events) override
     {
         std::lock_guard<std::mutex> lock(lock_);
-        fd_callbacks_[fd] = std::make_pair(std::move(callback), events);
+        fd_callbacks_[fd] = FdRegistration { std::move(callback), events, ++fd_registrations_ };
         wakeup();
     }
 
@@ -254,16 +255,28 @@ private:
 
             std::vector<struct pollfd> poll_fds;
             std::vector<int> fd_list;
+            // The registration of each polled fd when poll() started (none for the wakeup pipe).
+            // An fd can be removed and closed while poll() waits or an earlier callback runs, and
+            // its number reused by a new registration, even of the same callback: a result is
+            // dispatched only to the registration that was polled, and only while it is still
+            // registered. Holding the callback here also keeps a callback that owns its fd from
+            // closing that fd until this iteration ends.
+            std::vector<std::shared_ptr<FdCallback>> polled_callbacks;
+            std::vector<uint64_t> polled_registrations;
 
             // Always watch the wakeup pipe.
             poll_fds.push_back({ wakeup_read_fd_, POLLIN, 0 });
             fd_list.push_back(wakeup_read_fd_);
+            polled_callbacks.emplace_back();
+            polled_registrations.push_back(0);
 
             {
                 std::lock_guard<std::mutex> lock(lock_);
-                for (const auto& [fd, callback_data] : fd_callbacks_) {
-                    poll_fds.push_back({ fd, callback_data.second, 0 });
+                for (const auto& [fd, registration] : fd_callbacks_) {
+                    poll_fds.push_back({ fd, registration.events, 0 });
                     fd_list.push_back(fd);
+                    polled_callbacks.push_back(registration.callback);
+                    polled_registrations.push_back(registration.id);
                 }
             }
 
@@ -297,8 +310,17 @@ private:
                     {
                         std::lock_guard<std::mutex> lock(lock_);
                         auto it = fd_callbacks_.find(fd);
-                        if (it != fd_callbacks_.end()) {
-                            callback = it->second.first;
+                        if (it != fd_callbacks_.end() && it->second.id == polled_registrations[i]) {
+                            if (poll_fds[i].revents & POLLNVAL) {
+                                // Closed but still registered: nothing can come from it again,
+                                // and polling it would return at once, forever.
+                                HSB_LOG_WARN("Dropping the callback of fd={}, which was closed "
+                                             "without remove_fd_callback()",
+                                    fd);
+                                fd_callbacks_.erase(it);
+                            } else {
+                                callback = it->second.callback;
+                            }
                         }
                     }
                     if (callback) {
@@ -356,7 +378,15 @@ private:
     mutable std::mutex lock_;
     std::vector<std::shared_ptr<AlarmEntryImpl>> alarms_;
     std::atomic<uint64_t> alarms_added_ { 0 };
-    std::map<int, std::pair<std::shared_ptr<FdCallback>, short>> fd_callbacks_;
+    // An fd callback as add_fd_callback() registered it; id tells registrations apart, even of
+    // the same callback for the same fd number.
+    struct FdRegistration {
+        std::shared_ptr<FdCallback> callback;
+        short events = 0;
+        uint64_t id = 0;
+    };
+    std::map<int, FdRegistration> fd_callbacks_;
+    uint64_t fd_registrations_ = 0; // ids handed out so far (the wakeup pipe's is 0)
 
     int wakeup_read_fd_;
     int wakeup_write_fd_;

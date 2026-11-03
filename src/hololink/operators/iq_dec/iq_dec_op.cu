@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,9 +16,10 @@
  */
 
 #include <climits>
+#include <cmath>
 #include <stdexcept>
 
-#include "iq_dec_op.hpp"
+#include "iq_dec_kernels.hpp"
 
 static const size_t thread_block_size = 1024;
 
@@ -36,10 +37,12 @@ __global__ void cuda_decode_kernel(float* iq_component, const int16_t* encoded_i
 
 namespace hololink::operators {
 
-void IQDecoderOp::cuda_iq_decode(float* iq_component, const int16_t* encoded_input, size_t count, float scale) {
+void cuda_iq_decode(float* iq_component, const int16_t* encoded_input, size_t count, float scale,
+                                 cudaStream_t stream) {
   if (count % 4) throw std::runtime_error("size must be multiple of 4");
+  if (count == 0) return;
   cuda_decode_kernel<<<static_cast<size_t>(std::ceil(1.0 * count / thread_block_size)),
-                   thread_block_size>>>(iq_component, encoded_input, count, scale);
+                   thread_block_size, 0, stream>>>(iq_component, encoded_input, count, scale);
 }
 
 }  // namespace hololink::operators

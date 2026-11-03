@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,11 +17,23 @@ add_library(linux_coe_receiver STATIC
   linux_coe_receiver.cpp
   )
 
+add_library(linux_coe_receiver_op STATIC
+  linux_coe_receiver_op.cpp
+  )
+
 set_property(TARGET linux_coe_receiver PROPERTY POSITION_INDEPENDENT_CODE ON)
+set_property(TARGET linux_coe_receiver_op PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 add_library(hololink::operators::linux_coe_receiver ALIAS linux_coe_receiver)
+add_library(hololink::operators::linux_coe_receiver_op ALIAS linux_coe_receiver_op)
 
 target_include_directories(linux_coe_receiver
+  INTERFACE
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
+    $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+  )
+
+target_include_directories(linux_coe_receiver_op
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
@@ -34,13 +46,27 @@ target_link_libraries(linux_coe_receiver
     CUDA::cuda_driver
   )
 
+target_link_libraries(linux_coe_receiver_op
+  PUBLIC
+    hololink::operators::base_receiver_op
+  PRIVATE
+    hololink::core
+    linux_coe_receiver
+    CUDA::cuda_driver
+  )
+
 # Installation of the linux_coe_receiver operator
 set_target_properties(linux_coe_receiver PROPERTIES EXPORT_NAME operators::linux_coe_receiver)
-install(TARGETS linux_coe_receiver
+set_target_properties(linux_coe_receiver_op PROPERTIES EXPORT_NAME operators::linux_coe_receiver_op)
+install(TARGETS
+          linux_coe_receiver
+          linux_coe_receiver_op
         EXPORT HololinkTargets
         DESTINATION ${CMAKE_INSTALL_LIBDIR}
         COMPONENT hololink-operators)
 
-install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/linux_coe_receiver.hpp
+install(FILES
+          ${CMAKE_CURRENT_SOURCE_DIR}/linux_coe_receiver.hpp
+          ${CMAKE_CURRENT_SOURCE_DIR}/linux_coe_receiver_op.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/operators/linux_coe_receiver
         COMPONENT hololink-operators)

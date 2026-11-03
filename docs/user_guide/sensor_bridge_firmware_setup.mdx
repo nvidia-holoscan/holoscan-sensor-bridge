@@ -22,7 +22,7 @@ The Holoscan Sensor Bridge (HSB) FPGA firmware can be remotely flashed over Ethe
 
 1. These instructions assume that your FPGA was loaded with 0x2412 or newer firmware;
    this is the version included with HSB 2.0. If your configuration is older, follow the
-   [instructions to update to 2.0 first](https://docs.nvidia.com/holoscan/sensor-bridge/2.0.0/sensor_bridge_firmware_setup.html).
+   [instructions to update to 2.0 first](https://archive.docs.nvidia.com/holoscan/sensor-bridge/2.0.0/sensor_bridge_firmware_setup.html).
    To see what version of FPGA IP your HSB is configured with:
 
    ```sh
@@ -45,6 +45,8 @@ strategy.
 1. Lattice CPNX100-ETH-SENSOR-BRIDGE
 
 1. Leopard imaging VB1940 Eagle Camera
+
+1. Microchip MPF200-ETH-SENSOR-BRIDGE (R1)
 
 1. Microchip MPF200-ETH-SENSOR-BRIDGE-R2
 
@@ -69,8 +71,13 @@ strategy.
    use `--target-version`:
 
    ```sh
-   hsb_flasher --hololink 192.168.0.2 --target-version 2603
+   hsb_flasher --hololink 192.168.0.2 --target-version 2609
    ```
+
+   The latest firmware version in the manifest is 2609 for HSB Lite, the TauroTech
+   DA326, and the Leopard imaging VB1940 Eagle Camera. For the Microchip
+   MPF200-ETH-SENSOR-BRIDGE-R2, the latest version is 2606. For the Microchip PolarFire
+   board of the first revision (R1), the latest version is 2603.
 
    If the device is already running the target version, the tool exits with a message
    indicating no update is needed. To force a reflash of the same version (for example,
@@ -177,13 +184,13 @@ fpga_uuid:
   - <your-fpga-uuid>
  
 firmware_versions:
-  - version: 0x2603
+  - version: 0x2609
     cpnx:
-      - location: https://example.com/firmware/cpnx_v2603.bit
+      - location: https://example.com/firmware/cpnx_v2609.bit
         md5: <md5-checksum>
         size: <file-size-in-bytes>
     clnx:
-      - location: https://example.com/firmware/clnx_v2603.bit
+      - location: https://example.com/firmware/clnx_v2609.bit
         md5: <md5-checksum>
         size: <file-size-in-bytes>
 ```
@@ -208,7 +215,7 @@ expose two top-level functions that `hsb_flasher` calls:
 
 Each subclass declares a `MIN_VERSION` (the inclusive lower bound of the version range
 it covers); a device at version V is dispatched to the strategy with the largest
-`MIN_VERSION &lt;= V`. New minor revisions route automatically — only the YAML manifest
+`MIN_VERSION <= V`. New minor revisions route automatically — only the YAML manifest
 needs updating. A new flash protocol means adding a new class with the appropriate
 `MIN_VERSION`.
 
@@ -287,4 +294,5 @@ for reference or advanced use:
 
 - `program_lattice_cpnx100` — located in `build/tools/program_lattice_cpnx100/`
 - `program_leopard_cpnx100` — located in `build/tools/program_leopard_cpnx100/`
-- `polarfire_esb.py` — located in `build/python/lib/hololink/tools/`
+- `polarfire_esb` — the source is `python/tools/polarfire_esb.py`. The Python package
+  installs it as the `polarfire_esb` command.

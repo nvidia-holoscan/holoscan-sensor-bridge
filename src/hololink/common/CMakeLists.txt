@@ -18,9 +18,9 @@ add_library(hololink STATIC)
 
 target_sources(hololink
   PRIVATE
-    gui_renderer.cpp
     holoargs.cpp
     cuda_helper.cpp
+    shutdown_signal_disposition_guard.cpp
     tools.cpp
 )
 
@@ -41,10 +41,6 @@ endif()
 target_link_libraries(hololink
   PRIVATE
     holoscan::core
-
-    # Required by the gui_renderer
-    holoscan::viz
-    holoscan::viz::imgui
   PUBLIC
     hololink::core
     CUDA::cuda_driver
@@ -69,8 +65,36 @@ install(TARGETS hololink
 
 install(FILES cuda_error.hpp
         cuda_helper.hpp
-        gui_renderer.hpp
         holoargs.hpp
+        shutdown_signal_disposition_guard.hpp
         tools.hpp
         DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/common
         COMPONENT hololink-common)
+
+# hololink::gui_renderer -- the Dear ImGui window operators draw their GUIs into. A separate
+# target so the HoloViz dependency stays off everything else in hololink::common.
+if(HOLOLINK_HAS_IMGUI)
+  add_library(gui_renderer STATIC gui_renderer.cpp gui_staging.cpp)
+  add_library(hololink::gui_renderer ALIAS gui_renderer)
+  set_property(TARGET gui_renderer PROPERTY POSITION_INDEPENDENT_CODE ON)
+  target_include_directories(gui_renderer
+    INTERFACE
+      $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../..>
+      $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
+    )
+  target_link_libraries(gui_renderer
+    PRIVATE
+      hololink::core
+      holoscan::visualization::holoviz
+      CUDA::cuda_driver
+      CUDA::cudart
+    )
+  set_target_properties(gui_renderer PROPERTIES EXPORT_NAME gui_renderer)
+  install(TARGETS gui_renderer
+          EXPORT HololinkTargets
+          DESTINATION ${CMAKE_INSTALL_LIBDIR}
+          COMPONENT hololink-common)
+  install(FILES gui_renderer.hpp gui_staging.hpp
+          DESTINATION ${CMAKE_INSTALL_INCLUDEDIR}/hololink/common
+          COMPONENT hololink-common)
+endif()
