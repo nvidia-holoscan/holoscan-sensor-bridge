@@ -53,9 +53,10 @@ target_link_libraries(linux_receiver
   )
 
 target_link_libraries(linux_receiver_op
+  PUBLIC
+    hololink::operators::base_receiver_op
   PRIVATE
     hololink::core
-    hololink::operators::base_receiver_op
     linux_receiver
     CUDA::cuda_driver
   )

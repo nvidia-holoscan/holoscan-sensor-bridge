@@ -29,8 +29,9 @@ target_include_directories(udp_transmitter
 
 target_link_libraries(udp_transmitter
   PRIVATE
-    hololink
+    hololink::core
     holoscan::core
+    CUDA::cudart
 )
 
 # Installation of the udp_transmitter operator

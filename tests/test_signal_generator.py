@@ -22,11 +22,12 @@ import sys
 import pytest
 
 
+# The app picks the RoCE device on each board's network interface: the first devices the
+# system lists may not reach the boards (on a DGX Spark each port shows up as two devices, and
+# only one of them has the board's RoCE v2 GID).
 @pytest.mark.skip_unless_signal_generator
 @pytest.mark.accelerated_networking
-def test_signal_generator(
-    tx_hololink_address, hololink_address, tx_ibv_name, ibv_name, ibv_port
-):
+def test_signal_generator(tx_hololink_address, hololink_address):
     script = os.path.join(
         os.path.dirname(__file__), "..", "examples", "signal_generator.py"
     )
@@ -36,14 +37,8 @@ def test_signal_generator(
             script,
             "--tx-hololink",
             tx_hololink_address,
-            "--tx-ibv-name",
-            tx_ibv_name,
             "--rx-hololink",
             hololink_address,
-            "--rx-ibv-name",
-            ibv_name,
-            "--rx-ibv-port",
-            str(ibv_port),
             "--frame-limit",
             "1",
             "--no-gui",

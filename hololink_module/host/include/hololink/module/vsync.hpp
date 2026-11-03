@@ -12,35 +12,65 @@
 
 namespace hololink::module {
 
-/* Abstract base for any source that drives a board's VSYNC trigger
- * line. PTP-PPS is the source the framework ships today (see
- * PtpPpsOutputInterfaceV1 in ptp_pps_output.hpp); external trigger
- * inputs, software triggers, or other timing references can be added
- * later as additional derived interfaces without touching consumers.
+/**
+ * @brief Controls the VSYNC trigger that starts frames on a board's
+ * cameras.
  *
- * Consumers (camera drivers) only need to know whether *some* source
- * is currently driving the trigger so they can switch the sensor's
- * trigger-input mode on or off. They do not configure the source —
- * that is the producer interface's responsibility. */
+ * VSYNC is a timing pulse train sent to the cameras' frame-start (external
+ * trigger) inputs, so that the cameras begin their frames together.
+ * Something has to generate those pulses; this interface is what a
+ * camera driver, or an application, needs in order to use whichever
+ * source is installed. PtpPpsOutputInterfaceV1 is the source currently
+ * provided, and the same object is available through both interfaces.
+ *
+ * This interface does not configure the source: choosing the pulse rate
+ * and making the source ready (so that is_enabled() is true) is done
+ * through the source's own interface. Here, a camera driver checks
+ * is_enabled() to decide whether to put its sensor in external-trigger
+ * mode, and the application calls start() once the cameras are ready
+ * and stop() when done.
+ */
 class VsyncInterfaceV1 : public Service<VsyncInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "vsync.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     virtual ~VsyncInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* True when this source is configured and will respond to
-     * start()/stop(). Camera drivers consult this during configure()
-     * to decide whether to put their sensor in external-trigger mode. */
+    /**
+     * @brief Whether the source has been configured to produce pulses.
+     *
+     * Camera drivers consult this while configuring, to decide whether
+     * to put their sensor in external-trigger mode. start() and stop()
+     * are only meaningful while this is `true`.
+     *
+     * @return `true` if the source is configured; `false` otherwise.
+     */
     virtual bool is_enabled() const = 0;
 
-    /* Begin emitting trigger pulses on the wire. Idempotent — calling
-     * start() twice is safe. The application typically arranges for
-     * start() to fire once after every camera has finished entering
-     * external-sync waiting state, so the first pulse lands on all
-     * cameras simultaneously. */
+    /**
+     * @brief Begin generating trigger pulses.
+     *
+     * The application normally calls this once, after every camera has
+     * been put into external-trigger mode and is waiting, so that the
+     * first pulse reaches all of them at the same time. Calling it while
+     * pulses are already being generated has no effect. If the source
+     * is not enabled (see is_enabled()), no pulses are generated.
+     *
+     * @return HOLOLINK_MODULE_OK on success, or an error status.
+     */
     virtual hololink_module_status_t start() = 0;
 
-    /* Stop emitting trigger pulses. Idempotent. */
+    /**
+     * @brief Stop generating trigger pulses.
+     *
+     * The source remains configured, so start() can resume the pulses.
+     * Calling it when no pulses are being generated has no effect.
+     *
+     * @return HOLOLINK_MODULE_OK on success, or an error status.
+     */
     virtual hololink_module_status_t stop() = 0;
 };
 

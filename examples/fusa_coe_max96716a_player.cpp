@@ -15,9 +15,21 @@
  * limitations under the License.
  */
 
-#include <cuda_runtime.h>
+// MAX96716A internal video pattern generator (VPG) live viewer over the FuSa CoE capture
+// path, ported to Holoscan SDK 5.0's Graph / Operator<Params> shape:
+//   FusaCoeCaptureOp -> RgbReshapeOp -> HolovizOp
+//
+// Near-identical to the already-ported examples/max96716a_player.cpp (RoCE sibling) --
+// same RgbReshapeOp, same VPG/TauroTechDa326 setup -- with
+// hololink::module::operators::FusaCoeCaptureOp swapped in for the receiver, exactly as the
+// FuSa Hawk apps already demonstrate. The VPG has no CSI/Bayer stage (the deserializer's
+// built-in test pattern is RGB888 already), so FusaCoeCaptureOp runs in its opaque
+// byte-blob capture mode (frame_size_bytes set, no CFA/packetizer structure) -- mirrors the
+// pre-port shell's own configure_frame_size() call.
 
+#include <array>
 #include <chrono>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <sstream>
@@ -25,8 +37,27 @@
 #include <string>
 #include <vector>
 
-#include <gxf/std/allocator.hpp>
-#include <gxf/std/tensor.hpp>
+#include <cuda.h>
+#include <cuda_runtime_api.h>
+
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/domain/dlpack.hpp>
+#include <holoscan/core/domain/tensor.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/expected.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/core/sample.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
 
 #include "hololink/module/adapter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
@@ -34,12 +65,14 @@
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
 #include "max96716a.hpp"
+#include <hololink/common/cuda_helper.hpp>
 #include <hololink/common/holoargs.hpp>
 #include <hololink/common/tools.hpp>
 #include <hololink/core/logging.hpp>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include "player_support.hpp"
+
+namespace hx = hololink::examples;
 
 namespace {
 
@@ -94,205 +127,344 @@ void configure_vpg(Max96716a& deserializer, int32_t width, int32_t height,
     const int32_t v_blank = 45;
     const int32_t v_total = v_active + v_blank;
 
-    write24(deserializer, 0x0245, static_cast<uint32_t>(v_active * h_total));
-    write24(deserializer, 0x0248, static_cast<uint32_t>(v_blank * h_total));
-    write16(deserializer, 0x024E, 44);
-    write16(deserializer, 0x0250, static_cast<uint32_t>(h_total - 44));
-    write16(deserializer, 0x0252, static_cast<uint32_t>(v_total));
-    write16(deserializer, 0x0257, static_cast<uint32_t>(h_active));
-    write16(deserializer, 0x0259, static_cast<uint32_t>(h_blank));
-    write16(deserializer, 0x025B, static_cast<uint32_t>(v_active));
+    write24(deserializer, 0x0245, static_cast<uint32_t>(v_active * h_total)); // VS_HIGH_2
+    write24(deserializer, 0x0248, static_cast<uint32_t>(v_blank * h_total)); // VS_LOW_2
+    write16(deserializer, 0x024E, 44); // HS_HIGH_1
+    write16(deserializer, 0x0250, static_cast<uint32_t>(h_total - 44)); // HS_LOW_1
+    write16(deserializer, 0x0252, static_cast<uint32_t>(v_total)); // HS_CNT_1
+    write16(deserializer, 0x0257, static_cast<uint32_t>(h_active)); // DE_HIGH_1
+    write16(deserializer, 0x0259, static_cast<uint32_t>(h_blank)); // DE_LOW_1
+    write16(deserializer, 0x025B, static_cast<uint32_t>(v_active)); // DE_CNT_1
 
     uint8_t patgen_mode;
     if (pattern == "checkerboard") {
-        deserializer.set_register(0x025E, 0x00);
-        deserializer.set_register(0x025F, 0x00);
-        deserializer.set_register(0x0260, 0xFF);
-        deserializer.set_register(0x0261, 0xFF);
-        deserializer.set_register(0x0262, 0x00);
-        deserializer.set_register(0x0263, 0x00);
-        deserializer.set_register(0x0264, 16);
-        deserializer.set_register(0x0265, 16);
-        deserializer.set_register(0x0266, 8);
+        deserializer.set_register(0x025E, 0x00); // CHKR_COLOR_A_L
+        deserializer.set_register(0x025F, 0x00); // CHKR_COLOR_A_M
+        deserializer.set_register(0x0260, 0xFF); // CHKR_COLOR_A_H
+        deserializer.set_register(0x0261, 0xFF); // CHKR_COLOR_B_L
+        deserializer.set_register(0x0262, 0x00); // CHKR_COLOR_B_M
+        deserializer.set_register(0x0263, 0x00); // CHKR_COLOR_B_H
+        deserializer.set_register(0x0264, 16); // CHKR_RPT_A
+        deserializer.set_register(0x0265, 16); // CHKR_RPT_B
+        deserializer.set_register(0x0266, 8); // CHKR_ALT
         patgen_mode = 0b01;
     } else if (pattern == "gradient") {
-        deserializer.set_register(0x025D, 0x01);
+        deserializer.set_register(0x025D, 0x01); // GRAD_INCR
         patgen_mode = 0b10;
     } else {
         throw std::runtime_error("Unknown VPG pattern: " + pattern);
     }
 
-    deserializer.set_register(0x0240, 0xE3);
-    deserializer.set_register(0x0241, static_cast<uint8_t>(patgen_mode << 4));
+    deserializer.set_register(0x0240, 0xE3); // PATGEN_0
+    deserializer.set_register(0x0241, static_cast<uint8_t>(patgen_mode << 4)); // PATGEN_1
 }
 
-/// Reshapes the flat uint8 receiver buffer into a (H, W, 3) device tensor so
-/// Holoviz recognises it as a color image.
-class RgbReshapeOp : public holoscan::Operator {
+struct RgbReshapeOpParams {
+    int32_t width { 0 };
+    int32_t height { 0 };
+};
+
+// Reshapes the flat RGB888 receiver buffer into a (H, W, 3) schema::ImageT tensor Holoviz can
+// render directly. No Bayer/CSI conversion is needed -- the VPG already emits interleaved RGB.
+// Identical to examples/max96716a_player.cpp's own RgbReshapeOp.
+class RgbReshapeOp : public holoscan::Operator<RgbReshapeOpParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(RgbReshapeOp)
+    holoscan::Input<holoscan::Tensor> input_tensor { "tensor" };
+    holoscan::Output<holoscan::schema::ImageT> output { "output" };
 
     void setup(holoscan::OperatorSpec& spec) override
     {
-        spec.input<holoscan::gxf::Entity>("input");
-        spec.output<holoscan::gxf::Entity>("output");
-        spec.param(allocator_, "allocator", "Allocator", "Allocator for output tensor.");
-        spec.param(width_, "width", "Width", "Image width in pixels.");
-        spec.param(height_, "height", "Height", "Image height in pixels.");
+        static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
+        // Matches the receiver's own pool ceiling so this stage is never the tighter
+        // bottleneck -- the receiver can't forward a frame larger than this anyway.
+        static constexpr std::size_t kMaxBytes
+            = hololink::module::operators::FusaCoeCaptureOp::kMaxFrameBytes;
+
+        spec.input(input_tensor, "tensor").queue_depth(4U).accepts_projected_tensor();
+        spec.output(output, "output")
+            .max_emits_per_compute(1U)
+            .tensor_field(holoscan::schema::ImageTensorFields::data)
+            .produces_tensor(holoscan::TensorOutputSpec {
+                .representation = holoscan::TensorRepresentation {
+                    .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                    .dtype = kUInt8,
+                    .rank = 3U,
+                },
+                .bounds = holoscan::TensorBounds {
+                    .max_rank = 3U,
+                    .max_byte_span = kMaxBytes,
+                },
+                .storage = holoscan::TensorOutputStorage::kRuntimePool,
+            });
     }
 
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
+    [[nodiscard]] holoscan::Contract contract() const override
+    {
+        holoscan::Contract c;
+        c.trigger(holoscan::OnEach { input_tensor });
+        return c;
+    }
+
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute(
         holoscan::ExecutionContext& context) override
     {
-        auto maybe_entity = op_input.receive<holoscan::gxf::Entity>("input");
-        if (!maybe_entity) {
-            throw std::runtime_error("RgbReshapeOp: failed to receive input");
+        auto result = compute_impl(context);
+        if (!result && result.error().code == holoscan::ErrorCode::kNotReady) {
+            return {};
         }
-        auto& in_entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-        auto maybe_in_tensor = in_entity.get<nvidia::gxf::Tensor>();
-        if (!maybe_in_tensor) {
-            throw std::runtime_error("RgbReshapeOp: input tensor not found");
-        }
-        auto in_tensor = maybe_in_tensor.value();
-
-        const size_t pixels = static_cast<size_t>(width_.get()) * static_cast<size_t>(height_.get()) * 3u;
-        if (in_tensor->size() < pixels) {
-            return;
-        }
-
-        auto allocator_handle = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(
-            fragment()->executor().context(), allocator_.get()->gxf_cid());
-        if (!allocator_handle) {
-            throw std::runtime_error("RgbReshapeOp: failed to get allocator handle");
-        }
-
-        nvidia::gxf::Shape shape { static_cast<int32_t>(height_.get()),
-            static_cast<int32_t>(width_.get()), 3 };
-        auto out_message = CreateTensorMap(context.context(), allocator_handle.value(),
-            { { std::string(""), nvidia::gxf::MemoryStorageType::kDevice, shape,
-                nvidia::gxf::PrimitiveType::kUnsigned8, 0,
-                nvidia::gxf::ComputeTrivialStrides(shape,
-                    nvidia::gxf::PrimitiveTypeSize(nvidia::gxf::PrimitiveType::kUnsigned8)) } },
-            false);
-        if (!out_message) {
-            throw std::runtime_error("RgbReshapeOp: failed to allocate output");
-        }
-        auto out_tensor = out_message.value().get<nvidia::gxf::Tensor>("");
-        if (!out_tensor) {
-            throw std::runtime_error("RgbReshapeOp: failed to get output tensor");
-        }
-
-        cudaError_t err = cudaMemcpy(out_tensor.value()->pointer(), in_tensor->pointer(),
-            pixels, cudaMemcpyDeviceToDevice);
-        if (err != cudaSuccess) {
-            throw std::runtime_error(fmt::format("RgbReshapeOp: cudaMemcpy failed: {}",
-                cudaGetErrorString(err)));
-        }
-
-        auto result = holoscan::gxf::Entity(std::move(out_message.value()));
-        op_output.emit(result, "output");
+        return result;
     }
 
-private:
-    holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> allocator_;
-    holoscan::Parameter<int32_t> width_;
-    holoscan::Parameter<int32_t> height_;
-};
-
-/// FuSa CoE capture requires a device with start()/stop(); the VPG has none.
-class VpgDevice {
-public:
-    void start() { }
-    void stop() { }
-};
-
-class Application : public holoscan::Application {
-public:
-    Application(bool headless,
-        hololink::module::EnumerationMetadata sif_metadata,
-        const std::string& interface,
-        uint32_t timeout,
-        int32_t window_height, int32_t window_width,
-        size_t frame_size,
-        int64_t frame_limit,
-        int32_t vpg_width, int32_t vpg_height,
-        const std::string& window_title)
-        : headless_(headless)
-        , sif_metadata_(std::move(sif_metadata))
-        , interface_(interface)
-        , timeout_(timeout)
-        , window_height_(window_height)
-        , window_width_(window_width)
-        , frame_size_(frame_size)
-        , frame_limit_(frame_limit)
-        , vpg_width_(vpg_width)
-        , vpg_height_(vpg_height)
-        , window_title_(window_title)
-        , device_(std::make_shared<VpgDevice>())
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute_impl(
+        holoscan::ExecutionContext& context)
     {
-    }
+        const RgbReshapeOpParams& configuration = params();
+        const int32_t width = configuration.width;
+        const int32_t height = configuration.height;
+        const std::size_t pixels
+            = static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 3U;
 
-    void compose() override
-    {
-        using namespace holoscan;
+        auto sample = input_tensor.receive();
+        if (!sample)
+            return holoscan::make_unexpected(std::move(sample).error());
 
-        std::shared_ptr<Condition> condition;
-        if (frame_limit_) {
-            condition = make_condition<CountCondition>("count", frame_limit_);
-        } else {
-            condition = make_condition<BooleanCondition>("ok", true);
+        const holoscan::Tensor& in = sample->data;
+        if (static_cast<std::size_t>(in.nbytes()) < pixels)
+            return {}; // Short frame -- drop it. Holoviz can't render a partial image.
+
+        const std::array<int64_t, 3> out_shape { height, width, 3 };
+        auto loan = output.allocate_tensor(holoscan::TensorLoanRequest {
+            .shape = out_shape,
+            .dtype = DLDataType { static_cast<uint8_t>(kDLUInt), 8, 1 },
+        });
+        if (!loan) {
+            if (loan.error().code == holoscan::ErrorCode::kResourceExhausted)
+                return {}; // HolovizOp is behind; drop this frame
+            return holoscan::make_unexpected(std::move(loan).error());
         }
 
-        auto fusa_coe_capture = make_operator<hololink::module::operators::FusaCoeCaptureOp>(
-            "fusa_coe_capture",
-            Arg("enumeration_metadata", sif_metadata_),
-            Arg("interface", interface_.empty() ? sif_metadata_.get<std::string>("interface", "") : interface_),
-            Arg("mac_addr", [&]() -> std::vector<uint8_t> { return parse_mac_address(sif_metadata_.get<std::string>("mac_id", "")); }()),
-            Arg("timeout", timeout_),
-            Arg("device_start", std::function<void()>([this] { device_->start(); })),
-            Arg("device_stop", std::function<void()>([this] { device_->stop(); })),
-            condition);
-        fusa_coe_capture->configure_frame_size(static_cast<uint32_t>(frame_size_));
+        auto writer = loan->write(context.cuda_stream());
+        if (!writer)
+            return holoscan::make_unexpected(std::move(writer).error());
 
-        auto reshape_pool = make_resource<BlockMemoryPool>("reshape_pool",
-            /*storage_type=*/1, // device memory
-            static_cast<size_t>(vpg_width_) * vpg_height_ * 3u,
-            /*num_blocks=*/2);
-        auto reshape_op = make_operator<RgbReshapeOp>("reshape",
-            Arg("allocator", reshape_pool),
-            Arg("width", vpg_width_),
-            Arg("height", vpg_height_));
+        const cudaStream_t stream = context.cuda_stream().get();
+        if (cudaMemcpyAsync(writer->data(), in.data(), pixels, cudaMemcpyDeviceToDevice, stream)
+            != cudaSuccess) {
+            return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kFailure,
+                "RgbReshapeOp: device-to-device copy failed" });
+        }
 
-        std::vector<ops::HolovizOp::InputSpec> input_specs;
-        input_specs.emplace_back("", ops::HolovizOp::InputType::COLOR);
-        auto visualizer = make_operator<ops::HolovizOp>("holoviz",
-            Arg("framebuffer_srgb", true),
-            Arg("headless", headless_),
-            Arg("height", window_height_),
-            Arg("width", window_width_),
-            Arg("window_title", window_title_),
-            Arg("tensors", input_specs));
+        auto committed = std::move(*writer).commit();
+        if (!committed)
+            return holoscan::make_unexpected(std::move(committed).error());
 
-        add_flow(fusa_coe_capture, reshape_op, { { "output", "input" } });
-        add_flow(reshape_op, visualizer, { { "output", "receivers" } });
+        holoscan::TimePoint capture = sample->metadata.capture_time();
+        if (!capture.valid())
+            capture = context.activation_time();
+
+        holoscan::schema::ImageT descriptor;
+        descriptor.width = width;
+        descriptor.height = height;
+        descriptor.encoding = holoscan::schema::ImageEncoding_RGB8;
+
+        auto emitted = output.emit_tensor(std::move(*loan), descriptor,
+            holoscan::EmitOptions { .capture_time = capture });
+        if (!emitted && emitted.error().code == holoscan::ErrorCode::kBackpressured)
+            return {};
+        return emitted;
     }
-
-private:
-    const bool headless_;
-    hololink::module::EnumerationMetadata sif_metadata_;
-    const std::string interface_;
-    const uint32_t timeout_;
-    const int32_t window_height_;
-    const int32_t window_width_;
-    const size_t frame_size_;
-    const int64_t frame_limit_;
-    const int32_t vpg_width_;
-    const int32_t vpg_height_;
-    const std::string window_title_;
-    const std::shared_ptr<VpgDevice> device_;
 };
 
-} // anonymous namespace
+// Runs the player on the options main() parsed.
+int run(hololink::args::VariablesMap& variables_map, holoscan::ManagedShutdownSignals& signals)
+{
+    const auto hololink_ip = variables_map["hololink"].as<std::string>();
+    const auto sensor = variables_map["sensor"].as<std::string>();
+    const auto pattern = variables_map["pattern"].as<std::string>();
+    const auto title = variables_map["title"].as<std::string>();
+    const auto interface_arg = variables_map["interface"].as<std::string>();
+    const auto headless = variables_map["headless"].as<bool>();
+    const auto skip_setup = variables_map["skip-setup"].as<bool>();
+    const auto skip_reset = variables_map["skip-reset"].as<bool>();
+    const int32_t window_width = variables_map["window-width"].as<int>();
+    const int32_t window_height = variables_map["window-height"].as<int>();
+    const int32_t vpg_width = variables_map["width"].as<int>();
+    const int32_t vpg_height = variables_map["height"].as<int>();
+    const uint32_t timeout = static_cast<uint32_t>(variables_map["timeout"].as<int>());
+    const int64_t frame_limit = variables_map["frame-limit"].as<int>();
+
+    // Fail fast, before touching any hardware, rather than letting a bad resolution
+    // surface as a cryptic kInvalidArgument (or garbage register writes in
+    // configure_vpg()) deep inside the app. Checked separately from the byte-count
+    // cap below: a negative width paired with a negative height would otherwise wrap
+    // around in the unsigned multiplication below and silently pass that check.
+    if (vpg_width <= 0 || vpg_height <= 0) {
+        std::cerr << "Invalid resolution " << vpg_width << "x" << vpg_height
+                  << ": --width/--height must both be positive." << std::endl;
+        return EXIT_FAILURE;
+    }
+    // RGB888 = 3 bytes/pixel; pad generously for CSI-2 per-line framing overhead.
+    const size_t frame_size = static_cast<size_t>(vpg_width) * 3 * vpg_height
+        + 16 * static_cast<size_t>(vpg_height) + 4096;
+    if (frame_size > hololink::module::operators::FusaCoeCaptureOp::kMaxFrameBytes) {
+        std::cerr << "Requested resolution " << vpg_width << "x" << vpg_height << " ("
+                  << frame_size << " bytes/frame) exceeds the maximum supported frame size ("
+                  << hololink::module::operators::FusaCoeCaptureOp::kMaxFrameBytes
+                  << " bytes). Reduce --width/--height." << std::endl;
+        return EXIT_FAILURE;
+    }
+
+    CUdevice cu_device;
+    std::shared_ptr<hololink::module::HololinkInterfaceV1> holo_iface;
+
+    try {
+        // CUDA section
+        CudaCheck(cuInit(0));
+        int cu_device_ordinal = 0;
+        CudaCheck(cuDeviceGet(&cu_device, cu_device_ordinal));
+        CUcontext cu_context;
+        CudaCheck(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+        cuCtxSetCurrent(cu_context);
+
+        // Map sensor arg to SIF index (matches Python: left=0, right=1).
+        int64_t sif = (sensor == "right") ? 1 : 0;
+
+        hololink::module::EnumerationMetadata adapter_metadata
+            = hololink::module::Adapter::get_adapter().wait_for_channel(hololink_ip,
+                std::chrono::seconds(30));
+
+        hololink::module::EnumerationMetadata sif_metadata(adapter_metadata);
+        hololink::module::Adapter::get_adapter().use_sensor(sif_metadata, sif);
+
+        holo_iface = hololink::module::HololinkInterfaceV1::get_service(adapter_metadata);
+        holo_iface->start();
+        auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(adapter_metadata);
+        // sensor_holo provides I2C access for sensor/deserializer setup;
+        // sensors will be migrated to HololinkInterfaceV1::get_i2c() separately.
+        auto sensor_holo = board->hololink();
+        auto deserializer = std::make_shared<Max96716a>(sensor_holo);
+
+        if (!skip_setup) {
+            if (!skip_reset) {
+                holo_iface->reset();
+            }
+
+            board->release_reset();
+            board->power_cycle();
+            board->check_power();
+            board->setup_clock();
+
+            // Deser sanity check
+            uint8_t dev_id = deserializer->get_register(Max96716a::DEV_ID_REG);
+            if (dev_id != Max96716a::DEV_ID) {
+                throw std::runtime_error(fmt::format(
+                    "Deserializer mismatch: expected 0x{:02X}, got 0x{:02X}",
+                    Max96716a::DEV_ID, dev_id));
+            }
+
+            // MIPI output configuration — phy_2x4, MIPI_TX1/2 lane counts.
+            deserializer->configure_video_pipe();
+
+            // force_csi_out
+            deserializer->set_register(0x0330, 0x84);
+            configure_vpg(*deserializer, vpg_width, vpg_height, pattern);
+        }
+
+        const std::string interface = interface_arg.empty()
+            ? sif_metadata.get<std::string>("interface", "")
+            : interface_arg;
+        const auto mac_str = sif_metadata.get<std::string>("mac_id", "");
+        const auto mac_bytes = parse_mac_address(mac_str);
+
+        const std::string window_title = title + " - " + sensor;
+
+        // Build the graph.
+        holoscan::Graph graph { "fusa_coe_max96716a_player" };
+        holoscan::CompileOptions compile_options;
+
+        holoscan::visualization::LayerStack layers;
+        layers.add_image_layer("video",
+            holoscan::visualization::ImageLayerDesc {
+                .format = holoscan::visualization::ImageFormat::kR8G8B8Unorm,
+                .max_width = static_cast<uint32_t>(vpg_width),
+                .max_height = static_cast<uint32_t>(vpg_height),
+            });
+
+        auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers),
+            hx::DisplayConfig {
+                .title = window_title,
+                .width = static_cast<uint32_t>(window_width),
+                .height = static_cast<uint32_t>(window_height),
+                .headless = headless,
+            },
+            compile_options, cu_device_ordinal);
+
+        // VPG has no per-stream device to start/stop; pass no-op lambdas.
+        auto capture = graph.op<hololink::module::operators::FusaCoeCaptureOp>("capture");
+        capture.set_params(hololink::module::operators::FusaCoeCaptureParams {
+            .metadata = sif_metadata,
+            .device_start = [] {},
+            .device_stop = [] {},
+            .interface = interface,
+            .mac_addr = mac_bytes,
+            .timeout = timeout,
+            .frame_size_bytes = static_cast<uint32_t>(frame_size),
+            // Stop after --frame-limit frames, as HSDK4's CountCondition on FusaCoeCaptureOp did.
+            .frame_limit = frame_limit,
+            .frame_limit_ends_run = true,
+            // Names this camera in the capture's stall messages.
+            .name = std::string(capture.name()),
+        });
+
+        auto reshape = graph.op<RgbReshapeOp>("reshape");
+        reshape.set_params(RgbReshapeOpParams {
+            .width = vpg_width,
+            .height = vpg_height,
+        });
+
+        graph.add_flow(capture->tensor, reshape->input_tensor, hx::pipeline_edge());
+        graph.add_flow(reshape->output, viz->image_layer_input(0), hx::display_edge());
+
+        graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+        compile_options.deployment.bind_tensor_output_device(
+            holoscan::TensorOutputDevicePlacement {
+                .operator_path = "capture",
+                .output_port = "tensor",
+                .device = holoscan::DeviceId { cu_device_ordinal },
+            });
+        compile_options.deployment.bind_tensor_output_device(
+            holoscan::TensorOutputDevicePlacement {
+                .operator_path = "reshape",
+                .output_port = "output",
+                .device = holoscan::DeviceId { cu_device_ordinal },
+            });
+
+        const auto plan = holoscan::compile(graph, std::move(compile_options));
+        if (!plan.ok()) {
+            hx::print_compile_failure(plan);
+            holo_iface->stop();
+            CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+            return -1;
+        }
+
+        auto session = holoscan::run_async(plan, signals);
+        session.wait();
+        const bool failed = hx::report_session(session, plan);
+
+        holo_iface->stop();
+        CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+        return failed ? -1 : 0;
+    } catch (const std::exception& e) {
+        if (holo_iface) {
+            holo_iface->stop();
+        }
+        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+        return -1;
+    }
+}
+
+} // namespace
 
 int main(int argc, char** argv)
 {
@@ -320,77 +492,8 @@ int main(int argc, char** argv)
 
     auto variables_map = Parser().parse_command_line(argc, argv, options_description);
 
-    const auto hololink_ip = variables_map["hololink"].as<std::string>();
-    const auto sensor = variables_map["sensor"].as<std::string>();
-    const auto pattern = variables_map["pattern"].as<std::string>();
-    const auto title = variables_map["title"].as<std::string>();
-    const auto interface = variables_map["interface"].as<std::string>();
-    const auto headless = variables_map["headless"].as<bool>();
-    const auto skip_setup = variables_map["skip-setup"].as<bool>();
-    const auto skip_reset = variables_map["skip-reset"].as<bool>();
-    const int32_t window_width = variables_map["window-width"].as<int>();
-    const int32_t window_height = variables_map["window-height"].as<int>();
-    const int32_t vpg_width = variables_map["width"].as<int>();
-    const int32_t vpg_height = variables_map["height"].as<int>();
-    const uint32_t timeout = static_cast<uint32_t>(variables_map["timeout"].as<int>());
-    const int64_t frame_limit = variables_map["frame-limit"].as<int>();
-
-    try {
-        const int64_t sif = (sensor == "right") ? 1 : 0;
-
-        auto& adapter = hololink::module::Adapter::get_adapter();
-        hololink::module::EnumerationMetadata adapter_metadata
-            = adapter.wait_for_channel(hololink_ip, std::chrono::seconds(30));
-
-        hololink::module::EnumerationMetadata sif_metadata(adapter_metadata);
-        adapter.use_sensor(sif_metadata, sif);
-
-        auto holo_iface = hololink::module::HololinkInterfaceV1::get_service(adapter_metadata);
-        holo_iface->start();
-        auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(adapter_metadata);
-        auto legacy_holo = board->hololink();
-        auto deserializer = std::make_shared<Max96716a>(legacy_holo);
-
-        const size_t frame_size = static_cast<size_t>(vpg_width) * 3 * vpg_height
-            + 16 * vpg_height + 4096;
-        const std::string window_title = title + " - " + sensor;
-
-        auto application = holoscan::make_application<Application>(headless,
-            sif_metadata, interface, timeout,
-            window_height, window_width, frame_size, frame_limit,
-            vpg_width, vpg_height, window_title);
-
-        try {
-            if (!skip_setup) {
-                if (!skip_reset) {
-                    holo_iface->reset();
-                }
-                board->release_reset();
-                board->power_cycle();
-                board->check_power();
-                board->setup_clock();
-
-                uint8_t dev_id = deserializer->get_register(Max96716a::DEV_ID_REG);
-                if (dev_id != Max96716a::DEV_ID) {
-                    throw std::runtime_error(fmt::format(
-                        "Deserializer mismatch: expected 0x{:02X}, got 0x{:02X}",
-                        Max96716a::DEV_ID, dev_id));
-                }
-
-                deserializer->configure_video_pipe();
-                deserializer->set_register(0x0330, 0x84); // force_csi_out
-                configure_vpg(*deserializer, vpg_width, vpg_height, pattern);
-            }
-
-            application->run();
-        } catch (...) {
-            holo_iface->stop();
-            throw;
-        }
-        holo_iface->stop();
-        return 0;
-    } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
-        return -1;
-    }
+    // With managed signals, Ctrl+C stops the session cooperatively, so the board is stopped on
+    // the way out.
+    return hx::run_with_managed_signals(
+        [&](holoscan::ManagedShutdownSignals& signals) { return run(variables_map, signals); });
 }

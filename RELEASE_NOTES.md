@@ -1,5 +1,250 @@
 # Release Notes
 
+## 3.0-GA, November 2026
+
+### Dependencies
+
+- Holoscan SDK 5.0.0. The operators, the Python bindings and the example applications,
+  C++ and Python, are ported to it; Known Anomalies below lists what isn't yet.
+  - **Note:** Holoscan SDK 5.0 is a modular, high-performance version of Holoscan SDK,
+    with a new runtime and API. It is not backward compatible with Holoscan SDK 4.x and
+    earlier. To port your applications, see the
+    [Holoscan SDK 5 migration guide](https://docs.nvidia.com/holoscan/sdk-user-guide/introduction/migrating-from-4x).
+- The container that `docker/build.sh` builds installs it: the SDK's Debian packages
+  from its local APT repository, and its Python wheels from PyPI.
+- Supported developer kits:
+  - Jetson AGX Thor: JetPack 7.2.1 GA. Use
+    [SDK Manager](https://developer.nvidia.com/sdk-manager) to set it up.
+  - Jetson AGX Orin Developer Kit: JetPack 7.2.1 GA. Use
+    [SDK Manager](https://developer.nvidia.com/sdk-manager) to set it up.
+  - IGX Thor Developer Kit (T7000) with the iGPU:
+    [IGX SW 2.0.1 GA](https://developer.nvidia.com/igx-downloads).
+  - IGX Thor Developer Kit (T7000) with an RTX PRO 6000 dGPU:
+    [IGX SW 2.0.1 GA](https://developer.nvidia.com/igx-downloads).
+  - DGX Spark: DGX OS 7.6.0.
+- CUDA 13. Holoscan SDK 5 uses one CUDA 13 software stack for iGPU and dGPU systems.
+- Holoscan SDK 5 does not support IGX Orin (IGX OS 1.x) or JetPack 6. For these
+  platforms, use
+  [Holoscan Sensor Bridge 2.7](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/2.7.0).
+- Holoscan Sensor Bridge, 10G; FPGA v2609. The `hsb_flasher` manifests give 2609 for HSB
+  Lite, the Leopard imaging VB1940 Eagle Camera and the TauroTech DA326. To update the
+  FPGA, see [Firmware Setup](https://docs.nvidia.com/holoscan/sensor-bridge/firmware/firmware-setup).
+
+### Updates from 2.7-GA
+
+- **Container build** One command builds the container on all supported developer kits:
+  `sh docker/build.sh`. The script gets the container type from the host. It accepts
+  `--igpu` and `--dgpu` for compatibility, but it ignores them. The other options are
+  `--sipl`, `--no-inference`, `--disable-roce-gpu-vram`, `--prune-cache`,
+  `--no-prune-cache`, `--no-cache`, `--use-sccache=0|1`, `--hsdk=VERSION`,
+  `--cuda-archs=LIST` and `-f`.
+- **Python API renames**
+  - This release removes `hololink.operators.LinuxReceiverOperator`. Use
+    `hololink.operators.LinuxReceiverOp`.
+  - `use_mtu()` and `use_vlan()` are module functions, for example
+    `hololink.use_mtu(metadata, mtu)`. They are not static methods of `DataChannel` now.
+    `use_sensor()` is a module function (`hololink.use_sensor()`) and also a static method of
+    `DataChannel`.
+- **Distributed examples removed:** `distributed_imx274_player.py` and
+  `distributed_tao_peoplenet.py` have no Holoscan SDK 5 version and are no longer shipped.
+- **SIPL capture** has moved to the separate Holoscan Camera module (`holoscan_camera`),
+  which provides it to Holoscan SDK 5 applications as the `SIPLCaptureOp` operator.
+  Removed from Holoscan Sensor Bridge: `SIPLCaptureService` / `SIPLCameraOutputOp` and
+  their Python bindings, the `sipl_*` example applications and their
+  `examples/sipl_config/` files, the `HOLOLINK_BUILD_SIPL` CMake option, and the pytest
+  `--json-config` option. Holoscan Camera provides SIPL capture in C++ and Python
+  (`SIPLCaptureOp`, `sipl_player.py`). The SIPL inference examples have no replacement
+  in [Holoscan Camera](https://github.com/nvidia-holoscan/holoscan-camera) yet. FuSa CoE capture (`FusaCoeCaptureOp` and the
+  `fusa_coe_*` examples) remains part of Holoscan Sensor Bridge.
+- **Capture metadata** Receivers, `FusaCoeCaptureOp` and the image operators publish
+  each frame on two ports: `tensor` (the frame's tensor, or a `holoscan::schema::ImageT`
+  from the converters on) and `metadata` (`hololink::CaptureMetadataT`, replacing the
+  HSDK4 GXF metadata dictionary), which consumers pair by capture time. See
+  `MIGRATION.md` for this and the other operator API changes.
+- **Frames with lost data** are passed on, marked `holoscan::SampleFlags::kDegraded`;
+  set `drop_incomplete` in `CsiToBayerParams` or `SubFrameCombinerParams` to drop them
+  instead.
+- **Frame limit** Receivers and `FusaCoeCaptureOp` take a `frame_limit` parameter and
+  complete after that many frames, as an HSDK4 `CountCondition` on the receiver did; the
+  example players' `--frame-limit` uses it. With `frame_limit_ends_run` also set, the run
+  ends once every such receiver has reached its limit, even when an operator triggered by
+  another input, such as a `HolovizOp` that renders on one camera's layer, would otherwise
+  keep it going.
+- **FuSa CoE capture stalls** With `stall_timeout_ms` set, `FusaCoeCaptureOp` fails the
+  run after that many milliseconds without a frame. Set `FusaCoeCaptureParams::name` so
+  that its log messages say which capture stalled.
+- **IGX Thor Mini** This release does not officially support IGX Thor Mini. IGX SW 2.0
+  on IGX Thor Mini is L4T R38.5, and NVIDIA publishes no Jetson SIPL API package for it,
+  so the FuSa CoE build uses different SIPL headers than on JetPack 7.2. You can still
+  run Holoscan Sensor Bridge 3.0 on IGX Thor Mini: when `/usr/src/jetson_sipl_api` is
+  missing, `docker/build.sh` installs the JetPack 7.1 SIPL API package (R38.4.0) on the
+  host, and the container build uses it.
+- **FuSa CoE packetized line size** `FusaCoeCaptureOp` sized a packetized line from its
+  pixel count (3 RAW_10 pixels per 4 bytes, rounded up to 64), which is what the HSB
+  sends only when the CSI-2 line is a whole number of the packetizer program's loops, as
+  the IMX274's 1080p and 2160p lines are. A 1280-pixel RAW_10 line is not: the HSB sends
+  1792 bytes for it, not 1728, and the capture's line stride was wrong;
+  `PackedFormatConverterOp` (the RoCE and Linux receivers' packed geometry) and its
+  `hololink_module` port had the same arithmetic. The size now comes from the packetizer
+  program, whose schedule (input beats consumed and output beats emitted per loop) is
+  what the HSB acts on: `PacketizerProgram::get_output_size()` is a whole number of
+  loops, and the new `padded_output_size()` adds the 64-byte line pad.
+  `get_output_size()` therefore no longer returns the pixel arithmetic for partial loops
+  (for RAW_10, 5 bytes now give 128, not 8). `FusaCoeCaptureOp` also asks NvSciBuf for a
+  plane as wide as the received line, reporting the excess as right padding, instead of
+  the pixel width: NvSciBuf sizes the pitch from the width alone, so the allocation no
+  longer relies on its pitch alignment happening to cover the packetizer's extra bytes.
+  The HSB emulator's frame generators (`emulator_utils.cu` and `emulator_utils.py` in
+  `src/hololink/emulation/examples`) size their packetized lines the same way, so the
+  emulated IMX274 and VB1940 frames keep matching what the host expects.
+- **CRC validation** `ComputeCrcOp` and `CheckCrcOp` hand each frame's CRC over through
+  a shared `CrcChannel`, so every frame is checked against its own CRC; `CheckCrcOp`
+  takes only metadata.
+- **Sub-frame players (C++)** The IMX274 players combine the sub-frames before
+  demosaicing, so the image has no seams at sub-frame boundaries. In all four C++
+  sub-frame players, `--sub-frame-rows` must be even, and `--frame-limit` counts frames,
+  not sub-frames.
+- **RoCE receive path failures** A RoCE receiver whose receive path fails for good (a
+  fatal completion-queue or queue-pair event) fails the run, instead of waiting for
+  frames that can't arrive. The `hololink_module` receivers report it through the new
+  `RoceReceiverInterfaceV2::receive_path_failed()`.
+- **API changes**
+  - `hololink_module`: the `Adapter`'s enumeration callbacks are opaque, and
+    applications hold only the `EnumerationCallbackHandle` that `register_ip()` and
+    `register_all()` return; there is one `enumerate()`, with the raw bootp packet
+    optional; and `EnumerationMetadata::get(key, default)` throws when the key holds a
+    value of another type, instead of returning the default.
+  - `ibv_device_for_peer()` and the `Hololink` constructor take the interface a board
+    enumerated on, as a trailing argument with a default.
+  - `RoceReceiverMetadata::rx_write_requests` is removed, and
+    `CaptureMetadataT::rx_write_requests` is always 0.
+- **Python** The Python bindings (`hololink`, `hololink_module`) and the Python example
+  applications are ported to Holoscan SDK 5. Applications add operators with
+  `graph.op()`, and a receiver takes its data channel and the camera's start and stop
+  callbacks as constructor handles; see `MIGRATION.md`.
+- **Signal generator** `signal_generator` (C++ and Python) and its operators
+  (`SignalGeneratorOp`, `IQEncoderOp`, `IQDecoderOp`, `SignalViewerOp`) are ported;
+  their GUIs draw through HoloViz's ImGui backend.
+- **CPU RoCE** `CpuRoceTransceiverOp` and the `cpu_roce_loopback` example are new in
+  this release. A failure of the completion-queue monitor ends the run.
+- **`hololink` command** `hololink set-ip` points to `hololink-set-ip`, the C++ tool
+  that replaced it; `hololink i2c-proxy` is removed, as is the `hololink_i2c` driver it
+  served; and `--force` takes the board's `--fpga-uuid`.
+- **Tensor pool sizes** The receivers, `CsiToBayerOp`, `ImageProcessorOp` and
+  `PackedFormatConverterOp` size their output tensor pools from their parameters (the
+  receiver's `frame_size`, the converters' `geometry`, and the `pixel_width` and
+  `pixel_height` of `ImageProcessorOp`), instead of a 64 MiB ceiling per slot. Without
+  these parameters, the operator keeps the 64 MiB ceiling. A 720p pipeline that reserved 2.9 GB of device memory, more
+  than a 4 GB GPU shared with a desktop has, now reserves a few tens of MiB.
+  `FusaCoeCaptureOp`, `SubFrameCombinerOp` and `ArgusIspOp` keep the ceiling, as their
+  frame geometry is only known once they start.
+- **Emulator** The emulator's Python module (`hololink.emulation`) is ported to nanobind
+  and ships in the wheel again (`HOLOLINK_BUILD_EMULATOR=ON`, the wheel's default).
+  Python `I2CPeripheral` subclasses now receive usable buffers in `i2c_transaction`: an
+  immutable `bytes` for the write data and a `bytearray` to fill with the reply. An
+  exception in a Python peripheral or control-plane callback fails that transaction or
+  request and is reported through `sys.unraisablehook` instead of ending the emulator.
+  `i2c_transaction` can be called on a peripheral from Python with byte buffers, and
+  `HSBEmulator.read(address)` returns the register value instead of a status code. The
+  Emulator-only build's Python package needs Python 3.10 or newer, not pybind11.
+- **Headless runs** With `--headless`, the Python example applications render offscreen
+  into a CUDA image instead of opening a window, as the C++ players do, so they need no
+  display.
+- **RoCE device selection** The examples' `--ibv-name` is empty by default, and the RoCE
+  operators then use the RDMA device and port whose network interface reaches the board,
+  logging `Using IB device <name> port <n> for the board at <ip>`; pass `--ibv-name` only
+  to override it. This picks the right device on DGX Spark, where each port shows up as
+  two RDMA devices, and for a board on an IGX's second port.
+- **IMX274 modes** Mode 2 is `IMX274_MODE_3840X2160_30FPS_12BITS`, renamed from
+  `IMX274_MODE_3840X2160_60FPS_12BITS`: it always ran at 30 fps, and its frame format now
+  says so. The FuSa CoE IMX274 players refuse the 3840x2160 modes (0 and 2) with both
+  cameras, their default; pick one with `--sensor 0` or `--sensor 1`. Two 3840x2160
+  streams can exceed the 10G port's bandwidth and take the interface down until a reboot.
+
+### Known Anomalies
+
+- Not ported to Holoscan SDK 5 yet: the PCIe receiver (`PcieReceiverOp`), the `hsb_lite`
+  Python bindings and the C++ `AudioPacketizerOp` (the Python audio examples don't use
+  it).
+- `ecam0m30tof_player.py` isn't supported on Holoscan SDK 5 yet; it will be supported in
+  an upcoming update to release 3.0.
+- Three pytest files are reported as skipped, not yet ported: `test_hololink_acks.py` and
+  `test_hsb_sequence_checking.py` need `HololinkDevice` features that the Python bindings
+  don't expose, and `test_module_imx274_reconnect.py` needs the `hsb_lite` Python
+  bindings.
+- On AGX Thor with JetPack 7.2.1, a FuSa CoE application leaves the MGBE port's
+  `macsec_ns` interrupt firing after it closes, an L4T issue expected to be fixed in
+  JetPack 7.2.2. On CPU 0, where L4T leaves it, the interrupt makes Linux-socket
+  applications on that port lose packets until a reboot. `FusaCoeCaptureOp` moves it to
+  CPU 6 when it stops. This move needs root privileges. The demo container has them.
+  Outside the container, run the application with `sudo`. Reboot before you run
+  Linux-socket applications on that port if you killed the FuSa CoE application, or if
+  it logged a message that tells you to reboot.
+- `signal_generator`: the HSB100G configurator VM serves one run per boot (its SPI daemon
+  connects once), and the application waits until it does. Restart the VM before each
+  run.
+
+### Examples not tested for this release
+
+We ported these examples to Holoscan SDK 5, but we did not test them for this release:
+
+- `imx715_player.py`
+- `linux_imx715_player.py`
+- `cpu_roce_loopback.cpp`
+
+### Known Anomalies by Developer Kit
+
+#### All developer kits
+
+- 18 Python examples do not catch `KeyboardInterrupt`. On Ctrl+C, they stop with a
+  traceback. 15 of them also do not stop the sensor bridge device. The other 3
+  (`gpio_example_app.py`, `vb1940_imu_player.py` and `vb1940_stereo_imu_player.py`) stop
+  the device in a `finally` block. Workaround: use `--frame-limit` (all of them have it,
+  except `gpio_example_app.py`). The examples are `gpio_example_app.py`,
+  `imx274_latency.py`, `imx274_player.py`, `imx274_pva_crc_validation.py`,
+  `linux_hwisp_player.py`, `linux_imx274_frame_validation.py`,
+  `linux_imx274_latency.py`, `linux_imx274_player.py`,
+  `linux_single_network_stereo_imx274_player.py`, `linux_tsn_imx274_player.py`,
+  `native_imx274_player.py`, `single_network_stereo_imx274_player.py`,
+  `single_network_stereo_vb1940_player.py`, `stereo_imx274_player.py`,
+  `tsn_imx274_player.py`, `vb1940_imu_player.py`, `vb1940_player.py` and
+  `vb1940_stereo_imu_player.py`. The other Python examples stop the run correctly on
+  Ctrl+C.
+- HoloViz draws the PeopleNet and body pose overlays in white. This is a Holoscan SDK 5
+  limitation. There is no workaround.
+- Outside the container, `pytest` must run with `sudo`.
+- After an application runs with `sudo`, applications that run without `sudo` fail with
+  `RUNTIME_PORT_BINDING_UNAVAILABLE` (iceoryx2 file permissions). Workaround: remove
+  `/tmp/iceoryx2` and `/dev/shm/iox2*`, or reboot. See
+  [Troubleshooting](https://docs.nvidia.com/holoscan/sensor-bridge/support/troubleshooting#runtime-port-binding-unavailable).
+- Two IMX274 3840x2160 60 fps streams (`--camera-mode 0`) on one 10G port need
+  approximately 13 Gbit/s, and the HSB drops data. Workaround: connect each camera to
+  its own port, or use a 1920x1080 mode.
+- `sub_frame_vb1940_player` with `--camera-mode` 0, 1 or 2 (30 fps) logs warnings
+  continuously. Workaround: use `--camera-mode 3` (60 fps), the default.
+
+#### Jetson AGX Thor
+
+- A FuSa CoE application can make Linux-socket applications on the same MGBE port lose
+  packets. See the `macsec_ns` item in Known Anomalies.
+
+#### Jetson AGX Orin
+
+- The demo container leaves too little memory for some examples. For example, the
+  TensorRT engine build of `linux_body_pose_estimation.py` fails. Workaround: build HSB
+  and run the examples outside the container.
+
+#### IGX Thor Developer Kit (T7000)
+
+- When the application GPU and the display GPU are not the same, HoloViz fails with "No
+  suitable adapter found for surface". Workaround: use the GPU that drives the display,
+  run with `--headless`, or move the display to the GPU that runs the application. See
+  [Troubleshooting](https://docs.nvidia.com/holoscan/sensor-bridge/support/troubleshooting#no-suitable-adapter-found-for-surface).
+
+#### DGX Spark
+
+- No other known issues.
+
 ## 2.7-GA, July 2026
 
 ### Dependencies
@@ -25,7 +270,9 @@ host system, run `sh docs/make_docs.sh --preview`, then use your browser to look
   applications and for `hololink_module` device drivers.  See the user guide pages
   "Hololink Module Applications" and "Hololink Module Devices" for details.  Examples
   using this new approach are available in the examples directory: look for those with
-  the word "module" in the filename.
+  the word "module" in the filename.  The versioned application interfaces published by
+  this release are frozen: their definitions will not change, and new capabilities will
+  arrive as new interface versions.  See `hololink_module/INTERFACES.md` for the list.
 - **Emulator** Unified Linux/MCU emulators under single emulator HAL for application
   development and include templated targets for extending to other MCU hardware.
   Vb1940Emulator now supports calibration data storage via simulated I2C EEPROM.
@@ -331,7 +578,7 @@ look at `docs/user_guide/_build/html/index.html`.
   host systems, which support hardware PTP synchronization, these timestamps are within
   a microsecond of the host time, and can be used to accurately measure latency through
   the pipeline. These metadata values are available to pipeline operators via the
-  [HSDK application metadata API](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute).
+  [HSDK application metadata API](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute).
   See the user guide for more details. Sequence number checking is enabled for control
   plane transactions, and can provide protection against interaction from several hosts
   to the same HSB unit. The overall CRC of the received data frame is also included, in
@@ -380,7 +627,7 @@ look at `docs/user_guide/_build/html/index.html`.
   the 2412 configuration; the newer tree must be used to write the older firmware.
 
 - HSB network receiver operators use
-  [APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute)
+  [APIs provided by the Holoscan SDK](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4/using-the-sdk/create-an-application#working-with-metadata-from-operatorcompute)
   to share timestamps with later operators in the pipeline. Be sure and call the
   application (C++) `is_metadata_enabled(true)` method or (python)
   `is_metadata_enabled = True` at initialization time; otherwise each operator will only
@@ -388,7 +635,7 @@ look at `docs/user_guide/_build/html/index.html`.
   additional items to the pipeline metadata, be sure and add that metadata before
   calling `(output).emit`. If you have a pipeline that merges two paths, and experience
   a `runtime_error` exception when it fails to merge the metadata from those paths, see
-  [the page on Metadata update policies](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4-latest/using-the-sdk/create-an-application#metadata-update-policies)
+  [the page on Metadata update policies](https://docs.nvidia.com/holoscan/sdk-user-guide/4-4/using-the-sdk/create-an-application#metadata-update-policies)
   for information on how to manage this.
 
 - It is possible to overrun the bandwidth available on the ethernet, particularly when
@@ -525,7 +772,7 @@ look at `docs/user_guide/_build/html/index.html`.
 - PTP timestamps, published by HSB, aren't synchronized with the host time.
 
   The
-  [user guide hardware setup instructions](https://docs.nvidia.com/holoscan/sensor-bridge/1.1.0/setup.html)
+  [user guide hardware setup instructions](https://archive.docs.nvidia.com/holoscan/sensor-bridge/1.1.0/setup.html)
   show how to configure the `phc2sys` tool, which ensures that the NIC time-of-day
   clock, which is published with PTP network messages, is synchronized with the host
   real-time clock. As written, the setup instructions rely on the default ntpdate

@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -167,12 +167,13 @@ void LinuxCoeReceiver::run()
         }
 
         if (received_bytes <= 0) {
+            // Closing the data socket wakes recv() with EBADF.  That is an
+            // expected part of shutdown once close() has requested exit.
+            if (exit_) {
+                break;
+            }
             // check if there is a timeout
             if ((recv_errno == EAGAIN) || (recv_errno == EWOULDBLOCK) || (recv_errno == EINTR)) {
-                // should we exit?
-                if (exit_) {
-                    break;
-                }
                 // Go try again
                 continue;
             }

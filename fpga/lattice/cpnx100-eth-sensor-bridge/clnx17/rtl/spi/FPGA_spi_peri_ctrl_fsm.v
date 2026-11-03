@@ -23,7 +23,7 @@ module FPGA_spi_peri_ctrl_fsm  # (
         parameter [15:0] FPGA_VERSION = 16'h0100
     ) (
     input           clk             ,
-    input           rst_n           ,
+    input           rst             ,
     // Regtbl Ports
     output [7:0]    mipi_debug_en   ,
     output [1:0]    mipi_en         ,
@@ -83,7 +83,7 @@ wire [7:0]  rd_data        ;
 
 FPGA_spi_peri spi_peri (
     .clk             ( clk              ),
-    .rst_n           ( rst_n            ),
+    .rst             ( rst              ),
     .spi_mode        ( 2'b11            ),
     .write           ( write            ),
     .turnaround      ( turnaround       ),
@@ -113,8 +113,8 @@ logic state_change, state_change_r;
 logic rt_wr_en;
 
 
-always_ff @ (posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always_ff @ (posedge clk) begin
+    if (rst) begin
         ctrl_state  <= IDLE;
         cmd_ack_prev <= 1'b0;
     end
@@ -236,9 +236,9 @@ reg [7:0] CS_N_cnt;
 reg CS_N_prev;
 logic [1:0] lmmi_rdata_valid_prev;
 
-always@(posedge clk or negedge rst_n)  
+always@(posedge clk)  
 begin
-    if (!rst_n) begin
+    if (rst) begin
         // Reset regtbl
         for (i=0; i<16; i=i+1) begin
             regtbl[i] <= 8'h00;

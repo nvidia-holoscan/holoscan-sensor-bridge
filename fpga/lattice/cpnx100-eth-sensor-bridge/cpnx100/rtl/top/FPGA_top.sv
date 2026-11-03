@@ -319,7 +319,7 @@ module FPGA_top
     .DATA_WIDTH ( 5                                      )
   ) spi_glitch_filter (
     .clk        ( hif_clk                                ),
-    .rst_n      (~hif_rst                                ),
+    .rst        ( hif_rst                                ),
     .sync_in    ({FLASH_SPI_SDIO    , CTRL_SPI_MISO}     ),
     .sync_out   ({flsh_spi_sdio_sync, ctrl_spi_miso_sync})
   );
@@ -329,7 +329,7 @@ module FPGA_top
   logic [`SPI_INST-1:0] spi_sck;
   logic [3          :0] spi_sdio_i [`SPI_INST-1:0];
   logic [3          :0] spi_sdio_o [`SPI_INST-1:0];
-  logic [`SPI_INST-1:0] spi_oen;
+  logic [3          :0] spi_oen    [`SPI_INST-1:0];
 
   // Regular SPI
   assign CTRL_SPI_MSCK = spi_sck   [0];
@@ -339,8 +339,14 @@ module FPGA_top
   // QSPI Flash
   assign FLASH_SPI_MSCK = spi_sck  [1];
   assign FLASH_SPI_MCSN = spi_csn  [1];
-  assign FLASH_SPI_SDIO = spi_oen  [1] ? spi_sdio_o[1] : 4'hz;
+//  assign FLASH_SPI_SDIO = spi_oen  [1] ? spi_sdio_o[1] : 4'hz;
   assign spi_sdio_i[1]  = flsh_spi_sdio_sync;
+
+  generate
+    for (i=0; i<4; i++) begin: spi_inst
+      assign FLASH_SPI_SDIO[i] = spi_oen[1][i] ? spi_sdio_o[1][i] : 1'bz;
+    end
+  endgenerate
 
 //------------------------------------------------------------------------------
 // I2C Interface
@@ -358,7 +364,7 @@ module FPGA_top
     .FILTER_DEPTH ( 8                                     )
   ) i2c_glitch_filter (
     .clk          ( hif_clk                               ),
-    .rst_n        (~hif_rst                               ),
+    .rst          ( hif_rst                               ),
     .sync_in      ({CTRL_I2C_SDA, CTRL_I2C_SCL,
                     CAM_I2C_SDA , CAM_I2C_SCL            }),
     .sync_out     ({ctrl_i2c_sda_sync, ctrl_i2c_scl_sync,
@@ -395,7 +401,7 @@ module FPGA_top
     .FILTER_DEPTH ( 8    )
   ) uart_sync (
     .clk      ( hif_clk      ),
-    .rst_n    ( ~hif_rst     ),
+    .rst      ( hif_rst      ),
     .sync_in  ( uart_rx      ),
     .sync_out ( uart_rx_sync )
   );
@@ -416,9 +422,9 @@ module FPGA_top
     .W_OFSET      ( 8 )
   ) u_delayed_io (
     .cmd_clk      ( apb_clk              ),
-    .cmd_rst_n    ( ~apb_rst             ),
+    .cmd_rst      ( apb_rst              ),
     .proc_clk     ( apb_clk              ),  // Using same clock for simplicity
-    .proc_rst_n   ( ~apb_rst             ),  // Using same reset for simplicity
+    .proc_rst     ( apb_rst              ),  // Using same reset for simplicity
     // APB interface
     .i_apb_m2s    ( delayed_io_apb_m2s   ),
     .o_apb_s2m    ( delayed_io_apb_s2m   ),

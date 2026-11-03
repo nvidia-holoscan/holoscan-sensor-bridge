@@ -47,6 +47,8 @@
 #define DP_HOST_MAC_HIGH 0x24u
 #define DP_HOST_IP 0x28u
 #define DP_HOST_UDP_PORT 0x2Cu
+#define DP_VLAN_TAG 0x34u
+#define DP_VP_REG_CT (DP_VLAN_TAG / REGISTER_SIZE + 1)
 #define DP_PACKET_SIZE 0x04u
 #define DP_PACKET_UDP_PORT 0x08u
 #define DP_VP_MASK 0x0Cu
@@ -107,7 +109,7 @@ void update_bootp_packet(uint8_t* bootp_buffer, const struct timespec& start_tim
  * DP_PAGE_*, DP_BUFFER_LENGTH, DP_HOST_MAC/IP/UDP_PORT, ...) the host writes per stream.
  */
 struct DPSensorRegisters {
-    uint32_t vp_data[DP_HOST_UDP_PORT / REGISTER_SIZE + 1];
+    uint32_t vp_data[DP_VP_REG_CT];
     uint32_t vp_address;
     // SIF (sensor interface) register base. One per sensor_id:
     // sif_address = 0x01000000 + 0x10000 * sensor_id. Stamped by DataPlane::init().
@@ -197,28 +199,28 @@ public:
     virtual ~DataPlane();
 
     /**
-     * @brief Start the DataPlane by initiating the BootP broadcast
+     * @brief Start the DataPlane by initiating the BootP broadcast.
      */
     void start();
 
     /**
-     * @brief Stop the DataPlane by stopping the BootP broadcast
+     * @brief Stop the DataPlane by stopping the BootP broadcast.
      */
     void stop();
     /**
-     * @brief This is a clear alias for stop()
+     * @brief This is a clear alias for stop().
      */
     void stop_bootp() { stop(); }; // clear alias for stop()
 
     /**
-     * @brief Check if the DataPlane is running. (Bootp is broadcasting)
-     * @return True if the DataPlane is running, false otherwise.
+     * @brief Check if the DataPlane is running. (Bootp is broadcasting).
+     * @return true if the DataPlane is running, false otherwise.
      */
     bool is_running();
 
     /**
      * @brief Send a tensor over the DataPlane.
-     * @param tensor The tensor object reference to send. Supported device types are kDLCPU, kDLCUDA, kDLCUDAHost (host pinned), and kDLCUDAManaged (Unified Memory)
+     * @param tensor The tensor object reference to send. Supported device types are kDLCPU, kDLCUDA, kDLCUDAHost (host pinned), and kDLCUDAManaged (Unified Memory).
      * @param frame_metadata The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
      * @return The number of bytes sent or < 0 if error occurred.
      *
@@ -243,7 +245,7 @@ public:
 
     /**
      * @brief Check if the packetizer is enabled.
-     * @return True if the packetizer is enabled, false otherwise.
+     * @return true if the packetizer is enabled, false otherwise.
      */
     bool packetizer_enabled() const;
 
@@ -270,7 +272,7 @@ protected:
 
     /**
      * @brief method to update metadata model for the appropriate transmitter
-     * subclass can assume that appropriate locks are held while accessing memory registers and the transmitter metadata
+     * subclass can assume that appropriate locks are held while accessing memory registers and the transmitter metadata.
      */
     virtual void update_metadata(); // to be overridden by subclasses
 
@@ -294,7 +296,7 @@ protected:
 
 private:
     /**
-     * @brief Initialize the DataPlane by validating the configuration and registers. This is platform specific and should assume the internal configuration has been set and resources allocated, but no other state
+     * @brief Initialize the DataPlane by validating the configuration and registers. This is platform specific and should assume the internal configuration has been set and resources allocated, but no other state.
      */
     void init(HSBEmulator& hsb_emulator);
 };

@@ -53,25 +53,17 @@ target_link_libraries(hololink_taurotech_da326_headers
         hololink::module_headers)
 target_compile_features(hololink_taurotech_da326_headers INTERFACE cxx_std_17)
 
+# Python bindings: TauroTechDa326InterfaceV1 is now bound in
+# python/hololink_module/_hololink_module.cpp, consolidated with the other hololink_module
+# pybind11 extensions into one nanobind translation unit -- see
+# hololink_module/host/CMakeLists.txt's own Python comment for where that target is defined and
+# why. hololink_module.taurotech_da326.TauroTechDa326InterfaceV1 still works the same way from
+# the application's side; only the extension layout changed.
 if(HOLOLINK_BUILD_PYTHON)
-    include(hololink_deps/pybind11)
-
-    pybind11_add_module(_hololink_module_taurotech_da326 MODULE
-        python/taurotech_da326_py.cpp)
-    target_link_libraries(_hololink_module_taurotech_da326
-        PRIVATE
-            hololink::taurotech_da326::headers
-            hololink::module_core
-            holoscan::pybind11)
-    target_compile_features(_hololink_module_taurotech_da326 PRIVATE cxx_std_17)
-    if(TARGET hololink_module_core)
-        target_precompile_headers(_hololink_module_taurotech_da326
-            REUSE_FROM hololink_module_core)
-    endif()
-
-    set_target_properties(_hololink_module_taurotech_da326 PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/python/hololink_module/taurotech_da326")
+    # The compiled extension itself (hololink_module_python target, linking this directory's
+    # hololink_taurotech_da326_headers library) is defined in hololink_module/host/CMakeLists.txt;
+    # this just stages this sub-package's own __init__.py next to it, preserving the old
+    # per-extension output layout exactly.
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/__init__.py"
         "${CMAKE_BINARY_DIR}/python/hololink_module/taurotech_da326/__init__.py"

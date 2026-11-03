@@ -33,6 +33,8 @@
 
 namespace hololink::emulation {
 
+constexpr uint32_t DP_VP_REG_RANGE = DP_VP_REG_CT * REGISTER_SIZE;
+
 static inline uint32_t get_delta_msecs(const struct timespec& start_time, const struct timespec& end_time)
 {
     long long diff_sec = end_time.tv_sec - start_time.tv_sec;
@@ -46,7 +48,7 @@ int vp_data_readback_cb(void* ctxt, struct AddressValuePair* addr_val, int max_c
     int i = 0;
     while (i < max_count) {
         uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= dp_sensor_registers->vp_address && address <= dp_sensor_registers->vp_address + DP_HOST_UDP_PORT) {
+        if (address >= dp_sensor_registers->vp_address && address < dp_sensor_registers->vp_address + DP_VP_REG_RANGE) {
             AVP_SET_VALUE(addr_val, dp_sensor_registers->vp_data[(address - dp_sensor_registers->vp_address) / REGISTER_SIZE]);
         } else {
             return i;
@@ -63,7 +65,7 @@ int vp_data_configure_cb(void* ctxt, struct AddressValuePair* addr_val, int max_
     int i = 0;
     while (i < max_count) {
         uint32_t address = AVP_GET_ADDRESS(addr_val);
-        if (address >= dp_sensor_registers->vp_address && address <= dp_sensor_registers->vp_address + DP_HOST_UDP_PORT) {
+        if (address >= dp_sensor_registers->vp_address && address < dp_sensor_registers->vp_address + DP_VP_REG_RANGE) {
             dp_sensor_registers->vp_data[(address - dp_sensor_registers->vp_address) / REGISTER_SIZE] = AVP_GET_VALUE(addr_val);
         } else {
             return i;
@@ -289,9 +291,9 @@ void DataPlane::init(HSBEmulator& hsb_emulator)
     // register callbacks for data plane vp data. Multiple DataPlanes sharing a sensor_id all
     // pass the same dp_sensor_registers pointer here, so AddressMap::set silently replaces
     // the existing entry with an equivalent one.
-    CHECK_STATUS(hsb_emulator.register_read_callback(dp_sensor_registers->vp_address + DP_QP, dp_sensor_registers->vp_address + DP_HOST_UDP_PORT + REGISTER_SIZE, vp_data_readback_cb, dp_sensor_registers),
+    CHECK_STATUS(hsb_emulator.register_read_callback(dp_sensor_registers->vp_address + DP_QP, dp_sensor_registers->vp_address + DP_VP_REG_RANGE, vp_data_readback_cb, dp_sensor_registers),
         "Failed to register read callback for data plane vp data");
-    CHECK_STATUS(hsb_emulator.register_write_callback(dp_sensor_registers->vp_address + DP_QP, dp_sensor_registers->vp_address + DP_HOST_UDP_PORT + REGISTER_SIZE, vp_data_configure_cb, dp_sensor_registers),
+    CHECK_STATUS(hsb_emulator.register_write_callback(dp_sensor_registers->vp_address + DP_QP, dp_sensor_registers->vp_address + DP_VP_REG_RANGE, vp_data_configure_cb, dp_sensor_registers),
         "Failed to register write callback for data plane vp data");
 
     // register callbacks for data plane hif data. Same pattern as vp: multiple DataPlanes

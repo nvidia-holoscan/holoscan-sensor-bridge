@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -20,68 +20,108 @@
 #ifndef SRC_HOLOLINK_OPERATORS_LINUX_RECEIVER_LINUX_RECEIVER_OP
 #define SRC_HOLOLINK_OPERATORS_LINUX_RECEIVER_LINUX_RECEIVER_OP
 
-#include <functional>
 #include <memory>
-#include <set>
+#include <optional>
 #include <string>
 #include <thread>
+#include <vector>
+
+#include <cuda.h>
 
 #include "hololink/operators/base_receiver_op.hpp"
+#include <hololink/core/data_channel.hpp>
+#include <holoscan/core/parameter_schema.hpp>
 
 namespace hololink::operators {
 
 class LinuxReceiver;
 
-class LinuxReceiverOp : public BaseReceiverOp {
+/**
+ * @brief Flat parameter aggregate for LinuxReceiverOp.
+ *
+ * Contains CUDA-buffer and Linux-socket-specific configuration.
+ * Set all fields before passing to LinuxReceiverOp (or use designated initializers).
+ */
+struct LinuxReceiverParams {
+    // ---- Base receiver fields (shared with BaseReceiverOp) ----
+    CUcontext frame_context { nullptr };
+    size_t frame_size { 0 };
+    bool trim { true };
+    // Note: CUDA device placement is specified at graph compile time via
+    // CompileOptions::bind_tensor_output_device(), not as a per-params field.
+
+    // ---- Linux-specific fields ----
+    /// CPU affinity set for the receiver thread.
+    /// Empty → auto-detect from HOLOLINK_AFFINITY env-var, fallback to core 2.
+    std::vector<int> receiver_affinity {};
+    uint32_t pages { 1 }; ///< HSDK4 default.
+    uint32_t queue_size { 1 }; ///< HSDK4 default. Must be ≤ pages.
+    /// Complete after this many compute() calls (HSDK4: a CountCondition on the receiver): one
+    /// per frame, plus, with watch_ingress, one per ingress timeout; 0 or less: no limit.
+    int64_t frame_limit { 0 };
+    /// Once this operator and every other one that sets frame_limit_ends_run have reached their
+    /// frame_limit, end the whole run (ExecutionContext::request_completion()), dropping the frames
+    /// still in the pipeline; see hololink::operators::FrameLimitRunGroup for when a run needs it.
+    bool frame_limit_ends_run { false };
+    /// Also run compute() after each second without a frame, as HSDK4 receivers did with
+    /// use_frame_ready_condition=false (the sub-frame players): it logs "Ingress frame timeout;
+    /// ignoring." once per stall, and each such run counts toward frame_limit.
+    bool watch_ingress { false };
+};
+
+// A partial schema: HSDK5 only needs the field BaseReceiverOp::setup() sizes the tensor pool's
+// slots from (holoscan::parameter_byte_span()); the other fields stay opaque to it and are still
+// bound by the operator catalog. The schema makes frame_size a recompile-required parameter.
+HOLOSCAN_PARAM_SCHEMA(
+    LinuxReceiverParams,
+    holoscan::param_schema("com.nvidia.hololink.operators.LinuxReceiverParams", 1).partial(),
+    holoscan::field<&LinuxReceiverParams::frame_size>("frame_size")
+        .description("Size of one received frame, in bytes; the tensor pool's slot size."));
+
+/**
+ * @brief Operator that receives frames via a Linux UDP socket.
+ *
+ * Derives from BaseReceiverOp<LinuxReceiverParams>. Runtime dependencies are
+ * supplied through the constructor and configuration through LinuxReceiverParams.
+ *
+ * Outputs (see BaseReceiverOp):
+ *  'tensor'   — holoscan::Tensor, a copy of the received frame in a pool slot (1-D uint8,
+ *               device memory).
+ *  'metadata' — hololink::CaptureMetadataT, stamped with the tensor's capture_time and
+ *               frame_id.
+ */
+class LinuxReceiverOp : public BaseReceiverOp<LinuxReceiverOp, LinuxReceiverParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS_SUPER(LinuxReceiverOp, BaseReceiverOp);
+    using BaseReceiverOp<LinuxReceiverOp, LinuxReceiverParams>::BaseReceiverOp;
 
-    ~LinuxReceiverOp() = default;
-
-    // holoscan::Operator virtual functions
-    void initialize() override;
-    void setup(holoscan::OperatorSpec& spec) override;
-
-    // BaseReceiverOp virtual functions
+    // BaseReceiverOp virtual hooks
     void start_receiver() override;
     void stop_receiver() override;
     std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(double timeout_ms, CUstream cuda_stream) override;
     bool frames_ready() override;
-    std::shared_ptr<void> frame_memory_owner() override;
+    bool watch_ingress() const override { return params().watch_ingress; }
 
-    // Setter for rename_metadata function and receiver_affinity
-    void set_rename_metadata(std::function<std::string(const std::string&)> rename_fn);
+    /**
+     * @brief Override the CPU affinity for the receiver thread.
+     *
+     * Takes effect on the next start().  When set, this overrides the
+     * receiver_affinity field in LinuxReceiverParams.
+     *
+     * @param affinity  List of CPU indices to pin the receiver thread to.
+     */
     void set_receiver_affinity(const std::vector<int>& affinity);
 
 private:
-    holoscan::Parameter<std::vector<int>> receiver_affinity_;
-    holoscan::Parameter<uint32_t> pages_;
-    holoscan::Parameter<uint32_t> queue_size_;
+    // Optional CPU affinity override; set via set_receiver_affinity().
+    std::optional<std::vector<int>> affinity_override_;
 
-    std::function<std::string(const std::string&)> rename_metadata_;
-
-    // Cached metadata key names
-    std::string frame_packets_received_metadata_;
-    std::string frame_number_metadata_;
-    std::string received_frame_number_metadata_;
-    std::string frame_bytes_received_metadata_;
-    std::string received_s_metadata_;
-    std::string received_ns_metadata_;
-    std::string timestamp_s_metadata_;
-    std::string timestamp_ns_metadata_;
-    std::string metadata_s_metadata_;
-    std::string metadata_ns_metadata_;
-    std::string packets_dropped_metadata_;
-    std::string crc_metadata_;
-    std::string imm_data_metadata_;
-    std::string psn_metadata_;
-    std::string page_number_metadata_;
-    std::string bytes_written_metadata_;
+    // Effective receiver affinity resolved in start_receiver(), used in run().
+    std::vector<int> effective_affinity_;
 
     std::shared_ptr<LinuxReceiver> receiver_;
     std::unique_ptr<std::thread> receiver_thread_;
-    // shared_ptr (not unique_ptr) so the frame buffer's lifetime can be extended
-    // past stop_receiver() by in-flight tensors that wrap it (see frame_memory_owner).
+    // shared_ptr so the allocator can later hand pool slots directly backed by
+    // this RDMA-registered memory (zero-copy path, pending HSDK5 custom allocator API).
     std::shared_ptr<hololink::ReceiverMemoryDescriptor> frame_memory_;
 
     void run();

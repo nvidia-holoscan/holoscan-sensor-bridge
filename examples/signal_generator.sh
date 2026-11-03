@@ -1,4 +1,6 @@
 #!/bin/bash
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
 
 # Get the directory of the script
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
@@ -13,22 +15,11 @@ cd "$SCRIPT_DIR" || exit
 #EXP_Q='--expression-q=sin(2*PI*x)'
 #IQ_EXPRESSIONS="$EXP_I $EXP_Q"
 
-shopt -s nullglob
-LC_COLLATE=C INFINIBANDS=(/sys/class/infiniband/*)
-shopt -u nullglob
-if [ ${#INFINIBANDS[@]} -lt 2 ]; then
-    echo "Error: at least 2 InfiniBand devices required, found ${#INFINIBANDS[@]}" >&2
-    exit 1
-fi
-# The RoCE interfaces used for the TX and RX
-TX_INTERFACE=`basename ${INFINIBANDS[1]}`
-RX_INTERFACE=`basename ${INFINIBANDS[0]}`
-
 # IP addresses for the TX and RX
 TX_IP="192.168.0.3"
 RX_IP="192.168.0.2"
 
-TX_HOLOLINK="--tx-hololink=$TX_IP --tx-ibv-name=$TX_INTERFACE"
-RX_HOLOLINK="--rx-hololink=$RX_IP --rx-ibv-name=$RX_INTERFACE"
-
-python3 signal_generator.py $TX_HOLOLINK $RX_HOLOLINK --udp-ip="127.0.0.1"
+# The app picks the RoCE device on each board's network interface. Options given to this
+# script go to the app too, e.g. --tx-ibv-name=mlx5_3 --rx-ibv-name=mlx5_0 to pick the
+# devices yourself (see /sys/class/infiniband).
+python3 signal_generator.py --tx-hololink=$TX_IP --rx-hololink=$RX_IP --udp-ip="127.0.0.1" "$@"

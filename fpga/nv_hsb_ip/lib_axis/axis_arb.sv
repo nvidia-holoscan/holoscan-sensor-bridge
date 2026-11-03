@@ -20,6 +20,7 @@ module axis_arb #(         // Priority/RR arb
   parameter              ARB_TYPE = "ROUND_ROBIN", //ROUND_ROBIN or PRIORITY
   parameter [N_INPT-1:0] SKID     = '1,
   parameter [N_INPT-1:0] REG      = '1,
+  parameter              STICKY_EN= 0,
   localparam             W_KEEP   = W_DATA/8,
   localparam             W_INDX   = (N_INPT==1) ? 1 : $clog2(N_INPT)
 )(
@@ -113,11 +114,11 @@ end
 generate
   if (ARB_TYPE == "ROUND_ROBIN") begin
     rrarb #(
-      .WIDTH ( N_INPT                 )
+      .WIDTH     ( N_INPT             ),
+      .STICKY_EN ( STICKY_EN          )
     ) axis_arb (
       .clk     ( i_clk                ),
-      .rst_n   ( !i_rst               ),
-      .rst     ( 1'b0                 ),
+      .rst     ( i_rst                ),
       .idle    ( !pkt_active          ),
       .req     ( r_axis_tvalid        ),
       .gnt_idx ( gnt_idx              ),
@@ -126,11 +127,11 @@ generate
   end
   else begin
     priority_arb #(
-      .WIDTH ( N_INPT               )
+      .WIDTH     ( N_INPT           ),
+      .STICKY_EN ( STICKY_EN        )
     ) axis_arb (
       .clk   ( i_clk                ),
-      .rst_n ( !i_rst               ),
-      .rst   ( 1'b0                 ),
+      .rst   ( i_rst                ),
       .idle  ( !pkt_active          ),
       .req   ( r_axis_tvalid        ),
       .gnt   ( w_axis_tready        )

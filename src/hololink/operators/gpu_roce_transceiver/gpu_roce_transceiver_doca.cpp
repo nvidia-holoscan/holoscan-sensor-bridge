@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -54,6 +54,30 @@ static void mlx5_init_cqes(struct mlx5_cqe64* cqes, uint32_t nb_cqes)
 {
     for (uint32_t cqe_idx = 0; cqe_idx < nb_cqes; cqe_idx++)
         cqes[cqe_idx].op_own = (MLX5_CQE_INVALID << DOCA_GPUNETIO_VERBS_MLX5_CQE_OPCODE_SHIFT) | MLX5_CQE_OWNER_MASK;
+}
+
+/*
+ * Release a ring buffer and reset its fields, so that releasing it again is a no-op.
+ * The MR registers the memory with the NIC: deregister it before freeing the memory.
+ */
+static void release_ring(struct doca_gpu* gdev, struct gpu_roce_ring_buffer& ring)
+{
+    if (ring.addr_mr) {
+        ibv_dereg_mr(ring.addr_mr);
+        ring.addr_mr = nullptr;
+    }
+    if (ring.dmabuf_fd >= 0) {
+        close(ring.dmabuf_fd);
+        ring.dmabuf_fd = -1;
+    }
+    if (ring.addr) {
+        doca_gpu_mem_free(gdev, ring.addr);
+        ring.addr = nullptr;
+    }
+    if (ring.flag) {
+        doca_gpu_mem_free(gdev, ring.flag);
+        ring.flag = nullptr;
+    }
 }
 
 namespace hololink::operators {
@@ -143,6 +167,7 @@ doca_error_t DocaCq::create()
     cq_ring_haddr = (struct mlx5_cqe64*)(calloc(external_umem_size, sizeof(uint8_t)));
     if (cq_ring_haddr == nullptr) {
         HSB_LOG_ERROR("Failed to allocate cq host ring buffer memory for initialization");
+        result = DOCA_ERROR_NO_MEMORY;
         goto exit;
     }
 
@@ -201,6 +226,7 @@ doca_error_t DocaCq::create()
         result_cuda = cudaMemcpy(umem_dev_ptr, (void*)(cq_ring_haddr), external_umem_size, cudaMemcpyDefault);
         if (result_cuda != cudaSuccess) {
             HSB_LOG_ERROR("Failed to cudaMempy gpu cq cq ring buffer");
+            result = DOCA_ERROR_DRIVER;
             goto exit;
         }
     }
@@ -245,7 +271,7 @@ doca_error_t DocaQp::create(struct doca_verbs_context* verbs_ctx, const size_t f
     if (result != DOCA_SUCCESS) {
         HSB_LOG_ERROR("Failed to set external UAR for QP: {}",
             doca_error_get_descr(result));
-        return result;
+        goto exit;
     }
 
     result = doca_verbs_qp_init_attr_set_pd(qp_init_attr, vpd);
@@ -483,6 +509,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     }
 
     if (result != DOCA_SUCCESS || gpu_rx_ring.addr == nullptr) {
+        if (result == DOCA_SUCCESS)
+            result = DOCA_ERROR_NO_MEMORY;
         HSB_LOG_ERROR("Failed to alloc rx ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
@@ -493,6 +521,7 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         result_cuda = cudaMemset(gpu_rx_ring.addr, 0, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num);
         if (result_cuda != cudaSuccess) {
             HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            result = DOCA_ERROR_DRIVER;
             goto exit;
         }
     }
@@ -500,7 +529,9 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     gpu_rx_ring.addr_mr = nullptr;
     if (umem_cpu == false) {
         result = doca_gpu_dmabuf_fd(gdev, (void*)gpu_rx_ring.addr, gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, &gpu_rx_ring.dmabuf_fd);
-        if (result == DOCA_SUCCESS) {
+        if (result != DOCA_SUCCESS)
+            gpu_rx_ring.dmabuf_fd = -1;
+        else {
             // To use ibv_reg_dmabuf_mr() we must ensure application provides address and size aligned with the system page size.
             gpu_rx_ring.addr_mr = ibv_reg_dmabuf_mr(ibv_pd,
                 0,
@@ -535,7 +566,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         if (gpu_rx_ring.addr_mr == nullptr) {
             HSB_LOG_ERROR("Cannot register gpu_rx_ring memory region p={} size={}, errno={}.",
                 (uint64_t)gpu_rx_ring.addr, (int)gpu_rx_ring.stride_sz * gpu_rx_ring.stride_num, errno);
-            return DOCA_ERROR_NOT_SUPPORTED;
+            result = DOCA_ERROR_NOT_SUPPORTED;
+            goto exit;
         }
     }
 
@@ -555,6 +587,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
             nullptr);
     }
     if (result != DOCA_SUCCESS || gpu_rx_ring.flag == nullptr) {
+        if (result == DOCA_SUCCESS)
+            result = DOCA_ERROR_NO_MEMORY;
         HSB_LOG_ERROR("Failed to alloc rx flag ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
@@ -565,6 +599,7 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         result_cuda = cudaMemset(gpu_rx_ring.flag, 0, sizeof(uint64_t) * gpu_rx_ring.stride_num);
         if (result_cuda != cudaSuccess) {
             HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            result = DOCA_ERROR_DRIVER;
             goto exit;
         }
     }
@@ -589,6 +624,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     }
 
     if (result != DOCA_SUCCESS || gpu_tx_ring.addr == nullptr) {
+        if (result == DOCA_SUCCESS)
+            result = DOCA_ERROR_NO_MEMORY;
         HSB_LOG_ERROR("Failed to alloc tx ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
@@ -599,6 +636,7 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         result_cuda = cudaMemset(gpu_tx_ring.addr, 0, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num);
         if (result_cuda != cudaSuccess) {
             HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            result = DOCA_ERROR_DRIVER;
             goto exit;
         }
     }
@@ -607,7 +645,9 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     gpu_tx_ring.addr_mr = nullptr;
     if (umem_cpu == false) {
         result = doca_gpu_dmabuf_fd(gdev, (void*)gpu_tx_ring.addr, gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num, &gpu_tx_ring.dmabuf_fd);
-        if (result == DOCA_SUCCESS) {
+        if (result != DOCA_SUCCESS)
+            gpu_tx_ring.dmabuf_fd = -1;
+        else {
             // To use ibv_reg_dmabuf_mr() we must ensure application provides address and size aligned with the system page size.
             gpu_tx_ring.addr_mr = ibv_reg_dmabuf_mr(ibv_pd,
                 0,
@@ -623,7 +663,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     if (gpu_tx_ring.addr_mr == nullptr) {
         HSB_LOG_ERROR("Cannot register gpu_tx_ring memory region p={} size={}, errno={}.",
             (uint64_t)gpu_tx_ring.addr, (int)gpu_tx_ring.stride_sz * gpu_tx_ring.stride_num, errno);
-        return DOCA_ERROR_NOT_SUPPORTED;
+        result = DOCA_ERROR_NOT_SUPPORTED;
+        goto exit;
     }
 
     if (umem_cpu) {
@@ -642,6 +683,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
             nullptr);
     }
     if (result != DOCA_SUCCESS || gpu_tx_ring.flag == nullptr) {
+        if (result == DOCA_SUCCESS)
+            result = DOCA_ERROR_NO_MEMORY;
         HSB_LOG_ERROR("Failed to alloc tx flag ring buffer: {}", doca_error_get_descr(result));
         goto exit;
     }
@@ -652,6 +695,7 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
         result_cuda = cudaMemset(gpu_tx_ring.flag, 0, sizeof(uint64_t) * gpu_tx_ring.stride_num);
         if (result_cuda != cudaSuccess) {
             HSB_LOG_ERROR("cudaMemset returned error {}", (int)result_cuda);
+            result = DOCA_ERROR_DRIVER;
             goto exit;
         }
     }
@@ -659,19 +703,8 @@ doca_error_t DocaQp::create_ring(size_t stride_sz, unsigned stride_num, struct i
     return DOCA_SUCCESS;
 
 exit:
-    if (gpu_rx_ring.addr_mr)
-        ibv_dereg_mr(gpu_rx_ring.addr_mr);
-    if (gpu_rx_ring.addr)
-        doca_gpu_mem_free(gdev, gpu_rx_ring.addr);
-    if (gpu_rx_ring.flag)
-        doca_gpu_mem_free(gdev, gpu_rx_ring.flag);
-
-    if (gpu_tx_ring.addr_mr)
-        ibv_dereg_mr(gpu_tx_ring.addr_mr);
-    if (gpu_tx_ring.addr)
-        doca_gpu_mem_free(gdev, gpu_tx_ring.addr);
-    if (gpu_tx_ring.flag)
-        doca_gpu_mem_free(gdev, gpu_tx_ring.flag);
+    release_ring(gdev, gpu_rx_ring);
+    release_ring(gdev, gpu_tx_ring);
 
     return result;
 }
@@ -694,15 +727,16 @@ doca_error_t DocaQp::connect(struct doca_verbs_gid& doca_rgid, uint32_t gid_inde
 
     result = doca_verbs_qp_attr_create(&verbs_qp_attr);
     if (result != DOCA_SUCCESS) {
-        HSB_LOG_ERROR("Failed to create AH attributes: {}",
+        HSB_LOG_ERROR("Failed to create QP attributes: {}",
             doca_error_get_descr(result));
-        return result;
+        verbs_qp_attr = nullptr;
+        goto exit;
     }
 
     result = doca_verbs_ah_attr_set_gid(ah_attr, doca_rgid);
     if (result != DOCA_SUCCESS) {
         HSB_LOG_ERROR("Failed to set remote gid: {}", doca_error_get_descr(result));
-        return result;
+        goto exit;
     }
 
     /* IB only parameter */
@@ -837,13 +871,21 @@ doca_error_t DocaQp::connect(struct doca_verbs_gid& doca_rgid, uint32_t gid_inde
     }
 
 exit:
-    doca_verbs_qp_attr_destroy(verbs_qp_attr);
+    if (verbs_qp_attr)
+        doca_verbs_qp_attr_destroy(verbs_qp_attr);
     doca_verbs_ah_attr_destroy(ah_attr);
     return result;
 }
 
 DocaQp::~DocaQp()
 {
+    // The GPU export of the QP goes before the QP itself
+    if (gpu_qp)
+        doca_gpu_verbs_unexport_qp(gdev, gpu_qp);
+    // Same ordering constraint as DocaCq: the QP's DEVX object references
+    // both umems, so it must go before they are deregistered.
+    if (qp)
+        doca_verbs_qp_destroy(qp);
     if (umem)
         doca_umem_destroy(umem);
     if (umem_dbr)
@@ -852,22 +894,9 @@ DocaQp::~DocaQp()
         doca_gpu_mem_free(gdev, umem_dev_ptr);
     if (umem_dbr_dev_ptr)
         doca_gpu_mem_free(gdev, umem_dbr_dev_ptr);
-    if (qp)
-        doca_verbs_qp_destroy(qp);
 
-    if (gpu_rx_ring.addr_mr)
-        ibv_dereg_mr(gpu_rx_ring.addr_mr);
-    if (gpu_rx_ring.addr)
-        doca_gpu_mem_free(gdev, gpu_rx_ring.addr);
-    if (gpu_rx_ring.flag)
-        doca_gpu_mem_free(gdev, gpu_rx_ring.flag);
-
-    if (gpu_tx_ring.addr_mr)
-        ibv_dereg_mr(gpu_tx_ring.addr_mr);
-    if (gpu_tx_ring.addr)
-        doca_gpu_mem_free(gdev, gpu_tx_ring.addr);
-    if (gpu_tx_ring.flag)
-        doca_gpu_mem_free(gdev, gpu_tx_ring.flag);
+    release_ring(gdev, gpu_rx_ring);
+    release_ring(gdev, gpu_tx_ring);
 }
 
 } // namespace hololink::operators

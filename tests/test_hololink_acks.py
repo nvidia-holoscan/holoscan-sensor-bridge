@@ -18,7 +18,6 @@
 import logging
 
 import pytest
-import utils
 
 import hololink as hololink_module
 
@@ -44,23 +43,23 @@ def test_hololink_acks(hololink_address):
     metadata = hololink_module.Enumerator.find_channel(hololink_address)
     hololink = AckTimerHololink(
         peer_ip=metadata["peer_ip"],
+        peer_interface=metadata["interface"],
         control_port=metadata["control_port"],
         serial_number=metadata["serial_number"],
         sequence_number_checking=(
             False if metadata["sequence_number_checking"] == 0 else True
         ),
     )
-    with utils.PriorityScheduler():
-        hololink.start()
-        # Make sure we have PTP sync first.
-        logging.debug("Waiting for PTP sync.")
-        if not hololink.ptp_synchronize():
-            raise ValueError("Failed to synchronize PTP.")
-        #
-        for i in range(20):
-            hololink.get_hsb_ip_version()
-            hololink.get_fpga_date()
-        hololink.stop()
+    hololink.start()
+    # Make sure we have PTP sync first.
+    logging.debug("Waiting for PTP sync.")
+    if not hololink.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP.")
+    #
+    for i in range(20):
+        hololink.get_hsb_ip_version()
+        hololink.get_fpga_date()
+    hololink.stop()
 
     max_dt = None
     settled_acks = hololink._acks[5:]
@@ -120,45 +119,45 @@ def test_hololink_ecb_retry(hololink_address):
     metadata = hololink_module.Enumerator.find_channel(hololink_address)
     hololink = DropRequestHololink(
         peer_ip=metadata["peer_ip"],
+        peer_interface=metadata["interface"],
         control_port=metadata["control_port"],
         serial_number=metadata["serial_number"],
         sequence_number_checking=(
             False if metadata["sequence_number_checking"] == 0 else True
         ),
     )
-    with utils.PriorityScheduler():
-        hololink.start()
+    hololink.start()
 
-        # Write a known value to a known location.
-        value = 0xEEEEAA55
-        hololink.write_uint32(hololink_module.APB_RAM, value)
-        v = hololink.read_uint32(hololink_module.APB_RAM)
-        assert v == value
+    # Write a known value to a known location.
+    value = 0xEEEEAA55
+    hololink.write_uint32(hololink_module.APB_RAM, value)
+    v = hololink.read_uint32(hololink_module.APB_RAM)
+    assert v == value
 
-        # Show that we can retry a lost read request
-        hololink._drop_send = 1
-        v = hololink.read_uint32(hololink_module.APB_RAM)
-        assert v == value
+    # Show that we can retry a lost read request
+    hololink._drop_send = 1
+    v = hololink.read_uint32(hololink_module.APB_RAM)
+    assert v == value
 
-        # Show that we can retry a lost read reply
-        hololink._drop_receive = 1
-        v = hololink.read_uint32(hololink_module.APB_RAM)
-        assert v == value
+    # Show that we can retry a lost read reply
+    hololink._drop_receive = 1
+    v = hololink.read_uint32(hololink_module.APB_RAM)
+    assert v == value
 
-        # Show that we can retry a lost write request
-        value = 0xEEAA55EE
-        hololink._drop_send = 1
-        hololink.write_uint32(hololink_module.APB_RAM, value)
+    # Show that we can retry a lost write request
+    value = 0xEEAA55EE
+    hololink._drop_send = 1
+    hololink.write_uint32(hololink_module.APB_RAM, value)
 
-        v = hololink.read_uint32(hololink_module.APB_RAM)
-        assert v == value
+    v = hololink.read_uint32(hololink_module.APB_RAM)
+    assert v == value
 
-        # Show that we can retry a lost write reply
-        value = 0xAA55EEEE
-        hololink._drop_receive = 1
-        hololink.write_uint32(hololink_module.APB_RAM, value)
+    # Show that we can retry a lost write reply
+    value = 0xAA55EEEE
+    hololink._drop_receive = 1
+    hololink.write_uint32(hololink_module.APB_RAM, value)
 
-        v = hololink.read_uint32(hololink_module.APB_RAM)
-        assert v == value
+    v = hololink.read_uint32(hololink_module.APB_RAM)
+    assert v == value
 
-        hololink.stop()
+    hololink.stop()

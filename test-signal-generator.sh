@@ -19,19 +19,10 @@ set -o errexit
 SCRIPT_DIR=$(dirname "$(realpath "$0")")
 cd "$SCRIPT_DIR"
 
-shopt -s nullglob
-LC_COLLATE=C INFINIBANDS=(/sys/class/infiniband/*)
-shopt -u nullglob
-if [ ${#INFINIBANDS[@]} -lt 2 ]; then
-    echo "Error: at least 2 InfiniBand devices required, found ${#INFINIBANDS[@]}" >&2
-    exit 1
-fi
-TX_INTERFACE=$(basename "${INFINIBANDS[1]}")
-RX_INTERFACE=$(basename "${INFINIBANDS[0]}")
-
+# The app picks the RoCE device on each board's network interface. Other pytest options can
+# follow, e.g. -v.
 pytest tests/test_signal_generator.py \
     --signal-generator \
     --tx-hololink=192.168.0.3 \
     --hololink=192.168.0.2 \
-    --tx-ibv-name="$TX_INTERFACE" \
-    --ibv-name="$RX_INTERFACE"
+    "$@"

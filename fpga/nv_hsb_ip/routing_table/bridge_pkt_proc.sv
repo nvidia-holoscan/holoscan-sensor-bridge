@@ -398,8 +398,7 @@ rrarb #(
   .WIDTH(NUM_HOST)
 ) u_rrarb_host (
   .clk     ( i_pclk       ),    // Clock
-  .rst_n   ( !i_prst      ),    // Asynchronous reset active low
-  .rst     ( 1'b0         ),    // Synchronous reset active high
+  .rst     ( i_prst       ),    // Synchronous reset active high
   .idle    ( '1           ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
   .req     ( hif_req      ),    // vector of requests
   .gnt_idx (              ),
@@ -419,8 +418,7 @@ rrarb #(
   .WIDTH(NUM_SENSOR)
 ) u_rrarb_sensor (
   .clk     ( i_pclk       ),    // Clock
-  .rst_n   ( !i_prst      ),    // Asynchronous reset active low
-  .rst     ( 1'b0         ),    // Synchronous reset active high
+  .rst     ( i_prst       ),    // Synchronous reset active high
   .idle    ( '1           ),    // Only allow new grants when idle. Tie to 1 to grant new req at any time.
   .req     ( sif_req      ),    // vector of requests
   .gnt_idx ( sif_gnt_idx  ),

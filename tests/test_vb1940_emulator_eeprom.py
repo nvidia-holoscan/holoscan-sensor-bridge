@@ -34,7 +34,9 @@ import array
 
 import pytest
 
-import hololink.emulation.sensors as hemusens
+# A wheel built without the emulator (HOLOLINK_BUILD_EMULATOR=OFF) has no
+# hololink.emulation: skip rather than fail at collection.
+hemusens = pytest.importorskip("hololink.emulation.sensors")
 
 
 def test_constant_is_exported_and_correct():

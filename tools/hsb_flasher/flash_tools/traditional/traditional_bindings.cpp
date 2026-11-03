@@ -79,13 +79,14 @@ PYBIND11_MODULE(traditional_peripherals_py, m)
         "get_traditional_spi",
         [](const std::string& peer_ip, uint32_t control_port, const std::string& serial_number,
             uint32_t spi_address, uint32_t chip_select, uint32_t clock_divisor,
-            uint32_t cpol, uint32_t cpha, uint32_t width) {
+            uint32_t cpol, uint32_t cpha, uint32_t width, const std::string& peer_interface) {
             auto hololink = std::make_shared<Hololink>(
                 peer_ip, control_port, serial_number,
                 false /*sequence_number_checking*/,
                 false /*skip_sequence_initialization*/,
                 false /*ptp_enable*/,
-                false /*block_enable*/);
+                false /*block_enable*/,
+                peer_interface);
             hololink->start();
             auto spi = hololink::get_traditional_spi(
                 *hololink, spi_address, chip_select, clock_divisor, cpol, cpha, width);
@@ -94,23 +95,24 @@ PYBIND11_MODULE(traditional_peripherals_py, m)
         },
         "peer_ip"_a, "control_port"_a, "serial_number"_a,
         "spi_address"_a, "chip_select"_a, "clock_divisor"_a,
-        "cpol"_a, "cpha"_a, "width"_a);
+        "cpol"_a, "cpha"_a, "width"_a, "peer_interface"_a = std::string());
 
     m.def(
         "get_traditional_i2c",
         [](const std::string& peer_ip, uint32_t control_port, const std::string& serial_number,
-            uint32_t i2c_address) {
+            uint32_t i2c_address, const std::string& peer_interface) {
             auto hololink = std::make_shared<Hololink>(
                 peer_ip, control_port, serial_number,
                 false /*sequence_number_checking*/,
                 false /*skip_sequence_initialization*/,
                 false /*ptp_enable*/,
-                false /*block_enable*/);
+                false /*block_enable*/,
+                peer_interface);
             hololink->start();
             auto i2c = hololink::get_traditional_i2c(*hololink, i2c_address);
             return std::make_shared<TraditionalI2cHandle>(
                 TraditionalI2cHandle { std::move(hololink), std::move(i2c) });
         },
         "peer_ip"_a, "control_port"_a, "serial_number"_a,
-        "i2c_address"_a);
+        "i2c_address"_a, "peer_interface"_a = std::string());
 }

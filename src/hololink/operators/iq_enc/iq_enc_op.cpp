@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,124 +16,139 @@
  */
 #include "iq_enc_op.hpp"
 
-#include <imgui.h>
+#include <array>
+#include <stdexcept>
+
+#include <holoviz/imgui/ui.hpp>
+
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
 
 #include <hololink/core/logging_internal.hpp>
+#include <hololink/operators/output_pressure.hpp>
+
+#include "iq_enc_kernels.hpp"
 
 namespace hololink::operators {
 
-static const char* input_name = "input";
-static const char* output_name = "output";
+namespace {
+    constexpr DLDataType kFloat32 { kDLFloat, 32, 1 };
+    constexpr DLDataType kInt16 { kDLInt, 16, 1 };
+}
 
-void IQEncoderOp::initialize()
+IQEncoderOp::IQEncoderOp(float scale, std::shared_ptr<hololink::ImGuiRenderer> renderer)
+    : scale_(scale)
+    , renderer_(std::move(renderer))
 {
-    auto frag = fragment();
-
-    // Find if there is an argument for 'allocator'
-    auto has_allocator = std::find_if(
-        args().begin(), args().end(), [](const auto& arg) { return (arg.name() == "allocator"); });
-    // Create the allocator if there is no argument provided.
-    if (has_allocator == args().end()) {
-        allocator_ = frag->make_resource<holoscan::UnboundedAllocator>("allocator");
-        add_arg(allocator_.get());
+    // The encoder divides by the scale.
+    if (!(scale > 0.0f)) {
+        throw std::invalid_argument("IQEncoderOp: scale must be positive");
     }
-    Operator::initialize();
 }
 
 void IQEncoderOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.input<Tensor>(input_name);
-    spec.output<Tensor>(output_name);
+    spec.input(input, "input")
+        .expects_tensor(holoscan::TensorInputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                .dtype = kFloat32,
+            },
+        });
+    // float32 in, int16 out: each output slot needs half its producer's bytes.
+    spec.output(output, "output")
+        .max_emits_per_compute(1U)
+        .produces_tensor(
+            holoscan::TensorOutputSpec {
+                .representation = holoscan::TensorRepresentation {
+                    .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                    .dtype = kInt16,
+                    .rank = 1U,
+                },
+                .storage = holoscan::TensorOutputStorage::kRuntimePool,
+            },
+            holoscan::TensorOutputDerivations {
+                .max_byte_span = holoscan::input_max_byte_span(input).ceiling_divided_by(holoscan::tensor_byte_span(2U)),
+            });
+}
 
-    // Register converters for arguments not defined by Holoscan
-    register_converter<ImGuiRenderer*>();
-
-    spec.param(scale_,
-        "scale",
-        "scale",
-        "Scale",
-        1.0f);
-
-    spec.param(renderer_, "renderer", "ImGuiRenderer", "Pointer to ImGuiRenderer object");
+holoscan::Contract IQEncoderOp::contract() const
+{
+    holoscan::Contract contract;
+    contract.trigger(holoscan::OnEach { input });
+    return contract;
 }
 
 void IQEncoderOp::start()
 {
-    if (renderer_.has_value() && renderer_.get())
-        renderer_handle_ = renderer_->add_draw_function(name(), [this] {
+    if (renderer_)
+        renderer_handle_ = renderer_->add_draw_function("IQ Encoder", [this] {
             float scale = scale_;
-            if (ImGui::InputFloat("IQ encoding scale", &scale, 0.1f))
-                if (scale < 0)
-                    scale = 0;
-
-            std::unique_lock<std::mutex> lock(mutex_);
-            scale_ = scale;
+            if (ImGui::InputFloat("IQ encoding scale", &scale, 0.1f) && (scale > 0.0f))
+                scale_ = scale;
         });
 }
 
 void IQEncoderOp::stop()
 {
-    if (renderer_.has_value() && renderer_.get())
-        renderer_->remove_draw_function(renderer_handle_);
+    if (renderer_handle_) {
+        renderer_->remove_draw_function(*renderer_handle_);
+        renderer_handle_.reset();
+    }
 }
 
-void IQEncoderOp::compute(holoscan::InputContext& op_input, [[maybe_unused]] holoscan::OutputContext& op_output,
-    [[maybe_unused]] holoscan::ExecutionContext& context)
+holoscan::expected<void, holoscan::Error> IQEncoderOp::compute(holoscan::ExecutionContext& context)
 {
-    auto maybe_tensor = op_input.receive<Tensor>(input_name);
-    if (!maybe_tensor) {
-        HSB_LOG_ERROR("Failed to receive message from port '{}'", input_name);
-        throw std::exception();
+    auto maybe_sample = input.receive();
+    if (!maybe_sample) {
+        return holoscan::make_unexpected(std::move(maybe_sample).error());
+    }
+    const holoscan::Tensor& in_tensor = maybe_sample->data;
+
+    if (in_tensor.size() % 8) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument,
+            "Invalid IQ signal: element count must be a multiple of 8" });
     }
 
-    auto tensor_iq = maybe_tensor.value();
-    if (tensor_iq->size() % 8) {
-        throw std::runtime_error("Invalid IQ signal with size: " + std::to_string(tensor_iq->size()));
+    const std::array<int64_t, 1> shape { in_tensor.size() };
+    auto loan = output.allocate_tensor(holoscan::TensorLoanRequest { .shape = shape, .dtype = kInt16 });
+    if (!loan) {
+        if (!is_output_pressure(loan.error())) {
+            return holoscan::make_unexpected(std::move(loan).error());
+        }
+        record_dropped_output("IQEncoderOp", dropped_, loan.error());
+        return {};
+    }
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        return holoscan::make_unexpected(std::move(writer).error());
     }
 
-    // Create CUDA buffer
-    int tensor_size = static_cast<int>(tensor_iq->size());
-    // Try to acquire a buffer from the pool
-    auto unique_dl_managed_tensor_context = dl_managed_tensor_context_pool_.acquire();
-    // The size of the required buffer changed, release the buffer manually
-    if (unique_dl_managed_tensor_context && unique_dl_managed_tensor_context->dl_shape[0] != tensor_size) {
-        auto ptr = unique_dl_managed_tensor_context.release();
-        decltype(dl_managed_tensor_context_pool_)::Deleter {}(ptr);
-    }
-    std::shared_ptr<holoscan::DLManagedTensorContext> dl_managed_tensor_context(std::move(unique_dl_managed_tensor_context));
-    // If failed to acquire the buffer from the pool, allocate a new one and store it in the pool
-    if (!dl_managed_tensor_context) {
-        nvidia::gxf::Tensor gxf_tensor;
-        auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(context.context(),
-            allocator_->gxf_cid());
-        if (!gxf_tensor.reshape<int16_t>(nvidia::gxf::Shape { tensor_size },
-                nvidia::gxf::MemoryStorageType::kDevice,
-                allocator.value()))
-            throw std::runtime_error("Failed to allocate cuda memory");
+    // count is number of IQ pairs (2 components per signal)
+    cuda_iq_encode(static_cast<int16_t*>(writer->data()),
+        static_cast<const float*>(in_tensor.data()),
+        static_cast<size_t>(in_tensor.size()) / 2,
+        scale_,
+        context.cuda_stream().get());
 
-        auto maybe_dl_ctx = gxf_tensor.toDLManagedTensorContext();
-        if (!maybe_dl_ctx)
-            HSB_LOG_ERROR(
-                "Failed to get std:shared_ptr<DLManagedTensorContext> from nvidia::gxf::Tensor");
-        dl_managed_tensor_context = dl_managed_tensor_context_pool_.emplace(std::move(*maybe_dl_ctx.value()));
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        return holoscan::make_unexpected(std::move(committed).error());
     }
-    auto tensor = std::make_shared<holoscan::Tensor>(dl_managed_tensor_context);
-    HSB_LOG_DEBUG("Allocated ({})", (void*)tensor->data());
-
-    try {
-        // Encode values
-        std::unique_lock<std::mutex> lock(mutex_);
-        float scale = scale_;
-        lock.unlock();
-        cuda_iq_encode(reinterpret_cast<int16_t*>(tensor->data()),
-            reinterpret_cast<const float*>(tensor_iq->data()),
-            tensor_iq->size() / 2, scale); // To components (IQ) per signal
-    } catch (const std::exception& e) {
-        HSB_LOG_ERROR("Failed to encode data: {}", e.what());
+    auto emitted = output.emit(std::move(*loan),
+        holoscan::EmitOptions {
+            .capture_time = maybe_sample->metadata.capture_time(),
+            .frame_id = maybe_sample->metadata.frame_id,
+        });
+    if (!emitted) {
+        if (!is_output_pressure(emitted.error())) {
+            return holoscan::make_unexpected(std::move(emitted).error());
+        }
+        record_dropped_output("IQEncoderOp", dropped_, emitted.error());
     }
-
-    // Emit the encoded message
-    op_output.emit(tensor);
+    return {};
 }
 
 } // namespace hololink::operators

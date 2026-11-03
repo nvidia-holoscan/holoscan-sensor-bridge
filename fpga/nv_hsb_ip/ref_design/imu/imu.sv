@@ -196,7 +196,7 @@ end
 
 assign i2c_db_addr = (state == I2C_WRITE) ? wr_ptr : rd_ptr;
 
-always@(posedge i_aclk or posedge i_arst)  
+always@(posedge i_aclk)  
 begin
     if (i_arst) begin
         db_pready <= 1'b0;
@@ -253,8 +253,7 @@ rrarb #(
   .WIDTH   ( 2                                    )
 ) int_arb (
   .clk     ( i_aclk                               ),
-  .rst_n   ( !i_arst                              ), 
-  .rst     ( 1'b0                                 ), 
+  .rst     ( i_arst                               ), 
   .idle    ( ((state == I2C_IDLE) && !int_start)  ),
   .req     ( int_req_r                            ),
   .gnt_idx (                                      ),
@@ -277,7 +276,7 @@ end
 assign int_req[0] = (i_start[0] && !int_r[0]);
 assign int_req[1] = (i_start[1] && !int_r[1]);
 
-always@(posedge i_aclk or posedge i_arst)  
+always@(posedge i_aclk)  
 begin
     if(i_arst) begin   
         int_start  <= '0;
@@ -379,8 +378,7 @@ assign din = (state == I2C_10b_DEV_ADDR)    ? {5'b11110, device_address[9:8],1'b
                                                          db_rd_data[i2c_db_addr[1:0]*8+:8];
 i2c i2c_ctrl_byte_inst (
     .clk            ( i_aclk        ), // clock
-    .rst            ( 1'b0          ), // synchronous active high reset
-    .nReset         ( !i_arst       ), // asynchronous active low reset
+    .rst            ( i_arst        ), // synchronous active high reset
     .ena            ( '1            ), // core enable signal
     .clk_cnt        ( clk_cnt       ), // 4x SCL (default)
     // control inputs
@@ -480,7 +478,7 @@ always_comb begin
 end
  
  
-always@(posedge i_aclk or posedge i_arst)  
+always@(posedge i_aclk)  
 begin
     if(i_arst) begin   
         state           <= I2C_IDLE;

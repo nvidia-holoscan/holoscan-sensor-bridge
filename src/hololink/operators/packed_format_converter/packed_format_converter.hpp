@@ -17,9 +17,20 @@
 
 #pragma once
 
+#include <memory>
+#include <optional>
+
+#include <capture_metadata_traits.hpp>
 #include <hololink/core/csi_controller.hpp>
+#include <hololink/core/csi_formats.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
+#include <hololink/operators/csi_geometry_schema.hpp>
+#include <holoscan/core/domain/tensor.hpp>
 #include <holoscan/core/operator.hpp>
-#include <holoscan/core/parameter.hpp>
+#include <holoscan/core/parameter_schema.hpp>
+#include <holoscan/core/port.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/sensor_io/sensor_schema_package.hpp>
 
 #include <cuda.h>
 
@@ -29,38 +40,67 @@ class CudaFunctionLauncher;
 
 namespace hololink::operators {
 
-/**
- * Operator that enables the HSB packetizer to output 10- and 12-bit packed pixel formats,
- * then converts the output to 16 bits per pixel.
- *   - 10-bit format is packed 3 pixels per 4 bytes as {2'b0, p3[9:0], p2[9:0], p1[9:0]}
- *   - 12-bit format is packed 2 pixels per 3 bytes as {p2[11:0], p1[11:0]}
- */
-class PackedFormatConverterOp : public holoscan::Operator, public hololink::csi::CsiConverter {
-public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(PackedFormatConverterOp);
+struct PackedFormatConverterParams {
+    int cuda_device_ordinal = 0;
+    // CFA phase of the reconstructed Bayer mosaic -- not derivable from the packed-format
+    // conversion itself, so the camera driver's own camera->get_bayer_format() must be threaded
+    // through here explicitly. Stamped onto every emitted schema::ImageT's encoding field (see
+    // bayer_image_encoding()); unset stamps CUSTOM, leaving the CFA phase to the consumer.
+    std::optional<hololink::csi::BayerFormat> bayer_format;
+    // Geometry of the HSB-packed frames, as the sensor driver reports it through
+    // FusaCoeCaptureOp::make_geometry_adapter(geometry, /*packetizer_enabled=*/true). Required.
+    // start_byte is applied only when header_included is true.
+    // trailing_bytes is not part of the unpacked image.
+    hololink::csi::CsiGeometry geometry;
+    // Full-frame CRC paths retain the CSI header; ordinary capture exports pixels only.
+    bool header_included = false;
+};
 
+HOLOSCAN_PARAM_SCHEMA(
+    PackedFormatConverterParams,
+    holoscan::param_schema("com.nvidia.hololink.operators.PackedFormatConverterParams", 1),
+    holoscan::field<&PackedFormatConverterParams::cuda_device_ordinal>("cuda_device_ordinal")
+        .description("CUDA device on which to run the unpack kernel."),
+    holoscan::field<&PackedFormatConverterParams::bayer_format>("bayer_format")
+        .enum_values({ holoscan::param_enum_value("bggr", hololink::csi::BayerFormat::BGGR),
+            holoscan::param_enum_value("rggb", hololink::csi::BayerFormat::RGGB),
+            holoscan::param_enum_value("gbrg", hololink::csi::BayerFormat::GBRG),
+            holoscan::param_enum_value("grbg", hololink::csi::BayerFormat::GRBG) })
+        .description("CFA phase of the reconstructed Bayer mosaic's top-left 2x2 block; unset "
+                     "stamps CUSTOM."),
+    holoscan::field<&PackedFormatConverterParams::geometry>("geometry")
+        .template nested<hololink::csi::CsiGeometry>()
+        .description("Geometry of the HSB-packed frames; start_byte applies when header_included is true."),
+    holoscan::field<&PackedFormatConverterParams::header_included>("header_included")
+        .description("Input includes a CSI header of geometry.start_byte bytes (default: pixels only)."));
+
+/**
+ * Unpacks HSB-packed RAW_8/RAW_10/RAW_12 frames (the FuSa CoE packetizer's line format) into a
+ * 16-bit Bayer schema::ImageT. Configured entirely through PackedFormatConverterParams: HSDK5's
+ * graph.op<>() defers construction, so a sensor driver can no longer configure a live instance
+ * through the CsiConverter interface as it did in HSDK4.
+ */
+class PackedFormatConverterOp : public holoscan::Operator<PackedFormatConverterParams> {
+public:
+    void setup(holoscan::OperatorSpec& spec) override;
+    [[nodiscard]] holoscan::Contract contract() const override;
     void start() override;
     void stop() override;
-    void setup(holoscan::OperatorSpec& spec) override;
-    void compute(holoscan::InputContext&, holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext&) override;
+    holoscan::expected<void, holoscan::Error> compute(holoscan::ExecutionContext& context) override;
 
-    uint32_t receiver_start_byte() override;
-    uint32_t received_line_bytes(uint32_t line_bytes) override;
-    uint32_t transmitted_line_bytes(hololink::csi::PixelFormat pixel_format,
-        uint32_t pixel_width) override;
-    void configure(uint32_t start_byte, uint32_t bytes_per_line,
-        uint32_t pixel_width, uint32_t pixel_height,
-        hololink::csi::PixelFormat pixel_format,
-        uint32_t trailing_bytes) override;
+    holoscan::Input<holoscan::Tensor> input_tensor { "in_tensor" };
+    holoscan::Input<hololink::CaptureMetadataT> input_metadata { "in_metadata" };
+    holoscan::Output<holoscan::schema::ImageT> output_tensor { "tensor" };
+    holoscan::Output<hololink::CaptureMetadataT> output_metadata { "metadata" };
 
-    size_t get_frame_size();
+    // Bytes a packed line of pixel_width pixels occupies before the HSB pads it to 64: the
+    // CSI-2 line as the format's packetizer program (hololink::csi::get_packetizer_program())
+    // reshapes it, a whole number of the program's loops.
+    static uint32_t transmitted_line_bytes(hololink::csi::PixelFormat pixel_format, uint32_t pixel_width);
 
 private:
-    holoscan::Parameter<std::shared_ptr<holoscan::Allocator>> allocator_;
-    holoscan::Parameter<int> cuda_device_ordinal_;
-    holoscan::Parameter<std::string> in_tensor_name_;
-    holoscan::Parameter<std::string> out_tensor_name_;
+    holoscan::expected<void, holoscan::Error> compute_impl(holoscan::ExecutionContext& context);
+    void count_dropped_frame(const char* reason);
 
     CUcontext cuda_context_ = nullptr;
     CUdevice cuda_device_ = 0;
@@ -69,13 +109,14 @@ private:
 
     std::shared_ptr<hololink::common::CudaFunctionLauncher> cuda_function_launcher_;
 
-    uint32_t start_byte_;
-    uint32_t bytes_per_line_;
-    uint32_t pixel_width_;
-    uint32_t pixel_height_;
-    hololink::csi::PixelFormat pixel_format_;
-    uint32_t trailing_bytes_;
-    bool configured_ = false;
+    uint32_t bytes_per_line_ = 0;
+    uint32_t pixel_width_ = 0;
+    uint32_t pixel_height_ = 0;
+    hololink::csi::PixelFormat pixel_format_ = {};
+    hololink::operators::DropCounter dropped_frames_;
+    // Frames whose payload and metadata were stamped as different frames, reported at most once
+    // per second.
+    hololink::operators::DropCounter mismatched_frames_;
 };
 
 } // namespace hololink::operators

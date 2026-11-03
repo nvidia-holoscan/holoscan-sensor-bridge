@@ -79,8 +79,8 @@ The features that are supported in provided code are
 1. Loopback testing ability
    - The HSB Emulator can be used to test both accelerated and unaccelerated transport
      on the same device the host is running on though for accelerated transport, e.g.
-     `RoceReceiverOp` and `SIPLCaptureService / SIPLCameraOutputOp`, a physical
-     connection and network isolation would be needed
+     `RoceReceiverOp` and `FusaCoeCaptureOp`, a physical connection and network
+     isolation would be needed
 
 ### Limitations
 
@@ -93,7 +93,7 @@ features are not or will not be implemented.
    - This is a current limitation in the APIs to be consistent with real HSB IP. While
      only one HSBEmulator may run, the number of sensor `DataPlane`s that may attach to
      the instance is limited only by the number of IP addresses that can be assigned and
-     configurable sensor interfaces (SIFs) for the emulated device (\&lt;= 32).
+     configurable sensor interfaces (SIFs) for the emulated device (at most 32).
    - Running in isolated network namespaces will free up this restriction for
      connections other than a SW loopback, but requires application & system maintenance
 1. The HSB Emulator may not be reprogrammed via the host side IP tools like a real HSB:
@@ -115,10 +115,12 @@ minimum and are described in more detail in the
 Emulator has been tested with host applications in the following environments:
 
 1. x86 Linux Desktop - Ubuntu 22.04+ - Emulator applications only
-1. Jetson Orin Nano Developer Kit - Jetpack 6.1+ - Emulator applications only
-1. AGX Orin Developer Kit - Jetpack 6.1+ - Host or Emulator applications
-1. IGX Orin Developer Kit - IGX BaseOS 1.0+ - Host or Emulator applications
-1. AGX Thor Developer Kit - Jetpack 7.1+ - Host or Emulator applications
+1. Jetson Orin Nano Developer Kit - JetPack 6.1 or newer - Emulator applications only (no
+   Holoscan Sensor Bridge host applications)
+1. AGX Orin Developer Kit - JetPack 7.2.1 - Host or Emulator applications
+1. AGX Thor Developer Kit - JetPack 7.2.1 - Host or Emulator applications
+1. IGX Thor Developer Kit (T7000) - IGX SW 2.0.1 - Host or Emulator applications
+1. DGX Spark - DGX OS 7.6.0 - Host or Emulator applications
 
 As an example of extending the environment compatibility, an implementation of the HSB
 IP through the HSBEmulator HAL APIs is provided for STM's STM32f767zi Cortex-M7
@@ -127,7 +129,8 @@ processor that is suitable for deployment or development on the
 development board. This implementation currently includes only the control plane
 communication, but has an extensible callback feature where additional "registers" from
 control plane commands can invoke custom callbacks to be defined by the user. To
-demonstrate the cross-platform API, a simple example in `examples/hsb_control` is
+demonstrate the cross-platform API, a simple example in
+`src/hololink/emulation/examples/hsb_control.cpp` is
 provided that may be compiled for both linux and STM32F767ZI targets without any changes
 and respond to host control plane commands.
 
@@ -141,8 +144,10 @@ HSB-provided imx477 and imx715 sensor drivers as well.
 There are 2 ways to build the HSB Emulator
 
 - Full
-  - This is a normal build of the HSB repository that will build the emulator and
-    include it within the normal hololink Python module
+  - This is a normal build of the HSB repository with `-DHOLOLINK_BUILD_EMULATOR=ON`
+    (the default when the Python wheel is built with `pip install ./python`). It builds
+    the emulator and includes its Python module, `hololink.emulation`, within the normal
+    hololink Python package
 - Emulator-only
   - Targets a linux environment or MCU (currently only STM32f767zi Cortex-M7 devices,
     but extensible)
@@ -174,7 +179,7 @@ Follow the appropriate
 
 ```
   mkdir build
-  cmake -S . -B build
+  cmake -S . -B build -DHOLOLINK_BUILD_EMULATOR=ON
   cmake --build build -j
 ```
 
@@ -194,8 +199,21 @@ compatibility:
 If building the Python bindings as well
 
 ```
-  sudo apt-get install -y python3-pybind11 python3-venv python3-pip
+  sudo apt-get install -y python3-dev python3-venv python3-pip git
 ```
+
+The Python module is built with [nanobind](https://github.com/wjakob/nanobind) 3.0.1,
+the same binding library and version as the hololink package itself. `cmake` fetches
+that version automatically (hence `git`); to build offline, or to use a copy you already
+have, install it with `pip install nanobind==3.0.1` and pass
+`-Dnanobind_DIR=$(python3 -m nanobind --cmake_dir)` to `cmake`. Python 3.10 or newer is
+required. With Python 3.12 or newer and CMake 3.26 or newer the extension targets the
+CPython stable ABI (`_emulation.abi3.so`), so the same module works with any later
+Python; on Python 3.10 or 3.11, or with a CMake older than 3.26 (the
+`Development.SABIModule` component CMake needs for the stable ABI is new in 3.26), it is
+built for that interpreter only (`_emulation.cpython-3NN-*.so`), and `cmake` says so at
+configure time. The same applies to the Full build's modules, but the Full build needs
+CMake 4.0 or newer, so for its modules only the Python version matters.
 
 Additional dependencies for the Python bindings are required for the provided examples
 (`numpy` v1.23+ and `cupy`), but the virtual environment that is created will
@@ -277,10 +295,15 @@ prerequisites are not met or not in expected locations
 | dependency                                                                    | cmake configuration                                      | default setting               | availability                                                                                                                                          |
 | ----------------------------------------------------------------------------- | -------------------------------------------------------- | ----------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Python unavailable/not needed                                                 | `-DHSB_EMULATOR_BUILD_PYTHON=OFF`                        | `ON`                          | Emulator-only for Linux                                                                                                                               |
-| Python virtual environment location <br /> (ignored if Python build is `OFF`) | `-DHSB_EMULATOR_PYTHON_VENV=path/to/virtual_environment` | \`\`${CMAKE_BINARY_DIR}`/env` | Emulator-only for Linux                                                                                                                               |
+| Python virtual environment location <br /> (ignored if Python build is `OFF`) | `-DHSB_EMULATOR_PYTHON_VENV=path/to/virtual_environment` | `${CMAKE_BINARY_DIR}/env`       | Emulator-only for Linux                                                                                                                               |
+| nanobind already installed / no network <br /> (ignored if Python build is `OFF`) | `-Dnanobind_DIR=$(python3 -m nanobind --cmake_dir)`      | fetched by `cmake`            | Emulator-only for Linux; needs `pip install nanobind==3.0.1`                                                                                          |
 | non Linux targets                                                             | `-DHSB_EMULATOR_TARGET=target_name`                      | `linux`                       | `target_name` must have a configuration in `src/hololink/emulation/cmake/targets/*` and acceptable targets in `src/hololink/emulation/CMakeLists.txt` |
-| STM32CubeF7 not in `~/Documents/STM32`                                        | `-DSTM32_PATH=/path/to/STM32CubeF7/repo`                 | `~/STM32`                     | Emulator-only for STM32 targets                                                                                                                       |
-| zlib source available locally                                                 | \`-DZLIB_PATH=/path/to/zlib                              | downloads required files      | Emulator-only for STM32 targets                                                                                                                       |
+| STM32CubeF7 not in `~/STM32`                                                  | `-DSTM32_PATH=/path/to/dir` <br /> (the directory that contains `STM32CubeF7`) | `~/STM32`                     | Emulator-only for STM32 targets                                                                                                                       |
+| zlib source available locally                                                 | `-DZLIB_PATH=/path/to/zlib`                              | downloads required files      | Emulator-only for STM32 targets                                                                                                                       |
+
+The Emulator-only build needs CMake 3.18 or newer (the Full build needs 4.0), so the
+`apt` CMake of Ubuntu 22.04 (3.22) is enough; on older distributions `pip install cmake`
+provides a current one.
 
 Note for cmake version < 3.24 (`apt` default available in Ubuntu 22.04 or earlier),
 cmake does not allow setting a native architecture and a default
@@ -295,7 +318,7 @@ configurations and implementations. The source code for all the examples are loc
 `src/hololink/emulation/examples`. The C++ applications by default will be built to
 `<build directory>/examples/`.
 
-For all examples, `--help` will provide invocation and flag details. All current
+For most examples, `--help` will provide invocation and flag details. All current
 transport capabilities and therefore the examples will require running as `root` or
 under `sudo`.
 
@@ -314,11 +337,11 @@ sudo build/env/bin/python3 src/hololink/emulation/examples/serve_coe_stereo_vb19
 | `gpio_trigger_send_roce`           | N/A                                                            | send timestamp triggered by gpio pin over RoCEv2 from MCU | None                                          | `LinuxReceiver`, `RoceReceiver`                                                | STM32 targets only                |
 | `serve_linux_file`                 | `./serve_linux_file 192.168.0.2 imx_single_raw_frame.dat`      | serve frames from a file                                  | imx cameras                                   | `LinuxReceiver`, `RoceReceiver`                                                |                                   |
 | `serve_coe_file`                   | `./serve_coe_file 192.168.0.2 imx_single_raw_frame.dat`        | serve frames from a file                                  | imx cameras                                   | `LinuxCoeReceiver`                                                             |                                   |
-| `serve_coe_vb1940_file`            | `./serve_coe_vb1940_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file                                  | VB1940                                        | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
+| `serve_coe_vb1940_file`            | `./serve_coe_vb1940_file 192.168.0.2 imx_single_raw_frame.dat` | serve frames from a file                                  | VB1940                                        | `LinuxCoeReceiver`, `FusaCoeCaptureOp`                                         | Compatible with AGX Thor platform |
 | `serve_linux_single_vb1940_frames` | `./serve_linux_single_vb1940_frames 192.168.0.2`               | serve test RGB frames from single VB1940 camera           | VB1940                                        | `LinuxReceiver`, `RoceReceiver`                                                |                                   |
 | `serve_linux_stereo_vb1940_frames` | `./serve_linux_stereo_vb1940_frames 192.168.0.2`               | serve test RGB frames from stereo VB1940 camera           | VB1940                                        | `LinuxReceiver`, `RoceReceiver`                                                |                                   |
-| `serve_coe_single_vb1940_frames`   | `./serve_coe_single_vb1940_frames 192.168.0.2`                 | serve test RGB frames from single VB1940 camera           | VB1940                                        | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
-| `serve_coe_stereo_vb1940_frames`   | `./serve_coe_stereo_vb1940_frames 192.168.0.2`                 | serve test RGB frames from stereo VB1940 camera           | VB1940                                        | `LinuxCoeReceiver`, `SIPLCaptureService / SIPLCameraOutputOp`, `FusaCaptureOp` | Compatible with AGX Thor platform |
+| `serve_coe_single_vb1940_frames`   | `./serve_coe_single_vb1940_frames 192.168.0.2`                 | serve test RGB frames from single VB1940 camera           | VB1940                                        | `LinuxCoeReceiver`, `FusaCoeCaptureOp`                                         | Compatible with AGX Thor platform |
+| `serve_coe_stereo_vb1940_frames`   | `./serve_coe_stereo_vb1940_frames 192.168.0.2`                 | serve test RGB frames from stereo VB1940 camera           | VB1940                                        | `LinuxCoeReceiver`, `FusaCoeCaptureOp`                                         | Compatible with AGX Thor platform |
 
 For the `*_file` examples, it is crucial that image frame sizes are set up
 appropriately, especially on Jetson AGX Thor platform. <b>You will need to know the
@@ -352,7 +375,7 @@ size is greater than the value supplied to the `-s` option, it will assume multi
 frames are in the file and cycle through them, advancing by `-s` bytes after each image
 frame and reset to the start of the file when a full frame can no longer be sent. For
 example, if `X` is provided to the `-s` option, `-s X`, and the file size is `N * X + Y`
-bytes where `N > 0`, and `0 &lt;= Y < X`, the examples will send `N` image frames, reset
+bytes where `N > 0`, and `0 <= Y < X`, the examples will send `N` image frames, reset
 to the beginning of the file, and then continue.
 
 ## Testing
@@ -365,10 +388,10 @@ pytest
 ```
 
 the same as described in [Run tests in the demo container](/holoscan/sensor-bridge/getting-started/build#RunningTestsTarget). The
-default pytest configuration will test vb1940 camera modes with linux sockets in roce
-and coe packet formats for gpu or cpu inputs as well as linux roce with imx477 camera
-modes. To run an extended sweep of parameters including also imx715 and imx274 camera
-mode, run:
+default pytest configuration will test linux roce with imx477 camera modes. The vb1940
+camera modes with linux sockets in roce and coe packet formats for gpu or cpu inputs are
+tested only when you pass `--cuda-subprocesses`. To run an extended sweep of parameters
+including also imx715 and imx274 camera modes, run:
 
 ```
 pytest --emulator
@@ -378,18 +401,18 @@ to get the more comprehensive testing parameters.
 
 ### Hardware Loopback
 
-The tests above for vb1940 are all executed by default over software loopback. To run
+The vb1940 tests above run over software loopback by default. To run
 them over-the-wire using available network interfaces, they may be run in hardware
 loopback mode by attaching an Ethernet cable between 2 Ethernet-compatible ports on the
 target test device. Note the interfaces `IF1` and `IF2` (from e.g. `ip addr sh`) that
-correspond to the attached ports. Then run the tests with the following option:
+correspond to the attached ports. Then run the tests with the following options:
 
 ```
-pytest --hw-loopback IF1 IF2
+pytest --cuda-subprocesses --hw-loopback IF1 IF2
 ```
 
 This will run the same tests for the HSB Emulator, but isolate `IF1` from `IF2` and
-launch the relevant the emulator process on `IF1` and the test host application process
+launch the relevant emulator process on `IF1` and the test host application process
 targeting `IF2`.
 
 The scripts `nsisolate.sh`, `nsexec.sh`, `nspid.sh`, and `nsjoin.sh` in the `scripts/`
@@ -411,10 +434,9 @@ control/kill the `nsexec.sh` command without creating an orphaned process.
 
 ### Accelerated Networking on Hardware Loopback
 
-On platforms that offer accelerated networking such as Jetson AGX Thor (SIPL CoE over
-MGBE), IGX Orin (RoCEv2 over CX-7), and DGX Spark (RoCEv2 over CX-7), the network
-namespace scripts above also provide a simple way to test accelerated networking HSB
-applications.
+On platforms that offer accelerated networking such as Jetson AGX Thor (CoE over MGBE),
+IGX Thor T7000 (RoCEv2 over CX-7), and DGX Spark (RoCEv2 over CX-7), the network namespace
+scripts above also provide a simple way to test accelerated networking HSB applications.
 
 Under normal conditions, the Linux operating systems used on those target devices will
 route connections between two interfaces through an internal software/loopback
@@ -422,13 +444,13 @@ interface. Isolating one of the connected interfaces in a network namespace will
 the software loopback rerouting and force use of the accelerating hardware. The HSB
 Emulator tests for RoCE will already handle this and on relevant platforms will
 automatically configure a network namespace for testing when provided with the
-`--hw-loopback` parameters. On AGX Thor with SIPL, the MGBE interface needs to be
-managed independently but the tests will still run over the isolated interface if
-provided. As examples:
+`--hw-loopback` parameters. On AGX Thor, the MGBE interface needs to be managed
+independently but the tests will still run over the isolated interface if provided. As
+examples:
 
 ```
 # interface names may vary
-pytest --hw-loopback enP5p3s0f1np1 enP5p3s0f0np0
+pytest --cuda-subprocesses --hw-loopback enP5p3s0f1np1 enP5p3s0f0np0
 ```
 
 will run the linux, coe transport examples over standard linux sockets and also run the
@@ -439,12 +461,12 @@ scripts/nsisolate.sh enP2p1s0 192.168.0.2/24
 # this next line run outside the container if mgbe0_0 is "DOWN" after isolating
 sudo ip link set mgbe0_0 down && sudo ip link set mgbe0_0 up
 # back in the container
-pytest --hw-loopback enP2p1s0 mgbe0_0 --json-config my_single_vb1940_sensor_config.json
+pytest --cuda-subprocesses --hw-loopback enP2p1s0 mgbe0_0
 scripts/nsjoin.sh enP2p1s0
 ```
 
-will run the linux, coe transport examples over standard linux sockets and also run the
-SIPL example for vb1940 through the MGBE port with CoE offloading.
+will run the linux, coe transport examples over standard linux sockets through the MGBE
+port.
 
 ## Developing with HSB Emulator
 
@@ -457,8 +479,8 @@ every function is a stub — your job is to plug in the platform-specific logic.
    everything you need to extend:
    - `HSBTemplate.cpp` — control-plane handling, BootP broadcasting, basic networking.
    - `HSBTemplate_rocev2.cpp` — RoCEv2 transmit path (ConnectX-compatible).
-   - `HSBTemplate_coe.cpp` — IEEE 1722B Camera-over-Ethernet transmit path (SIPL / FuSa on
-     AGX Thor and IGX Thor Mini with mGbE).
+   - `HSBTemplate_coe.cpp` — IEEE 1722B Camera-over-Ethernet transmit path (FuSa CoE on
+     AGX Thor with MGBE).
 
 2. **Find every `TODO`** in the three files above and fill it in. The functions that
    actually need platform work are grouped by concern:
@@ -540,8 +562,7 @@ encapsulate and simplify construction of the network interface properties requir
 the `DataPlane` object in the hosted environment
 
 Two implementations of the `DataPlane` interface provided are `RoCEv2DataPlane` and
-`COEDataPlane`. The `COEDataPlane` is currently only available on linux target
-platforms.
+`COEDataPlane`. Both are available on the Linux and STM32 target platforms.
 
 RoCEv2 UDP-based transport implementation.
 
@@ -561,6 +582,51 @@ The primary example of implementing an I2CPeripheral for an HSB Emulator applica
 the STM VB1940 sensor for emulating the
 [Leopard Eagle HSB from Leopard Imaging](https://leopardimaging.com/sensor-bridge/).
 
+An `I2CPeripheral` may also be implemented in Python by subclassing `hemu.I2CPeripheral`.
+The controller calls `i2c_transaction` with the host's write bytes as an immutable
+`bytes` object and a `bytearray` of `read_size` bytes to fill with the reply
+(`read_bytes[0:n] = ...`); the controller copies it into its own buffer when the override
+returns, so the override must not change its length. An exception raised by the override
+fails the transaction (the host sees `I2C_I2C_ERR`) and is reported through
+`sys.unraisablehook`; it never stops the emulator.
+
+```python
+import hololink as hololink_module
+import hololink.emulation as hemu
+
+class Peripheral(hemu.I2CPeripheral):
+    def __init__(self):
+        super().__init__()
+        self.registers = {0x3000: 0x01}
+
+    def attach_to_i2c(self, controller, bus):
+        controller.attach_i2c_peripheral(bus, 0x1A, self)
+
+    def i2c_transaction(self, addr, write_bytes, write_size, read_bytes, read_size):
+        # 16-bit big-endian register address, then optional data bytes.
+        register = int.from_bytes(write_bytes[0:2], "big")
+        if write_size > 2:
+            self.registers[register] = write_bytes[2]
+        if read_size:
+            read_bytes[0:read_size] = bytes(
+                self.registers.get(register + i, 0) for i in range(read_size)
+            )
+        return hemu.I2CStatus.I2C_STATUS_SUCCESS
+
+hsb = hemu.HSBEmulator()
+peripheral = Peripheral()
+peripheral.attach_to_i2c(hsb.get_i2c(hololink_module.I2C_CTRL), hololink_module.CAM_I2C_BUS)
+```
+
+The emulator keeps an attached peripheral alive for as long as the emulator itself, so
+the application does not have to hold its own reference; the controller returned by
+`get_i2c()` keeps the emulator alive in turn. `i2c_transaction` can also be
+called on any peripheral from Python, for example to drive a C++ sensor emulator in a
+test: pass the bytes to write and a writable buffer (such as a `bytearray`) for the
+peripheral to fill, `peripheral.i2c_transaction(address, bytes([0x30, 0x00]), bytearray(2))`.
+`HSBEmulator.read(address)` returns the register value and raises `RuntimeError` when
+nothing is mapped at that address.
+
 ### Structure of an HSB Emulator application
 
 The [Examples](#examples) in the next section and the `main`
@@ -575,7 +641,7 @@ RoCEv2 transmission over Linux sockets.
 ```cpp
   // including the appropriate header for the implementation of the
   // DataPlane is sufficient for a minimal application 
-  #include "hololink/emulation/data_plane.hpp"
+  #include "hololink/emulation/rocev2_data_plane.hpp"
    
   // OPTIONAL: import the target sensor emulator 
   #include "hololink/emulation/sensors/vb1940_emulator.hpp"
@@ -617,7 +683,7 @@ RoCEv2 transmission over Linux sockets.
   // client code in a loop. Passing the DataPlane implementation gives the loop access
   // to send data to the host application and sending the sensor instance (if needed)
   // provides access to sensor-specific/state data
-  application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
+  application_specific_data_loop(data_plane, vb1940, ...user configuration data)
    
   // OPTIONAL: Stop the emulator if the application needed to be able to restart the 
   // HSBEmulator instance without exiting. All registered elements will receive a call
@@ -633,12 +699,12 @@ RoCEv2 transmission over Linux sockets.
   # importing the appropriate module for the implementation of the DataPlane is sufficient for
   # a minimal application
   import hololink.emulation as hemu
-   
+
   # import the hololink module for access to some HSB constants.
   # NOTE: this is very minimal in the "Emulator-only" build and does not include any of the
   # other hololink libraries
   import hololink as hololink_module
-   
+
   # Declare a target HSBEmulator instance. In this case, the example is explicitly emulating a
   # Leopard Eagle HSB configuration (needed for VB1940). It is not yet ready to receive
   # commands from a host application until a subsequent call to
@@ -647,7 +713,7 @@ RoCEv2 transmission over Linux sockets.
   # processes), they can receive and emit independent ECB packets, which may conflict with the
   # host application.
   hsb = hemu.HSBEmulator(hemu.HSB_LEOPARD_EAGLE_CONFIG)
-   
+
   # Create an implementation of the DataPlane interface which will be used to send data as if
   # from a *single* sensor. For this, you need to set a sensor_id to identify the sensor
   # interface the channel will emulate and IPAddress + data_plane_id that identify
@@ -659,7 +725,7 @@ RoCEv2 transmission over Linux sockets.
   sensor_id = 0
   data_plane = hemu.RoCEv2DataPlane( hsb, hemu.IPAddress(args.ip_address), 
      data_plane_id, sensor_id)
-   
+
   # Optional for stateful sensor emulation or driver bridge declare the sensor instance 
   vb1940 = hemu.sensors.Vb1940Emulator()
   # Attach it to an appropriate I2CController and bus. On Leopard Eagle HSB, the i2c bus 
@@ -667,18 +733,18 @@ RoCEv2 transmission over Linux sockets.
   vb1940.attach_to_i2c(
      hsb.get_i2c(hololink_module.I2C_CTRL), hololink_module.CAM_I2C_BUS + sensor_id
   )
-   
+
   # Start the emulator.
   # After this, the HSBEmulator instance can receive and respond to control commands from the
   # host application. All DataPlane instances which have been declared will start emitting
   # BOOTP broadcast messages. All I2CPeripherals will receive a call to their start() methods
   hsb.start()
-   
+
   # sensor client code in a loop. Passing the DataPlane implementation gives the loop access to
   # send data to the host application
   # and sending the sensor instance (if needed) provides access to sensor-specific/state data
-  application_specific_data_loop(RoCEv2DataPlane, vb1940, ...user configuration data)
-   
+  application_specific_data_loop(data_plane, vb1940, user_configuration)
+
   # OPTIONAL: Stop the emulator if the application needed to be able to restart the HSBEmulator
   # instance without exiting. All registered elements will receive a call to their `stop()`
   # methods for cleanup. The emulator and all registered elements can be re-started with a
@@ -698,7 +764,7 @@ the `emulator_utils` files.
 | Problem Description                                                                                                                                                  | Root Cause                                                                                                                                                                          | Corrective Action (s)                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | "Permission Denied"/"Operation not permitted" in socket creation or bind                                                                                             | UDP/port combination is protected by [capabilities](https://man7.org/linux/man-pages/man7/capabilities.7.html) privilege                                                            | - Run under `sudo` <br /> - Check firewall status and if necessary ensure the ports are open for UDP. <br /> Example (Ubuntu 24.04 UDP to/from IGX on port 192.168.0.101): <br /> `sudo ufw status # check for UDP access, specifically on port 8192`<br />`sudo ufw allow from 192.168.0.101 to any port 8192`<br /> - use `sudo setcap cap_net_raw+ep /path/to/executable` to remove raw socket restrictions. WARNING: allowing this on the Python interpreter has severe security implications |
-| white streaks/lost packets in frame visible on receiver end                                                                                                          | on the receiver host device, make sure your have sufficient network receiver buffer size. Common with LinuxReceiverOp and LinuxCoeReceiverOp, esp on AGX devices.                   | `sudo sysctl -w net.core.rmem_max=16777216 && sudo sysctl -w net.core.rmem_default=16777216`                                                                                                                                                                                                                                                                                                                                                                                                      |
+| white streaks/lost packets in frame visible on receiver end                                                                                                          | on the receiver host device, make sure you have sufficient network receiver buffer size. Common with LinuxReceiverOp and LinuxCoeReceiverOp, esp on AGX devices.                   | `sudo sysctl -w net.core.rmem_max=31326208 && sudo sysctl -w net.core.rmem_default=16777216`                                                                                                                                                                                                                                                                                                                                                                                                      |
 | running with Python code: <br />AttributeError: 'numpy.ndarray' object has no attribute '\_\_dlpack\_\_' <br />or similar with data types other than 'numpy.ndarray' | data type (in this case numpy array) does not support [Python array API](https://data-apis.org/array-api/latest/design_topics/data_interchange.html) DLPack data interchange format | - change to a data type that supports DLPack <br /> - upgrade environment to version of package that does support DLPack (numpy requires 1.23+)                                                                                                                                                                                                                                                                                                                                                   |
 | frequent I2C failures with emulator sending to Thor host device                                                                                                      | failed packet receipt on Thor mGbE interface with no retries in JP 7.0 with SIPL rel 38.2.1                                                                                         | upgrade to JP 7.1 EA rel 38.4                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 

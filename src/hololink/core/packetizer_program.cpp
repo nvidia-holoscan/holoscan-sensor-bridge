@@ -36,10 +36,21 @@ PacketizerProgram::~PacketizerProgram()
 {
 }
 
+bool PacketizerProgram::packetizes() const
+{
+    return true;
+}
+
 uint32_t PacketizerProgram::get_output_size(uint32_t input_size)
 {
     // Default is that packetizer program does not resize the data (i.e. just swizzles).
     return input_size;
+}
+
+uint32_t PacketizerProgram::padded_output_size(uint32_t input_size)
+{
+    const uint32_t output_size = get_output_size(input_size);
+    return (output_size + LINE_PAD_BYTES - 1) / LINE_PAD_BYTES * LINE_PAD_BYTES;
 }
 
 void PacketizerProgram::disable(Hololink& hololink, uint32_t sif_address)
@@ -50,6 +61,11 @@ void PacketizerProgram::disable(Hololink& hololink, uint32_t sif_address)
 /*******************************************************************************
  NullPacketizerProgram
 *******************************************************************************/
+
+bool NullPacketizerProgram::packetizes() const
+{
+    return false;
+}
 
 void NullPacketizerProgram::enable(Hololink& hololink, uint32_t sif_address)
 {
@@ -78,14 +94,19 @@ std::shared_ptr<PacketizerProgram> csi::get_packetizer_program(csi::PixelFormat 
 
 uint32_t Csi10ToPacked10::get_output_size(uint32_t input_size)
 {
-    // Input is tightly-packed 10-bit CSI data, output is 3 pixels per 4 bytes
-    // (including 2 bits of padding).
-    uint32_t num_pixels = (input_size * 8) / 10;
-    return ((num_pixels + 2) / 3) * 4;
+    // One loop of the 0x11f1fff7 schedule (LD_ARR 0xFFF7: 15 of its 16 rows load a beat)
+    // takes 120 input bytes and emits 128, and a line completes its last loop. This is
+    // not 3 pixels per 4 bytes: 1280 RAW_10 pixels (1600 CSI bytes) take 14 loops, 1792
+    // bytes, not 1708.
+    constexpr uint32_t INPUT_BYTES_PER_LOOP = 15 * 8;
+    constexpr uint32_t OUTPUT_BYTES_PER_LOOP = 16 * 8;
+    return (input_size + INPUT_BYTES_PER_LOOP - 1) / INPUT_BYTES_PER_LOOP * OUTPUT_BYTES_PER_LOOP;
 }
 
 void Csi10ToPacked10::enable(Hololink& hololink, uint32_t sif_address)
 {
+    // Enable, latency 1, MAX_ADDR 0xF, pad to 64 bytes, LD_ARR 0xFFF7 -- the schedule
+    // get_output_size() assumes.
     hololink.write_uint32(sif_address + PACKETIZER_MODE, 0x11f1fff7);
     hololink.write_uint32(sif_address + PACKETIZER_RAM, 0x00000000); // RAM: 0 ELEMENT:0
     hololink.write_uint32(sif_address + PACKETIZER_DATA, 0x2AAAAAAA); // DATA
@@ -523,8 +544,18 @@ void Csi10ToPacked10::enable(Hololink& hololink, uint32_t sif_address)
  Csi12ToPacked12
 *******************************************************************************/
 
+uint32_t Csi12ToPacked12::get_output_size(uint32_t input_size)
+{
+    // One loop of the 0x11210007 schedule (LD_ARR 0x0007: all 3 rows load a beat) takes 24
+    // input bytes and emits 24, and a line completes its last loop.
+    constexpr uint32_t BYTES_PER_LOOP = 3 * 8;
+    return (input_size + BYTES_PER_LOOP - 1) / BYTES_PER_LOOP * BYTES_PER_LOOP;
+}
+
 void Csi12ToPacked12::enable(Hololink& hololink, uint32_t sif_address)
 {
+    // Enable, latency 1, MAX_ADDR 2, pad to 64 bytes, LD_ARR 0x0007 -- the schedule
+    // get_output_size() assumes.
     hololink.write_uint32(sif_address + PACKETIZER_MODE, 0x11210007);
     hololink.write_uint32(sif_address + PACKETIZER_RAM, 0x00000000); // RAM: 0 ELEMENT:0
     hololink.write_uint32(sif_address + PACKETIZER_DATA, 0xAAAAAAAA); // DATA

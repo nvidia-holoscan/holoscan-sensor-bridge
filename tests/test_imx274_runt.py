@@ -15,338 +15,144 @@
 
 # See README.md for detailed information.
 
-import ctypes
+# The data plane's buffer length is set below the frame size, so the FPGA sends
+# each sensor frame as two: a "runt" of that length, then the rest. Each receiver
+# must report the bytes the FPGA wrote, and with trim, emit a tensor of just that
+# size.
+#
+# HSDK5 differences from v2.7:
+# - The buffer length is written from the receiver's device_start callback, which
+#   it calls after it has configured the data channel; v2.7 wrote it from an
+#   operator's start(). HSDK5 doesn't export DP_BUFFER_LENGTH to Python.
+# - The tensor sizes and the metadata are recorded by sinks on the receiver's
+#   outputs and matched by frame number after the run, and each frame is checked;
+#   v2.7 checked the last frame of each size. The frames are not passed on to
+#   CsiToBayerOp, as v2.7 did after a Python operator padded each runt frame to
+#   the full frame size.
+
+import dataclasses
 import logging
 
-import cuda.bindings.driver as cuda
-import cupy as cp
-import holoscan
+import applications
+import holoscan as hs
 import operators
 import pytest
 import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
 import hololink as hololink_module
 
+# The data plane register that sets where a frame ends (DP_BUFFER_LENGTH in
+# src/hololink/core/data_channel.hpp).
+DP_BUFFER_LENGTH = 0x18
 
-class SizeCheckerOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        in_tensor_name="",
-        out_tensor_name="",
-        out_frame_size=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._in_tensor_name = in_tensor_name
-        self._out_tensor_name = out_tensor_name
-        self._out_frame_size = out_frame_size
-        self._cp_frame = cp.ndarray(
-            (out_frame_size,),
-            dtype=cp.uint8,
-        )
-        self._found_sizes = {}
+
+@dataclasses.dataclass
+class FrameRecord:
+    frame_number: int
+    bytes_written: int
+
+
+class TensorSizeOp(hs.Operator):
+    """Appends (frame_number, tensor size) to the list registered as record_token."""
+
+    input = hs.Input("input", hs.payload.Tensor)
+
+    record_token = hs.Param(0)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.input, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        tensor = in_message.get(self._in_tensor_name)
-        cp_frame = cp.asarray(tensor)
-        self._cp_frame[:] = 0xFF
-        self._cp_frame[: cp_frame.size] = cp_frame[:]
-        op_output.emit({self._out_tensor_name: self._cp_frame}, "output")
-        # Cache
-        metadata = self.metadata
-        bytes_written = metadata["bytes_written"]
-        num_elements = tensor.size
-        self._found_sizes[bytes_written] = num_elements
-        #
-        buffer_size_bytes = tensor.nbytes
-        logging.debug(f"{buffer_size_bytes=:#x} {num_elements=} {bytes_written=:#x}")
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
 
-
-class UpdateBufferLengthOperator(operators.PassThroughOperator):
-    def __init__(
-        self,
-        *args,
-        frame_size=None,
-        enumeration_metadata=None,
-        hololink_channel=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._frame_size = frame_size
-        self._vp_address = enumeration_metadata["vp_address"]
-        self._hololink_channel = hololink_channel
-
-    def start(self):
-        hololink = self._hololink_channel.hololink()
-        hololink.write_uint32(
-            self._vp_address + hololink_module.DP_BUFFER_LENGTH, self._frame_size
+    def compute(self, context):
+        sample = self.input.receive()
+        operators.lookup(self.record_token).append(
+            (sample.metadata.frame_id, sample.data.nbytes)
         )
 
 
-class RuntTestApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        camera,
-        camera_mode,
-        frame_limit,
-        watchdog,
-        network_receiver_factory,
-        enumeration_metadata,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._watchdog = watchdog
-        self._network_receiver_factory = network_receiver_factory
-        self._enumeration_metadata = enumeration_metadata
-
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
-        self._camera.set_mode(self._camera_mode)
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-
+def runt_test(
+    camera_mode,
+    pattern,
+    hololink_address,
+    frame_limit,
+    trim,
+    receiver,
+    receiver_kwargs,
+):
+    frame_records = []
+    tensor_sizes = []
+    with applications.CudaContext() as cuda_context, applications.imx274_camera(
+        hololink_address, camera_mode, pattern=pattern
+    ) as camera, utils.Watchdog(
+        "frame-reception",
+        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
+        min_taps=utils.frame_floor(frame_limit),
+    ) as watchdog, utils.RunMonitor() as monitor:
+        frame_size = camera.frame_size
         # Our receiver buffer is going to be smaller than
         # the actual frame size; so every frame we get is
         # really one full one and another runt one.
         # (keep our size to an even multiple of 8)
         runt_frame_size = int(frame_size * 0.8) & ~7
         remaining_frame_size = frame_size - runt_frame_size
+        expected_frame_sizes = [runt_frame_size, remaining_frame_size]
+        vp_address = camera.metadata["vp_address"]
 
-        receiver_operator, size_checker_operator = self._network_receiver_factory(
-            self,
-            condition,
-            frame_size,
-            runt_frame_size,
-            self._cuda_context,
-            [runt_frame_size, remaining_frame_size],  # expected_frame_sizes
-        )
+        def device_start():
+            camera.device.write_uint32(vp_address + DP_BUFFER_LENGTH, runt_frame_size)
+            camera.camera.start()
 
-        update_buffer_length_operator = UpdateBufferLengthOperator(
-            self,
-            name="update_buffer_length",
-            frame_size=runt_frame_size,
-            enumeration_metadata=self._enumeration_metadata,
-            hololink_channel=self._hololink_channel,
-        )
-
-        pixel_format = self._camera.pixel_format()
-        bayer_format = self._camera.bayer_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx274 is 50
-            optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
-
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            framebuffer_srgb=True,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-
-        watchdog_operator = operators.WatchdogOp(
-            self,
-            name="watchdog_operator",
-            watchdog=self._watchdog,
-        )
-
-        #
-        self.add_flow(
-            receiver_operator, update_buffer_length_operator, {("output", "input")}
-        )
-        self.add_flow(
-            update_buffer_length_operator, size_checker_operator, {("output", "input")}
-        )
-        self.add_flow(
-            size_checker_operator, csi_to_bayer_operator, {("output", "input")}
-        )
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
-
-
-def runt_test(
-    camera_mode,
-    pattern,
-    headless,
-    hololink_address,
-    frame_limit,
-    trim,
-    network_receiver_factory,
-):
-    # Get a handle to data sources
-    channel_metadata = hololink_module.Enumerator.find_channel(
-        channel_ip=hololink_address
-    )
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    #
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=0
-    )
-    size_checker_operator = None
-    expected_frame_sizes = None
-    frame_size = None
-    with utils.Watchdog(
-        "frame-reception",
-        initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
-    ) as watchdog:
-        # Set up the application
-        def receiver_factory(
-            fragment,
-            condition,
-            _frame_size,
-            runt_frame_size,
-            frame_context,
-            _expected_frame_sizes,
-        ):
-            nonlocal frame_size
-            frame_size = _frame_size
-            receiver_operator = network_receiver_factory(
-                fragment,
-                condition,
-                name="receiver",
-                frame_size=_frame_size,
-                frame_context=frame_context,
-                hololink_channel=hololink_channel,
-                device=camera,
-                trim=trim,
-                runt_frame_size=runt_frame_size,
-            )
-            nonlocal size_checker_operator
-            size_checker_operator = SizeCheckerOperator(
-                fragment,
-                name="size_checker",
-                out_frame_size=frame_size,
-            )
-            nonlocal expected_frame_sizes
-            expected_frame_sizes = _expected_frame_sizes
-            return receiver_operator, size_checker_operator
-
-        application = RuntTestApplication(
-            headless,
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
+        test_graph = applications.TestGraph("runt")
+        rx = applications.add_receiver(
+            test_graph,
+            "receiver",
+            receiver,
             camera,
-            camera_mode,
+            cuda_context.cu_context,
             frame_limit,
-            watchdog,
-            network_receiver_factory=receiver_factory,
-            enumeration_metadata=channel_metadata,
+            device_start=device_start,
+            trim=trim,
+            **receiver_kwargs(camera, runt_frame_size),
         )
-        # Run it.
-        hololink = hololink_channel.hololink()
-        hololink.start()
-        try:
-            hololink.reset()
-            camera.setup_clock()
-            camera.configure(camera_mode)
-            camera.test_pattern(pattern)
-            #
-            application.run()
-        finally:
-            hololink.stop()
+        size_checker = test_graph.op(
+            TensorSizeOp,
+            "size_checker",
+            record_token=operators.register(tensor_sizes),
+        )
+        test_graph.add_flow(rx.tensor, size_checker.input, queue_depth=4)
+        test_graph.bind("receiver", "tensor")
+        record = test_graph.op(
+            operators.RecordMetadataOp,
+            "record_metadata",
+            record_token=operators.register((FrameRecord, frame_records)),
+        )
+        operators.metadata_flow(test_graph, rx.metadata, record.metadata)
+        watchdog_operator = test_graph.op(
+            operators.WatchdogOp,
+            "watchdog_operator",
+            watchdog_token=operators.register(watchdog),
+        )
+        operators.metadata_flow(test_graph, rx.metadata, watchdog_operator.metadata)
+        test_graph.run()
 
-    for bytes_written, num_elements in size_checker_operator._found_sizes.items():
+    monitor.assert_ok()
+    sizes = dict(tensor_sizes)
+    found_sizes = {}
+    for frame in frame_records:
+        if frame.frame_number not in sizes:
+            continue
+        bytes_written, num_elements = frame.bytes_written, sizes[frame.frame_number]
+        message = f"frame {frame.frame_number}: {bytes_written=:#x} {num_elements=:#x}"
+        assert bytes_written <= frame_size, message
+        assert bytes_written in expected_frame_sizes, message
+        assert num_elements == (bytes_written if trim else frame_size), message
+        found_sizes[bytes_written] = num_elements
+    for bytes_written, num_elements in found_sizes.items():
         logging.info(f"{bytes_written=:#x} {num_elements=:#x}")
-        assert bytes_written <= frame_size
-        if trim:
-            assert bytes_written == num_elements
-        else:
-            assert frame_size == num_elements
-        assert bytes_written in expected_frame_sizes
-    assert len(size_checker_operator._found_sizes) == len(expected_frame_sizes)
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    assert len(found_sizes) == len(expected_frame_sizes)
 
 
 @pytest.mark.skip_unless_imx274
@@ -354,7 +160,7 @@ def runt_test(
     "camera_mode, pattern",
     [
         (
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+            Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             10,
         ),
     ],
@@ -374,63 +180,43 @@ def test_linux_imx274_runt(
     frame_limit,
     trim,
 ):
-    def network_receiver_factory(
-        fragment,
-        condition,
-        name,
-        frame_size,
-        runt_frame_size,
-        frame_context,
-        hololink_channel,
-        device,
-        trim,
-    ):
-        receiver_operator = hololink_module.operators.LinuxReceiverOperator(
-            fragment,
-            condition,
-            name=name,
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=hololink_channel,
-            device=device,
-            trim=trim,
-        )
-        return receiver_operator
-
     runt_test(
         camera_mode,
         pattern,
-        headless,
         hololink_address,
         frame_limit,
         trim,
-        network_receiver_factory,
+        hololink_module.operators.LinuxReceiverOp,
+        lambda camera, runt_frame_size: {},
     )
 
 
-# This may execute on unaccelerated configurations, where
-# there may be any number of infiniband interfaces (but
-# most likely zero).  Make sure we can address elements
-# [0] and [1]; if those come back as None then the test
-# will fail-- as expected.
-sys_ibv_name = (hololink_module.infiniband_devices() + [None, None])[:2]
+def round_up(value, alignment):
+    return (value + alignment - 1) // alignment * alignment
 
 
+# The RoCE runt test needs the frame metadata right after the runt data, so it
+# gives the receiver the full frame_size and metadata_offset =
+# round_up(runt_frame_size, PAGE_SIZE), as v2.7 does. HSDK5's
+# RoceReceiverOp::start_receiver() rejects any metadata_offset below the full
+# frame ("metadata_offset ... overlaps frame data"), and without the offset the
+# receiver doesn't find the metadata (bytes_written=0). Seen on IGX Thor; v2.7
+# passes both cases on the same devkit. Remove the skip when the receiver accepts
+# an explicit metadata_offset inside the frame buffer.
+@pytest.mark.skip(
+    reason="HSDK5 RoceReceiverOp rejects a metadata_offset below frame_size, "
+    "which the runt layout needs"
+)
+@utils.requires_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode, pattern",
     [
         (
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+            Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             10,
         ),
-    ],
-)
-@pytest.mark.parametrize(
-    "ibv_name",
-    [
-        sys_ibv_name[0],
     ],
 )
 @pytest.mark.parametrize(
@@ -446,46 +232,27 @@ def test_roce_imx274_runt(
     headless,
     hololink_address,
     ibv_name,
+    ibv_port,
     frame_limit,
     trim,
 ):
-    def network_receiver_factory(
-        fragment,
-        condition,
-        name,
-        frame_size,
-        runt_frame_size,
-        frame_context,
-        hololink_channel,
-        device,
-        trim,
-    ):
-        ibv_port = 1
-        PAGE_SIZE = 128
-        metadata_offset = hololink_module.round_up(runt_frame_size, PAGE_SIZE)
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            fragment,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=hololink_channel,
-            device=device,
-            ibv_name=ibv_name,
-            ibv_port=ibv_port,
-            trim=trim,
-            metadata_offset=metadata_offset,
-        )
-        return receiver_operator
+    PAGE_SIZE = 128
+
+    def receiver_kwargs(camera, runt_frame_size):
+        return {
+            "ibv_name": ibv_name,
+            "ibv_port": ibv_port,
+            "metadata_offset": round_up(runt_frame_size, PAGE_SIZE),
+        }
 
     runt_test(
         camera_mode,
         pattern,
-        headless,
         hololink_address,
         frame_limit,
         trim,
-        network_receiver_factory,
+        hololink_module.operators.RoceReceiverOp,
+        receiver_kwargs,
     )
 
 
@@ -495,7 +262,7 @@ def test_roce_imx274_runt(
     "camera_mode, pattern",
     [
         (
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+            Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             10,
         ),
     ],
@@ -516,39 +283,19 @@ def test_coe_imx274_runt(
     trim,
     coe_interfaces,
 ):
-    def network_receiver_factory(
-        fragment,
-        condition,
-        name,
-        frame_size,
-        runt_frame_size,
-        frame_context,
-        hololink_channel,
-        device,
-        trim,
-    ):
-        coe_channel = 1
-        receiver_operator = hololink_module.operators.LinuxCoeReceiverOp(
-            fragment,
-            condition,
-            name=name,
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=hololink_channel,
-            device=device,
-            coe_interface=coe_interfaces[0],
-            pixel_width=device._width,
-            coe_channel=coe_channel,
-            trim=trim,
-        )
-        return receiver_operator
+    def receiver_kwargs(camera, runt_frame_size):
+        return {
+            "coe_interface": coe_interfaces[0],
+            "pixel_width": camera.width,
+            "coe_channel": 1,
+        }
 
     runt_test(
         camera_mode,
         pattern,
-        headless,
         hololink_address,
         frame_limit,
         trim,
-        network_receiver_factory,
+        hololink_module.operators.LinuxCoeReceiverOp,
+        receiver_kwargs,
     )

@@ -264,8 +264,13 @@ std::pair<EnumerationMetadata, std::vector<uint8_t>> receive_bootp(int fd)
     msg.msg_control = controlbuf.data();
     msg.msg_controllen = controlbuf.size();
 
-    const ssize_t received_bytes = recvmsg(fd, &msg, 0);
+    // Never block the reactor thread: a readiness report can be stale, and then there is nothing
+    // to read. Metadata without an fpga_uuid is skipped by the caller.
+    const ssize_t received_bytes = recvmsg(fd, &msg, MSG_DONTWAIT);
     if (received_bytes < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK) {
+            return { EnumerationMetadata {}, {} };
+        }
         throw std::runtime_error(
             fmt::format("recvmsg failed with errno={}: \"{}\"", errno, strerror(errno)));
     }

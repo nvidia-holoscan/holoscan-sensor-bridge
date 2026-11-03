@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,390 +13,775 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+# Single IMX477 sensor via RoceReceiverOp, running TAO PeopleNet (person + face detection) and
+# overlaying the boxes on the live video in Holoviz. Python port of this repo's own previous
+# (HSDK4-era) Python version of this app, via the HSDK5 Python bindings -- there is no
+# examples/tao_peoplenet_imx477.cpp sibling. This is the RoCE twin of
+# examples/linux_tao_peoplenet_imx477.py (see that file's own header comment for the full
+# rationale behind the inference side-chain's design -- InferenceOp/ResizeOp/ConvertToOp,
+# the deferred holoscan_inference import, the geometry-layer color-loss gap, and
+# ImageShiftToUint8Op); only the receiver and bring-up differ here, matching every other
+# RoCE/Linux IMX477 pair ported this session.
+#
+# Bring-up here is the simplest of any IMX477 app ported this session: the old app calls
+# Enumerator.find_channel(channel_ip=args.hololink) directly with no hl.use_sensor() demux and
+# no camera_id-driven I2C-bus-only selection quirk -- preserved exactly, not force-fit to the
+# use_sensor pattern other IMX477 apps use.
+#
+#   RoceReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp -> ImageShiftToUint8Op
+#     -> (a) HolovizOp "video" image layer
+#     -> (b) ResizeOp -> ConvertToOp -> FormatInferenceInputOp -> InferenceOp -> PostprocessorOp
+#          -> HolovizOp "person"/"faces" geometry layers
+#
+# InferenceOp (holoscan_inference package) and the preprocessing operators ResizeOp/ConvertToOp
+# (holoscan_vision package) replace the old built-in holoscan.operators.InferenceOp/
+# FormatConverterOp. FormatConverterOp's role here was simple (resize + float32 cast + [0,1]
+# scale, confirmed from the old app's own YAML -- it never used out_channel_order, the usual
+# NHWC->NCHW FormatConverterOp kwarg), so ResizeOp+ConvertToOp cover it exactly; the real
+# NHWC->NCHW transpose was always done by this app's own custom FormatInferenceInputOp, ported
+# here unchanged rather than attempting it via HSDK5's new ReformatOp (which handles the layout
+# change but not FormatInferenceInputOp's batch-dimension insertion -- reusing the old,
+# already-proven operator for both in one step avoids splitting that logic across two places).
+# InferenceOp's own input_map/output_map value lists become this operator's real port names
+# (confirmed from holoscan_inference's own authoring tests) -- "preprocessed" in, "scores" and
+# "boxes" out, matching this app's own YAML's pre_processor_map/inference_map values exactly
+# (renamed to input_map/output_map, the new API's names for the same concept).
+#
+# `import holoscan_inference` is deferred to inside run(), unlike every other import in this
+# app (or any other app ported this session): it requires TensorRT (libnvinfer), which isn't
+# installed in every environment this app's own --help/argument-parsing needs to keep working
+# in (confirmed: holoscan_inference is genuinely absent from this development environment, not
+# just unconfigured). Importing it at module level would make even `--help` crash wherever
+# TensorRT isn't present; deferring it means only actually running the graph requires it.
+#
+# Real, flagged behavior reduction: HolovizOp's new "geometry" layer (GeometryLayerDesc) has no
+# per-primitive or per-layer color field at all (confirmed directly from its C++ struct and
+# renderer source) -- the old app's green "person" boxes and red "faces" boxes both render in
+# whatever fixed color this SDK version's geometry renderer uses. Not fixable from this
+# operator's public API; flagged here rather than silently dropped.
+#
+# ImageShiftToUint8Op is ported from this repo's own HSDK4-era
+# python/hololink/operators/image_shift_to_uint8_operator.py (a 16-bit -> 8-bit right-shift),
+# used by the old app to feed Holoviz's video layer and the inference preprocessor from the same
+# 8-bit frame -- both still do, here too.
+#
+# The old app's camera-select flag is spelled --camera here (not --cam like every other IMX477
+# app ported this session) -- a real, pre-existing inconsistency in this app's own original
+# source, preserved rather than silently renamed.
+#
+# Usage:
+#   tao_peoplenet_imx477.py [OPTIONS]
+#
+# Options:
+#   --camera {0,1}    Which camera to stream: 0 for j14, 1 for j17 (default: 0)
+#   --resolution      4k or 1080p (default: 4k)
+#   --exposure N      Configure exposure (default: 0x05)
+#   --ibv-name NAME   IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N      Port number of IBV device (default: 1)
+#   --engine PATH     TAO PeopleNet ONNX model path (default: examples/resnet34_peoplenet_int8.onnx)
+#   --frame-limit N   Number of frames to capture (default: unlimited)
+#   --headless        Run without opening a window (still renders, presents nowhere)
+#   --fullscreen      Run in fullscreen mode
+#   --log-level N     Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
 import logging
 import os
+import signal
+import sys
+from datetime import timedelta
 
-import cuda.bindings.driver as cuda
 import cupy as cp
-import holoscan
+import hololink.sensors.imx477  # noqa: F401 -- makes hl.sensors.imx477.X resolve below
+import holoscan as hs
+import holoscan_vision
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
 import numpy as np
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
+
+# (hololink/__init__.py doesn't import the sensors subpackage itself, and Python doesn't expose
+# an unimported submodule as a parent-package attribute).
+
+# PeopleNet has three output classes: 0 person, 1 bag, 2 face. Only person/face are shown,
+# matching the old app's own selection (bag is decoded but discarded).
+_PERSON_FACE_BOX_CHANNELS = [0, 1, 2, 3, 8, 9, 10, 11]
+_PERSON_FACE_SCORE_CHANNELS = [0, 2]
+
+# Bounded-window pairing for InferenceOp's two sibling output ports (scores, boxes), which it
+# always emits together from the same compute() call -- same OnAligned+Exact{} idiom this
+# session's own tensor/metadata pairings already use, just applied to two inference outputs
+# instead of a tensor+metadata pair.
+_INFERENCE_OUTPUT_PAIRING_WINDOW = timedelta(microseconds=500)
+
+# Conservative overlay capacity: PeopleNet's 34x60 grid yields far more candidate boxes per
+# class than real people/faces visible in one frame after NMS; 64 is generous headroom, not a
+# value derived from the model itself.
+_MAX_OVERLAY_BOXES = 64
 
 
-class FormatInferenceInputOp(holoscan.core.Operator):
-    """Operator to format input image for inference"""
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+
+def import_tensor(tensor, stream):
+    """Borrow a read-only GPU view; callers finish reads before compute returns."""
+    return cp.from_dlpack(
+        tensor.__dlpack__(stream=stream.ptr, max_version=(1, 0), copy=False)
+    )
+
+
+def emit_host_tensor(port, values, options):
+    values = np.ascontiguousarray(values, dtype=np.float32).ravel()
+    port.emit(hs.Tensor.as_tensor(values), options=options)
+
+
+def wait_for_completion(session):
+    """Wait for receiver completion or runtime failure, and handle Ctrl+C."""
+    try:
+        session.wait()
+    except KeyboardInterrupt:
+        session.request_stop()
+        session.wait()
+    return any(
+        diag.severity == hs.diagnostics.DiagnosticSeverity.ERROR
+        for diag in session.diagnostics
+    )
+
+
+class ImageShiftToUint8Op(hs.Operator):
+    """Right-shifts a 16-bit image down to 8 bits per channel (shift=8 keeps the high byte).
+    Uses an SDK-owned output buffer so native CUDA consumers can track its lifetime."""
+
+    input = hs.Input("input", hs.schema.Image)
+    output = hs.Output("output", hs.schema.Image)
+
+    shift = hs.Param(0)
 
     def setup(self, spec):
-        spec.input("in")
-        spec.output("out")
+        spec.input(self.input, queue_depth=4)
+        spec.output(self.output).produces_tensor(
+            hs.tensor.OutputSpec(
+                storage="runtime_pool",
+                memory_kind=hs.tensor.MemoryKind.CUDA_DEVICE,
+                dtype=hs.tensor.DLDataType(1, 8, 1),
+                rank=3,
+            ),
+            hs.tensor.byte_span(3840 * 2160 * 3),
+            field="data",
+        )
 
-    def compute(self, op_input, op_output, context):
-        # Get input message
-        in_message = op_input.receive("in")
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
 
-        # Transpose
-        tensor = cp.asarray(in_message.get("preprocessed")).get()
-        # OBS: Numpy conversion and moveaxis is needed to avoid strange
-        # strides issue when doing inference
+    def compute(self, context):
+        # TensorRT may capture concurrently; avoid implicit legacy-stream dependencies.
+        with cp.cuda.Stream(non_blocking=True) as stream:
+            try:
+                self._compute(context, stream)
+            finally:
+                stream.synchronize()
+
+    def _compute(self, context, stream):
+        sample = self.input.receive()
+        image = sample.data
+        # Import versioned DLPack without copying, using an explicit consumer stream.
+        # Complete GPU reads before returning from this callback.
+        capsule = image.data.__dlpack__(
+            stream=stream.ptr, max_version=(1, 0), copy=False
+        )
+        cp_frame = cp.from_dlpack(capsule)
+        descriptor = hs.schema.Image(
+            height=image.height,
+            width=image.width,
+            encoding=hs.schema.image.ImageEncoding.RGB8,
+        )
+        request = hs.tensor.LoanRequest(
+            shape=cp_frame.shape, dtype=hs.tensor.DLDataType(1, 8, 1)
+        )
+        # Keep the camera's capture time, which BayerDemosaicOp passes on: HolovizOp draws
+        # the overlays captured no later than this frame with it.
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(sample.metadata)
+        options = provenance.emit_options(hs.sensor_io.CaptureTimePolicy.EARLIEST)
+        with self.output.allocate_tensors(
+            descriptor, {"data": request}, options=options
+        ) as loan:
+            tensor = loan.tensors["data"]
+            memory = cp.cuda.UnownedMemory(tensor.data, cp_frame.size, tensor)
+            destination = cp.ndarray(
+                cp_frame.shape,
+                dtype=cp.uint8,
+                memptr=cp.cuda.MemoryPointer(memory, 0),
+            )
+            # Finish the CuPy write before the loan publishes to native consumers.
+            cp.right_shift(cp_frame, self.shift, out=destination, casting="unsafe")
+            stream.synchronize()
+
+
+class FormatInferenceInputOp(hs.Operator):
+    """Transposes HWC->CHW and adds a batch dimension, matching InferenceOp's expected input
+    layout. Keeps the original CPU roundtrip and publishes contiguous data
+    through an SDK-owned CUDA output buffer."""
+
+    input = hs.Input("input", hs.schema.Image)
+    output = hs.Output("output", hs.payload.Tensor)
+
+    width = hs.Param(960)
+    height = hs.Param(544)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+        spec.output(self.output).produces_tensor(
+            hs.tensor.OutputSpec(
+                storage="runtime_pool",
+                memory_kind=hs.tensor.MemoryKind.CUDA_DEVICE,
+                dtype=hs.tensor.DLDataType(2, 32, 1),
+                rank=4,
+            ),
+            hs.tensor.byte_span(1 * 3 * self.height * self.width * 4),
+        )
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        # TensorRT may capture concurrently; avoid implicit legacy-stream dependencies.
+        with cp.cuda.Stream(non_blocking=True) as stream:
+            try:
+                self._compute(context, stream)
+            finally:
+                stream.synchronize()
+
+    def _compute(self, context, stream):
+        sample = self.input.receive()
+        image = sample.data
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(sample.metadata)
+        options = provenance.emit_options(hs.sensor_io.CaptureTimePolicy.EARLIEST)
+        capsule = image.data.__dlpack__(
+            stream=stream.ptr, max_version=(1, 0), copy=False
+        )
+        frame = cp.from_dlpack(capsule)
+        tensor = frame.get()
         tensor = np.moveaxis(tensor, 2, 0)[None]
-        tensor = cp.asarray(tensor)
+        tensor = np.ascontiguousarray(tensor, dtype=np.float32)
+        with self.output.allocate_tensor(
+            shape=tensor.shape, dtype="float32", options=options
+        ) as loan:
+            memory = cp.cuda.UnownedMemory(loan.tensor.data, tensor.nbytes, loan.tensor)
+            destination = cp.ndarray(
+                tensor.shape, dtype=cp.float32, memptr=cp.cuda.MemoryPointer(memory, 0)
+            )
+            destination.set(tensor)
+            stream.synchronize()
 
-        # Output tensor
-        op_output.emit({"preprocessed": tensor}, "out")
 
+class PostprocessorOp(hs.Operator):
+    """Reparameterizes PeopleNet's grid-encoded boxes, runs NMS, emits flat float32
+    [x0,y0,x1,y1, ...] box arrays for HolovizOp's rectangle_list geometry layers (4 floats per
+    box, confirmed against holoscan_visualization's own kGeometryRectFloats constant). Box math
+    (reparameterize_boxes/nms) ported unchanged from this repo's own HSDK4-era
+    tao_peoplenet.py PostprocessorOp; only I/O changed to HSDK5's typed ports and the new flat
+    rank-1-tensor geometry format (the old code's final (1, N, 2) point-pair reshape, for the
+    old HolovizOp InputSpec convention, becomes a flat (4*N,) ravel here instead)."""
 
-class PostprocessorOp(holoscan.core.Operator):
-    """Operator to post-process inference output:
-    * Reparameterize bounding boxes
-    * Non-max suppression
-    * Make boxes compatible with Holoviz
+    in_scores = hs.Input("in_scores", hs.payload.Tensor)
+    in_boxes = hs.Input("in_boxes", hs.payload.Tensor)
+    person = hs.Output("person", hs.payload.Tensor)
+    faces = hs.Output("faces", hs.payload.Tensor)
 
-    """
-
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
+    iou_threshold = hs.Param(0.15)
+    score_threshold = hs.Param(0.5)
+    image_width = hs.Param(0)
+    image_height = hs.Param(0)
+    box_scale = hs.Param(0.0)
+    box_offset = hs.Param(0.0)
+    grid_height = hs.Param(0)
+    grid_width = hs.Param(0)
 
     def setup(self, spec):
-        spec.input("in")
-        spec.output("out")
-        spec.param("iou_threshold", 0.15)
-        spec.param("score_threshold", 0.5)
-        spec.param("image_width", None)
-        spec.param("image_height", None)
-        spec.param("box_scale", None)
-        spec.param("box_offset", None)
-        spec.param("grid_height", None)
-        spec.param("grid_width", None)
+        spec.input(self.in_scores, queue_depth=4)
+        spec.input(self.in_boxes, queue_depth=4)
+        spec.output(self.person)
+        spec.output(self.faces)
 
-    def compute(self, op_input, op_output, context):
-        # Get input message
-        in_message = op_input.receive("in")
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.in_scores, self.in_boxes],
+                    window=_INFERENCE_OUTPUT_PAIRING_WINDOW,
+                )
+            )
+            .input(self.in_scores, hs.Exact())
+            .input(self.in_boxes, hs.Exact())
+        )
 
-        # Convert input to cupy array
+    def compute(self, context):
+        with cp.cuda.Stream(non_blocking=True) as stream:
+            try:
+                self._compute(context, stream)
+            finally:
+                stream.synchronize()
+
+    def _compute(self, context, stream):
         # ONNX models produce a singleton batch dimension that we skip.
-        boxes = cp.asarray(in_message.get("boxes"))[0, ...]
-        scores = cp.asarray(in_message.get("scores"))[0, ...]
+        boxes_sample = self.in_boxes.receive()
+        scores_sample = self.in_scores.receive()
+        # Overlay geometry describes the aligned inference inputs, not this activation.
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(boxes_sample.metadata)
+        provenance.observe(scores_sample.metadata)
+        self._overlay_options = provenance.emit_options(
+            hs.sensor_io.CaptureTimePolicy.EARLIEST
+        )
+        boxes = import_tensor(boxes_sample.data, stream)[0, ...]
+        scores = import_tensor(scores_sample.data, stream)[0, ...]
 
-        # PeopleNet has three classes:
-        # 0. Person
-        # 1. Bag
-        # 2. Face
-        # Here we only keep the Person and Face classes
-        boxes = boxes[[0, 1, 2, 3, 8, 9, 10, 11], ...][None]
-        scores = scores[[0, 2], ...][None]
+        boxes = boxes[_PERSON_FACE_BOX_CHANNELS, ...][None]
+        scores = scores[_PERSON_FACE_SCORE_CHANNELS, ...][None]
 
-        # Loop over label classes
-        out = {"person": None, "faces": None}
-        for i, label in enumerate(out):
-            # Reparameterize boxes
-            out[label], scores_nms = self.reparameterize_boxes(
+        outputs = {}
+        for i, label in enumerate(("person", "faces")):
+            label_boxes, label_scores = self._reparameterize_boxes(
                 boxes[:, 0 + i * 4 : 4 + i * 4, ...],
                 scores[:, i, ...][None],
             )
-
-            # Non-max suppression
-            out[label], _ = self.nms(out[label], scores_nms)
-
-            # Reshape for HoloViz
-            if len(out[label]) == 0:
-                out[label] = np.zeros([1, 2, 2]).astype(np.float32)
+            label_boxes, _ = self._nms(label_boxes, label_scores)
+            label_boxes = label_boxes[:_MAX_OVERLAY_BOXES]
+            if len(label_boxes) == 0:
+                outputs[label] = np.zeros((0,), dtype=np.float32)
             else:
-                out[label][:, [0, 2]] /= self.image_width
-                out[label][:, [1, 3]] /= self.image_height
-                out[label] = cp.reshape(out[label][None], (1, -1, 2))
-                out[label] = cp.asnumpy(out[label])
+                label_boxes[:, [0, 2]] /= self.image_width
+                label_boxes[:, [1, 3]] /= self.image_height
+                outputs[label] = cp.asnumpy(label_boxes).astype(np.float32).ravel()
 
-        # Output tensor
-        op_output.emit({"person": out["person"], "faces": out["faces"]}, "out")
+        emit_host_tensor(self.person, outputs["person"], self._overlay_options)
+        emit_host_tensor(self.faces, outputs["faces"], self._overlay_options)
 
-    def nms(self, boxes, scores):
-        """Non-max suppression (NMS)
-
-        Parameters
-        ----------
-        boxes : array (4, n)
-        scores : array (n,)
-
-        Returns
-        ----------
-        boxes : array (m, 4)
-        scores : array (m,)
-
-        """
+    def _nms(self, boxes, scores):
+        """Non-max suppression (NMS). boxes: array (4, n); scores: array (n,).
+        Returns boxes: array (m, 4), scores: array (m,)."""
         if len(boxes) == 0:
             return cp.asarray([]), cp.asarray([])
 
-        # Get coordinates
         x0, y0, x1, y1 = boxes[0, :], boxes[1, :], boxes[2, :], boxes[3, :]
-
-        # Area of bounding boxes
         area = (x1 - x0 + 1) * (y1 - y0 + 1)
-
-        # Get indices of sorted scores
         indices = cp.argsort(scores)
 
-        # Output boxes and scores
         boxes_out, scores_out = [], []
-
-        # Iterate over bounding boxes
         while len(indices) > 0:
-            # Get index with highest score from remaining indices
             index = indices[-1]
-
-            # Pick bounding box with highest score
             boxes_out.append(boxes[:, index])
             scores_out.append(scores[index])
 
-            # Get coordinates
             x00 = cp.maximum(x0[index], x0[indices[:-1]])
             x11 = cp.minimum(x1[index], x1[indices[:-1]])
             y00 = cp.maximum(y0[index], y0[indices[:-1]])
             y11 = cp.minimum(y1[index], y1[indices[:-1]])
 
-            # Compute IOU
             width = cp.maximum(0, x11 - x00 + 1)
             height = cp.maximum(0, y11 - y00 + 1)
             overlap = width * height
             union = area[index] + area[indices[:-1]] - overlap
             iou = overlap / union
 
-            # Threshold and prune
             left = cp.where(iou < self.iou_threshold)
             indices = indices[left]
 
-        # To array
-        boxes = cp.asarray(boxes_out)
-        scores = cp.asarray(scores_out)
+        return cp.asarray(boxes_out), cp.asarray(scores_out)
 
-        return boxes, scores
-
-    def reparameterize_boxes(self, boxes, scores):
+    def _reparameterize_boxes(self, boxes, scores):
         """Reparameterize boxes from corner+width+height to corner+corner.
-
-        Parameters
-        ----------
-        boxes : array (1, 4, grid_height, grid_width)
-        scores : array (1, 1, grid_height, grid_width)
-
-        Returns
-        ----------
-        boxes : array (4, n)
-        scores : array (n,)
-
-        """
+        boxes: array (1, 4, grid_height, grid_width); scores: array (1, 1, grid_height, grid_width).
+        Returns boxes: array (4, n), scores: array (n,)."""
         cell_height = self.image_height / self.grid_height
         cell_width = self.image_width / self.grid_width
 
-        # Generate the grid coordinates
         mx, my = cp.meshgrid(cp.arange(self.grid_width), cp.arange(self.grid_height))
         mx = mx.astype(np.float32).reshape((1, 1, self.grid_height, self.grid_width))
         my = my.astype(np.float32).reshape((1, 1, self.grid_height, self.grid_width))
 
-        # Compute the box corners
         xmin = -(boxes[0, 0, ...] + self.box_offset) * self.box_scale + mx * cell_width
         ymin = -(boxes[0, 1, ...] + self.box_offset) * self.box_scale + my * cell_height
         xmax = (boxes[0, 2, ...] + self.box_offset) * self.box_scale + mx * cell_width
         ymax = (boxes[0, 3, ...] + self.box_offset) * self.box_scale + my * cell_height
         boxes = cp.concatenate([xmin, ymin, xmax, ymax], axis=1)
 
-        # Select the scores that are above the threshold
         scores_mask = scores > self.score_threshold
         scores = scores[scores_mask]
         scores_mask = cp.repeat(scores_mask, 4, axis=1)
         boxes = boxes[scores_mask]
 
-        # Reshape after masking
         n = int(boxes.size / 4)
         boxes = boxes.reshape(4, n)
 
         return boxes, scores
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        frame_limit,
-        engine,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._frame_limit = frame_limit
-        self._engine = engine
-        # These are HSDK controls-- because we have both the
-        # image data and postprocessor output
-        # going into the same visualizer, don't
-        # raise an error when each path present metadata
-        # with the same names.  Because we don't use that metadata,
-        # it's easiest to just ignore new items with the same
-        # names as existing items.
-        self.is_metadata_enabled = False
-        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
 
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
+    input = hs.Input("input", hs.schema.Image)
 
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="csi_to_bayer_pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
 
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def run(
+    hololink_ip,
+    cam,
+    resolution,
+    exposure,
+    ibv_name,
+    ibv_port,
+    engine,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    import holoscan_inference  # noqa: F401 -- deferred; see this file's header comment
+
+    cuda_device_ordinal = 0
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    hololink_dev = None
+    try:
+        cuda_driver.cuCtxSetCurrent(cu_context)
+
+        print(f"Enumerating HSB board at {hololink_ip}...")
+        metadata = hl.find_channel(hololink_ip)
+        channel = hl.DataChannel(metadata)
+
+        hololink_dev = channel.hololink()
+        hololink_dev.start()
+        hololink_dev.reset()
+
+        camera = hl.sensors.imx477.Imx477(channel, camera_id=cam, resolution=resolution)
+        # Configures the camera for the requested resolution, 60fps.
+        camera.configure()
+        # IMX477 analog gain settings function. Analog gain value range is 0-1023 in decimal
+        # (10 bits). Users are free to experiment with the register values.
+        camera.set_analog_gain(0x2FF)
+        camera.set_exposure_reg(exposure)
+
+        pixel_format = camera.pixel_format()
+        bayer_format = camera.bayer_format()
+        frame_width = camera._width
+        frame_height = camera._height
+        geometry = hl.resolve_generic_geometry_from_dimensions(
+            int(pixel_format), frame_width, frame_height
         )
 
-        bayer_format = self._camera.bayer_format()
-        pixel_format = self._camera.pixel_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx477 is 100
+        # Build the graph.
+        graph = hs.Graph("tao_peoplenet_imx477")
+
+        rx = graph.op(
+            hl.operators.RoceReceiverOp,
+            "rx",
+            data_channel=channel,
+            frame_context=int(cu_context),
+            device_start=camera.start,
+            device_stop=camera.stop,
+            frame_size=(
+                geometry["start_byte"]
+                + geometry["bytes_per_line"] * geometry["pixel_height"]
+                + geometry["trailing_bytes"]
+            ),
+            ibv_name=ibv_name,
+            ibv_port=ibv_port,
+            frame_limit=frame_limit or 0,
+            frame_limit_ends_run=True,
+        )
+
+        csi = graph.op(
+            hl.operators.CsiToBayerOp,
+            "csi_to_bayer",
+            cuda_device_ordinal=cuda_device_ordinal,
+            geometry=geometry,
+            bayer_format=bayer_format.name.lower(),
+        )
+        graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+        graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+
+        image_processor = graph.op(
+            hl.operators.ImageProcessorOp,
+            "image_processor",
+            pixel_format=int(pixel_format),
+            pixel_width=geometry["pixel_width"],
+            pixel_height=geometry["pixel_height"],
+            bayer_format=int(bayer_format),
             optical_black=100,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
+            cuda_device_ordinal=cuda_device_ordinal,
         )
+        graph.add_flow(csi.tensor, image_processor.in_tensor, queue_depth=4)
+        graph.add_flow(csi.metadata, image_processor.in_metadata, queue_depth=4)
 
-        image_shift = hololink_module.operators.ImageShiftToUint8Operator(
-            self, name="image_shift", shift=8
-        )
-
-        rgb_components_per_pixel = 3
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="bayer_to_rgb_pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgb_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
+        demosaic = graph.op(
+            holoscan_vision.operators.BayerDemosaicOp,
+            "bayer_demosaic",
+            bayer_grid_pos=bayer_format.name.lower(),
             generate_alpha=False,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
+        )
+        graph.add_flow(image_processor.tensor, demosaic.input, queue_depth=4)
+
+        image_shift = graph.op(ImageShiftToUint8Op, "image_shift", shift=8)
+        graph.add_flow(
+            demosaic.output,
+            image_shift.input,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            framebuffer_srgb=True,
-            **self.kwargs("holoviz"),
+        # Inference side-chain: resize -> float32 cast+scale -> HWC->CHW+batch -> InferenceOp ->
+        # postprocess.
+        resize = graph.op(
+            holoscan_vision.operators.ResizeOp,
+            "resize",
+            width=960,
+            height=544,
+            max_batch_size=1,
+        )
+        graph.add_flow(
+            image_shift.output,
+            resize.input,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        #
-        pool = holoscan.resources.UnboundedAllocator(self)
-        preprocessor_args = self.kwargs("preprocessor")
-        preprocessor = holoscan.operators.FormatConverterOp(
-            self,
-            name="preprocessor",
-            pool=pool,
-            **preprocessor_args,
+        convert = graph.op(
+            holoscan_vision.operators.ConvertToOp,
+            "convert",
+            output_type="float32",
+            alpha=1.0 / 255.0,
+            beta=0.0,
         )
-        format_input = FormatInferenceInputOp(
-            self,
-            name="transpose",
-            pool=pool,
-        )
-        inference = holoscan.operators.InferenceOp(
-            self,
-            name="inference",
-            allocator=pool,
-            model_path_map={
-                "face_detect": self._engine,
-            },
-            **self.kwargs("inference"),
-        )
-        postprocessor_args = self.kwargs("postprocessor")
-        postprocessor_args["image_width"] = preprocessor_args["resize_width"]
-        postprocessor_args["image_height"] = preprocessor_args["resize_height"]
-        postprocessor = PostprocessorOp(
-            self,
-            name="postprocessor",
-            allocator=pool,
-            **postprocessor_args,
+        graph.add_flow(
+            resize.output,
+            convert.input,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
+        format_input = graph.op(FormatInferenceInputOp, "transpose")
+        graph.add_flow(
+            convert.output,
+            format_input.input,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, image_shift, {("transmitter", "input")})
-        self.add_flow(image_shift, visualizer, {("output", "receivers")})
-        self.add_flow(image_shift, preprocessor, {("output", "")})
-        self.add_flow(preprocessor, format_input)
-        self.add_flow(format_input, inference, {("", "receivers")})
-        self.add_flow(inference, postprocessor, {("transmitter", "in")})
-        self.add_flow(postprocessor, visualizer, {("out", "receivers")})
+
+        inference = graph.op(
+            "holoscan.inference.InferenceOp",
+            "inference",
+            model_path_map={"face_detect": engine},
+            input_map={"face_detect": ["preprocessed"]},
+            output_map={"face_detect": ["scores", "boxes"]},
+            backend="trt",
+            input_on_cuda=True,
+            is_engine_path=False,
+            enable_fp16=True,
+        )
+        graph.add_flow(
+            format_input.output,
+            inference.preprocessed,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        postprocessor = graph.op(
+            PostprocessorOp,
+            "postprocessor",
+            iou_threshold=0.15,
+            score_threshold=0.5,
+            box_scale=35.0,
+            box_offset=0.5,
+            grid_height=34,
+            grid_width=60,
+            image_width=960,
+            image_height=544,
+        )
+        graph.add_flow(
+            inference.scores,
+            postprocessor.in_scores,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+        graph.add_flow(
+            inference.boxes,
+            postprocessor.in_boxes,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        if headless:
+            # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp). The
+            # CUDA sink has no framebuffer_srgb: its sRGB format encodes on write instead.
+            sink = {
+                "kind": "cuda",
+                "width": frame_width,
+                "height": frame_height,
+                "format": "rgba8_srgb",
+            }
+        else:
+            sink = {
+                "kind": "window",
+                "framebuffer_srgb": True,
+                "title": f"Holoviz - {hololink_ip}",
+                "width": frame_width,
+                "height": frame_height,
+                "fullscreen": fullscreen,
+                "close_on_escape": True,
+            }
+        viz = graph.op(
+            "holoscan.visualization.HolovizOp",
+            "holoviz",
+            layers=[
+                {
+                    "port_name": "video",
+                    "kind": "image",
+                    "format": "rgb8_unorm",
+                    "max_width": frame_width,
+                    "max_height": frame_height,
+                },
+                {
+                    "port_name": "person",
+                    "kind": "geometry",
+                    "topologies": ["rectangle_list"],
+                    "max_primitives": _MAX_OVERLAY_BOXES,
+                    "default_line_width": 4,
+                },
+                {
+                    "port_name": "faces",
+                    "kind": "geometry",
+                    "topologies": ["rectangle_list"],
+                    "max_primitives": _MAX_OVERLAY_BOXES,
+                    "default_line_width": 4,
+                },
+            ],
+            sink=sink,
+            trigger={"kind": "layer", "layer": 0},
+        )
+        graph.add_flow(
+            image_shift.output,
+            viz.video,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        graph.add_flow(
+            postprocessor.person,
+            viz.person,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        graph.add_flow(
+            postprocessor.faces,
+            viz.faces,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        if headless:
+            discard = graph.op(DiscardImageOp, "discard")
+            graph.add_flow(
+                viz.output,
+                discard.input,
+                queue_policy=hs.QueuePolicy.DROP_OLDEST,
+                queue_depth=1,
+            )
+
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+
+        options = hs.CompileOptions()
+        for operator_path in ("rx", "csi_to_bayer", "image_processor"):
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="tensor",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+        for operator_path in (
+            "bayer_demosaic",
+            "image_shift",
+            "resize",
+            "convert",
+            "transpose",
+        ):
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="output",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+
+        options.deployment.bind_tensor_output_device(
+            operator_path="inference",
+            output_port="scores",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+        options.deployment.bind_tensor_output_device(
+            operator_path="inference",
+            output_port="boxes",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+
+        if headless:
+            options.deployment.bind_tensor_output_device(
+                operator_path="holoviz",
+                output_port="output",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+
+        plan = hs.compile(graph, options)
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+
+        print(
+            f"Capturing {resolution} {frame_width}x{frame_height} -- running (Ctrl+C to stop)..."
+        )
+
+        with hs.run_async(plan) as session:
+            failed = wait_for_completion(session)
+        if failed:
+            print("Run failed; see runtime diagnostics above.", file=sys.stderr)
+            return 1
+
+        print("Done.")
+        return 0
+
+    finally:
+        try:
+            if hololink_dev is not None:
+                hololink_dev.stop()
+        finally:
+            _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
 
 def main():
+    # Like Ctrl+C, SIGTERM (kill, docker stop) raises KeyboardInterrupt, so the session stops
+    # cooperatively and the camera and the board are stopped on the way out.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--camera",
@@ -420,12 +805,6 @@ def main():
         default=None,
         help="Exit after receiving this many frames",
     )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "tao_peoplenet.yaml"
-    )
-    parser.add_argument(
-        "--configuration", default=default_configuration, help="Configuration file"
-    )
     parser.add_argument(
         "--hololink",
         default="192.168.0.2",
@@ -445,17 +824,16 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=infiniband_devices[0] if infiniband_devices else None,
-        help="IBV device to use",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
     )
     parser.add_argument(
         "--ibv-port",
         type=int,
         default=1,
-        help="Port number of IBV device",
+        help="Port number of IBV device (with --ibv-name)",
     )
     parser.add_argument(
         "--exposure",
@@ -464,58 +842,22 @@ def main():
         help="Configure exposure.",
     )
     args = parser.parse_args()
-    if args.ibv_name is None:
-        parser.error("No InfiniBand device found; pass --ibv-name explicitly")
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the data source
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.imx477.Imx477(
-        hololink_channel, args.camera, args.resolution
-    )
 
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
+    logging.basicConfig(level=args.log_level)
+
+    return run(
+        args.hololink,
+        args.camera,
+        args.resolution,
+        args.exposure,
         args.ibv_name,
         args.ibv_port,
-        camera,
-        args.frame_limit,
         args.engine,
+        args.frame_limit,
+        args.headless,
+        args.fullscreen,
     )
-    application.config(args.configuration)
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    try:
-        hololink.reset()
-        camera.configure()
-
-        # IMX477 Analog gain settings function. Analog gain value range is 0-1023 in decimal (10 bits). Users are free to experiment with the register values.
-        camera.set_analog_gain(0x2FF)
-        camera.set_exposure_reg(args.exposure)
-
-        application.run()
-    finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

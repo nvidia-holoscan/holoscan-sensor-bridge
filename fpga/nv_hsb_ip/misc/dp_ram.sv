@@ -36,9 +36,9 @@ module dp_ram #(
   output      [DATA_WIDTH-1:0] dout_b
 );
 
-logic [DATA_WIDTH-1:0] mem     [RAM_DEPTH] = '{default:'0};
-(* ram_style = "block" *)      logic [DATA_WIDTH-1:0] blk_mem [RAM_DEPTH] = '{default:'0}/*synthesis syn_ramstyle = "block_ram"*/;
-(* ram_style = "distributed" *)logic [DATA_WIDTH-1:0] lut_mem [RAM_DEPTH] = '{default:'0}/*synthesis syn_ramstyle = "distributed"*/;
+logic [DATA_WIDTH-1:0] mem     [RAM_DEPTH];
+(* ram_style = "block" *)      logic [DATA_WIDTH-1:0] blk_mem [RAM_DEPTH]/*synthesis syn_ramstyle = "block_ram"*/;
+(* ram_style = "distributed" *)logic [DATA_WIDTH-1:0] lut_mem [RAM_DEPTH]/*synthesis syn_ramstyle = "distributed"*/;
 
 //------------------------------------------------------------------------------------------------//
 // Port A is always RD/WR

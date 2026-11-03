@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,10 +17,45 @@
 #include "sig_gen_op.hpp"
 
 #include <hololink/common/cuda_helper.hpp>
+#include <hololink/operators/output_pressure.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
 
 #include "sig_gen_op_gui.hpp"
 
 namespace hololink::operators {
+
+namespace {
+    constexpr DLDataType kFloat32 { kDLFloat, 32, 1 };
+}
+
+SignalGeneratorOp::SignalGeneratorOp(unsigned samples_count,
+    Rational sampling_interval,
+    std::string in_phase,
+    std::string quadrature,
+    std::string cuda_toolkit_include_path,
+    std::shared_ptr<hololink::ImGuiRenderer> renderer,
+    std::chrono::nanoseconds period,
+    uint64_t count)
+    : renderer_(std::move(renderer))
+    , samples_count_(samples_count)
+    , sampling_interval_(std::move(sampling_interval))
+    , signal_expression_strs_ { std::move(in_phase), std::move(quadrature) }
+    // If no CUDA toolkit path is provided, fall back to the compile-time default
+    , cuda_toolkit_include_path_(cuda_toolkit_include_path.empty()
+              ? std::string(CUDA_TOOLKIT_INCLUDE_PATHS)
+              : std::move(cuda_toolkit_include_path))
+    , period_(period)
+    , count_(count)
+{
+    if (samples_count_ % 4)
+        throw std::runtime_error("Samples Count must be a multiple of 4");
+    if (period_.count() <= 0)
+        throw std::runtime_error("The generation period must be positive");
+}
+
+SignalGeneratorOp::~SignalGeneratorOp() = default;
 
 void SignalGeneratorOp::SignalExpression::update_expression(const std::string& str)
 {
@@ -41,174 +76,150 @@ std::string SignalGeneratorOp::SignalExpression::str() const
 }
 
 size_t SignalGeneratorOp::SignalExpression::evaluate(float* device_output, size_t count,
-    size_t samples_index, const Rational& sampling_interval, size_t stride)
+    size_t samples_index, const Rational& sampling_interval, size_t stride,
+    SignalContext* device_context, cudaStream_t stream)
 {
-    return evaluate_expression(expr_, device_output, count, samples_index, sampling_interval, stride);
+    return evaluate_expression(expr_, device_output, count, samples_index, sampling_interval, stride,
+        device_context, stream);
+}
+
+void SignalGeneratorOp::setup(holoscan::OperatorSpec& spec)
+{
+    spec.output(output, "output")
+        .max_emits_per_compute(1U)
+        .produces_tensor(holoscan::TensorOutputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                .dtype = kFloat32,
+                .rank = 1U,
+            },
+            .bounds = holoscan::tensor_bounds(uint64_t(samples_count_) * number_of_signal_components * sizeof(float)),
+            .storage = holoscan::TensorOutputStorage::kRuntimePool,
+        });
+}
+
+holoscan::Contract SignalGeneratorOp::contract() const
+{
+    holoscan::Contract contract;
+    // Late ticks coalesce, so a generation slower than the period runs back to back.
+    contract.trigger(holoscan::OnClock { .period = period_ });
+    if (count_)
+        contract.complete_after(holoscan::ComputeCalls { .limit = count_ });
+    return contract;
 }
 
 void SignalGeneratorOp::start()
 {
     CudaCheck(cuInit(0));
-    CUdevice device;
-    CudaCheck(cuDeviceGet(&device, 0));
-    CUcontext context;
-    CudaCheck(cuDevicePrimaryCtxRetain(&context, device));
-    CudaCheck(cuCtxSetCurrent(context));
+    CudaCheck(cuDeviceGet(&cuda_device_, 0));
+    CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
+    // CUDA context state is per thread, and the runtime may run compute() on any of its threads:
+    // every CUDA-using callback pushes the context.
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
 
-    if (renderer_.has_value() && renderer_.get())
-        gui_ = std::make_unique<GUI>(renderer_.get(),
-            name(),
+    device_context_ = create_signal_context();
+    if (renderer_)
+        gui_ = std::make_shared<GUI>(renderer_,
+            "Signal Generator",
+            signal_expression_strs_[0],
+            signal_expression_strs_[1],
+            samples_count_,
+            sampling_interval_);
 
-            signal_expression_strs_[0].get(),
-            signal_expression_strs_[1].get(),
-            samples_count_.get(),
-            sampling_interval_.get());
-
-    for (int signal_component_index = 0; signal_component_index < number_of_signal_components; ++signal_component_index)
-        signal_expressions_[signal_component_index].set_cuda_toolkit_include_path(cuda_toolkit_include_path_.get());
+    for (int i = 0; i < number_of_signal_components; ++i)
+        signal_expressions_[i].set_cuda_toolkit_include_path(cuda_toolkit_include_path_);
 }
 
 void SignalGeneratorOp::stop()
 {
-    gui_.reset();
-    CUdevice device;
-    CudaCheck(cuDeviceGet(&device, 0));
-    CudaCheck(cuDevicePrimaryCtxRelease(device));
-}
-
-void SignalGeneratorOp::initialize()
-{
-    auto frag = fragment();
-
-    // Find if there is an argument for 'allocator'
-    auto has_allocator = std::find_if(
-        args().begin(), args().end(), [](const auto& arg) { return (arg.name() == "allocator"); });
-    // Create the allocator if there is no argument provided.
-    if (has_allocator == args().end()) {
-        allocator_ = frag->make_resource<holoscan::UnboundedAllocator>("allocator");
-        add_arg(allocator_.get());
+    {
+        hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
+        gui_.reset();
+        // The compiled expressions hold CUDA modules: release them with the context current.
+        signal_expressions_ = {};
+        destroy_signal_context(device_context_);
+        device_context_ = nullptr;
     }
-
-    Operator::initialize();
-
-    if (samples_count_.get() % 4)
-        throw std::runtime_error("Samples Count must be a multiple of 4");
+    CudaCheck(cuDevicePrimaryCtxRelease(cuda_device_));
+    cuda_context_ = nullptr;
 }
 
-void SignalGeneratorOp::setup(holoscan::OperatorSpec& spec)
+holoscan::expected<void, holoscan::Error> SignalGeneratorOp::compute(holoscan::ExecutionContext& context)
 {
-    spec.output<Tensor>("output");
+    hololink::common::CudaContextScopedPush cur_cuda_context(cuda_context_);
+    const cudaStream_t stream = context.cuda_stream().get();
 
-    /// Register converters for arguments not defined by Holoscan
-    register_converter<hololink::ImGuiRenderer*>();
-    register_converter<Rational>();
-
-    // Signal Expression Parameters
-    spec.param(allocator_, "allocator", "allocator", "Allocator used to allocate tensor output");
-    spec.param(renderer_, "renderer", "ImGuiRenderer", "Pointer to ImGuiRenderer object");
-    spec.param(samples_count_,
-        "samples_count",
-        "Samples Count",
-        "The number of samples to generate",
-        0u);
-    spec.param(sampling_interval_,
-        "sampling_interval",
-        "Sampling Interval",
-        "The interval between sequential samples",
-        Rational(1, 128));
-    spec.param(signal_expression_strs_[0],
-        "in_phase",
-        "in_phase",
-        "In Phase",
-        std::string("0"));
-    spec.param(signal_expression_strs_[1],
-        "quadrature",
-        "quadrature",
-        "Quadrature",
-        std::string("0"));
-    spec.param(cuda_toolkit_include_path_,
-        "cuda_toolkit_include_path",
-        "cuda_toolkit_include_path - path for cuda toolkit dependency. For multiple paths, use ':' as delimiter",
-        "cuda toolkit include path - path for cuda toolkit dependency. For multiple paths, use ':' as delimiter",
-        std::string(CUDA_TOOLKIT_INCLUDE_PATHS));
-}
-
-void SignalGeneratorOp::compute([[maybe_unused]] holoscan::InputContext& /*op_input*/, holoscan::OutputContext& op_output,
-    holoscan::ExecutionContext& context)
-{
-    static SignalGeneratorOp* self = this;
-//#define SIG_GEN_OP_MEASURE_TIME
-#ifdef SIG_GEN_OP_MEASURE_TIME
-    if (self == this) {
-        static std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
-        static size_t counter = 0;
-        static std::chrono::microseconds total_duration(0);
-        std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
-        auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        total_duration += duration;
-        start = end;
-        ++counter;
-        HSB_LOG_INFO("Cycle {} us, {} us (avg)", duration.count(), total_duration.count() / counter);
-    }
-#endif
     // Update parameters from GUI
     if (gui_ && gui_->is_running()) {
         // Get latest values from the GUI
         auto lock = gui_->lock();
-        for (int signal_component_index = 0; signal_component_index < number_of_signal_components; ++signal_component_index) {
-            auto signal_component_type = static_cast<SignalComponentType>(signal_component_index);
+        for (int i = 0; i < number_of_signal_components; ++i) {
+            auto signal_component_type = static_cast<SignalComponentType>(i);
             auto& gui_signal_expression = gui_->get_signal_component_expression(signal_component_type);
-            signal_expression_strs_[signal_component_index].get() = gui_signal_expression;
+            signal_expression_strs_[i] = gui_signal_expression;
         }
-        sampling_interval_.get() = gui_->get_sampling_interval();
+        sampling_interval_ = gui_->get_sampling_interval();
     }
 
     // Update expressions if needed
-    for (int signal_component_index = 0; signal_component_index < number_of_signal_components; ++signal_component_index)
-        signal_expressions_[signal_component_index].update_expression(signal_expression_strs_[signal_component_index].get());
+    for (int i = 0; i < number_of_signal_components; ++i)
+        signal_expressions_[i].update_expression(signal_expression_strs_[i]);
 
-    // Create a CUDA buffer
     // All the signal components are interleaved in one buffer
-    int tensor_size = static_cast<int>(samples_count_.get() * number_of_signal_components);
-    auto unique_dl_managed_tensor_context = dl_managed_tensor_context_pool_.acquire();
-    if (unique_dl_managed_tensor_context && unique_dl_managed_tensor_context->dl_shape[0] != tensor_size) { // The size of the required buffer changed
-        auto ptr = unique_dl_managed_tensor_context.release();
-        decltype(dl_managed_tensor_context_pool_)::Deleter {}(ptr);
+    const std::array<int64_t, 1> shape { int64_t(samples_count_) * number_of_signal_components };
+    auto loan = output.allocate_tensor(holoscan::TensorLoanRequest { .shape = shape, .dtype = kFloat32 });
+    if (!loan) {
+        if (!is_output_pressure(loan.error())) {
+            return holoscan::make_unexpected(std::move(loan).error());
+        }
+        record_dropped_output("SignalGeneratorOp", dropped_, loan.error());
+        return {};
     }
-    std::shared_ptr<holoscan::DLManagedTensorContext> dl_managed_tensor_context(std::move(unique_dl_managed_tensor_context));
-    if (!dl_managed_tensor_context) {
-        nvidia::gxf::Tensor gxf_tensor;
-        auto allocator = nvidia::gxf::Handle<nvidia::gxf::Allocator>::Create(context.context(),
-            allocator_->gxf_cid());
-        if (!gxf_tensor.reshape<float>(nvidia::gxf::Shape { tensor_size },
-                nvidia::gxf::MemoryStorageType::kDevice,
-                allocator.value()))
-            throw std::runtime_error("Failed to allocate cuda memory");
-        auto maybe_dl_ctx = gxf_tensor.toDLManagedTensorContext();
-        if (!maybe_dl_ctx)
-            HSB_LOG_ERROR("Failed to get std:shared_ptr<DLManagedTensorContext> from nvidia::gxf::Tensor");
-        dl_managed_tensor_context = dl_managed_tensor_context_pool_.emplace(std::move(*maybe_dl_ctx.value()));
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        return holoscan::make_unexpected(std::move(writer).error());
     }
-    auto tensor = std::make_shared<holoscan::Tensor>(dl_managed_tensor_context);
+    float* const samples = static_cast<float*>(writer->data());
 
-    // Generate the samples
-    auto sampling_index = index_;
+    // Generate the samples; the signal components are interleaved, so a stride is used
+    size_t next_index = index_;
     for (size_t offset = 0; offset < number_of_signal_components; ++offset) {
-        // The signal samples are interleaved, a stride is used
-        index_ = signal_expressions_[offset].evaluate(
-            reinterpret_cast<float*>(tensor->data()) + offset,
-            samples_count_.get(),
-            sampling_index,
-            sampling_interval_.get(),
-            number_of_signal_components); // stride
+        next_index = signal_expressions_[offset].evaluate(
+            samples + offset,
+            samples_count_,
+            index_,
+            sampling_interval_,
+            number_of_signal_components,
+            device_context_,
+            stream);
     }
 
-    if (gui_ && gui_->is_running()) {
-        gui_->push_samples(tensor);
-    }
+    if (gui_ && gui_->is_running())
+        gui_->stage_samples(samples, stream);
 
-    // Emit the samples
-    op_output.emit(tensor);
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        return holoscan::make_unexpected(std::move(committed).error());
+    }
+    auto emitted = output.emit(std::move(*loan),
+        holoscan::EmitOptions {
+            .capture_time = context.activation_time(),
+            .frame_id = frame_id_,
+        });
+    if (!emitted) {
+        if (!is_output_pressure(emitted.error())) {
+            return holoscan::make_unexpected(std::move(emitted).error());
+        }
+        record_dropped_output("SignalGeneratorOp", dropped_, emitted.error());
+        // Unpublished: regenerating these samples next time keeps the emitted signal continuous.
+        // But a recipient may already have seen a partially published buffer, so move past that.
+        if (!holoscan::publication_error_consumes_authority(emitted.error().code)) {
+            return {};
+        }
+    }
+    index_ = next_index;
+    ++frame_id_;
+    return {};
 }
 
 } // namespace hololink::operators

@@ -1,6 +1,6 @@
 /**
- * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES.
- * All rights reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,7 +18,13 @@
  */
 
 #include "gpu_roce_transceiver_op.hpp"
+#include "../base_receiver_op.inl"
 
+// Full GpuRoceTransceiver definition — needed here but kept out of the header
+// to avoid exposing DOCA/ibverbs headers to consumers of the operator.
+#include "gpu_roce_transceiver.hpp"
+
+#include <exception>
 #include <future>
 #include <netinet/in.h>
 #include <unistd.h>
@@ -29,63 +35,74 @@
 
 namespace hololink::operators {
 
-CUdeviceptr GpuRoceTransceiverOp::frame_memory()
+CUdeviceptr GpuRoceTransceiverOp::frame_memory(unsigned sensor_id)
 {
-    return (CUdeviceptr)(gpu_roce_transceiver_ ? gpu_roce_transceiver_->get_rx_ring_data_addr() : 0);
+    return (CUdeviceptr)(gpu_roce_transceiver_
+            ? gpu_roce_transceiver_->get_rx_ring_data_addr(sensor_id)
+            : 0);
 }
 
-void GpuRoceTransceiverOp::setup(holoscan::OperatorSpec& spec)
+std::vector<std::shared_ptr<DataChannel>> GpuRoceTransceiverOp::data_channels()
 {
-    HSB_LOG_INFO("Setting up DOCA-based RoCE receiver");
-
-    BaseReceiverOp::setup(spec);
-
-    spec.param(ibv_name_, "ibv_name", "IBVName", "IBV device to use",
-        std::string("roceP5p3s0f0"));
-    spec.param(tx_ibv_qp_, "tx_ibv_qp", "Tx remote QP", "Remote QP number for Tx", 2u);
-    spec.param(ibv_port_, "ibv_port", "IBVPort", "Port number of IBV device", 1u);
-    spec.param(gpu_id_, "gpu_id", "GPU Device ID", "CUDA device ID of the GPU", 0u);
-    spec.param(forward_, "forward", "Forward mode", "Enable forward mode", 0u);
-}
-
-void GpuRoceTransceiverOp::start()
-{
-    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_WAITING);
-    BaseReceiverOp::start();
-}
-
-void GpuRoceTransceiverOp::stop()
-{
-    // Signal the async condition to EVENT_DONE to wake up the scheduler
-    // This tells the scheduler the event has occurred and it can proceed
-    if (frame_ready_condition_) {
-        frame_ready_condition_->event_state(holoscan::AsynchronousEventState::EVENT_DONE);
+    std::vector<std::shared_ptr<DataChannel>> channels = this->params().hololink_channels;
+    if (channels.empty()) {
+        channels.push_back(hololink_channel_);
     }
-    // Now call base class stop which will call stop_receiver()
-    BaseReceiverOp::stop();
+
+    for (size_t x = 0; x < channels.size(); x++) {
+        if (!channels[x]) {
+            throw std::runtime_error(fmt::format("hololink_channels[{}] is null", x));
+        }
+    }
+
+    // One local QP per channel, all connected to the same board
+    const std::string& peer_ip = channels[0]->peer_ip();
+    for (size_t x = 1; x < channels.size(); x++) {
+        if (channels[x]->peer_ip() != peer_ip) {
+            throw std::runtime_error(fmt::format(
+                "hololink_channels[{}] peer_ip={} differs from hololink_channels[0] peer_ip={}: all "
+                "the channels must belong to the same board",
+                x, channels[x]->peer_ip(), peer_ip));
+        }
+    }
+    return channels;
 }
 
 void GpuRoceTransceiverOp::start_receiver()
 {
-    HSB_LOG_INFO("DOCA-based RoCE receiver is being implemented!");
+    const auto& p = this->params();
+    HSB_LOG_INFO("Starting DOCA-based RoCE receiver");
 
-    size_t page_size = hololink::core::round_up(
-        frame_size_.get(), hololink::core::PAGE_SIZE);
+    size_t page_size = hololink::core::round_up(p.frame_size, hololink::core::PAGE_SIZE);
 
-    const std::string& peer_ip = hololink_channel_->peer_ip();
-    HSB_LOG_INFO("ibv_name_={} ibv_port_={} peer_ip={} tx_ibv_qp_={} gpu_id_={} forward_={}", ibv_name_.get(),
-        ibv_port_.get(), peer_ip, tx_ibv_qp_, gpu_id_, forward_);
+    const std::vector<std::shared_ptr<DataChannel>> channels = data_channels();
+    const std::string& peer_ip = channels[0]->peer_ip();
+    // Without an ibv_name, the device that reaches the board.
+    const auto [ibv_name, ibv_port] = p.ibv_name.empty()
+        ? channels[0]->infiniband_device()
+        : std::make_pair(p.ibv_name, p.ibv_port);
+    HSB_LOG_INFO("ibv_name={} ibv_port={} peer_ip={} tx_ibv_qp={} channels={} gpu_id={} forward={}",
+        ibv_name, ibv_port, peer_ip, p.tx_ibv_qp, channels.size(), p.gpu_id, p.forward);
 
-    if (forward_ == 1)
+    if (p.forward == 1) {
         gpu_roce_transceiver_.reset(new GpuRoceTransceiver(
-            ibv_name_.get().c_str(), ibv_port_.get(), tx_ibv_qp_.get(), gpu_id_.get(),
-            frame_size_.get(), page_size, PAGES,
+            ibv_name.c_str(), ibv_port, p.tx_ibv_qp, p.gpu_id,
+            p.frame_size, page_size, PAGES,
             peer_ip.c_str(), true, false, false));
-    else
+    } else {
         gpu_roce_transceiver_.reset(new GpuRoceTransceiver(
-            ibv_name_.get().c_str(), ibv_port_.get(), tx_ibv_qp_.get(), gpu_id_.get(),
-            frame_size_.get(), page_size, PAGES,
+            ibv_name.c_str(), ibv_port, p.tx_ibv_qp, p.gpu_id,
+            p.frame_size, page_size, PAGES,
             peer_ip.c_str(), false, true, true));
+    }
+
+    // QP x carries the traffic of channels[x]
+    if (gpu_roce_transceiver_->get_num_qps() != channels.size()) {
+        throw std::runtime_error(fmt::format(
+            "tx_ibv_qp=\"{}\" lists {} QPs for {} Hololink DataChannels: there must be one QP per "
+            "channel",
+            p.tx_ibv_qp, gpu_roce_transceiver_->get_num_qps(), channels.size()));
+    }
 
     gpu_roce_transceiver_->set_frame_ready([this]() { this->frame_ready(); });
 
@@ -93,57 +110,91 @@ void GpuRoceTransceiverOp::start_receiver()
         throw std::runtime_error("Failed to start GpuRoceTransceiver");
     }
 
-    hololink_channel_->authenticate(gpu_roce_transceiver_->get_qp_number(),
-        gpu_roce_transceiver_->get_rkey());
+    try {
+        for (size_t x = 0; x < channels.size(); x++) {
+            channels[x]->authenticate(gpu_roce_transceiver_->get_qp_number(x),
+                gpu_roce_transceiver_->get_rkey(x));
+            HSB_LOG_INFO("HoloLink channel {} authenticated with DOCA-based QP {:#x} and RKEY", x,
+                gpu_roce_transceiver_->get_qp_number(x));
+        }
 
-    HSB_LOG_INFO(
-        "HoloLink channel authenticated with DOCA-based QP number and RKEY");
+        gpu_monitor_thread_.reset(new std::thread(
+            &GpuRoceTransceiverOp::gpu_monitor_loop, this));
 
-    gpu_monitor_thread_.reset(new std::thread(
-        &hololink::operators::GpuRoceTransceiverOp::gpu_monitor_loop, this));
+        HSB_LOG_INFO("DOCA Receiver thread started");
 
-    HSB_LOG_INFO("DOCA Receiver thread started");
+        auto [local_ip, local_port] = local_ip_and_port();
+        HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
 
-    auto [local_ip, local_port] = local_ip_and_port();
-    HSB_LOG_INFO("local_ip={} local_port={}", local_ip, local_port);
-
-    hololink_channel_->configure_roce(gpu_roce_transceiver_->external_frame_memory(),
-        frame_size_, page_size, PAGES, local_port);
-    HSB_LOG_INFO("HoloLink configured successfully");
+        for (const auto& channel : channels) {
+            // Recorded first so that a partially written configuration is also undone on stop
+            configured_channels_.push_back(channel);
+            channel->configure_roce(gpu_roce_transceiver_->external_frame_memory(),
+                p.frame_size, page_size, PAGES, local_port);
+        }
+        HSB_LOG_INFO("HoloLink configured successfully");
+    } catch (...) {
+        // Don't leave the monitor thread and the GPU kernels running, nor HSB sending, after a
+        // failed start (BaseReceiverOp::start() expects this to clean up after itself). The
+        // failure that got here is the one reported.
+        const bool kernels_may_run = static_cast<bool>(gpu_monitor_thread_);
+        try {
+            stop_receiver();
+        } catch (const std::exception& e) {
+            HSB_LOG_ERROR("Stopping the receiver after a failed start failed: {}", e.what());
+        }
+        // Also free the DOCA resources and, on an iGPU, the CPU proxy thread, which runs until the
+        // transceiver is destroyed. Not if forward-mode kernels may be running: they don't exit on
+        // close(), so the destructor would wait for them forever.
+        if (!p.forward || !kernels_may_run) {
+            gpu_roce_transceiver_.reset();
+        }
+        throw;
+    }
 }
 
 void GpuRoceTransceiverOp::stop_receiver()
 {
     HSB_LOG_INFO("Stopping DOCA-based RoCE receiver");
 
-    hololink_channel_->unconfigure();
-    data_socket_.reset();
-    gpu_roce_transceiver_->close();
-
-    // Detach the thread instead of joining to avoid hanging on GPU kernel cleanup
-    // The thread will exit naturally after processing the control pipe signal
-    if (gpu_monitor_thread_ && gpu_monitor_thread_->joinable()) {
-        // Give the thread time to exit gracefully after close() signaled it
-        auto future = std::async(std::launch::async, [this]() {
-            gpu_monitor_thread_->join();
-        });
-
-        if (future.wait_for(std::chrono::seconds(2)) == std::future_status::timeout) {
-            HSB_LOG_WARN("GPU monitor thread did not exit in time, detaching");
-            gpu_monitor_thread_->detach();
+    // Stop HSB sending to every channel first, even if one of them fails; tear everything down
+    // before reporting the first failure (destroying a joinable thread terminates the process).
+    std::exception_ptr unconfigure_error;
+    for (const auto& channel : configured_channels_) {
+        try {
+            channel->unconfigure();
+        } catch (...) {
+            if (!unconfigure_error) {
+                unconfigure_error = std::current_exception();
+            }
         }
     }
+    configured_channels_.clear();
+
+    data_socket_.reset();
+    // Guard against being called after a start_receiver() that failed before the transceiver
+    // existed.
+    if (gpu_roce_transceiver_) {
+        gpu_roce_transceiver_->close();
+    }
+
+    // close() wakes up the monitor thread through the control pipe and sets the kernels' exit
+    // flag. The receive-only and transmit-only kernels check it also while waiting for packets;
+    // the forward-mode kernels only between packets, so they keep waiting once HSB stops sending.
+    if (gpu_monitor_thread_ && gpu_monitor_thread_->joinable()) {
+        gpu_monitor_thread_->join();
+    }
     gpu_monitor_thread_.reset();
+    if (unconfigure_error) {
+        std::rethrow_exception(unconfigure_error);
+    }
 }
 
 void GpuRoceTransceiverOp::gpu_monitor_loop()
 {
     HSB_LOG_INFO("Starting GPU monitoring loop for DOCA CQ");
 
-    CudaCheck(cuCtxSetCurrent(frame_context_));
-    CUcontext current_context;
-    CudaCheck(cuCtxGetCurrent(&current_context));
-    std::cout << "gpu_roce_transceiver context: " << current_context << std::endl;
+    CudaCheck(cuCtxSetCurrent(this->params().frame_context));
     gpu_roce_transceiver_->blocking_monitor();
 
     HSB_LOG_INFO("GPU monitoring loop ended");
@@ -163,7 +214,7 @@ std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> GpuRoceTransceiverO
     if (!gpu_roce_transceiver_) {
         return {};
     }
-    // Blocks until close(); returns false → compute emits nothing (kernel owns datapath).
+    // GPU kernel owns the data path; always returns {} so compute() emits nothing.
     gpu_roce_transceiver_->get_next_frame(0, cuda_stream);
     return {};
 }
@@ -173,7 +224,7 @@ std::tuple<std::string, uint32_t> GpuRoceTransceiverOp::local_ip_and_port()
     sockaddr_in ip {};
     ip.sin_family = AF_UNSPEC;
     socklen_t ip_len = sizeof(ip);
-    if (getsockname(data_socket_.get(), (sockaddr*)&ip, &ip_len) < 0) {
+    if (getsockname(data_socket_.get(), reinterpret_cast<sockaddr*>(&ip), &ip_len) < 0) {
         throw std::runtime_error(
             fmt::format("getsockname failed with errno={}: \"{}\"", errno, strerror(errno)));
     }
@@ -184,36 +235,30 @@ std::tuple<std::string, uint32_t> GpuRoceTransceiverOp::local_ip_and_port()
     return { local_ip, local_port };
 }
 
-uint8_t* GpuRoceTransceiverOp::get_ring_addr(bool is_rx)
+uint8_t* GpuRoceTransceiverOp::get_ring_addr(bool is_rx, unsigned sensor_id)
 {
-    if (is_rx)
-        return gpu_roce_transceiver_->get_rx_ring_data_addr();
-    else
-        return gpu_roce_transceiver_->get_tx_ring_data_addr();
+    return is_rx ? gpu_roce_transceiver_->get_rx_ring_data_addr(sensor_id)
+                 : gpu_roce_transceiver_->get_tx_ring_data_addr(sensor_id);
 }
 
-size_t GpuRoceTransceiverOp::get_ring_stride_sz(bool is_rx)
+size_t GpuRoceTransceiverOp::get_ring_stride_sz(bool is_rx, unsigned sensor_id)
 {
-    if (is_rx)
-        return gpu_roce_transceiver_->get_rx_ring_stride_sz();
-    else
-        return gpu_roce_transceiver_->get_tx_ring_stride_sz();
+    return is_rx ? gpu_roce_transceiver_->get_rx_ring_stride_sz(sensor_id)
+                 : gpu_roce_transceiver_->get_tx_ring_stride_sz(sensor_id);
 }
 
-uint32_t GpuRoceTransceiverOp::get_ring_stride_num(bool is_rx)
+uint32_t GpuRoceTransceiverOp::get_ring_stride_num(bool is_rx, unsigned sensor_id)
 {
-    if (is_rx)
-        return gpu_roce_transceiver_->get_rx_ring_stride_num();
-    else
-        return gpu_roce_transceiver_->get_tx_ring_stride_num();
+    return is_rx ? gpu_roce_transceiver_->get_rx_ring_stride_num(sensor_id)
+                 : gpu_roce_transceiver_->get_tx_ring_stride_num(sensor_id);
 }
 
-uint64_t* GpuRoceTransceiverOp::get_ring_flag_addr(bool is_rx)
+uint64_t* GpuRoceTransceiverOp::get_ring_flag_addr(bool is_rx, unsigned sensor_id)
 {
-    if (is_rx)
-        return gpu_roce_transceiver_->get_rx_ring_flag_addr();
-    else
-        return gpu_roce_transceiver_->get_tx_ring_flag_addr();
+    return is_rx ? gpu_roce_transceiver_->get_rx_ring_flag_addr(sensor_id)
+                 : gpu_roce_transceiver_->get_tx_ring_flag_addr(sensor_id);
 }
+
+template class BaseReceiverOp<GpuRoceTransceiverOp, GpuRoceTransceiverParams>;
 
 } // namespace hololink::operators

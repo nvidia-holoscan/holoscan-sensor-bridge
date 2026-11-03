@@ -11,26 +11,7 @@ support. Adopting a future version is a deliberate edit
 (``HololinkInterfaceV1`` -> ``HololinkInterfaceV2``).
 """
 
-import os
-import sys
-
-# Load the core extension with RTLD_GLOBAL so its C++ typeinfo
-# (RoceDataChannelInterfaceV1, FrameMetadataInterfaceV1, EnumerationMetadata,
-# etc.) is visible to the sibling pybind11 extensions
-# (_hololink_module_operators, _hololink_module_<module>). Without
-# this, each .so resolves typeid against its own local copy and pybind11
-# cross-module casts fail with "Unable to cast ... to C++ type '?'".
-# The legacy hololink_core uses the same pattern
-# (python/hololink/hololink_core/__init__.py).
-_have_dlopen_flags = hasattr(sys, "getdlopenflags")
-if _have_dlopen_flags:
-    _old_dlopen_flags = sys.getdlopenflags()
-    sys.setdlopenflags(os.RTLD_LAZY | os.RTLD_GLOBAL)
-
-from . import _hololink_py_module as _native  # noqa: E402
-
-if _have_dlopen_flags:
-    sys.setdlopenflags(_old_dlopen_flags)
+from . import _hololink_module as _native
 
 Adapter = _native.Adapter
 Module = _native.Module
@@ -75,6 +56,21 @@ hsb_log_error = _native.hsb_log_error
 # value), so callers name no legacy hololink constant.
 DEFAULT_MTU = _native.DEFAULT_MTU
 
+# The reconnection framework: subclass SensorDevice/SensorFactory in Python to supply a sensor's
+# bring-up/arm/teardown policy to HsbControllerOp (see hsb_controller_op.hpp's own class comment).
+# NetworkReceiverFactory is opaque -- built via make_linux_network_receiver_factory() (always
+# available) or make_roce_network_receiver_factory() (RoCE builds only, see below) and passed
+# straight through to HsbControllerOp's network_receiver_factory parameter.
+SensorDevice = _native.SensorDevice
+SensorFactory = _native.SensorFactory
+NetworkReceiverFactory = _native.NetworkReceiverFactory
+make_linux_network_receiver_factory = _native.make_linux_network_receiver_factory
+
+# The converter a sensor driver trains in place of CsiToBayerOp: pass it to
+# camera.configure_converter(), then use get_csi_length() for the receiver's frame_size and
+# geometry() for CsiToBayerOp's `geometry` parameter (see CsiToBayerConverter's C++ class comment).
+CsiToBayerConverter = _native.CsiToBayerConverter
+
 # Status codes (hololink/module/status.h) returned by V1 interface methods, so
 # Python overrides return e.g. HOLOLINK_MODULE_OK rather than a bare integer.
 HOLOLINK_MODULE_OK = _native.HOLOLINK_MODULE_OK
@@ -109,6 +105,11 @@ __all__ = [
     "CsiConverterV1",
     "AlarmEntry",
     "DEFAULT_MTU",
+    "SensorDevice",
+    "SensorFactory",
+    "NetworkReceiverFactory",
+    "make_linux_network_receiver_factory",
+    "CsiToBayerConverter",
     "HOLOLINK_MODULE_OK",
     "HOLOLINK_MODULE_INVALID_PARAMETER",
     "HOLOLINK_MODULE_NOT_FOUND",
@@ -124,6 +125,14 @@ __all__ = [
     "hsb_log_error",
 ]
 
+# Present only in FUSA-enabled builds. Mirrors hololink.resolve_geometry's own top-level
+# placement.
+if hasattr(_native, "resolve_fusa_coe_geometry_from_dimensions"):
+    resolve_fusa_coe_geometry_from_dimensions = (
+        _native.resolve_fusa_coe_geometry_from_dimensions
+    )
+    __all__.append("resolve_fusa_coe_geometry_from_dimensions")
+
 # Present only in RoCE-enabled builds: the ibv_device_for_peer and
 # infiniband_devices bindings link ibverbs and are gated on
 # HOLOLINK_BUILD_ROCE, so a build without RoCE omits them.
@@ -133,3 +142,6 @@ if hasattr(_native, "ibv_device_for_peer"):
 if hasattr(_native, "infiniband_devices"):
     infiniband_devices = _native.infiniband_devices
     __all__.append("infiniband_devices")
+if hasattr(_native, "make_roce_network_receiver_factory"):
+    make_roce_network_receiver_factory = _native.make_roce_network_receiver_factory
+    __all__.append("make_roce_network_receiver_factory")

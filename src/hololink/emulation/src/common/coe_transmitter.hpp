@@ -40,7 +40,7 @@ void update_frame_metadata_end(COECtxt* coe_ctxt, uint16_t packet_bytes);
 void update_packet_headers_midframe(COECtxt* coe_ctxt, uint32_t to_consume, bool frame_end);
 
 /**
- * @brief The COETransmitter implements the BaseTransmitter interface and encapsulates the transport over COE
+ * @brief The COETransmitter implements the BaseTransmitter interface and encapsulates the transport over COE.
  */
 class COETransmitter : public BaseTransmitter {
 public:

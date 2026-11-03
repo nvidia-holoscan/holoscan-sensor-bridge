@@ -13,6 +13,12 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+#
+# Configuration of depth.py's standalone holohub application (V4L2 camera or video-replayer
+# source). Nothing reads it on Holoscan SDK 5: that application cannot run there (see depth.py),
+# and linux_depth_anything_v2_imx477.py, which read the preprocessor, inference and holoviz
+# sections through Holoscan SDK 4's Application.config(), now sets those values in code (see its
+# header comment).
 ---
 v4l2_source:
   device: "/dev/video0"

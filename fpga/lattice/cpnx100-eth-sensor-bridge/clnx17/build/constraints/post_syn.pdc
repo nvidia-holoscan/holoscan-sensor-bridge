@@ -103,6 +103,11 @@ ldc_set_vcc -bank 1 1.8
 ldc_set_vcc -bank 3 1.8
 ldc_set_vcc -bank 4 1.8
 ldc_set_vcc -bank 5 1.8
-create_clock -name {clk_byte_o} -period 10 [get_pins -hierarchical URWDCKHS]
-create_clock -name {clk_hs_o} -period 10 [get_pins -hierarchical UCRXWCHS]
+# Byte clock = line rate / gear. The CSI RX is dynamically reconfigurable, so the
+# byte clock is not fixed at the generated gear 16 / 2500 Mbps (156.25 MHz) point:
+# per Lattice, the worst case is gear 8 / 1500 Mbps = 187.5 MHz (5.333 ns).
+# Constrain to 5.3 ns so the fabric closes for every reachable rate / gear combo.
+# Clock sources are the D-PHY hard-IP pins that exist post-map (UCRXWCHS/URWDCKHS).
+create_clock -name {clk_byte_o} -period 5.300 [get_pins -hierarchical URWDCKHS]
+create_clock -name {clk_hs_o} -period 5.300 [get_pins -hierarchical UCRXWCHS]
 set_clock_groups -group [get_clocks clk_hs_o] -group [get_clocks {mipi_rx[*].mipi_bridge_inst/sclk_o}] -group [get_clocks u_lvds_pll/clkos3_o] -group [get_clocks clk_byte_o] -asynchronous

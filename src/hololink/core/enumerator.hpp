@@ -49,8 +49,16 @@ const std::string TT_DA326_UUID = "9957a9ac-36b5-4518-83ec-5d514aecb750";
 
 /**
  * Strategy that adjusts enumeration data based on FPGA UUID.
+ *
+ * enable_shared_from_this lets a strategy that already lives in a shared_ptr (every entry in
+ * Enumerator's UUID table) be handed back to C++ as an owner of that same control block. The
+ * Python binding relies on this: when an application reads a built-in strategy with
+ * set_uuid_strategy() and registers it under a second UUID, nanobind recovers the original
+ * shared_ptr through shared_from_this() instead of minting a new one whose deleter pins the
+ * Python wrapper, which would otherwise live forever in the intentionally leaked table and
+ * be reported as a leaked instance at interpreter shutdown.
  */
-class EnumerationStrategy {
+class EnumerationStrategy : public std::enable_shared_from_this<EnumerationStrategy> {
 public:
     // All ABCs have virtual destructors.
     virtual ~EnumerationStrategy();
@@ -72,7 +80,7 @@ public:
 class Enumerator {
 public:
     /**
-     * @brief Handle for managing registered callbacks
+     * @brief Handle for managing registered callbacks.
      */
     class CallbackHandle {
     public:
@@ -93,7 +101,7 @@ public:
     };
 
     /**
-     * @brief Inner ReactorEnumerator class for managing IP callbacks
+     * @brief Inner ReactorEnumerator class for managing IP callbacks.
      */
     class ReactorEnumerator {
     public:
@@ -118,9 +126,9 @@ public:
     };
 
     /**
-     * @brief Construct a new Enumerator object
+     * @brief Construct a new Enumerator object.
      *
-     * @param local_interface blank for all local interfaces
+     * @param local_interface Blank for all local interfaces.
      * @param bootp_request_port
      * @param bootp_reply_port
      */
@@ -145,25 +153,25 @@ public:
      *
      * @param channel_ip
      * @param timeout
-     * @return Metadata&
+     * @return Metadata for the matching channel.
      * @throw std::runtime_error if the channel is not found within the timeout
      */
     static Metadata find_channel(const std::string& channel_ip,
         const std::shared_ptr<Timeout>& timeout = std::make_shared<Timeout>(10.f));
 
     /**
-     * @brief Register a callback for a specific IP address
+     * @brief Register a callback for a specific IP address.
      *
-     * @param ip IP address to monitor
-     * @param callback Function to call when enumeration packets are received from this IP
-     * @return CallbackHandle for unregistering
+     * @param ip IP address to monitor.
+     * @param callback Function to call when enumeration packets are received from this IP.
+     * @return CallbackHandle for unregistering.
      */
     static std::shared_ptr<CallbackHandle> register_ip(const std::string& ip, const std::function<void(Metadata&)>& callback);
 
     /**
-     * @brief Unregister a callback
+     * @brief Unregister a callback.
      *
-     * @param handle The handle returned by register_ip
+     * @param handle The handle returned by register_ip.
      */
     static void unregister_ip(const std::shared_ptr<CallbackHandle>& handle);
 
@@ -189,7 +197,7 @@ public:
 
     /**
      * Configure enumeration based on the UUID found during enumeration.
-     * @returns any previous registration for this UUID or nullptr.
+     * @return any previous registration for this UUID or nullptr.
      */
     static std::shared_ptr<EnumerationStrategy> set_uuid_strategy(std::string uuid, std::shared_ptr<EnumerationStrategy> enumeration_strategy);
 

@@ -17,7 +17,6 @@
 
 #include "native_imx274_sensor.hpp"
 
-#include <cassert>
 #include <iostream>
 #include <thread>
 #include <vector>
@@ -58,7 +57,10 @@ void NativeImx274Sensor::configure(CameraMode mode)
     // Make sure this is a version we know about.
     uint32_t version = get_version();
     HSB_LOG_INFO("version={}", version);
-    assert(version == VERSION);
+    if (version != VERSION) {
+        throw std::runtime_error("Unsupported IMX274 version:" + std::to_string(version)
+            + ", expected " + std::to_string(VERSION) + ".");
+    }
 
     configure_camera(mode);
 }
@@ -188,7 +190,7 @@ void NativeImx274Sensor::initialize_supported_modes()
     supported_modes_ = {
         imx274_mode::IMX274_MODE_3840X2160_60FPS,
         imx274_mode::IMX274_MODE_1920X1080_60FPS,
-        imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS
+        imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS
     };
 
     // Initialize frame formats
@@ -204,11 +206,11 @@ void NativeImx274Sensor::initialize_supported_modes()
         1080,
         60,
         csi::PixelFormat::RAW_10);
-    mode_frame_formats_[imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS] = std::make_shared<Imx274FrameFormat>(imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS,
-        "IMX274_MODE_3840X2160_60FPS_12BITS",
+    mode_frame_formats_[imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS] = std::make_shared<Imx274FrameFormat>(imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS,
+        "IMX274_MODE_3840X2160_30FPS_12BITS",
         3840,
         2160,
-        60,
+        30,
         csi::PixelFormat::RAW_12);
 }
 
@@ -284,8 +286,8 @@ void NativeImx274Sensor::configure_camera(CameraMode mode)
     case imx274_mode::IMX274_MODE_1920X1080_60FPS:
         apply_register_settings(imx274_mode::IMX274_MODE_1920X1080_60FPS_SEQUENCE);
         break;
-    case imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS:
-        apply_register_settings(imx274_mode::IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE);
+    case imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS:
+        apply_register_settings(imx274_mode::IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE);
         break;
     default:
         HSB_LOG_ERROR("Unsupported camera mode: {}", mode_.value());
@@ -309,22 +311,30 @@ void NativeImx274Sensor::apply_register_settings(const ContainerT& settings)
     }
 }
 
+void NativeImx274Sensor::enable_test_pattern(uint8_t pattern)
+{
+    set_register(imx274_mode::REG_TEST_ENABLE, 0x11);
+    set_register(imx274_mode::REG_TEST_SETUP4, 0x01);
+    set_register(imx274_mode::REG_TEST_SETUP1, 0x01);
+    set_register(imx274_mode::REG_TEST_SETUP2, 0x01);
+    set_register(imx274_mode::REG_TEST_SETUP3, 0x11);
+    set_register(imx274_mode::REG_TEST_PATTERN, pattern);
+}
+
+void NativeImx274Sensor::disable_test_pattern()
+{
+    set_register(imx274_mode::REG_TEST_ENABLE, 0x00);
+    set_register(imx274_mode::REG_TEST_SETUP1, 0x00);
+    set_register(imx274_mode::REG_TEST_SETUP2, 0x00);
+    set_register(imx274_mode::REG_TEST_SETUP3, 0x00);
+}
+
 void NativeImx274Sensor::test_pattern(uint8_t pattern)
 {
     if (pattern == 0) {
-        // Disable test pattern
-        set_register(imx274_mode::REG_TEST_ENABLE, 0x00);
-        set_register(imx274_mode::REG_TEST_SETUP1, 0x00);
-        set_register(imx274_mode::REG_TEST_SETUP2, 0x00);
-        set_register(imx274_mode::REG_TEST_SETUP3, 0x00);
+        disable_test_pattern();
     } else {
-        // Enable test pattern
-        set_register(imx274_mode::REG_TEST_ENABLE, 0x11);
-        set_register(imx274_mode::REG_TEST_SETUP4, 0x01);
-        set_register(imx274_mode::REG_TEST_SETUP1, 0x01);
-        set_register(imx274_mode::REG_TEST_SETUP2, 0x01);
-        set_register(imx274_mode::REG_TEST_SETUP3, 0x11);
-        set_register(imx274_mode::REG_TEST_PATTERN, pattern);
+        enable_test_pattern(pattern);
     }
 }
 

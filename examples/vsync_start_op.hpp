@@ -6,79 +6,68 @@
 #ifndef HOLOLINK_EXAMPLES_VSYNC_START_OP_HPP
 #define HOLOLINK_EXAMPLES_VSYNC_START_OP_HPP
 
+#include <chrono>
+#include <cstdint>
 #include <memory>
-#include <stdexcept>
 #include <string>
 
-#include <yaml-cpp/yaml.h>
-
-#include <holoscan/holoscan.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/expected.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/temporal_contract.hpp>
 
 #include "hololink/module/status.h"
 #include "hololink/module/vsync.hpp"
 
-// Holoscan binds operator parameters through YAML converters. The
-// VsyncStartOp `vsync` parameter is only ever set with a C++
-// holoscan::Arg("vsync", vsync) from application code — never from a
-// YAML config — so this converter exists solely to satisfy
-// register_converter<T>()'s requirement and throws if ever invoked.
-// (Mirrors HOLOLINK_MODULE_YAML_CONVERTER_UNSUPPORTED in the adapter
-// operator .cpp files.)
-template <>
-struct YAML::convert<std::shared_ptr<hololink::module::VsyncInterfaceV1>> {
-    static Node encode(std::shared_ptr<hololink::module::VsyncInterfaceV1>&)
-    {
-        throw std::runtime_error("Unsupported");
-    }
-    static bool decode(const Node&, std::shared_ptr<hololink::module::VsyncInterfaceV1>&)
-    {
-        throw std::runtime_error("Unsupported");
-    }
+struct VsyncStartParams {
+    // Required: the Parameter is declared without a default in the HSDK4 original, so
+    // omitting it there failed operator initialization. Params has no such enforcement --
+    // compute() checks for null explicitly instead.
+    std::shared_ptr<hololink::module::VsyncInterfaceV1> vsync;
 };
 
-/* One-shot holoscan operator whose first compute() fires
- * vsync->start(). Wired into an application's compose() with a
- * CountCondition(1) and no input/output ports. Holoscan invokes
- * compute() only after every operator's start() has run — including
- * the RoceReceiverOp::device_start lambdas that arm each camera.
- * By the time this fires, the cameras are in external-sync waiting
- * state, so the first VSYNC pulse lands on all of them simultaneously
- * and frame N on each receiver tracks the same trigger edge.
+/* One-shot holoscan operator whose compute() fires vsync->start(), activated by a short OnClock
+ * tick (there is nothing to trigger on otherwise). Like the HSDK4 original's CountCondition(1),
+ * Contract::complete_after(ComputeCalls{1}) completes it after that one call, so it doesn't keep
+ * the run from completing at --frame-limit. HSDK5 accepts complete_after() only for an operator
+ * with at least one output, hence the "done" output, which is never connected or emitted.
  *
- * The vsync source is taken via a holoscan::Parameter — applications
- * pass holoscan::Arg("vsync", vsync) to make_operator. Required: the
- * Parameter is declared without a default, so omitting the Arg
- * fails operator initialization. */
-class VsyncStartOp : public holoscan::Operator {
+ * Holoscan invokes compute() only after every operator's start() has run -- including the
+ * RoceReceiverOp::device_start lambdas that arm each camera. By the time this first fires,
+ * the cameras are in external-sync waiting state, so the first VSYNC pulse lands on all of
+ * them simultaneously and frame N on each receiver tracks the same trigger edge. */
+class VsyncStartOp : public holoscan::Operator<VsyncStartParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(VsyncStartOp)
+    holoscan::Output<std::uint32_t> done { "done" };
 
-    VsyncStartOp() = default;
+    void setup(holoscan::OperatorSpec& spec) override { spec.output(done, "done"); }
 
-    void setup(holoscan::OperatorSpec& spec) override
+    [[nodiscard]] holoscan::Contract contract() const override
     {
-        register_converter<std::shared_ptr<hololink::module::VsyncInterfaceV1>>();
-
-        spec.param(vsync_, "vsync",
-            "Vsync source",
-            "Vsync source whose start() is fired once when this "
-            "operator's compute() runs.");
+        holoscan::Contract c;
+        c.trigger(holoscan::OnClock { .period = std::chrono::milliseconds(1) })
+            .complete_after(holoscan::ComputeCalls { .limit = 1U });
+        return c;
     }
 
-    void compute(holoscan::InputContext& /*op_input*/,
-        holoscan::OutputContext& /*op_output*/,
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute(
         holoscan::ExecutionContext& /*context*/) override
     {
-        const hololink_module_status_t status = vsync_.get()->start();
-        if (status != HOLOLINK_MODULE_OK) {
-            throw std::runtime_error(
-                "While starting VSYNC pulses from VsyncStartOp: status "
-                + std::to_string(static_cast<int>(status)));
+        const auto& p = params();
+        if (!p.vsync) {
+            return holoscan::make_unexpected(holoscan::Error {
+                holoscan::ErrorCode::kInvalidArgument, "VsyncStartOp: vsync was not set" });
         }
+        const hololink_module_status_t status = p.vsync->start();
+        if (status != HOLOLINK_MODULE_OK) {
+            return holoscan::make_unexpected(holoscan::Error { holoscan::ErrorCode::kFailure,
+                "While starting VSYNC pulses from VsyncStartOp: status "
+                    + std::to_string(static_cast<int>(status)) });
+        }
+        return {};
     }
-
-private:
-    holoscan::Parameter<std::shared_ptr<hololink::module::VsyncInterfaceV1>> vsync_;
 };
 
 #endif // HOLOLINK_EXAMPLES_VSYNC_START_OP_HPP

@@ -35,8 +35,9 @@ explains how; the rest of this page builds a working player first.
 
 This tutorial builds a player that receives video from an IMX274 camera and displays it.
 The complete program ships as `imx274_module_tutorial.py` (Python) and
-`imx274_module_tutorial` (C++); every snippet below is taken from it. Pick your language
-with the tabs.
+`imx274_module_tutorial` (C++, built from `examples/imx274_module_tutorial.cpp`); the
+snippets in each tab are taken from the program in that language. Pick your language
+with the tabs. Both programs use the Holoscan SDK 5 API.
 
 ### Configuration
 
@@ -55,43 +56,62 @@ The player is a Holoscan pipeline of five operators. Data flows left to right:
 receiver -> csi_to_bayer -> image_processor -> demosaic -> holoviz
 ```
 
+The first two links each carry two streams: the frame (`tensor`) and its capture
+metadata (`metadata`). Only the image goes on to the demosaic, so the metadata output of
+`image_processor` stays unconnected; hololink operators skip an unconnected metadata
+output.
+
 While data flow starts with the receiver operator, we can't construct it without knowing
-some configuration (specifically the receiver buffer size) that comes from
-`csi_to_bayer`. So build `CsiToBayerOp`, configure it against the camera, and read back
-the frame size:
+some configuration (specifically the receiver buffer size) that comes from the CSI to
+Bayer converter. So configure the converter against the camera, read back the frame
+size, and build `CsiToBayerOp`:
 
 <Tabs>
 
 <Tab title="Python" language="python">
 
 ```python
-  csi_op = hololink_module.operators.CsiToBayerOp(
-      self,
-      name="csi_to_bayer",
-      allocator=csi_to_bayer_pool,
-      cuda_device_ordinal=self._cuda_device_ordinal,
-  )
+  converter = hololink_module.CsiToBayerConverter()
   # Configuring the converter tells us how big each received frame is.
-  self._camera.configure_converter(csi_op)
-  frame_size = csi_op.get_csi_length()
+  camera.configure_converter(converter)
+  frame_size = converter.get_csi_length()
+  geometry = converter.geometry()
+  csi = graph.op(
+      hololink_module.operators.CsiToBayerOp,
+      "csi_to_bayer",
+      cuda_device_ordinal=cu_device_ordinal,
+      geometry=geometry,
+      bayer_format=bayer_name,
+  )
 ```
 
 </Tab>
 <Tab title="C++" language="cpp">
 
 ```cpp
-  auto csi_to_bayer_operator = make_operator<hololink::module::operators::CsiToBayerOp>(
-      "csi_to_bayer",
-      holoscan::Arg("allocator", csi_to_bayer_pool),
-      holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
+  hololink::module::csi::CsiGeometry geometry;
   // Configuring the converter tells us how big each received frame is.
-  camera_->configure_converter(csi_to_bayer_operator);
-
-  const size_t frame_size = csi_to_bayer_operator->get_csi_length();
+  camera->configure_converter(
+      hololink::module::operators::CsiToBayerOp::make_geometry_adapter(geometry));
+  const size_t frame_size = geometry.start_byte
+      + geometry.bytes_per_line * geometry.pixel_height + geometry.trailing_bytes;
+  // ...
+  auto csi = graph.op<hololink::module::operators::CsiToBayerOp>("csi_to_bayer");
+  csi.set_params(hololink::module::operators::CsiToBayerParams {
+      .cuda_device_ordinal = cu_device_ordinal,
+      .geometry = geometry,
+      .bayer_format = bayer_format,
+  });
 ```
 
 </Tab>
 </Tabs>
+
+`graph.op()` adds an operator to the Holoscan `Graph`. In C++, `set_params()` then
+configures it; in Python, `graph.op()` takes the parameters as keyword arguments.
+`graph.op()` defers constructing the operator, so the camera reports its geometry
+instead of configuring a live operator: into a `CsiGeometry` through an adapter in C++,
+and into a `CsiToBayerConverter` in Python.
 
 `RoceReceiverOp` configures itself from the enumeration metadata to listen for data on
 the enumerated channel. The `device_start` / `device_stop` callbacks start and stop the
@@ -102,14 +122,14 @@ camera around streaming:
 <Tab title="Python" language="python">
 
 ```python
-  receiver = hololink_module.operators.RoceReceiverOp(
-      self,
-      name="receiver",
-      enumeration_metadata=self._metadata,
-      frame_context=self._cuda_context,
+  receiver = graph.op(
+      hololink_module.operators.RoceReceiverOp,
+      "receiver",
+      metadata=metadata,
+      frame_context=int(cu_context),
       frame_size=frame_size,
-      device_start=self._camera.start,
-      device_stop=self._camera.stop,
+      device_start=camera.start,
+      device_stop=camera.stop,
   )
 ```
 
@@ -117,13 +137,15 @@ camera around streaming:
 <Tab title="C++" language="cpp">
 
 ```cpp
-  auto receiver_operator = make_operator<hololink::module::operators::RoceReceiverOp>(
+  auto receiver = graph.op<hololink::module::operators::RoceReceiverOp>(
       "receiver",
-      holoscan::Arg("enumeration_metadata", metadata_),
-      holoscan::Arg("frame_context", cuda_context_),
-      holoscan::Arg("frame_size", frame_size),
-      holoscan::Arg("device_start", std::function<void()>([this] { camera_->start(); })),
-      holoscan::Arg("device_stop", std::function<void()>([this] { camera_->stop(); })));
+      metadata,
+      [camera] { camera->start(); },
+      [camera] { camera->stop(); });
+  receiver.set_params(hololink::module::operators::RoceReceiverParams {
+      .frame_context = cu_context,
+      .frame_size = frame_size,
+  });
 ```
 
 </Tab>
@@ -133,9 +155,56 @@ Three operators finish the pipeline:
 
 - `ImageProcessorOp` is a `hololink_module` operator that provides a naive ISP of Bayer
   data (e.g. RGGB) using the GPU.
-- `BayerDemosaicOp` is a standard Holoscan operator that interpolates the Bayer grid
-  into RGBA.
+- `BayerDemosaicOp` is a standard Holoscan operator that interpolates the 16-bit Bayer
+  grid into 16-bit RGBA.
 - `HolovizOp` is a standard Holoscan operator that displays the result.
+
+`BayerDemosaicOp` and `HolovizOp` come from the SDK's vision and visualization modules
+(`holoscan::vision` and `holoscan::visualization` in C++, `holoscan_vision` and
+`holoscan_visualization` in Python). Both programs open a 1920x1080 window titled
+"Holoviz", with one image layer for the camera's 16-bit RGBA frames. The C++ program
+adds `HolovizOp` with `hx::add_holoviz()`, one of the helpers it shares with the other
+example players (`examples/player_support.hpp`), with the default layer trigger, which
+renders each frame as it arrives:
+
+```cpp
+  holoscan::visualization::LayerStack layers;
+  layers.add_image_layer("video", hx::rgba16_layer(camera->width(), camera->height()));
+
+  // A 1920x1080 window titled "Holoviz" that renders each frame as it arrives.
+  holoscan::CompileOptions compile_options;
+  auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers), hx::DisplayConfig {}, compile_options,
+      cu_device_ordinal);
+```
+
+The Python program adds it by its catalog name and draws 60 times a second, as the other
+Python players do:
+
+```python
+  visualizer = graph.op(
+      "holoscan.visualization.HolovizOp",
+      "holoviz",
+      layers=[
+          {
+              "port_name": "video",
+              "kind": "image",
+              "format": "rgba16_unorm",
+              "max_width": camera._width,
+              "max_height": camera._height,
+          }
+      ],
+      sink={
+          "kind": "window",
+          # The demosaiced data is linear sensor output: encode to sRGB on write.
+          "framebuffer_srgb": True,
+          "title": "Holoviz",
+          "width": 1920,
+          "height": 1080,
+          "close_on_escape": True,
+      },
+      trigger={"kind": "clock", "period_ns": round(1e9 / 60.0)},
+  )
+```
 
 Wire the operators together:
 
@@ -144,24 +213,39 @@ Wire the operators together:
 <Tab title="Python" language="python">
 
 ```python
-  self.add_flow(receiver, csi_op, {("output", "input")})
-  self.add_flow(csi_op, image_proc, {("output", "input")})
-  self.add_flow(image_proc, demosaic, {("output", "receiver")})
-  self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
+  graph.add_flow(receiver.tensor, csi.in_tensor, queue_depth=2)
+  graph.add_flow(receiver.metadata, csi.in_metadata, queue_depth=2)
+  graph.add_flow(csi.tensor, image_processor.in_tensor, queue_depth=2)
+  graph.add_flow(csi.metadata, image_processor.in_metadata, queue_depth=2)
+  graph.add_flow(image_processor.tensor, demosaic.input, queue_depth=2)
+  graph.add_flow(
+      demosaic.output,
+      visualizer.video,
+      queue_policy=hs.QueuePolicy.DROP_OLDEST,
+      queue_depth=1,
+  )
 ```
 
 </Tab>
 <Tab title="C++" language="cpp">
 
 ```cpp
-  add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
-  add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
-  add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
-  add_flow(demosaic, visualizer, { { "transmitter", "receivers" } });
+  graph.add_flow(receiver->tensor, csi->input_tensor, hx::pipeline_edge());
+  graph.add_flow(receiver->metadata, csi->input_metadata, hx::pipeline_edge());
+  graph.add_flow(csi->output_tensor, ip->input_tensor, hx::pipeline_edge());
+  graph.add_flow(csi->output_metadata, ip->input_metadata, hx::pipeline_edge());
+  graph.add_flow(ip->output_tensor, demosaic->input, hx::pipeline_edge());
+  graph.add_flow(demosaic->output, viz->image_layer_input(0), hx::display_edge());
 ```
 
 </Tab>
 </Tabs>
+
+Each link of the chain gets a two-frame queue (`hx::pipeline_edge()` in C++): one frame
+being processed and one waiting. The link into `HolovizOp` gets a one-frame queue that
+drops the oldest frame (`hx::display_edge()` in C++), so that where `HolovizOp` runs on
+a thread of its own, a display that falls behind skips to the newest frame instead of
+holding the pipeline back.
 
 ### Application initialization
 
@@ -209,8 +293,7 @@ driver resolves the services it needs from the metadata internally:
 <Tab title="C++" language="cpp">
 
 ```cpp
-  auto camera = std::make_shared<hololink::module::sensors::imx274::Imx274Cam>(
-      metadata);
+  auto camera = std::make_shared<hololink::module::sensors::imx274::Imx274Cam>(metadata);
 ```
 
 </Tab>
@@ -263,8 +346,18 @@ close the socket:
 <Tab title="Python" language="python">
 
 ```python
-  app = HoloscanApplication(cu_context, cu_device_ordinal, metadata, camera)
-  app.run()
+  graph, options = build_graph(cu_context, cu_device_ordinal, metadata, camera)
+  plan = hs.compile(graph, options)
+  # ...
+  # Run until the window closes or Ctrl+C, then report how the run ended.
+  with hs.run_async(plan) as session:
+      try:
+          session.wait()
+      except KeyboardInterrupt:
+          # Leaving the block stops the session cooperatively, which stops the camera.
+          pass
+  # ...
+  # Stop streaming data and close up sockets.
   hololink.stop()
 ```
 
@@ -272,14 +365,28 @@ close the socket:
 <Tab title="C++" language="cpp">
 
 ```cpp
-  auto application = holoscan::make_application<HoloscanApplication>(
-      cu_context, cu_device_ordinal, metadata, camera);
-  application->run();
+  const auto plan = holoscan::compile(graph, std::move(compile_options));
+  // ...
+  // Run until the window closes or Ctrl+C, then report how the run ended.
+  auto session = holoscan::run_async(plan, signals);
+  session.wait();
+  const bool failed = hx::report_session(session, plan);
+
+  // Stop streaming data and close up sockets.
   hololink->stop();
 ```
 
 </Tab>
 </Tabs>
+
+`compile()` turns the graph into an execution plan, after the program has bound the
+operators' tensor outputs to the GPU with `bind_tensor_output_device()`. In Python,
+Ctrl+C or SIGTERM raises `KeyboardInterrupt` in `session.wait()`, and leaving the `with`
+block stops the session cooperatively. `main()` runs everything inside
+`hx::run_with_managed_signals()`, and the session runs bound to those managed shutdown
+signals: Ctrl+C, like closing the window, stops it cooperatively, so the camera and the
+board are still stopped on the way out. `hx::report_session()` prints the session's
+diagnostics and returns true on failure.
 
 ### Build and run the application
 

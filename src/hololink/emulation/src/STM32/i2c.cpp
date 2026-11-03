@@ -138,6 +138,15 @@ void i2c_transaction(I2CControllerCtxt* i2c_ctxt, uint32_t value)
     uint16_t num_bytes_write = i2c_ctxt->registers[I2C_REG_NUM_BYTES / REGISTER_SIZE] & 0xFFFF;
     uint16_t num_bytes_read = (i2c_ctxt->registers[I2C_REG_NUM_BYTES / REGISTER_SIZE] >> 16) & 0xFFFF;
 
+    // The host can program any 16-bit count into I2C_REG_NUM_BYTES, but the data window
+    // behind it is only I2C_DATA_BUFFER_SIZE bytes (the real controller rejects more, see
+    // Hololink::I2c::i2c_transaction). Fail the transaction here rather than let a
+    // peripheral read or write past `data`.
+    if (num_bytes_write > I2C_DATA_BUFFER_SIZE || num_bytes_read > I2C_DATA_BUFFER_SIZE) {
+        i2c_ctxt->status = I2C_I2C_ERR;
+        return;
+    }
+
 #ifdef I2C_TEST_MODE
     if (general_call_address == peripheral_address) {
         // write dummy data to the data buffer for receipt

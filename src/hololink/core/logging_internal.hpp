@@ -37,36 +37,36 @@ using buffer_context = buffered_context<Char>;
 #endif
 
 /**
- * @brief Formatter for Metadata
+ * @brief Formatter for Metadata.
  *
  * @tparam
  */
 template <>
 struct fmt::formatter<hololink::Metadata> : fmt::formatter<fmt::string_view> {
     /**
-     * @brief Format function for Metadata
+     * @brief Format function for Metadata.
      *
      * @param metadata
      * @param ctx
-     * @return auto
+     * @return auto.
      */
     auto format(const hololink::Metadata& metadata, fmt::format_context& ctx) const
         -> decltype(ctx.out());
 };
 
 /**
- * @brief Formatter for a Metadata element
+ * @brief Formatter for a Metadata element.
  *
  * @tparam
  */
 template <>
 struct fmt::formatter<hololink::Metadata::Element> : fmt::formatter<fmt::string_view> {
     /**
-     * @brief Format function for Metadata element
+     * @brief Format function for Metadata element.
      *
      * @param element
      * @param ctx
-     * @return auto
+     * @return auto.
      */
     auto format(const hololink::Metadata::Element& element, fmt::format_context& ctx) const
         -> decltype(ctx.out());

@@ -206,4 +206,130 @@ task generate_sensor_data_patterns();
              num_frames * frame_size_bytes, num_frames * frame_size_words, `DATAPATH_WIDTH));
 endtask
 
+//==============================================================================
+// All-Sensor Demo Stimulus - One Default VP Per Sensor, Packetizer Untouched
+//==============================================================================
+function automatic logic [`DATAPATH_WIDTH-1:0] make_all_sensor_data_pattern(
+    input int sensor_id,
+    input int frame_id,
+    input int word_id
+);
+    logic [`DATAPATH_WIDTH-1:0] pattern;
+    pattern = '0;
+
+    // Keep sensor identity in the low 32 bits so narrow sensor interfaces still
+    // carry an obvious marker in packet payloads and waveforms.
+    pattern[7:0]   = 8'(word_id);
+    pattern[15:8]  = 8'(word_id >> 8);
+    pattern[23:16] = 8'(frame_id);
+    pattern[31:24] = 8'(sensor_id);
+
+    if (`DATAPATH_WIDTH >= 64) begin
+        pattern[39:32] = 8'hA0 | 8'(sensor_id);
+        pattern[47:40] = 8'h5A;
+        pattern[55:48] = 8'(frame_id >> 8);
+        pattern[63:56] = 8'(word_id >> 16);
+    end
+
+    return pattern;
+endfunction
+
+task automatic prepopulate_expected_sensor_frame(input int sensor_id, input int frame_id, input int global_frame_id);
+    automatic int sensor_width;
+    automatic int sensor_bytes;
+    automatic int frame_size_words_sensor;
+    automatic logic [`DATAPATH_WIDTH-1:0] data_pattern;
+
+    sensor_width = SIF_RX_WIDTH[sensor_id];
+    sensor_bytes = sensor_width / 8;
+    frame_size_words_sensor = FRAME_SIZE_BYTES / sensor_bytes;
+
+    expected_sensor_data[global_frame_id] = new[FRAME_SIZE_BYTES];
+    for (int word = 0; word < frame_size_words_sensor; word++) begin
+        data_pattern = make_all_sensor_data_pattern(sensor_id, frame_id, word);
+        for (int byte_idx = 0; byte_idx < sensor_bytes; byte_idx++) begin
+            expected_sensor_data[global_frame_id][word*sensor_bytes + byte_idx] = data_pattern[byte_idx*8 +: 8];
+        end
+    end
+endtask
+
+task automatic send_sensor_frame(input int sensor_id, input int frame_id);
+    automatic int sensor_width;
+    automatic int sensor_bytes;
+    automatic int frame_size_words_sensor;
+    automatic int global_frame_id;
+    automatic logic [`DATAPATH_WIDTH-1:0] data_pattern;
+    automatic logic [`DATAKEEP_WIDTH-1:0] keep_val;
+
+    sensor_width = SIF_RX_WIDTH[sensor_id];
+    sensor_bytes = sensor_width / 8;
+    frame_size_words_sensor = FRAME_SIZE_BYTES / sensor_bytes;
+    global_frame_id = get_all_sensor_global_frame_id(sensor_id, frame_id);
+
+    prepopulate_expected_sensor_frame(sensor_id, frame_id, global_frame_id);
+
+    keep_val = '0;
+    for (int b = 0; b < sensor_bytes; b++) begin
+        keep_val[b] = 1'b1;
+    end
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf("===== Transmitting SENSOR[%0d] FRAME %0d (global frame %0d, width=%0d, words=%0d) =====",
+             sensor_id, frame_id, global_frame_id, sensor_width, frame_size_words_sensor));
+
+    for (int word = 0; word < frame_size_words_sensor; word++) begin
+        data_pattern = make_all_sensor_data_pattern(sensor_id, frame_id, word);
+
+        i_sif_axis_tdata[sensor_id]  <= data_pattern;
+        i_sif_axis_tkeep[sensor_id]  <= keep_val;
+        i_sif_axis_tuser[sensor_id]  <= 2'h0;
+        i_sif_axis_tvalid[sensor_id] <= 1'b1;
+        i_sif_axis_tlast[sensor_id]  <= (word == (frame_size_words_sensor - 1));
+
+        if (word == 0 || word == (frame_size_words_sensor - 1)) begin
+            `TB_LOG_LOW(LOG_INFO, $sformatf("SENSOR[%0d] Transfer: frame=%0d word=%0d/%0d data=0x%0h tkeep=0x%0h tlast=%b",
+                     sensor_id, frame_id, word, frame_size_words_sensor-1, data_pattern, keep_val,
+                     (word == (frame_size_words_sensor - 1))));
+        end
+
+        @(posedge sif_clk);
+        while (!o_sif_axis_tready[sensor_id]) @(posedge sif_clk);
+    end
+
+    i_sif_axis_tvalid[sensor_id] <= 1'b0;
+    i_sif_axis_tlast[sensor_id]  <= 1'b0;
+
+    @(posedge sif_clk);
+    i_sif_axis_tdata[sensor_id] <= {`DATAPATH_WIDTH{1'b0}};
+    i_sif_axis_tkeep[sensor_id] <= {`DATAKEEP_WIDTH{1'b0}};
+    i_sif_axis_tuser[sensor_id] <= 2'h0;
+
+    sensor_frames_generated++;
+    sensor_frames_generated_by_sensor[sensor_id]++;
+    `TB_LOG_LOW(LOG_PASS, $sformatf("SENSOR[%0d] FRAME %0d transmitted with marker 0x%02x",
+             sensor_id, frame_id, 8'hA0 | 8'(sensor_id)));
+endtask
+
+task generate_all_sensor_data_patterns();
+    automatic int num_frames = TOTAL_TEST_FRAMES;
+    automatic int total_expected_frames = `SENSOR_RX_IF_INST * TOTAL_TEST_FRAMES;
+
+    `TB_LOG_LOW(LOG_INFO, "Starting ALL_SENSORS data generation (sequential demo mode)");
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Configuration: %0d sensors × %0d frames = %0d expected frames",
+             `SENSOR_RX_IF_INST, num_frames, total_expected_frames));
+
+    for (int sensor = 0; sensor < `SENSOR_RX_IF_INST; sensor++) begin
+        for (int frame = 0; frame < num_frames; frame++) begin
+            send_sensor_frame(sensor, frame);
+            if (frame < (num_frames - 1)) begin
+                repeat(1000) @(posedge sif_clk);
+            end
+        end
+        if (sensor < (`SENSOR_RX_IF_INST - 1)) begin
+            repeat(1000) @(posedge sif_clk);
+        end
+    end
+
+    `TB_LOG_LOW(LOG_PASS, $sformatf("ALL_SENSORS data generation complete: %0d frames generated", sensor_frames_generated));
+endtask
+
 `endif // HOLOLINK_SENSOR_STIM_SVH

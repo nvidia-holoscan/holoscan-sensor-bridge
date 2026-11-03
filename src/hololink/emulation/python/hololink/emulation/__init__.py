@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,12 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import importlib
-import sys
+"""HSB emulator: ``import hololink.emulation as hemu``.
 
+One nanobind extension (``_emulation``) provides both this module and the
+``hololink.emulation.sensors`` submodule, so the C++ sensor emulators derive from the
+``I2CPeripheral`` bound here without any cross-module type lookup.
+"""
+
+from . import sensors
 from ._emulation import (
     HSB_EMULATOR_CONFIG,
     HSB_LEOPARD_EAGLE_CONFIG,
+    AddressValuePair,
     COEDataPlane,
     DataPlane,
     HSBConfiguration,
@@ -28,11 +34,14 @@ from ._emulation import (
     I2CStatus,
     IPAddress,
     RoCEv2DataPlane,
+    hsb_config_set_uuid,
 )
 
+# The Linux UDP receiver consumes the same RoCEv2 packet stream.
 LinuxDataPlane = RoCEv2DataPlane
 
 __all__ = [
+    "AddressValuePair",
     "COEDataPlane",
     "DataPlane",
     "HSB_EMULATOR_CONFIG",
@@ -45,23 +54,6 @@ __all__ = [
     "IPAddress",
     "RoCEv2DataPlane",
     "LinuxDataPlane",
+    "hsb_config_set_uuid",
     "sensors",
 ]
-
-_SUBMODULES = {
-    "sensors": "sensors",
-}
-
-
-# Lazily load submodules.
-# this is needed to avoid circular imports from loading Vb1940Emulator, which depends on both I2CPeripheral and I2CController
-def __getattr__(attr):
-    if attr in _SUBMODULES:
-        module_name = ".".join([__name__, _SUBMODULES[attr]])
-        if module_name in sys.modules:  # cached
-            module = sys.modules[module_name]
-        else:
-            module = importlib.import_module(module_name)  # import
-            sys.modules[module_name] = module  # cache
-        return module
-    raise AttributeError(f"module {__name__} has no attribute {attr}")

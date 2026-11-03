@@ -166,7 +166,6 @@ priority_arb #(
   .WIDTH      ( W_EVENT                       )
 ) u_priority_arb (
   .clk        ( i_aclk                        ),
-  .rst_n      ( '1                            ),
   .rst        ( i_arst                        ),
   .idle       ( (evt_state == IDLE)           ),
   .req        ( fifo_active ? (req^mask) : '0 ),

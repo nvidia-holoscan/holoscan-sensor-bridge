@@ -56,6 +56,16 @@ navigation:
         title: Emulation API
         slug: emulation-api
         collapsed: true
+      # Same arrangement for the versioned service interfaces (docs.yml
+      # `libraries.hololink-module`): point at the deep subtree so the
+      # `hololink -> namespaces -> module` breadcrumb is skipped. Keep this
+      # path in sync with GENERATED_API_FOLDERS in
+      # docs/scripts/build_hololink_docs.py, which writes the placeholder
+      # that keeps unauthenticated builds resolving.
+      - folder: ./generated/api-reference/cpp/module/hololink/namespaces/module
+        title: Module API
+        slug: module-api
+        collapsed: true
 
   - section: FPGA IP
     contents:
@@ -83,6 +93,8 @@ navigation:
         path: ../ip_integration.mdx
       - page: Simulation
         path: ../simulation.mdx
+      - page: Getting Started with IP
+        path: ../getting_started_ip.mdx
       - page: Hardware Debug
         path: ../hardware_debug.mdx
       - page: Known Limitations
@@ -105,7 +117,10 @@ navigation:
   - section: Resources
     collapsed: true
     contents:
+      # This path serves the Holoscan SDK 5 user guide (version label "5.0 (Latest)").
       - link: Holoscan SDK documentation
         href: https://docs.nvidia.com/holoscan/sdk-user-guide
       - link: GitHub repository
-        href: https://github.com/nvidia-holoscan/hololink
+        href: https://github.com/nvidia-holoscan/holoscan-sensor-bridge
+      - link: Holoscan Sensor Bridge Hub
+        href: https://github.com/nvidia-holoscan/holoscan-sensor-bridge-hub/tree/main

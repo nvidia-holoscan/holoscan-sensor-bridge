@@ -1,42 +1,47 @@
 ## RoceReceiverOp
 
-Receiver operators, including RoceReceiverOp and LinuxReceiverOperator specifications
-include:
+Receiver operators, including RoceReceiverOp and LinuxReceiverOp specifications include:
 
-- Always return the most recently received video frame. This operator will never return
-  a video frame older than 1 frame time. If the pipeline is busy and is unavailable to
-  accept incoming video frames, older frame data is replaced with newer frame data. If
-  the frame request occurs while another frame is being received, this operator returns
-  the last completed video frame.
+- Publish each completed video frame one time. The receiver publishes the frame on its
+  `tensor` output port and the frame's capture metadata on its `metadata` output port.
+  Holoscan calls the receiver's `compute` method when a new frame is complete. With
+  `watch_ingress=True` (the sub-frame players set it), Holoscan also calls `compute`
+  after each second without a frame. These calls also count toward `frame_limit`.
+- Drop frames instead of blocking the camera. The receiver drops a frame when a
+  downstream queue is full or when no free buffer is available. The receiver logs the
+  number of dropped frames once per second. To always process the newest frame, give
+  each link a one-frame queue that drops the oldest frame. In Python, use
+  `hs.QueuePolicy.DROP_OLDEST`. The example applications do this for `HolovizOp`.
 - Never return the same video frame twice. If the pipeline is faster than a video
-  reception time, the pipeline will block until the next incoming frame is complete.
+  reception time, the pipeline waits until the next incoming frame is complete.
 - PTP timestamps, sent by HSB on both the start-of-frame and the end-of-frame condition,
   are available by looking at received metadata. When PTP is properly configured, this
   provides a reliable mechanism for determining the actual latency for processing or
-  displaying this data. Note that PTP is only supported for IGX configurations.
+  displaying this data. For the PTP setup of each supported platform, see
+  [Host setup](setup.mdx).
 
 RoceReceiverOp uses RDMA with special caveats that are likely to change in future
 versions:
 
 - There is no protection against rewriting the video buffer while the pipeline is using
-  it. The current implementation allocates enough GPU memory to receive two video
-  frames, and the transmitter is configured to alternate between these two buffers.
-  Video pipelines usually start by copying the data from the receiver buffer into
-  another region of memory (via CsiToBayerOp)--this minimizes the time during which an
-  overwrite hazard can occur--but scheduling these operations is dependent on CPU
-  availability. CudaCRCOp can be used to verify that received data has not been
-  corrupted; as long as it computes the same value that's found in the receiver
-  metadata, then you've proven that the memory contents have not been updated.
+  it. The current implementation allocates enough GPU memory to receive two video frames
+  (the `pages` parameter, default 2), and the transmitter is configured to alternate
+  between these two buffers. The receiver operator copies each frame from the receiver
+  buffer into a tensor pool slot. Then it publishes the frame. This copy decreases the
+  time in which an overwrite can occur. But the time of the copy changes with the CPU
+  load. Use `ComputeCrcOp` and `CheckCrcOp` to make sure that the received data is not
+  corrupted. The two operators share a `CrcChannel` (`hololink.CrcChannel` in Python).
+  If `ComputeCrcOp` calculates the same value as the value in the receiver metadata, the
+  memory contents did not change.
 
 ## Holoscan sensor bridge IP address configuration
 
 For systems where the 192.168.0.0/24 network is unavailable, you can use the
 `hololink-set-ip` command to reconfigure sensor bridge IP addresses. Sensor bridge
 devices transmit enumeration messages based on the BOOTP protocol; the host can reply
-with a request to set the IP address to a specific value. Programs in the Holoscan
-sensor bridge host software all accept a `--hololink=<IP-address>` command line
-parameter to look for the device with the given IP address instead of the default
-192.168.0.2.
+with a request to set the IP address to a specific value. Most programs in the Holoscan
+sensor bridge host software accept a `--hololink=<IP-address>` command line parameter to
+look for the device with the given IP address instead of the default 192.168.0.2.
 
 First, locate the MAC ID and local interface that the sensor bridge port is connected to
 with the `hololink-enumerate` command. Within the
@@ -44,10 +49,10 @@ with the `hololink-enumerate` command. Within the
 
 ```none
 $ hololink-enumerate
-mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
-mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
-mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
-mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2507 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2609 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2609 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DA hsb_ip_version=0x2609 fpga_crc=0xffff ip_address=192.168.0.2 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f0np0 board=hololink-lite
+mac_id=48:B0:2D:EE:84:DB hsb_ip_version=0x2609 fpga_crc=0xffff ip_address=192.168.0.3 fpga_uuid=889b7ce3-65a5-4247-8b05-4ff1904c3359 serial_number=10030032828115 interface=enP5p3s0f1np1 board=hololink-lite
 ```
 
 This configuration has two network ports, with MAC ID 48:B0:2D:EE:84:DA connected to the
@@ -115,7 +120,7 @@ expected; for examples on how to permanently configure routes, see the
 ## Network cables and adapters
 
 Please use one of the following cables to connect the sensor bridge SFP+ to the **IGX
-Devkit** or DGX Spark QSFP port:
+Thor T7000** or DGX Spark QSFP port:
 
 1. [Fiber optic cable](https://www.amazon.com/FLYPROFiber-10ft-4pack-Fiber-Length-Options/dp/B089K1J5GG)
    with
@@ -129,8 +134,8 @@ Devkit** or DGX Spark QSFP port:
    [SFP+ to QSFP](https://www.amazon.com/Converter-CVR-QSFP-SFP10G-Mellanox-MAM1Q00A-QSA-All-Metal/dp/B082V1TLHH?th=1)
    adapter
 
-Please use the following cables to connect the sensor bridge SFP+ to the **Jetson AGX
-Orin Devkit** 10G Ethernet port:
+Please use the following cables to connect the sensor bridge SFP+ to the **AGX Orin
+developer kit** 10G Ethernet port:
 
 1. [RJ45 Ethernet cable](https://www.amazon.com/Amazon-Basics-Ethernet-High-Speed-Snagless/dp/B089MGH8W3/ref=sr_1_5?crid=1KJ1COP3OKCV7&dib=eyJ2IjoiMSJ9.awXrUbdN3xPxSw8yHRVmtqoUhU1UJEBgQ7Bt3D1N-o4R66qUmZdXTiq-3z8avmIBca3drzlYJhDUl2a8emDyXxFtjeYRRH6OgEOfqtc1w9-y1SPhRXhFWKwLnC3aFhzNs6uT3x_OYvZRxUgOiadVqR8GAUdJiHgH-2SyzwUS8bM_CMRTnRdrU6y-d59mmKSet0zarNIM5FuTMVdwoBJIs_DecT4gyQQA4UnlgvC9VsXYpIxPlFkLnJGnllhPNGDUtysKngtLL1_WyhiUI5y0Q2lcAqDyHlzCCPCPRmm6Hpg.-xBCBUe3Gj5rNmopY7uoCfHAf0ybNBqeWSgi1ARCvW8&dib_tag=se&keywords=rj45%2Bethernet%2Bcable&qid=1708561933&s=electronics&sprefix=rj45%2B%2Celectronics%2C172&sr=1-5&th=1)
    with
@@ -143,9 +148,9 @@ recommendation.
 ## MTU Settings
 
 A new channel enumeration metadata parameter "mtu" is added, which can be adjusted by
-calling the `DataChannel.use_mtu()` method. By default, the 1500 Ethernet MTU is used.
-If the application suggests a different value, then the code will do one of these
-things:
+calling `hololink.use_mtu(metadata, mtu)` in Python or `DataChannel::use_mtu()` in C++,
+before the `DataChannel` is constructed. By default, the 1500 Ethernet MTU is used. If
+the application suggests a different value, then the code will do one of these things:
 
 - use the specific value you've passed in
 - use an adjusted value based on e.g. GPU page size, NIC constraints, or RDMA
@@ -163,15 +168,30 @@ Configuring the receiver to accept larger MTUs usually requires OS-level configu
 of MTU on the receiving network interface.
 [Host setup instructions](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget)
 now include recommendations to execute e.g.
-`sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4096`, for all HSB
+`sudo nmcli connection modify hololink-$EN0 802-3-ethernet.mtu 4200`, for all HSB
 connected interfaces, to allow for a larger receiver MTU. Note that you must
 reinitialize that network interface (e.g. `sudo nmcli con down hololink-$EN0` and
 `sudo nmcli con up hololink-$EN0`) for that setting to take effect.
 
-ConnectX-7, included in IGX configurations, only supports a maximum MTU of 4096--it does
-not support the industry standard 9000 byte jumbo size. For this reason, larger packets
-than 4k have not been tested. AGX Orin's network interface doesn't support an MTU larger
-than 1500.
+ConnectX-7, included in IGX Thor T7000 and DGX Spark, supports a maximum RoCE MTU of
+4096 bytes. The RoCE receiver sets this path MTU (`IBV_MTU_4096`). RoCE does not use the
+industry standard 9000 byte jumbo size. The interface MTU of 4200 in the host setup is
+larger than the RoCE MTU, so that the interface also accepts the packet headers. For
+this reason, larger packets than 4k have not been tested. AGX Orin's network interface
+doesn't support an MTU larger than 1500.
+
+The maximum MTU on Jetson AGX Thor is 4096. The AGX Thor host setup does not set an MTU
+on the `mgbe0_0` interface. Thus, the interface uses the default MTU of 1500. To use a
+larger MTU on AGX Thor, set the MTU of `mgbe0_0` to 4096 or less. Then reinitialize the
+interface:
+
+```none
+sudo nmcli connection modify hololink-mgbe0_0 802-3-ethernet.mtu 4096
+sudo nmcli con down hololink-mgbe0_0
+sudo nmcli con up hololink-mgbe0_0
+```
+
+Then request the same MTU or a smaller MTU in the application.
 
 When choosing an MTU value, note that HSB data plane packets include some overhead: 74
 bytes for RoCE or 46 for P1722B CoE, and the remainder of the MTU is available for

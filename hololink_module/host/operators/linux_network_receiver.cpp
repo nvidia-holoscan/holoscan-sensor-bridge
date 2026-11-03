@@ -24,6 +24,7 @@
 #include "hololink/module/cuda_unique.hpp" // HOLOLINK_MODULE_CUDA_CHECK
 #include "hololink/module/logging.hpp"
 #include "hololink/module/module.hpp"
+#include "hololink/module/networking.hpp" // size_receive_buffer
 #include "hololink/module/page_size.hpp" // PAGE_SIZE, round_up
 #include "hololink/module/receiver_memory_descriptor.hpp"
 #include "hololink/module/status.h"
@@ -41,27 +42,6 @@ hololink_module_status_t LinuxNetworkReceiver::construct(
     const hololink::module::EnumerationMetadata& metadata, const Config& config)
 {
     config_ = config;
-
-    auto rename = config_.rename_metadata;
-    if (!rename) {
-        rename = [](const std::string& name) { return name; };
-    }
-    frame_packets_received_key_ = rename("frame_packets_received");
-    frame_bytes_received_key_ = rename("frame_bytes_received");
-    frame_number_key_ = rename("frame_number");
-    received_frame_number_key_ = rename("received_frame_number");
-    received_s_key_ = rename("received_s");
-    received_ns_key_ = rename("received_ns");
-    timestamp_s_key_ = rename("timestamp_s");
-    timestamp_ns_key_ = rename("timestamp_ns");
-    metadata_s_key_ = rename("metadata_s");
-    metadata_ns_key_ = rename("metadata_ns");
-    packets_dropped_key_ = rename("packets_dropped");
-    crc_key_ = rename("crc");
-    psn_key_ = rename("psn");
-    imm_data_key_ = rename("imm_data");
-    page_number_key_ = rename("page_number");
-    bytes_written_key_ = rename("bytes_written");
 
     if (config_.queue_size == 0) {
         throw std::runtime_error("Queue size cannot be 0");
@@ -111,6 +91,10 @@ hololink_module_status_t LinuxNetworkReceiver::construct(
     if (socket_status != HOLOLINK_MODULE_OK) {
         return socket_status;
     }
+    // One frame of kernel buffering, so a stall in the single-threaded
+    // reassembly loop can't overflow the socket and cost us the frame-end
+    // packets that complete frames. See size_receive_buffer.
+    hololink::module::size_receive_buffer(data_socket_, config_.frame_size);
 
     receiver_
         = hololink::module::LinuxReceiverInterfaceV1::get_service(metadata);
@@ -248,30 +232,28 @@ std::shared_ptr<void> LinuxNetworkReceiver::frame_buffer_owner()
     return frame_buffer_;
 }
 
-void LinuxNetworkReceiver::stamp_metadata(holoscan::MetadataDictionary& metadata)
+void LinuxNetworkReceiver::stamp_metadata(hololink::Metadata& metadata)
 {
     // The software receiver decoded these during reassembly, so they come
     // straight off the frame-info struct — no device read or decode step.
-    metadata.set(frame_packets_received_key_,
-        static_cast<int64_t>(frame_info_.frame_packets_received));
-    metadata.set(frame_bytes_received_key_,
-        static_cast<int64_t>(frame_info_.frame_bytes_received));
-    metadata.set(frame_number_key_, static_cast<int64_t>(frame_info_.frame_number));
-    metadata.set(received_frame_number_key_,
-        static_cast<int64_t>(frame_info_.received_frame_number));
-    metadata.set(received_s_key_, static_cast<int64_t>(frame_info_.received_s));
-    metadata.set(received_ns_key_, static_cast<int64_t>(frame_info_.received_ns));
-    metadata.set(timestamp_s_key_, static_cast<int64_t>(frame_info_.timestamp_s));
-    metadata.set(timestamp_ns_key_, static_cast<int64_t>(frame_info_.timestamp_ns));
-    metadata.set(metadata_s_key_, static_cast<int64_t>(frame_info_.metadata_s));
-    metadata.set(metadata_ns_key_, static_cast<int64_t>(frame_info_.metadata_ns));
-    metadata.set(packets_dropped_key_,
-        static_cast<int64_t>(frame_info_.packets_dropped));
-    metadata.set(crc_key_, static_cast<int64_t>(frame_info_.crc));
-    metadata.set(psn_key_, static_cast<int64_t>(frame_info_.psn));
-    metadata.set(imm_data_key_, static_cast<int64_t>(frame_info_.imm_data));
-    metadata.set(page_number_key_, static_cast<int64_t>(frame_info_.imm_data & 0xFFF));
-    metadata.set(bytes_written_key_, static_cast<int64_t>(frame_info_.bytes_written));
+    // Fixed key names, matching the vocabulary BaseReceiverOp's .inl reads to
+    // populate the typed CaptureMetadataT schema (see its own field list).
+    metadata["frame_packets_received"] = static_cast<int64_t>(frame_info_.frame_packets_received);
+    metadata["frame_bytes_received"] = static_cast<int64_t>(frame_info_.frame_bytes_received);
+    metadata["frame_number"] = static_cast<int64_t>(frame_info_.frame_number);
+    metadata["received_frame_number"] = static_cast<int64_t>(frame_info_.received_frame_number);
+    metadata["received_s"] = static_cast<int64_t>(frame_info_.received_s);
+    metadata["received_ns"] = static_cast<int64_t>(frame_info_.received_ns);
+    metadata["timestamp_s"] = static_cast<int64_t>(frame_info_.timestamp_s);
+    metadata["timestamp_ns"] = static_cast<int64_t>(frame_info_.timestamp_ns);
+    metadata["metadata_s"] = static_cast<int64_t>(frame_info_.metadata_s);
+    metadata["metadata_ns"] = static_cast<int64_t>(frame_info_.metadata_ns);
+    metadata["packets_dropped"] = static_cast<int64_t>(frame_info_.packets_dropped);
+    metadata["crc"] = static_cast<int64_t>(frame_info_.crc);
+    metadata["psn"] = static_cast<int64_t>(frame_info_.psn);
+    metadata["imm_data"] = static_cast<int64_t>(frame_info_.imm_data);
+    metadata["page_number"] = static_cast<int64_t>(frame_info_.imm_data & 0xFFF);
+    metadata["bytes_written"] = static_cast<int64_t>(frame_info_.bytes_written);
 }
 
 std::shared_ptr<hololink::module::DataChannelInterfaceV1>

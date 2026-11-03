@@ -19,7 +19,7 @@ module uart #(
 )(
   // System
   input                   clk,
-  input                   rst_n,
+  input                   rst,
 
   // Configuration
   input  [15:0]           baud_div,        // Baud rate divisor for 16x oversampling
@@ -65,7 +65,7 @@ logic [15:0] baud_counter;
 logic        baud_tick;
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     baud_counter <= 0;
     baud_tick    <= 0;
   end
@@ -147,7 +147,7 @@ function automatic [4:0] calc_stop_bit_cycles(input [1:0] stop_mode);
 endfunction
     
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     tx_state           <= TX_IDLE;
     tx_oversample_cnt  <= 0;
     tx_bit_cnt         <= 0;
@@ -283,7 +283,7 @@ assign rx_start_lock = (rx_state == RX_IDLE && rx_falling_edge && rts_n_q2 == 1'
   (rx_state == RX_STOP && rx_oversample_cnt >= rx_stop_bit_cycles - 1 && rx_baud_tick && rx_falling_edge);
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     rx_baud_counter <= 0;
     rx_baud_tick    <= 0;
   end
@@ -408,7 +408,7 @@ end
 // Sample collection and voting logic
 // Note: rx_ones_count is incremented as samples are collected (not counted at end)
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
   rx_sample_buffer <= '0;
   rx_sample_count  <= 0;
   rx_ones_count    <= 0;
@@ -460,7 +460,7 @@ logic uart_rx_input;
 assign uart_rx_input = loopback_en ? tx_reg : uart_rx;
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     rx_sync  <= 2'b11;
     rts_n_q  <= 1'b0;  // Default to ready (active low)
     rts_n_q2 <= 1'b0;  // Default to ready (active low)
@@ -476,7 +476,7 @@ assign rx_falling_edge = (rx_sync == 2'b10);
 
 // RX State Machine - Unified logic using rx_bit_value and rx_bit_valid
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     rx_state          <= RX_IDLE;
     rx_oversample_cnt <= 0;
     rx_bit_cnt        <= 0;
@@ -654,7 +654,7 @@ logic                  rx_data_valid;
 logic [DATA_WIDTH-1:0] rx_data_reg;
 
 always_ff @(posedge clk) begin
-  if (!rst_n) begin
+  if (rst) begin
     rx_data_valid <= 0;
     rx_data_reg   <= 0;
   end

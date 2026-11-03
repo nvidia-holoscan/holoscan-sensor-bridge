@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,29 +13,91 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+# NOTE: This example isn't supported on Holoscan SDK 5 yet; it will be supported in an upcoming update to release 3.0.
+#
+# e-CAM0M30_TOF depth/IR sensor via RoceReceiverOp (RDMA/InfiniBand), displayed live with
+# Holoviz. Python port of this repo's own previous (HSDK4-era) Python version of this app, via
+# the HSDK5 Python bindings. Needed new low-level I2C/SPI/Serializer/Deserializer bindings (the
+# sensor driver, python/hololink/sensors/ecam0m30tof/ecam0m30tof.py, is pure Python and talks to
+# hardware directly through them, unlike IMX274/VB1940's C++-bound sensors).
+#
+#   RoceReceiverOp -> CsiToBayerOp -> ImageShiftAndProcessingOperator -> HolovizOp
+#
+# No ImageProcessorOp/BayerDemosaicOp stage -- matches the old app's own pipeline shape exactly;
+# ImageShiftAndProcessingOperator consumes CsiToBayerOp's raw tensor directly (this sensor's
+# "image" is itself a depth/IR map, not a Bayer-mosaic color image).
+#
+# In 2-plane mode (EDEPTH_MODE_DEPTH_IR), ImageShiftAndProcessingOperator splits the frame into
+# a depth half and an active-IR half, shown side by side. The old app rendered the depth half
+# with HolovizOp's InputType.DEPTH_MAP (a pseudo-colored depth ramp); this HSDK5 SDK version's
+# HolovizOp has no equivalent layer kind at all (confirmed against the SDK's own accepted-"kind"
+# list: image/geometry/text/lut only) -- the depth half renders as plain grayscale instead. A
+# real, visible behavior reduction versus the old app, not an oversight.
+#
+# --frame-limit has no HSDK5 CountCondition equivalent, so it's implemented with a small native
+# Python operator, FrameLimitOp, tapping the receiver's tensor output and counting activations
+# (same pattern as every other *_player.py port in this repo).
+#
+# Dropped, matching established precedent: --configuration (application.config(), no HSDK5
+# equivalent, every port in this repo already drops this); --pattern (camera.test_pattern(...)
+# -- ECam0M30Tof has no such method at all, so this was already dead/broken in the old app);
+# --depth-range (parsed by the old app but never actually passed to camera.configure() anywhere
+# in its own main() -- also already dead, always used configure()'s own depth_range=1 default
+# regardless of what was passed on the CLI).
+#
+# Usage:
+#   ecam0m30tof_player.py [OPTIONS]
+#
+# Options:
+#   --hololink IP                 IP address of Hololink board (default: 192.168.0.2)
+#   --camera-mode N                e-CAM0M30_TOF mode (default: 0 = depth+IR)
+#   --ibv-name NAME                IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N                   Port number of IBV device (default: 1)
+#   --expander-configuration N    I2C expander configuration (0 or 1, default: 0)
+#   --ptp-sync                    After reset, wait for PTP time to synchronize
+#   --skip-reset                  Don't call reset on the hololink device
+#   --frame-limit N               Number of frames to capture (default: unlimited)
+#   --headless                    Run without opening a window (still renders, presents nowhere)
+#   --fullscreen                  Run in fullscreen mode
+#   --log-level N                 Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
 import logging
-import os
+import signal
+import sys
+import threading
 import time
 
-import cuda.bindings.driver as cuda
 import cupy as cp
-import holoscan
+import hololink.sensors.ecam0m30tof  # noqa: F401 -- makes hl.sensors.ecam0m30tof.X resolve
+import holoscan as hs
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
+
+# below (hololink/__init__.py doesn't import the sensors subpackage itself, and Python doesn't
+# expose an unimported submodule as a parent-package attribute).
 
 
-def write_lmmi_register(camera_idx, data, addr, hololink):
-    slow_spi = hololink.get_spi(
-        hololink_module.CLNX_SPI_BUS,
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
+
+
+def write_lmmi_register(camera_idx, data, addr, hololink_dev):
+    slow_spi = hololink_dev.get_spi(
+        hl.CLNX_SPI_BUS,
         chip_select=0,
         cpol=0,
         cpha=1,
         width=1,
-        prescaler=0xF,
+        clock_divisor=0xF,
     )
     request = [0x11, 0x0C]
     while 1:  # Check Ready
@@ -53,7 +115,7 @@ def write_lmmi_register(camera_idx, data, addr, hololink):
 
 
 def reconfigurable_mipi(
-    camera_idx, lane_prog, clock_lane_settle_cycle, data_lane_settle_cycle, hololink
+    camera_idx, lane_prog, clock_lane_settle_cycle, data_lane_settle_cycle, hololink_dev
 ):
     logging.debug(lane_prog, clock_lane_settle_cycle, data_lane_settle_cycle)
 
@@ -65,15 +127,14 @@ def reconfigurable_mipi(
 
     logging.debug(reg0A, reg0B, reg0C, reg0F, reg10)
 
-    write_lmmi_register(camera_idx, reg0A, 0x0A, hololink)
-    write_lmmi_register(camera_idx, reg0B, 0x0B, hololink)
-    write_lmmi_register(camera_idx, reg0C, 0x0C, hololink)
-    write_lmmi_register(camera_idx, reg0F, 0x0F, hololink)
-    write_lmmi_register(camera_idx, reg10, 0x10, hololink)
+    write_lmmi_register(camera_idx, reg0A, 0x0A, hololink_dev)
+    write_lmmi_register(camera_idx, reg0B, 0x0B, hololink_dev)
+    write_lmmi_register(camera_idx, reg0C, 0x0C, hololink_dev)
+    write_lmmi_register(camera_idx, reg0F, 0x0F, hololink_dev)
+    write_lmmi_register(camera_idx, reg10, 0x10, hololink_dev)
 
 
-def program_mipi_phy(camera_idx, num_lanes, clock_freq, hololink):
-
+def program_mipi_phy(camera_idx, num_lanes, clock_freq, hololink_dev):
     lane_prog = num_lanes - 1
     if clock_freq >= 1000:
         data_lane_settle_cycle = 6
@@ -87,7 +148,11 @@ def program_mipi_phy(camera_idx, num_lanes, clock_freq, hololink):
         data_lane_settle_cycle = 11
     clock_lane_settle_cycle = 9
     reconfigurable_mipi(
-        camera_idx, lane_prog, clock_lane_settle_cycle, data_lane_settle_cycle, hololink
+        camera_idx,
+        lane_prog,
+        clock_lane_settle_cycle,
+        data_lane_settle_cycle,
+        hololink_dev,
     )
 
 
@@ -100,171 +165,381 @@ def convert_depth_to_grayscale(depth_image):
     return depth_grayscale
 
 
-class ImageShiftAndProcessingOperator(holoscan.core.Operator):
-    def __init__(self, *args, no_of_planes=1, **kwargs):
+class _FrameLimit:
+    """Shared state for --frame-limit: a single counter (this app is single-sensor)."""
+
+    lock = threading.Lock()
+    count = 0
+    limit = 0
+
+    @classmethod
+    def reset(cls, limit):
+        with cls.lock:
+            cls.count = 0
+            cls.limit = limit
+
+    @classmethod
+    def record(cls):
+        """Counts a frame; True once the limit is reached."""
+        with cls.lock:
+            cls.count += 1
+            return cls.limit > 0 and cls.count >= cls.limit
+
+
+class FrameLimitOp(hs.Operator):
+    """Count captured frames toward --frame-limit; see _FrameLimit."""
+
+    input = hs.Input("input", hs.payload.Tensor)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+        if _FrameLimit.record():
+            context.request_stop()
+
+
+class ImageShiftAndProcessingOperator(hs.Operator):
+    """Converts the raw uint16 depth/IR tensor to uint8 grayscale; in 2-plane (depth+IR) mode,
+    splits it into a depth half and a doubled active-IR half (replicated across 3 channels,
+    matching the old app's own RGB color-map construction), emitted on separate ports for
+    HolovizOp's side-by-side dual-view layout. See the file-level comment for why the depth
+    half is plain grayscale here, not a pseudo-colored depth ramp."""
+
+    # CsiToBayerOp's own "tensor" output (this operator's producer) and HolovizOp's "image"-kind
+    # layer inputs are both schema-typed (holoscan.schema.Image), not a bare hs.payload.Tensor --
+    # confirmed via GRAPH_PORT_TYPE_MISMATCH when this was first written with the latter.
+    input = hs.Input("input", hs.schema.Image)
+    image = hs.Output("image", hs.schema.Image)
+    depth = hs.Output("depth", hs.schema.Image)
+
+    no_of_planes = hs.Param(1)
+
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._no_of_planes = no_of_planes
         self._color_map = cp.zeros((480, 640, 3), cp.uint8)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.input, queue_depth=4)
+        spec.output(self.image)
+        if self.no_of_planes == 2:
+            spec.output(self.depth)
 
-    def start(self):
-        pass
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
 
-    def stop(self):
-        pass
-
-    def compute(self, op_input, op_output, context):
-        # Get input message
-        in_message = op_input.receive("input")
-        msg = in_message.get("image")
-        cp_frame = cp.asarray(msg)
+    def compute(self, context):
+        # self.input is schema-typed (holoscan.schema.Image, not a bare Tensor -- see its own
+        # comment above): receive_data() returns the materialized Image struct, whose own
+        # `data` field (not the Image object itself) carries the actual DLPack-compatible
+        # Tensor (see image.fbs's own `data: Tensor` field doc).
+        image_value = self.input.receive_data()
+        cp_frame = cp.from_dlpack(image_value.data)
         cp_frame_uint8 = convert_depth_to_grayscale(cp_frame)
-        if self._no_of_planes == 1:
-            op_output.emit({"image": cp_frame_uint8}, "output")
-        elif self._no_of_planes == 2:
+        if self.no_of_planes == 1:
+            self.image.emit(
+                hs.schema.Image(
+                    height=480,
+                    width=640,
+                    # hs.schema.ImageEncoding does not resolve -- the schema module's
+                    # __getattr__ only lazily re-exports a fixed set of top-level names
+                    # ("Image", "Imu"; see holoscan/schema/__init__.py's own
+                    # _OPTIONAL_TYPES), not the Image submodule's own ImageEncoding enum.
+                    # The real location is the submodule itself (confirmed by reading it).
+                    encoding=hs.schema.image.ImageEncoding.MONO8,
+                    data=cp_frame_uint8,
+                )
+            )
+        else:
             depth = cp_frame_uint8[-1::-2, :, :]
             active_ir = cp_frame_uint8[1::2, :, 0] * 2
             self._color_map[:, :, 0] = cp.squeeze(active_ir)
             self._color_map[:, :, 1] = cp.squeeze(active_ir)
             self._color_map[:, :, 2] = cp.squeeze(active_ir)
-            op_output.emit({"depth": depth, "image": self._color_map}, "output")
-
-
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        camera_mode,
-        frame_limit,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._no_of_planes = 1
-        if (
-            camera_mode
-            == hololink_module.sensors.ecam0m30tof.ECam0M30Tof_Mode.EDEPTH_MODE_DEPTH_IR
-        ):
-            self._no_of_planes = 2
-
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
+            self.depth.emit(
+                hs.schema.Image(
+                    height=480,
+                    width=640,
+                    encoding=hs.schema.image.ImageEncoding.MONO8,
+                    data=depth,
+                )
             )
-            condition = self._count
+            self.image.emit(
+                hs.schema.Image(
+                    height=480,
+                    width=640,
+                    encoding=hs.schema.image.ImageEncoding.RGB8,
+                    data=self._color_map,
+                )
+            )
+
+
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
+
+    input = hs.Input("input", hs.schema.Image)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def run(
+    hololink_ip,
+    camera_mode,
+    ibv_name,
+    ibv_port,
+    expander_configuration,
+    ptp_sync,
+    skip_reset,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    cuda_device_ordinal = 0
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    cuda_driver.cuCtxSetCurrent(cu_context)
+
+    print(f"Enumerating HSB board at {hololink_ip}...")
+    metadata = hl.find_channel(hololink_ip)
+    channel = hl.DataChannel(metadata)
+
+    hololink_dev = channel.hololink()
+    hololink_dev.start()
+    if not skip_reset:
+        hololink_dev.reset()
+    if ptp_sync:
+        logging.debug("Waiting for PTP sync.")
+        if not hololink_dev.ptp_synchronize():
+            logging.error("Failed to synchronize PTP; ignoring.")
         else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
-        self._camera.set_mode(self._camera_mode)
+            logging.debug("PTP synchronized.")
 
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
+    program_mipi_phy(0, 2, 270, hololink_dev)
+    program_mipi_phy(1, 2, 270, hololink_dev)
+
+    camera = hl.sensors.ecam0m30tof.ECam0M30Tof(
+        channel, expander_configuration=expander_configuration
+    )
+    camera.setup_clock()
+    time.sleep(1)
+    camera.configure(camera_mode)
+
+    no_of_planes = (
+        2
+        if camera_mode == hl.sensors.ecam0m30tof.ECam0M30Tof_Mode.EDEPTH_MODE_DEPTH_IR
+        else 1
+    )
+    frame_width = camera._width
+    frame_height = camera._height
+    geometry = hl.resolve_generic_geometry_from_dimensions(
+        int(camera.pixel_format()), frame_width, frame_height
+    )
+
+    if frame_limit:
+        _FrameLimit.reset(frame_limit)
+
+    # Build the graph.
+    graph = hs.Graph("ecam0m30tof_player")
+
+    rx = graph.op(
+        hl.operators.RoceReceiverOp,
+        "rx",
+        data_channel=channel,
+        frame_context=int(cu_context),
+        device_start=camera.start,
+        device_stop=camera.stop,
+        frame_size=(
+            geometry["start_byte"]
+            + geometry["bytes_per_line"] * geometry["pixel_height"]
+            + geometry["trailing_bytes"]
+        ),
+        ibv_name=ibv_name,
+        ibv_port=ibv_port,
+    )
+
+    if frame_limit:
+        frame_limit_op = graph.op(FrameLimitOp, "frame_limit")
+        graph.add_flow(rx.tensor, frame_limit_op.input, queue_depth=4)
+
+    csi = graph.op(
+        hl.operators.CsiToBayerOp,
+        "csi_to_bayer",
+        cuda_device_ordinal=cuda_device_ordinal,
+        geometry=geometry,
+        # TODO(ecam0m30tof driver): bayer_format needs to be depth- or IR-specific; the sensor
+        # driver itself hardcodes GBRG as a placeholder (see its own bayer_format() comment) --
+        # matched here rather than inventing a different placeholder.
+        bayer_format="gbrg",
+    )
+    graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+    graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+
+    image_shift = graph.op(
+        ImageShiftAndProcessingOperator, "image_shift", no_of_planes=no_of_planes
+    )
+    graph.add_flow(csi.tensor, image_shift.input, queue_depth=4)
+
+    if no_of_planes == 2:
+        layers = [
+            {
+                "port_name": "depth",
+                "kind": "image",
+                "format": "r8_unorm",
+                "max_width": frame_width,
+                "max_height": frame_height // 2,
+                "view": {
+                    "offset_x": 0.0,
+                    "offset_y": 0.0,
+                    "scale_x": 0.5,
+                    "scale_y": 1.0,
+                },
+            },
+            {
+                "port_name": "image",
+                "kind": "image",
+                "format": "rgb8_unorm",
+                "max_width": frame_width,
+                "max_height": frame_height // 2,
+                "view": {
+                    "offset_x": 0.5,
+                    "offset_y": 0.0,
+                    "scale_x": 0.5,
+                    "scale_y": 1.0,
+                },
+            },
+        ]
+    else:
+        layers = [
+            {
+                "port_name": "image",
+                "kind": "image",
+                "format": "r8_unorm",
+                "max_width": frame_width,
+                "max_height": frame_height,
+            }
+        ]
+
+    if headless:
+        # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp).
+        sink = {
+            "kind": "cuda",
+            "width": frame_width,
+            "height": frame_height if no_of_planes == 1 else frame_height // 2,
+            "format": "rgba8_unorm",
+        }
+    else:
+        sink = {
+            "kind": "window",
+            "title": f"Holoviz - {hololink_ip}",
+            "width": frame_width,
+            "height": frame_height if no_of_planes == 1 else frame_height // 2,
+            "fullscreen": fullscreen,
+            "close_on_escape": True,
+        }
+    viz = graph.op(
+        "holoscan.visualization.HolovizOp",
+        "holoviz",
+        layers=layers,
+        sink=sink,
+        trigger={
+            "kind": "clock",
+            "period_ns": round(1e9 / 60.0),
+        },
+    )
+    graph.add_flow(
+        image_shift.image,
+        viz.image,
+        queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        queue_depth=1,
+    )
+    if no_of_planes == 2:
+        graph.add_flow(
+            image_shift.depth,
+            viz.depth,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
         )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-            out_tensor_name="image",
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.info(f"{frame_size=}")
-        frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
+    if headless:
+        discard = graph.op(DiscardImageOp, "discard")
+        graph.add_flow(
+            viz.output,
+            discard.input,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
         )
 
-        image_shift = ImageShiftAndProcessingOperator(
-            self,
-            name="image_shift",
-            no_of_planes=self._no_of_planes,
+    clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+    graph.set_default_clock(clock_key)
+
+    options = hs.CompileOptions()
+    options.deployment.bind_tensor_output_device(
+        operator_path="csi_to_bayer",
+        output_port="tensor",
+        device=hs.execution.DeviceId(cuda_device_ordinal),
+    )
+
+    if headless:
+        options.deployment.bind_tensor_output_device(
+            operator_path="holoviz",
+            output_port="output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
         )
 
-        image_spec = holoscan.operators.HolovizOp.InputSpec(
-            "image", holoscan.operators.HolovizOp.InputType.COLOR
-        )
-        tensor_list = [image_spec]
+    plan = hs.compile(graph, options)
+    if not plan.ok:
+        print("Graph compilation failed:", file=sys.stderr)
+        for diag in plan.diagnostics:
+            print(f"  {diag}", file=sys.stderr)
+        hololink_dev.stop()
+        _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+        return 1
 
-        if self._no_of_planes == 2:
-            view = holoscan.operators.HolovizOp.InputSpec.View()
-            view.offset_x = 0.0
-            view.offset_y = 0.0
-            view.width = 0.5
-            view.height = 1
-            image_spec.views = [view]
+    print(
+        f"Capturing mode={camera_mode} {frame_width}x{frame_height} -- running (Ctrl+C to stop)..."
+    )
 
-            image2_spec = holoscan.operators.HolovizOp.InputSpec(
-                "depth", holoscan.operators.HolovizOp.InputType.DEPTH_MAP
-            )
-            view = holoscan.operators.HolovizOp.InputSpec.View()
-            view.offset_x = 0.5
-            view.offset_y = 0.0
-            view.width = 0.5
-            view.height = 1
-            image2_spec.views = [view]
-            tensor_list = [image_spec, image2_spec]
+    with hs.run_async(plan) as session:
+        try:
+            session.wait()
+        except KeyboardInterrupt:
+            # Ctrl+C or SIGTERM: leaving the block stops the session cooperatively, which
+            # stops the camera.
+            pass
+    if session.diagnostics:
+        print(session.summary(), file=sys.stderr)
+    failed = session.termination == hs.RunTermination.FAILED
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            width=640 * self._no_of_planes,
-            height=480,
-            tensors=tensor_list,
-        )
+    hololink_dev.stop()
+    _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(csi_to_bayer_operator, image_shift, {("output", "input")})
-        self.add_flow(image_shift, visualizer, {("output", "receivers")})
+    if failed:
+        return 1
+    print("Done.")
+    return 0
 
 
 def main():
+    # Like Ctrl+C, SIGTERM (kill, docker stop) raises KeyboardInterrupt, so the session stops
+    # cooperatively and the camera and the board are stopped on the way out.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     parser = argparse.ArgumentParser()
-    modes = hololink_module.sensors.ecam0m30tof.ECam0M30Tof_Mode
+    modes = hl.sensors.ecam0m30tof.ECam0M30Tof_Mode
     mode_choices = [mode.value for mode in modes]
     mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
     parser.add_argument(
@@ -272,13 +547,6 @@ def main():
         type=int,
         choices=mode_choices,
         default=mode_choices[0],
-        help=mode_help,
-    )
-    parser.add_argument(
-        "--depth-range",
-        type=int,
-        choices=(0, 1),
-        default=1,
         help=mode_help,
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
@@ -291,36 +559,22 @@ def main():
         default=None,
         help="Exit after receiving this many frames",
     )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
+    parser.add_argument(
+        "--hololink", default="192.168.0.2", help="IP address of Hololink board"
     )
     parser.add_argument(
-        "--configuration",
-        default=default_configuration,
-        help="Configuration file",
+        "--log-level", type=int, default=20, help="Python logging level to display"
     )
-    parser.add_argument(
-        "--hololink",
-        default="192.168.0.2",
-        help="IP address of Hololink board",
-    )
-    parser.add_argument(
-        "--log-level",
-        type=int,
-        default=20,
-        help="Logging level to display",
-    )
-    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
         "--ibv-name",
-        default=infiniband_devices[0],
-        help="IBV device to use",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
     )
     parser.add_argument(
         "--ibv-port",
         type=int,
         default=1,
-        help="Port number of IBV device",
+        help="Port number of IBV device (with --ibv-name)",
     )
     parser.add_argument(
         "--expander-configuration",
@@ -328,12 +582,6 @@ def main():
         default=0,
         choices=(0, 1),
         help="I2C Expander configuration",
-    )
-    parser.add_argument(
-        "--pattern",
-        type=int,
-        choices=range(12),
-        help="Configure to display a test pattern.",
     )
     parser.add_argument(
         "--ptp-sync",
@@ -346,69 +594,24 @@ def main():
         help="Don't call reset on the hololink device.",
     )
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the data source
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"{channel_metadata=}")
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.ecam0m30tof.ECam0M30Tof(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.ecam0m30tof.ECam0M30Tof_Mode(args.camera_mode)
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
+
+    logging.basicConfig(level=args.log_level)
+
+    camera_mode = hl.sensors.ecam0m30tof.ECam0M30Tof_Mode(args.camera_mode)
+
+    return run(
+        args.hololink,
+        camera_mode,
         args.ibv_name,
         args.ibv_port,
-        camera,
-        camera_mode,
+        args.expander_configuration,
+        args.ptp_sync,
+        args.skip_reset,
         args.frame_limit,
+        args.headless,
+        args.fullscreen,
     )
-    application.config(args.configuration)
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    try:
-        if not args.skip_reset:
-            hololink.reset()
-        if args.ptp_sync:
-            logging.debug("Waiting for PTP sync.")
-            if not hololink.ptp_synchronize():
-                logging.error("Failed to synchronize PTP; ignoring.")
-            else:
-                logging.debug("PTP synchronized.")
-
-        program_mipi_phy(0, 2, 270, hololink)
-        program_mipi_phy(1, 2, 270, hololink)
-
-        camera.setup_clock()
-        time.sleep(1)
-        camera.configure(camera_mode)
-        if args.pattern is not None:
-            camera.test_pattern(args.pattern)
-
-        logging.info("Calling run")
-        application.run()
-    finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

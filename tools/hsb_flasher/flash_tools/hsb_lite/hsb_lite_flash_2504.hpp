@@ -26,13 +26,13 @@ namespace hololink {
  * Flash firmware using legacy connection mode.
  * For older FPGA versions that need special connection handling.
  *
- * @param ip_address IP address of the device
- * @param clnx_path Path to CLNX firmware file
- * @param cpnx_path Path to CPNX firmware file
- * @param current_version Current firmware version (for metadata construction)
- * @param fpga_uuid FPGA UUID
- * @param serial_number Device serial number
- * @return true if flash succeeded, false otherwise
+ * @param ip_address IP address of the device.
+ * @param clnx_path Path to CLNX firmware file.
+ * @param cpnx_path Path to CPNX firmware file.
+ * @param current_version Current firmware version (for metadata construction).
+ * @param fpga_uuid FPGA UUID.
+ * @param serial_number Device serial number.
+ * @return true if flash succeeded, false otherwise.
  */
 bool hsb_lite_flash_2504(const std::string& ip_address,
     const std::string& clnx_path,

@@ -138,7 +138,10 @@ class Imx274Cam:
     def configure(self, imx274_mode_set):
         version = self.get_version()
         logging.info("version=%s" % (version,))
-        assert version == VERSION
+        if version != VERSION:
+            raise RuntimeError(
+                f"Unsupported IMX274 version:{version}, expected {VERSION}."
+            )
         # IMX274 needs a 25 MHz reference clock on the HSB-Lite
         # carrier. The per-data-plane oscillator the supplement
         # publishes either programs that rate (returns True) or
@@ -238,9 +241,9 @@ class Imx274Cam:
             mode_list = imx274_mode.imx274_mode_1920x1080_60fps
         elif (
             imx274_mode_set.value
-            == imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS.value
+            == imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS.value
         ):
-            mode_list = imx274_mode.imx274_mode_3840X2160_60fps_12bits
+            mode_list = imx274_mode.imx274_mode_3840X2160_30fps_12bits
         else:
             logging.error(f"{imx274_mode_set} mode is not present.")
 
@@ -334,14 +337,17 @@ class Imx274Cam:
             pixel_format, self._width
         )
         received_line_bytes = converter.received_line_bytes(transmitted_line_bytes)
-        # 175 bytes of metadata precede the image data.
-        start_byte += converter.received_line_bytes(175)
+        # Sensor metadata precedes the image data: 175 bytes for RAW_10, and
+        # 175 + 35 = 210 bytes for RAW_12.
+        embedded_data_bytes = 175
         if self._pixel_format == csi.PixelFormat.RAW_10:
             # 8 lines of optical black before real image data
             start_byte += received_line_bytes * 8
         elif self._pixel_format == csi.PixelFormat.RAW_12:
             # 16 lines of optical black before real image data
+            embedded_data_bytes += 35
             start_byte += received_line_bytes * 16
+        start_byte += converter.received_line_bytes(embedded_data_bytes)
         converter.configure(
             start_byte,
             received_line_bytes,

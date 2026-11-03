@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 730 340" width="730" height="340" role="img" aria-labelledby="t d">
+<title id="t">Jetson AGX Orin to Holoscan Sensor Bridge</title>
+<desc id="d">Jetson AGX Orin to Holoscan Sensor Bridge: Jetson AGX Orin connected to a Holoscan Sensor Bridge board. end0 192.168.0.101/24 to SFP+ 0 192.168.0.2</desc>
+<rect x="0" y="0" width="730" height="340" fill="#ffffff"/>
+<text x="365.0" y="30" font-family="sans-serif" font-size="18" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Jetson AGX Orin to Holoscan Sensor Bridge</text>
+<rect x="20" y="55" width="300" height="230" rx="10" fill="#f2f7e8" stroke="#76b900" stroke-width="2"/>
+<text x="35" y="83" font-family="sans-serif" font-size="16" font-weight="bold" text-anchor="start" fill="#1a1a1a">Jetson AGX Orin</text>
+<text x="35" y="105" font-family="sans-serif" font-size="13" font-weight="normal" text-anchor="start" fill="#4a4a4a">JetPack 7.2.1</text>
+<rect x="520" y="55" width="190" height="230" rx="10" fill="#eef3fb" stroke="#3b6ea8" stroke-width="2"/>
+<text x="615.0" y="83" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Holoscan Sensor</text>
+<text x="615.0" y="102" font-family="sans-serif" font-size="15" font-weight="bold" text-anchor="middle" fill="#1a1a1a">Bridge board</text>
+<text x="615.0" y="119" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">Linux sockets, no RoCE</text>
+<rect x="170" y="150" width="145" height="54" rx="6" fill="#ffffff" stroke="#76b900" stroke-width="1.5"/>
+<text x="178" y="168" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">10 GbE RJ45 port</text>
+<text x="178" y="183" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">end0</text>
+<text x="178" y="198" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.101/24</text>
+<rect x="525" y="150" width="120" height="54" rx="6" fill="#ffffff" stroke="#3b6ea8" stroke-width="1.5"/>
+<text x="533" y="168" font-family="sans-serif" font-size="12" font-weight="bold" text-anchor="start" fill="#1a1a1a">SFP+ 0</text>
+<text x="533" y="188" font-family="monospace" font-size="12" font-weight="normal" text-anchor="start" fill="#1a1a1a">192.168.0.2</text>
+<line x1="315" y1="180" x2="525" y2="180" stroke="#1a1a1a" stroke-width="3"/>
+<circle cx="315" cy="180" r="4" fill="#1a1a1a"/><circle cx="525" cy="180" r="4" fill="#1a1a1a"/>
+<text x="420.0" y="124" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">Ethernet cable</text>
+<text x="420.0" y="138" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">10GBASE-T SFP+ at the board</text>
+<text x="365.0" y="322" font-family="sans-serif" font-size="12" font-weight="normal" text-anchor="middle" fill="#4a4a4a">AGX Orin has one network port for the board. Connect SFP+ 0 only.</text>
+</svg>

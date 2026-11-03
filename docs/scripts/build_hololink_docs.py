@@ -21,7 +21,7 @@ User guide pages are committed as ``*.mdx`` under ``docs/user_guide/``. Fern con
 ``docs/user_guide/fern/``. The public C++ API for ``src/hololink/emulation`` is
 generated under ``docs/user_guide/fern/generated/``.
 
-With ``--with-library-mdx``, the pipeline runs ``fern docs md generate`` and
+With ``--with-library-mdx``, the pipeline runs ``fern docs md generate --local`` and
 post-processes the generated MDX before ``fern check --local`` (local validation),
 ``fern docs dev`` (``--preview``),
 ``fern generate --docs --preview`` (``--publish-preview`` for CI), or
@@ -42,6 +42,7 @@ Usage (from hololink repo root):
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -49,6 +50,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 SCRIPTS = Path(__file__).resolve().parent
@@ -146,9 +148,15 @@ def _check_source_assets(*, allow_lfs_pointers: bool) -> int:
     return _report_lfs_pointers(pointers)
 
 
-def _run(cmd: list[str], *, cwd: Path | None = None, check: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    cmd: list[str],
+    *,
+    cwd: Path | None = None,
+    check: bool = True,
+    env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess:
     print("+ " + " ".join(cmd), flush=True)
-    return subprocess.run(cmd, cwd=cwd or REPO, check=check)
+    return subprocess.run(cmd, cwd=cwd or REPO, check=check, env=env)
 
 
 # Warnings `fern docs dev` always emits for a local, unauthenticated preview: the
@@ -185,6 +193,52 @@ def _run_preview(fern_exe: str, fern_dir: Path, *, port: int) -> int:
 
 def _fern_exe() -> str | None:
     return shutil.which("fern")
+
+
+def _checkout_commit() -> str:
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "rev-parse", "--short=12", "HEAD"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
+
+
+def _local_library_runtime_error() -> str | None:
+    """Return an actionable error when Fern cannot run its local parser."""
+    docker_exe = shutil.which("docker")
+    if docker_exe is None:
+        return (
+            "local C++ API generation requires Docker; install and start Docker "
+            "before running with --with-library-mdx"
+        )
+
+    result = subprocess.run(
+        [docker_exe, "info"],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        detail = result.stderr.strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        return f"Docker is installed but its daemon is unavailable{suffix}"
+
+    if sys.platform == "darwin":
+        context = subprocess.run(
+            [docker_exe, "context", "show"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if context == "colima" and not _is_under(REPO.resolve(), Path.home().resolve()):
+            return (
+                "Colima only shares the macOS home directory by default, but the "
+                f"repository checkout is {REPO}. Move the checkout under {Path.home()} "
+                "or configure Colima to mount this path"
+            )
+    return None
 
 
 def _require_fern_auth(*, action: str) -> int | None:
@@ -239,9 +293,13 @@ def _production_docs_urls(fern_dir: Path) -> tuple[str, str | None]:
             if stripped.startswith("custom-domain:"):
                 value = stripped.split(":", 1)[1].strip()
                 if value:
-                    custom_url = value if value.startswith("http") else f"https://{value}"
+                    custom_url = (
+                        value if value.startswith("http") else f"https://{value}"
+                    )
     if not fern_url:
-        fern_url = "https://nvidia-holoscan.docs.buildwithfern.com/holoscan/sensor-bridge"
+        fern_url = (
+            "https://nvidia-holoscan.docs.buildwithfern.com/holoscan/sensor-bridge"
+        )
     return fern_url, custom_url
 
 
@@ -255,7 +313,8 @@ def _fallback_preview_url(*, fern_dir: Path, preview_id: str) -> str | None:
         return None
     if not org:
         return None
-    slug = preview_id.strip().lower().replace("/", "-").replace("_", "-")
+    slug = re.sub(r"[^a-z0-9-]", "-", preview_id.lower())
+    slug = re.sub(r"-+", "-", slug).strip("-") or "default"
     return f"https://{org}-preview-{slug}.docs.buildwithfern.com{_docs_site_path(fern_dir)}"
 
 
@@ -373,7 +432,9 @@ def _env_fern_token() -> str | None:
 
 # Placeholder used wherever a FERN_TOKEN value would otherwise be printed. The token is
 # a secret credential and must never be echoed to stdout/stderr or CI logs.
-_REDACTED_TOKEN = "***redacted***"  # noqa: S105 - not a credential; masks tokens in logs
+_REDACTED_TOKEN = (
+    "***redacted***"  # noqa: S105 - not a credential; masks tokens in logs
+)
 
 
 def _redacted_cmd(cmd: list[str]) -> str:
@@ -424,54 +485,164 @@ def _clean_generated_api_docs(generated_docs: Path) -> None:
         print(f"removed: {removed}", flush=True)
 
 
-def _ensure_emulation_api_placeholder(fern_dir: Path) -> None:
+# The generated C++ API folders that the `folder:` entries in
+# docs/user_guide/fern/index.yml point at, each as its path under
+# generated/api-reference/cpp and the title of its placeholder. Keep this in sync
+# with index.yml and with the libraries in docs/user_guide/fern/docs.yml.
+GENERATED_API_FOLDERS = (
+    (("emulation", "hololink", "namespaces", "emulation"), "Emulation API"),
+    (("module", "hololink", "namespaces", "module"), "Module API"),
+)
+
+
+def _ensure_api_placeholders(fern_dir: Path) -> None:
     """Keep unauthenticated local checks usable without generated library MDX.
 
-    Fern's `folder:` entry in ``index.yml`` points inside the ``output.path``
-    tree of the ``hololink-emulation`` library (see
-    ``docs/user_guide/fern/docs.yml``) -- specifically at the deep subtree
-    ``hololink/namespaces/emulation`` where Fern's C++ generator writes the
-    per-compound MDX (see the comment on the ``folder:`` entry in
-    ``docs/user_guide/fern/index.yml`` for why that path). Fern errors with
-    "Folder not found" if that path does not exist on disk, which is exactly
-    what happens on an unauthenticated local preview where
+    Each `folder:` entry for a C++ API in ``index.yml`` points inside the
+    ``output.path`` tree of its library (see ``docs/user_guide/fern/docs.yml``)
+    -- at the deep subtree ``hololink/namespaces/<name>`` where Fern's C++
+    generator writes the per-compound MDX (see the comment on the ``folder:``
+    entries in ``docs/user_guide/fern/index.yml`` for why that path). Fern
+    errors with "Folder not found" if that path does not exist on disk, which is
+    exactly what happens on an unauthenticated local preview where
     ``fern docs md generate`` never ran (no token) and therefore never wrote
-    anything under ``output.path``. This writes one hidden placeholder MDX
-    file at that folder so the folder always resolves.
+    anything under ``output.path``. This writes one hidden placeholder MDX file
+    in each such folder that has no pages, so every folder resolves.
     """
-    # Must mirror the `folder:` target in index.yml exactly; otherwise the
-    # placeholder would land at a different folder than the one Fern probes.
-    output = (
-        fern_dir
-        / "generated"
-        / "api-reference"
-        / "cpp"
-        / "emulation"
-        / "hololink"
-        / "namespaces"
-        / "emulation"
-    )
-    if any(output.rglob("*.mdx")) if output.is_dir() else False:
-        return
-    # Filename prefix `_` and `hidden: true` frontmatter both keep this out of
-    # the rendered sidebar; belt-and-suspenders in case either exclusion
-    # mechanism changes in a future Fern release.
-    output.mkdir(parents=True, exist_ok=True)
-    (output / "_placeholder.mdx").write_text(
-        "---\ntitle: Emulation API\nhidden: true\n---\n\n"
-        "This API reference is generated during authenticated Fern builds.\n",
-        encoding="utf-8",
+    for parts, title in GENERATED_API_FOLDERS:
+        output = fern_dir.joinpath("generated", "api-reference", "cpp", *parts)
+        if output.is_dir() and any(output.rglob("*.mdx")):
+            continue
+        # Filename prefix `_` and `hidden: true` frontmatter both keep this out
+        # of the rendered sidebar; belt-and-suspenders in case either exclusion
+        # mechanism changes in a future Fern release.
+        output.mkdir(parents=True, exist_ok=True)
+        (output / "_placeholder.mdx").write_text(
+            f"---\ntitle: {title}\nhidden: true\n---\n\n"
+            "This API reference is generated during authenticated Fern builds.\n",
+            encoding="utf-8",
+        )
+
+
+def _missing_generated_api_titles(fern_dir: Path) -> list:
+    """The titles of the C++ APIs whose library has no generated pages yet."""
+    missing = []
+    for parts, title in GENERATED_API_FOLDERS:
+        output = fern_dir.joinpath("generated", "api-reference", "cpp", *parts)
+        generated = (
+            output.is_dir()
+            and not any(output.rglob("_placeholder.mdx"))
+            and any(
+                path.is_file() and path.name not in {"overview.mdx", "_placeholder.mdx"}
+                for path in output.rglob("*.mdx")
+            )
+        )
+        if not generated:
+            missing.append(title)
+    return missing
+
+
+API_SOURCE_STAMP = ".hololink-api-source.json"
+
+
+def _api_input_state(fern_dir: Path) -> dict:
+    """Hash each configured local input tree and its parser configuration."""
+    import yaml
+
+    settings = yaml.safe_load((fern_dir / "docs.yml").read_text(encoding="utf-8"))
+    inputs = {}
+    for name, library in settings.get("libraries", {}).items():
+        relative = library.get("input", {}).get("path")
+        if not relative:
+            raise ValueError(f"API library {name} requires a local checkout input.")
+        directory = (fern_dir / relative).resolve()
+        if not directory.is_relative_to(REPO.resolve()) or not directory.is_dir():
+            raise ValueError(
+                f"API input is missing or outside the checkout: {directory}"
+            )
+        hashes = {}
+        for path in sorted(directory.rglob("*")):
+            if path.is_symlink():
+                raise ValueError(f"API source contains a symbolic link: {path}")
+            if path.is_file():
+                hashes[path.relative_to(directory).as_posix()] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+        doxyfile = library.get("config", {}).get("doxyfile")
+        inputs[name] = {
+            "path": directory.relative_to(REPO.resolve()).as_posix(),
+            "files": hashes,
+            "configuration": library,
+            "doxyfile_sha256": (
+                hashlib.sha256((fern_dir / doxyfile).read_bytes()).hexdigest()
+                if doxyfile
+                else None
+            ),
+        }
+    if not inputs:
+        raise ValueError("No configured local API inputs were found.")
+    return {
+        "libraries": inputs,
+        "fern_config_sha256": hashlib.sha256(
+            (fern_dir / "fern.config.json").read_bytes()
+        ).hexdigest(),
+        "postprocessor_sha256": hashlib.sha256(
+            FIX_LIBRARY_MDX.read_bytes()
+        ).hexdigest(),
+    }
+
+
+def _generated_content_hashes(fern_dir: Path) -> dict:
+    generated = fern_dir / "generated"
+    hashes = {}
+    for path in sorted(generated.rglob("*")):
+        if path.is_symlink():
+            raise ValueError(f"Generated API contains a symbolic link: {path}")
+        if path.is_file() and path.name != API_SOURCE_STAMP:
+            hashes[path.relative_to(generated).as_posix()] = hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+    return hashes
+
+
+def _write_api_source_stamp(
+    fern_dir: Path, expected_inputs: dict | None = None
+) -> None:
+    commit = subprocess.check_output(
+        ["git", "-C", str(REPO), "rev-parse", "HEAD"], text=True
+    ).strip()
+    inputs = _api_input_state(fern_dir)
+    if expected_inputs is not None and inputs != expected_inputs:
+        raise ValueError(
+            "API source inputs changed during generation; regenerate the pages."
+        )
+    data = {
+        "source_commit": commit,
+        "inputs": inputs,
+        "generated": _generated_content_hashes(fern_dir),
+    }
+    (fern_dir / "generated" / API_SOURCE_STAMP).write_text(
+        json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8"
     )
 
 
-def _has_generated_emulation_api(fern_dir: Path) -> bool:
-    output = fern_dir / "generated" / "api-reference" / "cpp" / "emulation"
-    if not output.is_dir():
-        return False
-    return any(
-        path.is_file() and path.name not in {"overview.mdx", "_placeholder.mdx"}
-        for path in output.rglob("*.mdx")
-    )
+def _check_api_source_stamp(fern_dir: Path) -> None:
+    path = fern_dir / "generated" / API_SOURCE_STAMP
+    if not path.is_file():
+        raise ValueError(
+            "Generated APIs have no source stamp; run with --with-library-mdx."
+        )
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if not re.fullmatch(r"[0-9a-f]{40}", data.get("source_commit", "")):
+        raise ValueError("Generated API source commit is invalid.")
+    if data.get("inputs") != _api_input_state(fern_dir):
+        raise ValueError(
+            "Generated API inputs differ from this checkout; regenerate the API pages."
+        )
+    if data.get("generated") != _generated_content_hashes(fern_dir):
+        raise ValueError(
+            "Generated API pages changed after generation; regenerate them."
+        )
 
 
 def _fern_assets_ok(fern_dir: Path) -> bool:
@@ -480,6 +651,30 @@ def _fern_assets_ok(fern_dir: Path) -> bool:
 
 
 def run_pipeline(args: argparse.Namespace) -> int:
+    # Keep the disposable assembled project alive for validation and publication.
+    # An explicit output directory is retained for review and bundle promotion.
+    with tempfile.TemporaryDirectory(
+        prefix=".fern-assembled-", dir=DOCS_DIR
+    ) as temporary:
+        args._assembly_output = (
+            getattr(args, "output_dir", None) or Path(temporary) / "site"
+        )
+        try:
+            if getattr(args, "archive_ref", None):
+                from archive_hololink_docs import extract_archive
+
+                args.archive_dir = extract_archive(
+                    args.archive_repository,
+                    args.archive_ref,
+                    Path(temporary) / "v2.7",
+                )
+            return _run_pipeline_current(args)
+        except (ValueError, OSError, subprocess.CalledProcessError) as error:
+            print(f"error: {error}", file=sys.stderr)
+            return 1
+
+
+def _run_pipeline_current(args: argparse.Namespace) -> int:
     fern_dir = args.fern_dir.expanduser().resolve()
     generated_docs = fern_dir / "generated"
 
@@ -510,11 +705,33 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 127
+        runtime_error = _local_library_runtime_error()
+        if runtime_error is not None:
+            print(f"error: {runtime_error}.", file=sys.stderr)
+            return 1
         if not FIX_LIBRARY_MDX.is_file():
             print(f"Missing post-process script: {FIX_LIBRARY_MDX}", file=sys.stderr)
             return 2
+        print(f"C++ API source checkout: {REPO} ({_checkout_commit()})", flush=True)
+        api_inputs_before = _api_input_state(fern_dir)
         _clean_generated_api_docs(generated_docs)
-        _run([fern_exe, "docs", "md", "generate"], cwd=fern_dir)
+        tmpdir = Path(tempfile.mkdtemp(prefix=".fern-library-", dir=SOURCE))
+        env = os.environ.copy()
+        env["TMPDIR"] = str(tmpdir)
+        result = _run(
+            [fern_exe, "docs", "md", "generate", "--local"],
+            cwd=fern_dir,
+            check=False,
+            env=env,
+        )
+        if result.returncode:
+            print(
+                f"error: fern docs md generate --local exited with {result.returncode}.",
+                file=sys.stderr,
+            )
+            print(f"Fern temporary files retained at: {tmpdir}", file=sys.stderr)
+            return result.returncode
+        shutil.rmtree(tmpdir)
 
     if generated_docs.is_dir():
         if not FIX_LIBRARY_MDX.is_file():
@@ -529,24 +746,71 @@ def run_pipeline(args: argparse.Namespace) -> int:
             ]
         )
 
-    if args.publish and not _has_generated_emulation_api(fern_dir):
+    if args.with_library_mdx and generated_docs.is_dir():
+        _write_api_source_stamp(fern_dir, api_inputs_before)
+
+    remote_publish = args.publish or args.publish_preview
+    missing_api = _missing_generated_api_titles(fern_dir) if remote_publish else []
+    if missing_api:
         print(
-            "error: production publication requires generated Emulation C++ API pages; "
-            "run with --with-library-mdx.",
+            "error: remote publication requires generated C++ API pages "
+            f"({', '.join(missing_api)}); run with --with-library-mdx.",
             file=sys.stderr,
         )
         return 1
 
-    needs_remote_publish = args.publish_preview or args.delete_preview_id or args.publish
+    if remote_publish:
+        _check_api_source_stamp(fern_dir)
+
+    source_fern_dir = fern_dir
+    archive_dir = getattr(args, "archive_dir", None)
+    if remote_publish and archive_dir is None:
+        print(
+            "error: remote publication requires the verified 2.7 archive; use "
+            "--archive-dir or --archive-ref with --archive-repository.",
+            file=sys.stderr,
+        )
+        return 1
+    if archive_dir is not None:
+        from archive_hololink_docs import assemble
+
+        fern_dir = assemble(fern_dir.parent, archive_dir, args._assembly_output)
+        print(f"Assembled 3.0 and 2.7 documentation: {fern_dir}", flush=True)
+    elif not remote_publish:
+        print(
+            "Local source-only build: supply --archive-dir to include 2.7.", flush=True
+        )
+
+    needs_remote_publish = (
+        args.publish_preview or args.delete_preview_id or args.publish
+    )
     if needs_remote_publish:
-        if (rc := _require_fern_auth(
-            action="Remote Fern preview" if not args.publish else "Production docs publish"
-        )) is not None:
+        if (
+            rc := _require_fern_auth(
+                action=(
+                    "Remote Fern preview"
+                    if not args.publish
+                    else "Production docs publish"
+                )
+            )
+        ) is not None:
             return rc
         fern_exe = _fern_exe()
         if not fern_exe:
             print("The `fern` CLI was not found on PATH.", file=sys.stderr)
             return 127
+        if args.publish_preview and not args.preview_id:
+            print("error: --publish-preview requires --preview-id.", file=sys.stderr)
+            return 2
+        if remote_publish and not _fern_assets_ok(fern_dir):
+            print(
+                "error: missing dist theme assets (commit docs/user_guide/fern/dist/)",
+                file=sys.stderr,
+            )
+            return 1
+        # Validate the exact assembled tree before any preview deletion or upload.
+        # --skip-fern-check only applies to local source preparation.
+        _run([fern_exe, "check", "--local", "--warnings"], cwd=fern_dir)
         if args.delete_preview_id:
             _delete_remote_preview(
                 fern_exe=fern_exe,
@@ -555,7 +819,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
             )
         if args.publish_preview:
             if not args.preview_id:
-                print("error: --publish-preview requires --preview-id.", file=sys.stderr)
+                print(
+                    "error: --publish-preview requires --preview-id.", file=sys.stderr
+                )
                 return 2
             if not _fern_assets_ok(fern_dir):
                 print(
@@ -569,6 +835,10 @@ def run_pipeline(args: argparse.Namespace) -> int:
                 preview_id=args.preview_id,
                 force=args.force,
             )
+            if fern_dir != source_fern_dir and (fern_dir / PREVIEW_URL_FILE).is_file():
+                shutil.copy2(
+                    fern_dir / PREVIEW_URL_FILE, source_fern_dir / PREVIEW_URL_FILE
+                )
         if args.publish:
             if not _fern_assets_ok(fern_dir):
                 print(
@@ -599,7 +869,7 @@ def run_pipeline(args: argparse.Namespace) -> int:
         print("The `fern` CLI was not found on PATH.", file=sys.stderr)
         return 127
 
-    _ensure_emulation_api_placeholder(fern_dir)
+    _ensure_api_placeholders(fern_dir)
 
     if args.preview:
         return _run_preview(fern_exe, fern_dir, port=args.port)
@@ -617,7 +887,9 @@ def run_pipeline(args: argparse.Namespace) -> int:
 def _docker_image_tag() -> str:
     version_path = REPO / "VERSION"
     version = (
-        version_path.read_text(encoding="utf-8").strip() if version_path.is_file() else "local"
+        version_path.read_text(encoding="utf-8").strip()
+        if version_path.is_file()
+        else "local"
     )
     return f"hololink-docs:{version}"
 
@@ -748,6 +1020,113 @@ def _ensure_docker_available() -> int | None:
     return None
 
 
+def _active_docker_socket() -> str:
+    """Return the Unix socket used by the active Docker context."""
+    if sys.platform == "darwin":
+        context = subprocess.run(
+            ["docker", "context", "show"],
+            text=True,
+            capture_output=True,
+            check=False,
+        ).stdout.strip()
+        if context == "colima":
+            # Colima's macOS client socket is not visible inside its Linux VM.
+            # The daemon-visible source path for sibling containers is the
+            # conventional socket maintained inside that VM.
+            return "/var/run/docker.sock"
+
+    docker_host = os.environ.get("DOCKER_HOST", "").strip()
+    if not docker_host:
+        result = subprocess.run(
+            ["docker", "context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        docker_host = result.stdout.strip()
+        if result.returncode or not docker_host:
+            detail = result.stderr.strip().splitlines()
+            suffix = f": {detail[-1]}" if detail else ""
+            raise RuntimeError(f"could not determine the active Docker socket{suffix}")
+
+    if not docker_host.startswith("unix://"):
+        raise RuntimeError(
+            f"the active Docker endpoint is not a Unix socket: {docker_host}"
+        )
+    socket_path = docker_host.removeprefix("unix://")
+    if not socket_path.startswith("/"):
+        raise RuntimeError(
+            f"the active Docker socket path is not absolute: {socket_path}"
+        )
+    return socket_path
+
+
+def _container_docker_options(*, image: str, with_library_mdx: bool) -> list[str]:
+    """Return docker-run options that let Fern start its local parser."""
+    if not with_library_mdx:
+        return []
+
+    socket_mount = f"{_active_docker_socket()}:/var/run/docker.sock"
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "-v",
+            socket_mount,
+            image,
+            "stat",
+            "-c",
+            "%g",
+            "/var/run/docker.sock",
+        ],
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    socket_gid = result.stdout.strip()
+    if result.returncode or not socket_gid.isdigit():
+        detail = result.stderr.strip().splitlines()
+        suffix = f": {detail[-1]}" if detail else ""
+        raise RuntimeError(f"could not inspect the Docker daemon socket{suffix}")
+    return [
+        "-eDOCKER_HOST=unix:///var/run/docker.sock",
+        "--group-add",
+        socket_gid,
+        "-v",
+        socket_mount,
+    ]
+
+
+def _archive_container_options(
+    args: argparse.Namespace, repo_root: Path
+) -> tuple[list[str], list[str]]:
+    """Forward archive inputs without importing host-side preparation dependencies."""
+    flags = []
+    mounts = []
+    for name in ("archive_dir", "output_dir"):
+        value = getattr(args, name, None)
+        if value is not None:
+            value = value.expanduser().resolve()
+            flags.extend(["--" + name.replace("_", "-"), str(value)])
+            mount = value if value.exists() else value.parent
+            if not _is_under(mount, repo_root):
+                readonly = ":ro" if name == "archive_dir" else ""
+                mounts.append(f"{mount}:{mount}{readonly}")
+    if getattr(args, "archive_ref", None):
+        repository = args.archive_repository
+        local = Path(repository).expanduser()
+        if local.is_dir():
+            local = local.resolve()
+            repository = str(local)
+            if not _is_under(local, repo_root):
+                mounts.append(f"{local}:{local}:ro")
+        flags.extend(
+            ["--archive-ref", args.archive_ref, "--archive-repository", repository]
+        )
+    return flags, mounts
+
+
 def _run_in_docker(args: argparse.Namespace) -> int:
     if not DOCKERFILE.is_file():
         print(f"Missing Dockerfile: {DOCKERFILE}", file=sys.stderr)
@@ -762,9 +1141,25 @@ def _run_in_docker(args: argparse.Namespace) -> int:
         if _ensure_lfs_assets():
             print("Git LFS: pulled docs/user_guide image assets on host.")
         elif shutil.which("git-lfs") is None:
-            print("Git LFS: git-lfs not on PATH; skipping automatic pull.", file=sys.stderr)
+            print(
+                "Git LFS: git-lfs not on PATH; skipping automatic pull.",
+                file=sys.stderr,
+            )
 
     image = _build_docs_image()
+
+    try:
+        docker_options = _container_docker_options(
+            image=image,
+            with_library_mdx=args.with_library_mdx,
+        )
+    except RuntimeError as exc:
+        print(
+            f"error: Docker-container C++ API generation {exc}; "
+            "use a local Docker daemon or run with --no-docker.",
+            file=sys.stderr,
+        )
+        return 1
 
     repo_root = REPO.resolve()
     fern_dir = args.fern_dir.expanduser().resolve()
@@ -779,6 +1174,9 @@ def _run_in_docker(args: argparse.Namespace) -> int:
     ]
     # LFS objects are pulled on the host above; skip in-container pull (no git credentials).
     pipeline_args.append("--skip-lfs-pull")
+    archive_args, archive_mounts = _archive_container_options(args, repo_root)
+    pipeline_args.extend(archive_args)
+    docker_mounts.extend(archive_mounts)
     if args.allow_lfs_pointers:
         pipeline_args.append("--allow-lfs-pointers")
     if args.with_library_mdx:
@@ -811,6 +1209,7 @@ def _run_in_docker(args: argparse.Namespace) -> int:
     _mount_host_fern_dir(docker_home=docker_home, docker_mounts=docker_mounts)
 
     docker_env = [f"-eHOME={docker_home}"]
+    docker_run_env = os.environ.copy()
     if os.environ.get("CI"):
         docker_env.append("-eCI=1")
     # Forward an explicitly-provided FERN_TOKEN (a non-expiring org token from
@@ -820,7 +1219,9 @@ def _run_in_docker(args: argparse.Namespace) -> int:
     # access token is not a valid API token, which would break auth.
     env_token = _env_fern_token()
     if env_token:
-        docker_env.append(f"-eFERN_TOKEN={env_token}")
+        # Docker reads the value from its environment; keep it out of argv.
+        docker_env.append("-eFERN_TOKEN")
+        docker_run_env["FERN_TOKEN"] = env_token
     if args.preview:
         docker_env.append("-eHOST=0.0.0.0")
 
@@ -828,6 +1229,7 @@ def _run_in_docker(args: argparse.Namespace) -> int:
         "docker",
         "run",
         *docker_env,
+        *docker_options,
         "--rm",
     ]
     if args.preview:
@@ -852,10 +1254,10 @@ def _run_in_docker(args: argparse.Namespace) -> int:
         docker_cmd.extend(["--net", "host"])
     docker_cmd.extend(
         [
-        "--name",
-        args.container_name,
-        "--user",
-        f"{os.getuid()}:{os.getgid()}",
+            "--name",
+            args.container_name,
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
         ]
     )
     for mount in docker_mounts:
@@ -877,7 +1279,9 @@ def _run_in_docker(args: argparse.Namespace) -> int:
         docker_cmd.insert(2, "-ti")
 
     print("+ " + _redacted_cmd(docker_cmd), flush=True)
-    return subprocess.run(docker_cmd, cwd=REPO, check=False).returncode
+    return subprocess.run(
+        docker_cmd, cwd=REPO, check=False, env=docker_run_env
+    ).returncode
 
 
 def main() -> int:
@@ -889,6 +1293,25 @@ def main() -> int:
         type=Path,
         default=DEFAULT_FERN_DIR,
         help="Fern project directory (default: docs/user_guide/fern).",
+    )
+    archives = parser.add_mutually_exclusive_group()
+    archives.add_argument(
+        "--archive-dir",
+        type=Path,
+        help="Verified v2.7 snapshot, or a directory containing v2.7/.",
+    )
+    archives.add_argument(
+        "--archive-ref",
+        help="Full commit SHA containing v2.7/ on the archive repository.",
+    )
+    parser.add_argument(
+        "--archive-repository",
+        help="Explicit archive Git URL or local checkout; no private default.",
+    )
+    parser.add_argument(
+        "--output-dir",
+        type=Path,
+        help="Retain the assembled project in a new directory for review.",
     )
     parser.add_argument(
         "--allow-lfs-pointers",
@@ -903,7 +1326,7 @@ def main() -> int:
     parser.add_argument(
         "--with-library-mdx",
         action="store_true",
-        help="Generate the Emulation C++ API MDX (requires Fern auth).",
+        help="Generate C++ API MDX from this checkout (requires Docker).",
     )
     parser.add_argument(
         "--skip-library-mdx",
@@ -913,7 +1336,7 @@ def main() -> int:
     parser.add_argument(
         "--skip-fern-check",
         action="store_true",
-        help="Run the pipeline only; skip fern check / preview.",
+        help="Skip checks for local preparation; remote operations still validate.",
     )
     parser.add_argument(
         "--preview",
@@ -971,6 +1394,8 @@ def main() -> int:
     if args.publish and args.preview:
         print("error: --publish and --preview are mutually exclusive.", file=sys.stderr)
         return 2
+    if args.publish_preview and args.preview:
+        parser.error("--preview and --publish-preview are mutually exclusive")
     if args.publish and args.publish_preview:
         print(
             "error: --publish and --publish-preview are mutually exclusive.",
@@ -990,13 +1415,16 @@ def main() -> int:
         # automatically while keeping unauthenticated local checks non-interactive.
         args.with_library_mdx = _has_fern_org_token()
 
-    if args.with_library_mdx and not _fern_auth_token():
-        print(
-            "error: C++ API generation requires Fern auth (run 'fern login' or set FERN_TOKEN).",
-            file=sys.stderr,
-        )
-        return 1
-
+    if args.archive_repository and not args.archive_ref:
+        parser.error("--archive-repository requires --archive-ref")
+    if args.archive_ref and not args.archive_repository:
+        parser.error("--archive-ref requires --archive-repository")
+    if args.output_dir and not (args.archive_dir or args.archive_ref):
+        parser.error("--output-dir requires an archive input")
+    if (args.publish or args.publish_preview) and args.allow_lfs_pointers:
+        parser.error("remote publication cannot allow unresolved Git LFS pointers")
+    if args.archive_ref and not re.fullmatch(r"[0-9a-f]{40}", args.archive_ref):
+        parser.error("--archive-ref requires a full 40-character commit SHA")
     if args.no_docker:
         return run_pipeline(args)
     return _run_in_docker(args)

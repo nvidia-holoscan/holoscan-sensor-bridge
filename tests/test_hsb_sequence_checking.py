@@ -33,6 +33,7 @@ def test_hsb_sequence_checking(hololink_address):
     # on that will reset the sequence number in the HSB device.
     hololink_a = hololink_module.Hololink(
         peer_ip=metadata["peer_ip"],
+        peer_interface=metadata["interface"],
         control_port=metadata["control_port"],
         serial_number=metadata["serial_number"],
         sequence_number_checking=True,
@@ -44,6 +45,7 @@ def test_hsb_sequence_checking(hololink_address):
     # number in the HSB device.
     hololink_b = hololink_module.Hololink(
         peer_ip=metadata["peer_ip"],
+        peer_interface=metadata["interface"],
         control_port=metadata["control_port"],
         serial_number=metadata["serial_number"],
         sequence_number_checking=True,

@@ -21,17 +21,55 @@ set_property(TARGET sub_frame_visualizer PROPERTY POSITION_INDEPENDENT_CODE ON)
 
 add_library(hololink::operators::sub_frame_visualizer ALIAS sub_frame_visualizer)
 
+add_dependencies(sub_frame_visualizer capture_metadata_schema_generated)
+
+# The band shader is compiled to SPIR-V at build time with the SDK's HoloViz helper. It is
+# installed beside holoscan-config.cmake and included by it when the visualization component is
+# requested; fall back to the file itself when holoscan was found without components.
+if(NOT COMMAND holoviz_generate_shader_header)
+  include("${holoscan_DIR}/HolovizShaderHeader.cmake")
+endif()
+holoviz_generate_shader_header(
+  OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/holoviz_generated/sub_frame_visualizer.slang.hpp"
+  SLANG shader.slang
+  NAMESPACE hololink::operators::sub_frame_visualizer_shader
+  PAIRS main=vertex_main:fragment_main
+)
+target_sources(sub_frame_visualizer PRIVATE
+  "${CMAKE_CURRENT_BINARY_DIR}/holoviz_generated/sub_frame_visualizer.slang.hpp")
+
 target_include_directories(sub_frame_visualizer
+  PUBLIC
+    $<BUILD_INTERFACE:${CAPTURE_METADATA_SCHEMA_GENERATED_DIR}>
+  PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/holoviz_generated"
   INTERFACE
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
     $<INSTALL_INTERFACE:${CMAKE_INSTALL_INCLUDEDIR}>
   )
 
 target_link_libraries(sub_frame_visualizer
+  PUBLIC
+    # sub_frame_visualizer.hpp includes the generated capture_metadata_traits.hpp,
+    # which uses holoscan::schema types. capture_metadata_schema_generated alone
+    # may not carry holoscan::schema's own usage requirements to an installed
+    # consumer (unlike within this build tree); link it explicitly, matching
+    # base_receiver_op's INTERFACE link of the same
+    # (src/hololink/operators/CMakeLists.txt).
+    holoscan::schema
+    # sub_frame_visualizer.hpp's input port is now schema::ImageT (the image-domain payload),
+    # which pulls in holoscan/sensor_io/sensor_schema_package.hpp for schema::ImageT itself.
+    # holoscan::schema alone does not carry sensor_io's own usage requirements to an installed
+    # consumer; link it explicitly, same reasoning as holoscan::schema above.
+    holoscan::sensor_io
+    # HSDK5 HoloViz RHI (rhi::Device/Swapchain/Image/ExternalSemaphore), from the visualization
+    # module; see the gate in ../CMakeLists.txt. Public: sub_frame_visualizer.hpp includes the
+    # holoviz headers and holds holoviz objects by value.
+    holoscan::visualization::holoviz
   PRIVATE
     hololink
     holoscan::core
-    holoscan::viz
+    CUDA::cuda_driver
 )
 
 # Installation of the sub_frame_visualizer operator

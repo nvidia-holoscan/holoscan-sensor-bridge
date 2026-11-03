@@ -1,0 +1,142 @@
+The Holoscan Sensor Bridge (HSB) IP can be configured for different numbers of sensor
+and host interfaces, interface widths, peripheral interfaces, and dataplane formats. The
+HSB IP agent skills provide a guided workflow for creating the configuration and
+top-level wrapper. A simple testbench is also provided to verify the resulting
+integration.
+
+## Generate the HSB IP Configuration
+
+The HSB IP agent skills are available in the
+[Holoscan Sensor Bridge repository](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/3.0.0/skills).
+
+1. Install the following skills in the skills directory supported by the AI agent:
+
+   ```none
+   <agent-skills-directory>/hsb-ip-def
+   <agent-skills-directory>/hsb-ip-packetizer
+   <agent-skills-directory>/hsb-ip-create-top
+   ```
+
+   The skills support Claude Code and Codex. Other AI agents can use them if they
+   support compatible `SKILL.md`-based skills and the required file and shell tools.
+   Refer to the agent's documentation for its skills directory.
+
+1. Restart the AI session to load the installed skills.
+
+1. Ask the agent to use `hsb-ip-def` to generate `HOLOLINK_def.svh`:
+
+   ```none
+   Use hsb-ip-def to generate a HOLOLINK_def.svh for my FPGA design.
+   ```
+
+   The skill asks questions about the intended design and generates the macro and
+   parameter definitions that configure the HSB IP. When the design requires the Sensor
+   RX Packetizer, `hsb-ip-def` uses `hsb-ip-packetizer` to derive its configuration.
+
+1. Ask the agent to use `hsb-ip-create-top` to generate an `FPGA_top.sv` wrapper around
+   the `HOLOLINK_top` module:
+
+   ```none
+   Use hsb-ip-create-top to generate FPGA_top.sv from HOLOLINK_def.svh.
+   ```
+
+Review all generated files and connections before using them in an FPGA design. The
+generated wrapper instantiates the HSB IP, but application-specific logic must still be
+implemented and connected. For example, the user must connect the board-level sensor I/O
+to logic that produces the Sensor AXI-Stream interface expected by the HSB IP.
+
+The skills can also validate an existing configuration or wrapper:
+
+```none
+Use hsb-ip-def to validate path/to/HOLOLINK_def.svh.
+Use hsb-ip-create-top to check path/to/FPGA_top.sv against path/to/HOLOLINK_def.svh.
+```
+
+## Run the Simple Testbench
+
+The
+[HSB IP simple testbench](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/tree/3.0.0/fpga/nv_hsb_ip_simple_tb)
+provides a simulation environment for verifying the HSB IP configuration and the
+sensor-to-host and host-to-sensor datapaths. It uses the `HOLOLINK_top` module as the
+device under test (DUT).
+
+### Configure the Environment
+
+1. Open `setup_env.csh`. Uncomment the path variables, set their values, select the
+   simulator, and set the simulator's installation directories:
+
+   ```csh
+   setenv HOLOLINK_PATH "/path/to/nv_hsb_ip"
+   setenv HOLOLINK_DEF_INCLUDE "/path/to/directory/containing/HOLOLINK_def.svh"
+   setenv SIMULATOR "VCS"
+   setenv DUMP 1
+   setenv VCS_HOME "/path/to/vcs"
+   setenv DESIGNWARE_HOME "/path/to/designware_home"
+   setenv VERDI_HOME "/path/to/verdi"
+   ```
+
+   `HOLOLINK_PATH` identifies the HSB IP RTL directory. `HOLOLINK_DEF_INCLUDE`
+   identifies the directory containing the configuration file. Set `SIMULATOR` to either
+   `VCS` or `XCELIUM`. Set `DUMP` to `1` to generate an FSDB waveform when using VCS, or
+   to `0` to disable waveform capture. The `DUMP` option is ignored when using Xcelium.
+   `VCS_HOME`, `DESIGNWARE_HOME`, and `VERDI_HOME` locate the Synopsys tools for VCS;
+   for Xcelium, set `XCELIUM_HOME` instead.
+
+1. Source the environment:
+
+   ```csh
+   source setup_env.csh
+   ```
+
+### Select the Dataplane Format
+
+Use `make run` to test the RoCE dataplane format:
+
+```none
+make run
+```
+
+Use `make coe` to test the Camera over Ethernet (CoE) dataplane format:
+
+```none
+make coe
+```
+
+### Select the Test Mode
+
+The TX and RX directions below are named from the perspective of the HSB IP.
+
+- `TEST_MODE=SINGLE_SENSOR` is the default. It sends frames from Sensor RX interface 0
+  to Host TX interface 0.
+- `TEST_MODE=ALL_SENSORS` sends frames sequentially from every Sensor RX interface
+  configured by `SENSOR_RX_IF_INST` to the host selected by `TARGET_HOST`. The default
+  target is Host TX interface 0.
+- `TEST_MODE=HOST2SEN` sends RoCE UC SEND messages from Host RX interface 0 to every
+  Sensor TX interface configured by `SENSOR_TX_IF_INST`.
+
+For example:
+
+```none
+make run TEST_MODE=SINGLE_SENSOR
+make run TEST_MODE=ALL_SENSORS TARGET_HOST=0
+make run TEST_MODE=HOST2SEN
+make coe TEST_MODE=ALL_SENSORS TARGET_HOST=0
+```
+
+`TARGET_HOST` applies only to `ALL_SENSORS`. The `SINGLE_SENSOR` and `HOST2SEN` modes
+use host interface 0.
+
+### Capture Waveforms
+
+When using VCS with `DUMP=1` in `setup_env.csh`, running simulation generates a
+`waves.fsdb` waveform file:
+
+```none
+make run
+```
+
+Open the resulting waveform in Verdi:
+
+```none
+verdi -ssf waves.fsdb &
+```

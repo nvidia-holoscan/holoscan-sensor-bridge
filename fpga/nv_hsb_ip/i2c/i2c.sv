@@ -17,7 +17,6 @@
 module i2c (
     input         clk,     // controller clock
     input         rst,     // synchronous active high reset
-    input         nReset,  // asynchronous active low reset
     input         ena,     // core enable signal
     input  [31:0] i2c_scl_timeout,
     input  [15:0] clk_cnt,        // 4x SCL (default)
@@ -84,7 +83,7 @@ logic        peri_stretch;
 logic        peri_stretch_r;
 
 always_ff @(posedge clk) begin
-  if (!nReset) begin
+  if (rst) begin
     state      <= I2C_IDLE;
     sda_r      <= '1;
     scl_r      <= '1;
@@ -134,7 +133,7 @@ end
 
 // Register Inputs
 always_ff @(posedge clk) begin
-  if (!nReset) begin
+  if (rst) begin
     din_r <= '0;
   end
   else begin
@@ -150,7 +149,7 @@ end
 //------------------------------------------------------------------------------------------------//
 
 always_ff @(posedge clk) begin
-  if (!nReset) begin
+  if (rst) begin
     pcnt           <= '0;
     clk_div_cnt    <= 'd1;
     timeout_cnt    <= '0;

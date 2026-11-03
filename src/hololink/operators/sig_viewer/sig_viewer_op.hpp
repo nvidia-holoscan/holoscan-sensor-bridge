@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -18,132 +18,84 @@
 #ifndef OPERATORS_SIG_VIEWER_SIG_VIEWER_OP_HPP
 #define OPERATORS_SIG_VIEWER_SIG_VIEWER_OP_HPP
 
-#include <array>
-#include <queue>
-#include <string>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <vector>
 
-#include <cuda_runtime.h>
-#include <thrust/device_vector.h>
-
-#include <holoscan/holoscan.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/port.hpp>
 
 #include <hololink/common/gui_renderer.hpp>
-#include <hololink/core/smart_object_pool.hpp>
+
+namespace hololink {
+class GuiStaging;
+} // namespace hololink
 
 namespace hololink::operators {
 
+class SignalSpectrum;
+
 /***
- * The IQEncoderOp operator encodes in-phase and quadrature signal components
- * and creates a signal buffer.
+ * Visualizes an IQ signal tensor received on the 'input' port: time-domain (signal) and
+ * frequency-domain (spectrum) views drawn with Dear ImGui. Without a running renderer it
+ * consumes its input and does nothing else.
  *
  * Input:
- *  'input' - The the signal to be viewed.
- *         The signal is expected to be an array of floats
- *         while each float represents a signal sample.
- *
- * Parameters:
- *  'renderer' - Since Dear ImGui is not supported by Holoviz operators,
- *               a pointer to an ImGuiRenderer object is required.
+ *  'input' - Float tensor of interleaved IQ samples (I0Q0 I1Q1 ...).
  */
-
-class SignalViewerOp : public holoscan::Operator {
+class SignalViewerOp : public holoscan::Operator<> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(SignalViewerOp)
+    explicit SignalViewerOp(std::shared_ptr<hololink::ImGuiRenderer> renderer = nullptr);
+    ~SignalViewerOp();
 
-    SignalViewerOp() = default;
-
-    void initialize() override;
     void setup(holoscan::OperatorSpec& spec) override;
-
+    [[nodiscard]] holoscan::Contract contract() const override;
     void start() override;
     void stop() override;
+    holoscan::expected<void, holoscan::Error> compute(holoscan::ExecutionContext& context) override;
 
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext& context) override;
-    using Samples = std::vector<float>;
+    holoscan::Input<holoscan::Tensor> input { "input" };
 
 private:
-    static constexpr unsigned number_of_signal_components = 2;
-    static void on_input_tensors_ready(void* data);
+    static constexpr int number_of_signal_components = 2;
 
-    std::shared_ptr<holoscan::UnboundedAllocator> allocator_;
+    // What the GUI asks compute() to stage; written by the GUI, read by compute(), under mutex_.
+    struct Settings {
+        bool show_signal = false;
+        int signal_from = 0; // plotted time window [signal_from, signal_to), in IQ samples
+        int signal_to = 128;
+        bool show_spectrum = true;
+        int spectrum_size = 1024;
+        int spectrum_output = 0; // index into the "Power"/"Amplitude" choices
+    };
+    // What one staged batch holds; travels with it as its tag.
+    struct Layout {
+        int signal_from = 0;
+        int signal_samples = 0;
+        int spectrum_size = 0;
+        int total_samples = 0;
+    };
+
+    void draw();
+    void draw_signal(Settings& settings);
+    void draw_spectrum(Settings& settings);
+
+    std::shared_ptr<hololink::ImGuiRenderer> renderer_;
+    std::optional<ImGuiRenderer::Handle> renderer_handle_;
     std::mutex mutex_;
-    struct SignalView {
-        SignalView();
-        bool show_ = false;
-        bool force_update_ = true;
-        int from_ = 0;
-        int to_ = 128;
-        int max_count_ = 0; // Number of IQ pairs in the tensor
-        std::shared_ptr<holoscan::Tensor> tensor_;
-        float max_value_ = 1.0f;
-        Samples samples_;
+    Settings settings_;
+    std::unique_ptr<hololink::GuiStaging> staging_;
+    std::unique_ptr<SignalSpectrum> spectrum_; // compute() only
 
-        struct SignalComponent {
-            SignalComponent(const std::string& name = "");
-            void draw_show_checkbox();
-
-            std::string name_;
-            bool show_plot_ = true;
-        };
-        using Signal = std::array<SignalComponent, number_of_signal_components>;
-        Signal signal_;
-        void draw(const std::shared_ptr<holoscan::Tensor>& tensor, cudaStream_t stream);
-    };
-    SignalView signal_view_;
-    struct SpectrumView {
-        bool show_ = true;
-        std::string label_ = "Spectrum";
-        int size_ = 1024;
-        int from_ = 0;
-        int to_ = size_ / 2;
-        int output_type_index_ = 0;
-        std::shared_ptr<holoscan::Tensor> tensor_iq_;
-
-        enum class OutputType {
-            Power,
-            Amplitude
-        };
-
-        /**
-         * The spectrum class can calculate spectrum from signal IQ pairs
-         */
-        class Spectrum {
-        public:
-            // The size of the spectrum (the number of sample pairs to use)
-            Spectrum(int64_t count);
-            ~Spectrum();
-
-            int64_t get_count() const;
-
-            void calculate(const float* device_samples_iq, OutputType output_type, cudaStream_t stream = 0);
-            const thrust::device_vector<float>& get_data() const;
-
-        private:
-            struct Impl;
-            std::unique_ptr<Impl> pimpl_;
-        };
-        std::shared_ptr<Spectrum> device_spectrum_;
-        Samples host_spectrum_;
-
-        void draw(const std::shared_ptr<holoscan::Tensor>& tensor_iq, cudaStream_t stream);
-        static bool type_combo_handler(void* data, int idx, const char** out_text);
-        static const std::vector<std::pair<std::string, OutputType>> output_types_;
-    };
-    SpectrumView spectrum_view_;
-
-    ImGuiRenderer::Handle renderer_handle_;
-    cudaStream_t stream_ {};
-
-    using Tensor = std::shared_ptr<holoscan::Tensor>;
-    using TensorsQueue = std::queue<Tensor>;
-    TensorsQueue input_pending_tensor_queue_;
-    Tensor input_ready_tensor_;
-
-    static std::pair<float, float> cuda_minmax(const float* data, size_t size, cudaStream_t stream = 0);
-
-    // Parameters
-    holoscan::Parameter<hololink::ImGuiRenderer*> renderer_;
+    // GUI thread only
+    Layout layout_;
+    std::vector<float> batch_;
+    std::vector<float> signal_samples_;
+    std::vector<float> spectrum_samples_;
+    float max_value_ = 1.0f;
+    int spectrum_from_ = 0;
+    int spectrum_to_ = 512;
 };
 
 } // namespace hololink::operators

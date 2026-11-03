@@ -27,8 +27,8 @@
 #include <cuda.h>
 #include <curand_kernel.h>
 #include <nvrtc.h>
-#include <thrust/device_vector.h>
 
+#include <hololink/common/cuda_error.hpp>
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/core/logging_internal.hpp>
 
@@ -150,6 +150,9 @@ public:
       oss << "expr_eval_" << std::setw(sizeof(this) * 2) << std::setfill('0') << std::hex << reinterpret_cast<uintptr_t>(this) << ".cu" << std::dec;
       name_ = oss.str();
       HSB_LOG_DEBUG("Creating Cuda program: {}", name_);
+      // NVRTC changes SIGINT's and SIGTERM's dispositions, which fails a run with managed
+      // shutdown signals; see ShutdownSignalDispositionGuard.
+      const hololink::common::ShutdownSignalDispositionGuard signal_dispositions;
       NVRTC_CHECK(nvrtcCreateProgram(&program_, cuda_code.c_str(), name_.c_str(), 0, nullptr, nullptr));
   }
 
@@ -167,6 +170,9 @@ public:
   // Compiling the Cuda source code provided in the constructor
   void compile(const std::vector<const char*>& options = std::vector<const char*>()) try {
     HSB_LOG_DEBUG("Compiling Cuda program: {}", name_);
+    // NVRTC changes SIGINT's and SIGTERM's dispositions, which fails a run with managed shutdown
+    // signals; see ShutdownSignalDispositionGuard.
+    const hololink::common::ShutdownSignalDispositionGuard signal_dispositions;
     NVRTC_CHECK(nvrtcCompileProgram(program_, options.size(), options.size() ? &options.front() : nullptr));
   } catch (const std::exception&) {
     HSB_LOG_ERROR("{}", get_log());
@@ -273,14 +279,25 @@ struct Expression::Impl {
     }())
   {
   }
-  void evaluate(float* device_output, size_t count, size_t stride, void* device_data);
+  ~Impl() {
+    if (curand_states_)
+      cudaFree(curand_states_);
+  }
+  Impl(const Impl&) = delete;
+  Impl& operator=(const Impl&) = delete;
+
+  void evaluate(float* device_output, size_t count, size_t stride, void* device_data, cudaStream_t stream);
 
     CudaModule cuda_module_;
   CUfunction cuda_function_;
   using SeedType  = unsigned long long;
   SeedType seed_;
   std::string cuda_toolkit_include_paths_;  // The path to curand is required if curand functions are used
-  thrust::device_vector<curandState> curand_states_;
+  // Not a thrust::device_vector: its resize() fills on the legacy default stream, unordered
+  // with the caller's (possibly non-blocking) stream that rand_init_kernel and the expression
+  // run on.
+  curandState* curand_states_ = nullptr;
+  size_t curand_states_count_ = 0;
 };
 
 Expression::Expression(std::shared_ptr<Impl> pimpl) :
@@ -288,36 +305,46 @@ Expression::Expression(std::shared_ptr<Impl> pimpl) :
 {
 }
 
-void Expression::Impl::evaluate(float* device_output, size_t count, size_t stride, void* device_data) {
+void Expression::Impl::evaluate(float* device_output, size_t count, size_t stride, void* device_data,
+                                cudaStream_t stream) {
 
   if (stride == 0)
     log_and_throw("The stride cannot be 0");
+  if (count == 0)
+    return;
 
   // Curand states is costy and therefore is initialized separately and only once.
   curandState* curand_states = nullptr;
   if (!cuda_toolkit_include_paths_.empty()) {
     // Initialize curand_states.
-    if (curand_states_.size() != count) {
-      curand_states_.resize(count);
+    if (curand_states_count_ != count) {
+      if (curand_states_) {
+        CUDA_CHECK(cudaFree(curand_states_));
+        curand_states_ = nullptr;
+        curand_states_count_ = 0;
+      }
+      CUDA_CHECK(cudaMalloc(&curand_states_, count * sizeof(curandState)));
+      curand_states_count_ = count;
       rand_init_kernel<<<static_cast<size_t>(std::ceil(1.0 * count / thread_block_size)),
-                        thread_block_size>>>(curand_states_.data().get(), count, seed_);
+                        thread_block_size, 0, stream>>>(curand_states_, count, seed_);
     }
-    curand_states = curand_states_.data().get();
+    curand_states = curand_states_;
 
   }
 
   // Launch the kernel
   void* args[] = {&device_output, &count, &stride, &device_data, &curand_states };
-  cuLaunchKernel(cuda_function_,
+  CudaCheck(cuLaunchKernel(cuda_function_,
     static_cast<size_t>(std::ceil(1.0 * count / thread_block_size)), 1, 1,
     thread_block_size, 1, 1,
-    0, nullptr, args, nullptr);
+    0, stream, args, nullptr));
 }
 
-void Expression::evaluate(float* device_output, size_t count, size_t stride, void* device_data) const {
+void Expression::evaluate(float* device_output, size_t count, size_t stride, void* device_data,
+                          cudaStream_t stream) const {
   if (!pimpl_)
     log_and_throw("Invalid expression");
-  pimpl_->evaluate(device_output, count, stride, device_data);
+  pimpl_->evaluate(device_output, count, stride, device_data, stream);
 }
 
 Expression::operator bool() const {

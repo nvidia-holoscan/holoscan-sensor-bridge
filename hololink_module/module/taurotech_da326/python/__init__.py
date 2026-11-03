@@ -15,9 +15,7 @@
 
 """TauroTech DA326 supplement bindings."""
 
-import hololink_module  # noqa: F401 — side-effect import for V1 type registration
-
-from . import _hololink_module_taurotech_da326 as _native
+from hololink_module import _hololink_module as _native
 
 TauroTechDa326InterfaceV1 = _native.TauroTechDa326InterfaceV1
 

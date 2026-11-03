@@ -46,42 +46,12 @@ target_link_libraries(hololink_hsb_lite_headers
         hololink::module_headers)
 target_compile_features(hololink_hsb_lite_headers INTERFACE cxx_std_17)
 
-# Per-module Python sub-package. Builds _hololink_module_hsb_lite.so
-# under ${BUILD}/python/hololink_module/hsb_lite/ alongside the
-# matching __init__.py so PYTHONPATH=${BUILD}/python python3 -c
-# "import hololink_module.hsb_lite" resolves directly out of the
-# build tree.
-if(HOLOLINK_BUILD_PYTHON)
-    include(hololink_deps/pybind11)
-
-    pybind11_add_module(_hololink_module_hsb_lite MODULE
-        python/hsb_lite_py.cpp)
-    # holoscan::pybind11 pins this extension to the same pybind11 ABI
-    # the sibling _hololink_py_module and _hololink_module_operators
-    # extensions use, so cross-module type lookups (EnumerationMetadata,
-    # Module) hit one shared internals capsule. Without it the pybind11
-    # internals tag is `__pybind11_internals_v4_gcc_libstdcpp_cxxabi1016__`
-    # instead of holoscan's `__pybind11_internals_v4__`, and the
-    # registries split.
-    target_link_libraries(_hololink_module_hsb_lite
-        PRIVATE
-            hololink::hsb_lite::headers
-            holoscan::pybind11)
-    target_compile_features(_hololink_module_hsb_lite PRIVATE cxx_std_17)
-    # Reuse hololink::module_core's PCH — the binding TU transitively pulls
-    # in the same framework headers. Visibility is compatible
-    # (pybind11_add_module sets hidden by default, matching
-    # hololink_module_core).
-    if(TARGET hololink_module_core)
-        target_precompile_headers(_hololink_module_hsb_lite
-            REUSE_FROM hololink_module_core)
-    endif()
-
-    set_target_properties(_hololink_module_hsb_lite PROPERTIES
-        LIBRARY_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/python/hololink_module/hsb_lite")
-    configure_file(
-        "${CMAKE_CURRENT_SOURCE_DIR}/python/__init__.py"
-        "${CMAKE_BINARY_DIR}/python/hololink_module/hsb_lite/__init__.py"
-        COPYONLY)
-endif()
+# Python bindings: NOT YET ported to nanobind, unlike its hololink_module Python-extension
+# siblings (core, operators, vb1940, taurotech_da326 -- see python/hololink_module/CMakeLists.txt
+# and hololink_module/host/CMakeLists.txt's own Python comment). This pybind11_add_module()
+# block (holoscan::pybind11, not exported by the installed HSDK5 holoscan-sdk) would otherwise
+# break HOLOLINK_BUILD_MODULE's configure step the same way the other 4 did, so it's disabled
+# here rather than fixed -- no app in examples/*.py imports hololink_module.hsb_lite, so this
+# is deliberately deferred (same treatment as CheckCrcOp), not an oversight. Port
+# python/hsb_lite_py.cpp into the consolidated _hololink_module.cpp the same way the other 4
+# files were if a caller ever needs hololink_module.hsb_lite from Python.

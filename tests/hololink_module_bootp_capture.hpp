@@ -22,6 +22,7 @@ class BootpCaptureV1
     : public hololink::module::Service<BootpCaptureV1> {
 public:
     static constexpr const char* type_id = "test.bootp_capture.v1";
+    static constexpr const char* release_version = hololink::module::TEST_ONLY;
 
     virtual ~BootpCaptureV1() = default;
 

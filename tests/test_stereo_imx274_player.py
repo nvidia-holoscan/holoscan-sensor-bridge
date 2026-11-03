@@ -19,17 +19,19 @@ import sys
 from unittest import mock
 
 import pytest
+import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
 from examples import stereo_imx274_player
 
 
+@utils.requires_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
+        Imx274_Mode.IMX274_MODE_3840X2160_60FPS,
     ],
 )
 def test_stereo_imx274_player_player(
@@ -49,9 +51,14 @@ def test_stereo_imx274_player_player(
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        stereo_imx274_player.main()
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = stereo_imx274_player.main()
 
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    assert result == 0
+    # Both receivers must get frames.
+    assert len(monitor.frames) == 2, monitor.frames
+    monitor.assert_ok()
+
+    # check for errors
+    captured = capsys.readouterr()
+    assert captured.err == ""

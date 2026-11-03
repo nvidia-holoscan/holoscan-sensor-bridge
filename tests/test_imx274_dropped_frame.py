@@ -15,244 +15,165 @@
 
 # See README.md for detailed information.
 
-import ctypes
+# A consumer of the receiver stalls for 0.2 s at frame 30. The receiver must drop
+# the frames that arrive meanwhile and go on: the frame numbers it publishes have a
+# gap right after the stalled frame, frames keep coming after the gap, and the
+# watchdog sees a frame at least every 0.5 s after startup.
+#
+# In v2.7 the stall (0.1 s) and the watchdog were after HolovizOp, and the stall
+# held up the whole pipeline (one scheduler thread), so the RoCE receiver dropped
+# the frames that arrived meanwhile. HSDK5 runs the operators on several threads and
+# doesn't wait for a full queue: a hololink receiver drops a frame that it can't
+# publish. So the stalled sink takes the receiver's frames on a blocking edge with
+# room for STALL_QUEUE_DEPTH frames, and the receiver drops whole frames, tensor
+# and metadata, while the sink sleeps.
+
 import logging
 import time
 
-import cuda.bindings.driver as cuda
-import holoscan
+import applications
+import holoscan as hs
 import operators
 import pytest
 import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
 import hololink as hololink_module
 
+# The sink's frame that stalls, and for how long: 12 frames at 60 FPS. At v2.7's
+# 0.1 s, only 2 frames dropped (below), the fewest the test accepts.
+STALL_FRAME = 30
+STALL_S = 0.2
 
-class DroppedFrameTestApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        camera,
-        camera_mode,
-        frame_limit,
-        watchdog,
-        network_receiver_factory,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._watchdog = watchdog
-        self._network_receiver_factory = network_receiver_factory
+# During the stall, one frame more than the queue depth gets through: frames
+# 30, 31 and 32 after the stalled frame 29 on an IGX Thor T7000 (ConnectX,
+# 1080p60). The receiver drops the frames that arrive after them (2 there with a
+# 0.1 s stall).
+STALL_QUEUE_DEPTH = 2
 
-    def compose(self):
-        logging.info("compose")
-        self._count = holoscan.conditions.CountCondition(
-            self,
-            name="count",
-            count=self._frame_limit,
-        )
+# The frames that must arrive after the dropped ones.
+RECOVERY_FRAMES = 10
 
-        self._camera.set_mode(self._camera_mode)
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
 
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        receiver_operator = self._network_receiver_factory(
-            self,
-            self._count,
-            frame_size,
-            self._cuda_context,
-        )
+class StallOp(hs.Operator):
+    """Records the frame number of each of the receiver's frames, and sleeps
+    STALL_S at the STALL_FRAME-th one. Its edge blocks, so it sees each frame
+    that the receiver publishes, in order."""
 
-        pixel_format = self._camera.pixel_format()
-        bayer_format = self._camera.bayer_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx274 is 50
-            optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
+    input = hs.Input("input", hs.payload.Tensor)
 
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
+    record_token = hs.Param(0)
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            framebuffer_srgb=True,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=STALL_QUEUE_DEPTH)
 
-        watchdog_operator = operators.WatchdogOp(
-            self,
-            name="watchdog_operator",
-            watchdog=self._watchdog,
-        )
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
 
-        def stall():
+    def compute(self, context):
+        sample = self.input.receive()
+        if sample.is_missing:
+            return
+        frame_numbers = operators.lookup(self.record_token)
+        frame_numbers.append(sample.metadata.frame_id)
+        if len(frame_numbers) == STALL_FRAME:
             logging.info("STALLING")
-            time.sleep(0.1)
-
-        stall_operator = operators.OnFrameNOperator(
-            self,
-            name="stall_operator",
-            trigger_frame=30,
-            callback=stall,
-        )
-
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
-        self.add_flow(visualizer, stall_operator, {("camera_pose_output", "input")})
+            time.sleep(STALL_S)
 
 
 def dropped_frame_test(
     camera_mode,
     pattern,
-    headless,
     hololink_address,
     frame_limit,
-    network_receiver_factory,
+    receiver,
+    receiver_kwargs,
+    headless,
 ):
-    # Get a handle to data sources
-    channel_metadata = hololink_module.Enumerator.find_channel(
-        channel_ip=hololink_address
-    )
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    #
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=0
-    )
-    with utils.Watchdog(
+    frame_numbers = []
+    with applications.CudaContext() as cuda_context, applications.imx274_camera(
+        hololink_address, camera_mode, pattern=pattern
+    ) as camera, utils.Watchdog(
         "frame-reception",
         initial_timeout=operators.color_profiler_initial_timeout(frame_limit),
-    ) as watchdog:
-        # Set up the application
-        def receiver_factory(fragment, condition, frame_size, frame_context):
-            receiver_operator = network_receiver_factory(
-                fragment,
-                condition,
-                name="receiver",
-                frame_size=frame_size,
-                frame_context=frame_context,
-                hololink_channel=hololink_channel,
-                device=camera,
-            )
-            return receiver_operator
-
-        application = DroppedFrameTestApplication(
-            headless,
-            cu_context,
-            cu_device_ordinal,
-            hololink_channel,
+        min_taps=utils.frame_floor(frame_limit),
+    ) as watchdog, utils.RunMonitor() as monitor:
+        test_graph = applications.TestGraph("dropped_frame")
+        rx = applications.add_receiver(
+            test_graph,
+            "receiver",
+            receiver,
             camera,
-            camera_mode,
+            cuda_context.cu_context,
             frame_limit,
-            watchdog,
-            network_receiver_factory=receiver_factory,
+            **receiver_kwargs,
         )
-        # Run it.
-        hololink = hololink_channel.hololink()
-        hololink.start()
-        try:
-            hololink.reset()
-            camera.setup_clock()
-            camera.configure(camera_mode)
-            camera.test_pattern(pattern)
-            #
-            application.run()
-        finally:
-            hololink.stop()
+        isp = applications.add_isp(test_graph, "", rx, camera)
+        applications.show_images(
+            test_graph,
+            "holoviz",
+            [applications.Image(isp["demosaic"].output, camera.width, camera.height)],
+            headless,
+            "IMX274 dropped frame test",
+        )
+        watchdog_operator = test_graph.op(
+            operators.WatchdogOp,
+            "watchdog_operator",
+            watchdog_token=operators.register(watchdog),
+        )
+        operators.metadata_flow(
+            test_graph, isp["image_processor"].metadata, watchdog_operator.metadata
+        )
+        stall_operator = test_graph.op(
+            StallOp, "stall_operator", record_token=operators.register(frame_numbers)
+        )
+        # The receiver publishes a frame's tensor before its metadata, so a full
+        # queue here makes it drop the whole frame (counted). A sink that took
+        # only the metadata would leave CsiToBayerOp tensors without metadata.
+        test_graph.add_flow(
+            rx.tensor,
+            stall_operator.input,
+            queue_policy=hs.QueuePolicy.BLOCKING,
+            queue_depth=STALL_QUEUE_DEPTH,
+        )
+        test_graph.run()
 
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
+    monitor.assert_ok()
+    assert len(frame_numbers) > STALL_FRAME, f"Only {len(frame_numbers)} frames"
+    stalled = frame_numbers[STALL_FRAME - 1]
+    after_stall = frame_numbers[STALL_FRAME - 1 :]
+    gaps = [
+        (before, after)
+        for before, after in zip(after_stall, after_stall[1:])
+        if after != before + 1
+    ]
+    logging.info(
+        f"{len(frame_numbers)} frames; stalled at frame {stalled}; gaps after it: {gaps}"
+    )
+    assert gaps, f"No frame was dropped after the stall at frame {stalled}"
+    before, after = gaps[0]
+    # The frames in the sink's queue and one more arrive; the receiver drops the
+    # next ones.
+    assert (
+        before <= stalled + STALL_QUEUE_DEPTH + 1
+    ), f"The first frames dropped, after {before}, aren't the stall's (frame {stalled})"
+    assert after - before > 2, f"Only frames {before + 1}..{after - 1} were dropped"
+    recovered = len(after_stall) - after_stall.index(after)
+    assert (
+        recovered >= RECOVERY_FRAMES
+    ), f"Only {recovered} frames arrived after the dropped ones"
 
 
-# This may execute on unaccelerated configurations, where
-# there may be any number of infiniband interfaces (but
-# most likely zero).  Make sure we can address elements
-# [0] and [1]; if those come back as None then the test
-# will fail-- as expected.
-sys_ibv_name = (hololink_module.infiniband_devices() + [None, None])[:2]
-
-
+@utils.requires_roce
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
 @pytest.mark.parametrize(
     "camera_mode, pattern",
     [
         (
-            hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+            Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
             10,
         ),
-    ],
-)
-@pytest.mark.parametrize(
-    "ibv_name",
-    [
-        sys_ibv_name[0],
     ],
 )
 def test_roce_imx274_dropped_frame(
@@ -261,36 +182,15 @@ def test_roce_imx274_dropped_frame(
     headless,
     hololink_address,
     ibv_name,
+    ibv_port,
     frame_limit,
 ):
-    def network_receiver_factory(
-        fragment,
-        condition,
-        name,
-        frame_size,
-        frame_context,
-        hololink_channel,
-        device,
-    ):
-        ibv_port = 1
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            fragment,
-            condition,
-            name=name,
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=hololink_channel,
-            device=device,
-            ibv_name=ibv_name,
-            ibv_port=ibv_port,
-        )
-        return receiver_operator
-
     dropped_frame_test(
         camera_mode,
         pattern,
-        headless,
         hololink_address,
         frame_limit,
-        network_receiver_factory,
+        hololink_module.operators.RoceReceiverOp,
+        {"ibv_name": ibv_name, "ibv_port": ibv_port},
+        headless,
     )

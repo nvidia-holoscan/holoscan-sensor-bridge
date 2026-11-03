@@ -30,6 +30,7 @@ module rx_parser
   parameter   MTU              = 1500,           //Maximum packet size in bytes
   parameter   N_QP             = 1,
   parameter   ENABLE_ROCE_ACK  = 0,
+  parameter   VLAN_DISABLE     = 0,
   parameter   SYNC_CLK         = 0
 )(
 
@@ -105,8 +106,8 @@ localparam VLAN_BYTES            = 4;
 localparam IP_BYTES              = 20;
 localparam UDP_BYTES             = 8;
 localparam BTH_BYTES             = 12;
-localparam HDR_BYTES             = ETH_BYTES + VLAN_BYTES + IP_BYTES + UDP_BYTES + BTH_BYTES;
-localparam HDR_DECODE_BEAT       = ((ETH_BYTES + VLAN_BYTES + IP_BYTES + UDP_BYTES) / KEEP_WIDTH);  //Data input beat that the header is completed
+localparam HDR_BYTES             = ETH_BYTES + (VLAN_DISABLE ? 0 : VLAN_BYTES) + IP_BYTES + UDP_BYTES + BTH_BYTES;
+localparam HDR_DECODE_BEAT       = ((ETH_BYTES + (VLAN_DISABLE ? 0 : VLAN_BYTES) + IP_BYTES + UDP_BYTES) / KEEP_WIDTH);  //Data input beat that the header is completed
 localparam AXI_PIPE_WIDTH        = AXI_DWIDTH + KEEP_WIDTH + 3;
 localparam AXI_HDR_WIDTH         = 85+USER_WIDTH;
 localparam IPV4_STAGES           = 5;
@@ -115,19 +116,19 @@ localparam LOOPBCK_UDP_PORT      = 16'h1000;
 localparam ICMP                  = 8'h01;
 localparam UDP                   = 8'h11;
 
-// The NO_BACKPRESSURE input path needs the almost-full threshold plus one full
-// packet of headroom, so FIFO_DEPTH is normally RLS_AFULL_DEPTH + 1 packet
-// (3 packets deep, AFULL at 2). On wide host buses MTU/KEEP_WIDTH is small and
-// this is cheap. On narrow buses (e.g. 8-bit nano) MTU/KEEP_WIDTH is large and a
-// 3-packet depth crosses the 4096-entry LSRAM boundary, forcing each block from
-// 4Kx4 into 8Kx2 and doubling RAM1K18 usage (overflows small devices). When
-// 3 packets will not fit in a 4K-deep LSRAM, fall back to AFULL=1/depth=2
-// packets, which keeps the AFULL+1-packet invariant within a single 4K LSRAM.
-localparam PKT_DEPTH       = (MTU / KEEP_WIDTH);
-localparam LSRAM_4K_DEPTH  = 4096;
-localparam FIT_3PKT_IN_4K  = ((PKT_DEPTH * 3) <= LSRAM_4K_DEPTH);
-localparam FIFO_DEPTH      = FIT_3PKT_IN_4K ? (PKT_DEPTH * 3) : (PKT_DEPTH * 2); // 3 full packets (2 on narrow buses)
-localparam RLS_AFULL_DEPTH = FIT_3PKT_IN_4K ? (PKT_DEPTH * 2) : (PKT_DEPTH * 1); // AFULL after 2 packets (1 on narrow buses)
+// sc_fifo rounds BUF_DEPTH up to 2^ceil(log2(N)). On 256-bit+ hosts a packet
+// is few beats, so 3-packet depth stays in the same EBR. On narrower buses
+// 3 packets crosses 512/4096 and doubles RAM, so stay at 2 packets.
+//
+// LS is NO_BACKPRESSURE. AFULL is sampled at LS SOP (not as a global FCS
+// error) so a whole LS frame is dropped when there is not a packet of room.
+// Wide buses AFULL at 2 packets with 3-packet depth; narrower AFULL at 1
+// packet with 2-packet depth so there is always one MTU of headroom.
+localparam PKT_DEPTH       = (MTU + KEEP_WIDTH - 1) / KEEP_WIDTH;
+localparam WIDE_HOST_BUS   = (AXI_DWIDTH >= 256);
+localparam INP_FIFO_DEPTH  = WIDE_HOST_BUS ? (PKT_DEPTH * 3) : (PKT_DEPTH * 2);
+localparam LS_FIFO_DEPTH   = WIDE_HOST_BUS ? (PKT_DEPTH * 3) : (PKT_DEPTH * 2);
+localparam RLS_AFULL_DEPTH = WIDE_HOST_BUS ? (PKT_DEPTH * 2) : PKT_DEPTH;
 localparam META_FIFO_DEPTH = (AXI_DWIDTH < 32) ? 8 : 31;
 
 
@@ -199,8 +200,6 @@ logic [((HDR_BYTES*8)-1):0] hdr;
 logic [7:0]                 hdr_array [HDR_BYTES-1:0];
 logic                       hdr_valid;
 
-logic                       sop;
-logic                       eop;
 logic                       is_vlan;
 logic [15:0]                vlan_tci;
 logic                       r_is_vlan;
@@ -240,8 +239,13 @@ generate
   end
 endgenerate
 
-assign is_vlan                          = ({hdr_array[12],hdr_array[13]} == 16'h8100);
-assign vlan_tci                         = {hdr_array[14], hdr_array[15]};
+if (VLAN_DISABLE) begin
+  assign is_vlan = '0;
+  assign vlan_tci = '0;
+end else begin
+  assign is_vlan                        = ({hdr_array[12],hdr_array[13]} == 16'h8100);
+  assign vlan_tci                       = {hdr_array[14], hdr_array[15]};
+end
 
 assign eth_hdr_i.dest_mac               = {hdr_array[00], hdr_array[01], hdr_array[02], hdr_array[03], hdr_array[04], hdr_array[05]};
 assign eth_hdr_i.src_mac                = {hdr_array[06], hdr_array[07], hdr_array[08], hdr_array[09], hdr_array[10], hdr_array[11]};
@@ -311,6 +315,7 @@ logic                                 hdr_rden;
 logic [IPV4_STAGES-2:0]               is_ipv4_type;
 logic                                 fcs_iserr;
 logic                                 fcs_err_data;
+logic                                 ls_afull_iserr;
 logic                                 ack_pkt_done;
 logic                                 ack_pkt_is_err;
 logic                                 buf_rls_afull;
@@ -332,7 +337,7 @@ always_ff @(posedge host_clk) begin
   else begin
     is_ipv4_type <= {is_ipv4_type[IPV4_STAGES-3:0],(eth_hdr_i.ethertype == 16'h0800)};
     ack_pkt_done   <= i_axis_rx_tvalid && i_axis_rx_tlast;
-    ack_pkt_is_err <= fcs_err_data;
+    ack_pkt_is_err <= fcs_err_data || buf_rls_afull;
     //If the packet is IPv4 and there is a IPv4 checksum failure, add to stat counter. Reset on sync'ed SW signal.
     if (inst_dec_stat_rst) begin
       parser_ipv4_chksum_err_cnt          <= '0;
@@ -394,18 +399,18 @@ sc_fifo #(
 );
 
 sc_fifo #(
-  .DATA_WIDTH   ( 1                                                ),
+  .DATA_WIDTH   ( 2                                                ),
   .FIFO_DEPTH   ( META_FIFO_DEPTH                                  )
 ) fcs_buffer (
   .clk          ( host_clk                                         ),
   .rst          ( host_rst                                         ),
   .wr           ( (i_axis_rx_tvalid & i_axis_rx_tlast)             ),
-  .din          ( fcs_err_data                                     ),
+  .din          ( {buf_rls_afull, fcs_err_data}                    ),
   .full         (                                                  ),
   .afull        (                                                  ),
   .over         (                                                  ),
   .rd           ( hdr_rden                                         ),
-  .dout         ( fcs_iserr                                        ),
+  .dout         ( {ls_afull_iserr, fcs_iserr}                      ),
   .dval         (                                                  ),
   .empty        ( fcs_empty                                        ),
   .aempty       (                                                  ),
@@ -413,7 +418,7 @@ sc_fifo #(
   .count        (                                                  )
 );
 
-assign fcs_err_data = i_axis_rx_tuser || buf_rls_afull;
+assign fcs_err_data = i_axis_rx_tuser;
 
 //------------------------------------------------------------------------------------------------//
 // PTP
@@ -469,7 +474,9 @@ logic hdr_empty;
 logic is_stx;
 logic r_is_stx;
 logic is_btx;
+logic buf_is_btx;
 logic r_is_btx;
+logic buf_is_vlan;
 logic is_loopbk;
 logic is_bootp;
 logic is_arp;
@@ -477,7 +484,6 @@ logic is_ptp;
 logic is_ecb;
 logic is_roce_ecb;
 logic is_ping;
-logic is_pkt;
 
 logic [47:0]              hdr_din_mac;
 logic [AXI_HDR_WIDTH-1:0] hdr_din;
@@ -580,7 +586,6 @@ sc_fifo #(
 
 
 assign hdr_din = {r_is_vlan,r_vlan_tci,rx_msg_type_ptp_hdr,bth_dest_qp,hdr_din_mac,is_roce_ecb,is_arp,is_ping,is_ecb,is_bootp,is_loopbk,is_ptp,is_btx,is_stx};
-assign o_dest_info          = hdr_dout[80:9];
 assign o_ptp_sync_msg = proc_pipeline[0] && is_ptp && (rx_msg_type_ptp_hdr == PTP_SYNC_TYPE);
 
 
@@ -599,7 +604,7 @@ generate
       .HDR_BYTES        ( 54                 ),
       .N_QP             ( N_QP               ),
       .META_FIFO_DEPTH  ( META_FIFO_DEPTH    ),
-      .FIFO_DEPTH       ( FIFO_DEPTH         )
+      .FIFO_DEPTH       ( INP_FIFO_DEPTH     )
     ) u_roce_ack (
       .i_pclk           ( host_clk           ),
       .i_prst           ( host_rst           ),
@@ -658,7 +663,7 @@ logic                   buf_axis_tvalid;
 logic                   buf_axis_tlast;
 logic [AXI_DWIDTH-1:0]  buf_axis_tdata;
 logic [KEEP_WIDTH-1:0]  buf_axis_tkeep;
-logic [NUM_LS_INST+USER_WIDTH-1:0] buf_axis_tuser;
+logic [NUM_LS_INST+USER_WIDTH+2+72:0] buf_axis_tuser;
 logic                   buf_axis_tready;
 logic                   w_buf_axis_tready;
 logic                   w_buf_axis_tvalid;
@@ -668,7 +673,7 @@ axis_buffer # (
   .IN_DWIDTH       ( AXI_DWIDTH     ),
   .OUT_DWIDTH      ( AXI_DWIDTH     ),
   .WAIT2SEND       ( 1              ),
-  .BUF_DEPTH       ( FIFO_DEPTH     ),
+  .BUF_DEPTH       ( INP_FIFO_DEPTH ),
   .OUTPUT_SKID     ( '0             ),
   .NO_BACKPRESSURE ( 1              )
 ) u_axis_inp_buffer (
@@ -701,20 +706,15 @@ logic                    buf_rmv_axis_tvalid;
 logic                    buf_rmv_axis_tlast;
 logic [ AXI_DWIDTH-1:0]  buf_rmv_axis_tdata;
 logic [ KEEP_WIDTH-1:0]  buf_rmv_axis_tkeep;
-logic [NUM_LS_INST+USER_WIDTH-1:0] buf_rmv_axis_tuser;
+logic [NUM_LS_INST+USER_WIDTH+2+72:0] buf_rmv_axis_tuser;
 
 // Backpressure
 always_ff @(posedge host_clk) begin
   if (host_rst) begin
     buf_axis_tready <= '0;
     hdr_ready       <= '0;
-    is_pkt          <= '0;
   end
   else begin
-    is_pkt <= (sop && eop) ? '0   :
-              (sop       ) ? '1   :
-              (eop       ) ? '0   :
-                            is_pkt;
     hdr_ready <= (!ipv4_empty && !fcs_empty && !hdr_empty && !hdr_rden && !ack_empty);
     if (buf_axis_tready) begin
       buf_axis_tready <= !buf_axis_eop;
@@ -728,53 +728,46 @@ end
 assign hdr_rden = (hdr_ready && !buf_axis_tready);
 assign ipv4_invld = ipv4_iserr | fcs_iserr | ack_is_err;
 
-assign sop                  = (w_buf_axis_tvalid && w_buf_axis_tready) && !is_pkt;
 assign buf_axis_eop         = (buf_axis_tlast && w_buf_axis_tvalid && w_buf_axis_tready);
-assign eop                  = (buf_rmv_axis_tlast && buf_rmv_axis_tvalid) ||
-                              (buf_axis_tlast && w_buf_axis_tvalid && w_buf_axis_tready && ipv4_invld);
 
-assign r_is_stx             = hdr_dout[0];
-assign r_is_btx             = hdr_dout[1];
-assign r_is_ptp             = hdr_dout[2];
-assign buf_axis_tuser       = {hdr_dout[101:85], hdr_dout[8:3]};
+assign buf_axis_tuser       = {hdr_dout[80:9],hdr_dout[2:0],hdr_dout[85+USER_WIDTH-1:85], hdr_dout[8:3]};
 assign rx_msg_type_ptp      = hdr_dout[84:81];
 assign buf_axis_tvalid      = (ipv4_invld) ? '0 : w_buf_axis_tvalid && buf_axis_tready;
 // Light backpressure from bridge pkt proc due to short back to back packets
-assign w_buf_axis_tready    = buf_axis_tready && (i_btx_axis_tready || !r_is_btx);
+assign w_buf_axis_tready    = buf_axis_tready && (i_btx_axis_tready || !buf_is_btx);
 
-logic            [31:0] vlan_tag;
-logic            [31:0] vlan_tag_be;
-
-axis_remove #(
-  .AXI_DWIDTH         ( AXI_DWIDTH             ),
-  .W_USER             ( NUM_LS_INST+USER_WIDTH ),
-  .REMOVE_OFFSET      ( 96                     ),
-  .REMOVE_WIDTH       ( 32                     )
-) u_vlan_remove (
-  .clk                ( host_clk               ),
-  .rst                ( host_rst               ),
-  .i_enable           ( buf_axis_tuser[USER_WIDTH+NUM_LS_INST-1] && !r_is_btx),
-  .o_removed_data     ( vlan_tag               ),
-  .o_gated_enable     (                        ),
-  .i_axis_rx_tvalid   ( buf_axis_tvalid        ),
-  .i_axis_rx_tdata    ( buf_axis_tdata         ),
-  .i_axis_rx_tlast    ( buf_axis_tlast         ),
-  .i_axis_rx_tuser    ( buf_axis_tuser         ),
-  .i_axis_rx_tkeep    ( buf_axis_tkeep         ),
-  .o_axis_rx_tready   (                        ),
-  .o_axis_tx_tvalid   ( buf_rmv_axis_tvalid    ),
-  .o_axis_tx_tdata    ( buf_rmv_axis_tdata     ),
-  .o_axis_tx_tlast    ( buf_rmv_axis_tlast     ),
-  .o_axis_tx_tuser    ( buf_rmv_axis_tuser     ),
-  .o_axis_tx_tkeep    ( buf_rmv_axis_tkeep     ),
-  .i_axis_tx_tready   ( 1'b1                   )
-);
-
-generate
-  for (genvar j=0; j<4; j++) begin
-    assign vlan_tag_be[j*8+:8] = vlan_tag[(4-1-j)*8+:8];
-  end
-endgenerate
+if (VLAN_DISABLE) begin
+  assign buf_rmv_axis_tvalid = buf_axis_tvalid;
+  assign buf_rmv_axis_tdata  = buf_axis_tdata;
+  assign buf_rmv_axis_tlast  = buf_axis_tlast;
+  assign buf_rmv_axis_tuser  = buf_axis_tuser;
+  assign buf_rmv_axis_tkeep  = buf_axis_tkeep;
+end else begin
+  axis_remove #(
+    .AXI_DWIDTH         ( AXI_DWIDTH                  ),
+    .W_USER             ( NUM_LS_INST+USER_WIDTH+3+72 ),
+    .REMOVE_OFFSET      ( 96                          ),
+    .REMOVE_WIDTH       ( 32                          )
+  ) u_vlan_remove (
+    .clk                ( host_clk                    ),
+    .rst                ( host_rst                    ),
+    .i_enable           ( buf_is_vlan && !buf_is_btx  ),
+    .o_removed_data     (                             ),
+    .o_gated_enable     (                             ),
+    .i_axis_rx_tvalid   ( buf_axis_tvalid             ),
+    .i_axis_rx_tdata    ( buf_axis_tdata              ),
+    .i_axis_rx_tlast    ( buf_axis_tlast              ),
+    .i_axis_rx_tuser    ( buf_axis_tuser              ),
+    .i_axis_rx_tkeep    ( buf_axis_tkeep              ),
+    .o_axis_rx_tready   (                             ),
+    .o_axis_tx_tvalid   ( buf_rmv_axis_tvalid         ),
+    .o_axis_tx_tdata    ( buf_rmv_axis_tdata          ),
+    .o_axis_tx_tlast    ( buf_rmv_axis_tlast          ),
+    .o_axis_tx_tuser    ( buf_rmv_axis_tuser          ),
+    .o_axis_tx_tkeep    ( buf_rmv_axis_tkeep          ),
+    .i_axis_tx_tready   ( 1'b1                        )
+  );
+end
 
 //------------------------------------------------------------------------------------------------//
 // Low Speed Packet Buffer
@@ -793,32 +786,32 @@ axis_buffer # (
   .IN_DWIDTH         ( AXI_DWIDTH                 ),
   .OUT_DWIDTH        ( AXI_LS_DWIDTH              ),
   .WAIT2SEND         ( 0                          ),
-  .BUF_DEPTH         ( FIFO_DEPTH                 ),
+  .BUF_DEPTH         ( LS_FIFO_DEPTH              ),
   .W_USER            ( 17 + NUM_LS_INST           ),
   .OUTPUT_SKID       ( '1                         ),
   .ALMOST_FULL_DEPTH ( RLS_AFULL_DEPTH            ),
   .NO_BACKPRESSURE   ( 1                          )
 ) u_axis_out_buffer (
-  .in_clk            ( host_clk                   ),
-  .in_rst            ( host_rst                   ),
-  .out_clk           ( host_clk                   ),
-  .out_rst           ( host_rst                   ),
-  .i_axis_rx_tvalid  ( (buf_rmv_axis_tvalid & is_ls) ),
-  .i_axis_rx_tdata   ( buf_rmv_axis_tdata            ),
-  .i_axis_rx_tlast   ( buf_rmv_axis_tlast            ),
-  .i_axis_rx_tuser   ( buf_rmv_axis_tuser            ),
-  .i_axis_rx_tkeep   ( buf_rmv_axis_tkeep            ),
-  .o_axis_rx_tready  (                               ),
-  .o_fifo_aempty     (                            ),
-  .o_fifo_afull      ( buf_rls_afull              ),
-  .o_fifo_empty      (                            ),
-  .o_fifo_full       (                            ),
-  .o_axis_tx_tvalid  ( rls_axis_tvalid            ),
-  .o_axis_tx_tdata   ( rls_axis_tdata             ),
-  .o_axis_tx_tlast   ( rls_axis_tlast             ),
-  .o_axis_tx_tuser   ( rls_axis_tuser             ),
-  .o_axis_tx_tkeep   ( rls_axis_tkeep             ),
-  .i_axis_tx_tready  ( rls_axis_tready            )
+  .in_clk            ( host_clk                                       ),
+  .in_rst            ( host_rst                                       ),
+  .out_clk           ( host_clk                                       ),
+  .out_rst           ( host_rst                                       ),
+  .i_axis_rx_tvalid  ( (buf_rmv_axis_tvalid & is_ls & !ls_afull_iserr) ),
+  .i_axis_rx_tdata   ( buf_rmv_axis_tdata                             ),
+  .i_axis_rx_tlast   ( buf_rmv_axis_tlast                             ),
+  .i_axis_rx_tuser   ( buf_rmv_axis_tuser[USER_WIDTH+NUM_LS_INST-1:0] ),
+  .i_axis_rx_tkeep   ( buf_rmv_axis_tkeep                             ),
+  .o_axis_rx_tready  (                                                ),
+  .o_fifo_aempty     (                                                ),
+  .o_fifo_afull      ( buf_rls_afull                                  ),
+  .o_fifo_empty      (                                                ),
+  .o_fifo_full       (                                                ),
+  .o_axis_tx_tvalid  ( rls_axis_tvalid                                ),
+  .o_axis_tx_tdata   ( rls_axis_tdata                                 ),
+  .o_axis_tx_tlast   ( rls_axis_tlast                                 ),
+  .o_axis_tx_tuser   ( rls_axis_tuser                                 ),
+  .o_axis_tx_tkeep   ( rls_axis_tkeep                                 ),
+  .i_axis_tx_tready  ( rls_axis_tready                                )
 );
 
 axis_reg # (
@@ -839,6 +832,13 @@ assign is_ls = (|buf_rmv_axis_tuser[NUM_LS_INST-1:0]);
 //------------------------------------------------------------------------------------------------//
 // UDP Loopback
 //------------------------------------------------------------------------------------------------//
+assign buf_is_btx  = buf_axis_tuser[USER_WIDTH+NUM_LS_INST+1];
+assign buf_is_vlan = buf_axis_tuser[USER_WIDTH+NUM_LS_INST-1];
+
+assign r_is_stx    = buf_rmv_axis_tuser[USER_WIDTH+NUM_LS_INST];
+assign r_is_btx    = buf_rmv_axis_tuser[USER_WIDTH+NUM_LS_INST+1];
+assign r_is_ptp    = buf_rmv_axis_tuser[USER_WIDTH+NUM_LS_INST+2];
+assign o_dest_info = buf_rmv_axis_tuser[USER_WIDTH+NUM_LS_INST+74:USER_WIDTH+NUM_LS_INST+3];
 
 assign o_stx_axis_tvalid  = (buf_rmv_axis_tvalid && r_is_stx);
 assign o_stx_axis_tdata   = buf_rmv_axis_tdata;

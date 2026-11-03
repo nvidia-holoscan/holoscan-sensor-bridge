@@ -152,17 +152,23 @@ logic [PSN_RAM_SIZE-1:0] sts_ram_data;
 logic [W_RAM_ADDR-1:0]   sts_ram_addr;
 logic [W_RAM_ADDR-1:0]   sts_ram_wraddr;
 logic [PSN_RAM_SIZE-1:0] sts_ram_wrdata;
-logic                    sts_ram_wren = '0;
+logic                    sts_ram_wren;
 logic                    sts_ram_rden;
 
-(* ram_style = "block" *) logic [PSN_RAM_SIZE-1:0] sts_ram [N_QP] = '{default:'0}/*synthesis syn_ramstyle = "block_ram"*/;
+(* ram_style = "distributed" *) logic [PSN_RAM_SIZE-1:0] sts_ram [N_QP]/*synthesis syn_ramstyle = "distributed"*/;
 
 always @ (posedge i_pclk) begin
-  if (sts_ram_wren) begin
-    sts_ram[sts_ram_addr] <= sts_ram_wrdata;
+  if (i_prst) begin
+    sts_ram      <= '{default:'0};
+    sts_ram_data <= '0;
   end
-  if (sts_ram_rden) begin
-    sts_ram_data <= sts_ram[sts_ram_addr];
+  else begin
+    if (sts_ram_wren) begin
+      sts_ram[sts_ram_addr] <= sts_ram_wrdata;
+    end
+    if (sts_ram_rden) begin
+      sts_ram_data     <= sts_ram[sts_ram_addr];
+    end
   end
 end
 

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 // An assertions file for basic checks on AXI-Stream interface
 // Based on the FV interface file fv/hololink/interface/FV_AXI_S_check.sv
 

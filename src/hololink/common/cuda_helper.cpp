@@ -17,6 +17,7 @@
 
 #include "cuda_helper.hpp"
 
+#include <iostream>
 #include <memory>
 
 #include <nvrtc.h>
@@ -86,7 +87,12 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
     }
     compile_options.push_back("--include-path=/usr/local/cuda/include");
     compile_options.push_back("--include-path=/usr/local/cuda/include/cccl");
-    if (nvrtcCompileProgram(prog, compile_options.size(), compile_options.data()) != NVRTC_SUCCESS) {
+    nvrtcResult compiled;
+    {
+        ShutdownSignalDispositionGuard signal_dispositions;
+        compiled = nvrtcCompileProgram(prog, compile_options.size(), compile_options.data());
+    }
+    if (compiled != NVRTC_SUCCESS) {
         // Obtain compilation log from the program.
         size_t logSize;
         NvRTCCheck(nvrtcGetProgramLogSize(prog, &logSize));
@@ -94,6 +100,7 @@ CudaFunctionLauncher::CudaFunctionLauncher(const char* source,
         NvRTCCheck(nvrtcGetProgramLog(prog, log.get()));
         std::stringstream buf;
         buf << "Failed to compile: " << log.get();
+        std::cerr << buf.str() << std::endl;
         throw std::runtime_error(buf.str().c_str());
     }
     // Obtain CUBIN from the program (real-arch target required, set above).

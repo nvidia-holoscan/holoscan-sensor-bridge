@@ -9,29 +9,36 @@ executed on the host system before running the Holoscan application and make sur
 `DISPLAY` environment variable is set properly in the container where the application is
 run.
 
-## Segmentation fault crashes the GPU
+<Anchor id="no-suitable-adapter-found-for-surface" />
 
-On IGX Orin if your GPU is left in a bad state after a segmentation fault and you see
-"ERR!" when running nvidia-smi, e.g.,
+## Visualizer fails on IGX Thor: "No suitable adapter found for surface"
+
+This section applies to IGX Thor T7000 with an RTX PRO 6000 dGPU. The visualizer must
+use the GPU that drives the display. If the application uses one GPU and the display is
+on the other GPU, the visualizer fails with this message:
 
 ```none
-➜  nvidia-smi
-+-----------------------------------------------------------------------------------------+
-| NVIDIA-SMI 535.183.01             Driver Version: 535.183.01   CUDA Version: 12.2       |
-|-----------------------------------------+------------------------+----------------------+
-| GPU  Name                 Persistence-M | Bus-Id          Disp.A | Volatile Uncorr. ECC |
-| Fan  Temp   Perf          Pwr:Usage/Cap |           Memory-Usage | GPU-Util  Compute M. |
-|                                         |                        |               MIG M. |
-|=========================================+========================+======================|
-|   0  NVIDIA RTX A6000               Off |   00000005:09:00.0 N/A |                  N/A |
-|ERR!  ERR! ERR!             N/A  /  N/A  |       1MiB /  49140MiB |     N/A      Default |
-|                                         |                        |                 ERR! |
-+-----------------------------------------+------------------------+----------------------+
+No suitable adapter found for surface
 ```
 
-Check the driver version returned from the command and upgrade to `535.309.01` following
-the instructions from the [setup section](setup.mdx). The instructions on the setup page
-will also upgrade from IGX OS 1.1.2 to 1.1.3.
+`docker/demo.sh` sets `CUDA_VISIBLE_DEVICES=0` (the dGPU) only when the graphics output
+is on the dGPU (`NV_DISABLE_IGPU_GRAPHICS` in `/etc/environment` has a value that is not
+`0`). In all other cases, `docker/demo.sh` does not set `CUDA_VISIBLE_DEVICES`.
+
+To correct the problem, do one of these steps:
+
+- Use the GPU that drives the display: `export CUDA_VISIBLE_DEVICES=0` for the dGPU, or
+  `export CUDA_VISIBLE_DEVICES=1` for the iGPU.
+- Run the example with `--headless`. With this option, the C++ and Python examples
+  render into a GPU image and do not open a window. These examples have no `--headless`
+  option: `imx274_module_tutorial.cpp`, `imx274_module_tutorial.py`,
+  `linux_sub_frame_imx274_hsdk5_player.cpp` and `sub_frame_vb1940_player.cpp`. Run
+  `signal_generator.cpp` and `signal_generator.py` with `--no-gui`.
+- Move the graphics output to the GPU that runs the application. For the steps, see
+  [Enabling dGPU display and graphics](https://docs.nvidia.com/igx/user-guide/latest/SW/gpu/dgpu-support.html#enabling-dgpu-display-and-graphics)
+  in the IGX user guide.
+
+Do not set `CUDA_VISIBLE_DEVICES=0,1`. With this value, CUDA initialization fails.
 
 ## Unable to connect to the sensor bridge device
 
@@ -53,9 +60,11 @@ appropriate network configurations as listed above. `ping 192.168.0.2` and
 ### FPGA firmware version mismatch (`ping` succeeds, `hololink enumerate` shows nothing)
 
 If an HSB device is running an incompatible FPGA image (e.g. FPGA is 2407 while the host
-software requires 2412), `ping` would be successful but no enumeration data would
-appear. Firmware version problems can be solved by
-[reprogramming your device](sensor_bridge_firmware_setup.mdx).
+software expects 2609), `ping` succeeds, but no enumeration data shows. To correct a
+firmware version problem, [reprogram your device](sensor_bridge_firmware_setup.mdx).
+Holoscan Sensor Bridge 3.0 uses FPGA version 2609 on HSB Lite, the Leopard imaging
+VB1940 Eagle Camera and the TauroTech DA326. Other boards use the latest version in the
+firmware manifest of the board. The RoCE data path needs FPGA version 2602 or newer.
 
 ## Visualizer display is completely white
 
@@ -80,38 +89,121 @@ cat $i
 done
 ```
 
-Use the appropriate value where `roceP5p3s0f0` is shown here. When no data plane
-requests are received, be sure and check that the sensor is properly connected to the
-sensor bridge board.
+Use the appropriate value where `roceP5p3s0f0` is shown here: the RoCE receivers log the
+device and port they use (`ibv_name=... ibv_port=...`). When no data plane requests are
+received, be sure and check that the sensor is properly connected to the sensor bridge
+board.
 
-## v2.3.0 Thor Intermittent Random I2C errors when running SIPL sample applications
+<Anchor id="runtime-port-binding-unavailable" />
 
-When running SIPL applications, intermittent failures to ping cameras over Ethernet and
-random I2C errors can be seen because of driver header incompatibility. This applies
-only for SIPL applications and not for Holoscan Sensor Bridge applications. When you
-encounter an issue with running the SIPL CoE Camera sample, follow the steps below.
+## `RUNTIME_PORT_BINDING_UNAVAILABLE` after an application ran with `sudo`
 
-After you install JetPack 7.0 GA, the following steps are required for running the
-nvsipl_coe_camera application:
+Holoscan SDK 5 applications use iceoryx2 shared memory files in `/tmp/iceoryx2` and
+`/dev/shm`. If you run an application with `sudo`, the application makes iceoryx2 files
+that root owns. This applies to applications in the container and to `linux_coe_`
+examples (`LinuxCoeReceiverOp`) that you run with `sudo`. After this, an application
+that you run outside the container as your user can fail with this message:
 
 ```none
-sudo cp /usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so /tmp/libnvuddf_eagle_library.so_orig
-cd /usr/src/jetson_sipl_api/sipl/
-sudo mkdir build 
-cd build
-sudo cmake ..
-sudo make nvsipl_coe_camera
-sudo cp ./samples/coe_camera/nvsipl_coe_camera ~/
-sudo cp /tmp/libnvuddf_eagle_library.so_orig /usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so
-Run the app nvsipl_coe_camera.
+RUNTIME_PORT_BINDING_UNAVAILABLE
 ```
 
-Please also refer to JetPack 7.0 GA release notes for more details.
+To correct the problem, reboot the host, or remove the iceoryx2 files:
+
+```none
+sudo rm -rf /tmp/iceoryx2
+sudo rm -f /dev/shm/iox2*
+```
+
+For more information, see "accessing services from multiple users" in the
+[iceoryx2 FAQ](https://github.com/eclipse-iceoryx/iceoryx2/blob/main/FAQ.md).
+
+## Python error: `module 'holoscan' has no attribute 'Graph'`
+
+This error shows that Python imports a Holoscan SDK 4 package, or an empty
+`holoscan/__init__.py`, instead of Holoscan SDK 5. Holoscan SDK 4 packages can stay on a
+host after an update to Holoscan Sensor Bridge 3.0.
+
+1. Find the installed Holoscan Debian packages:
+
+   ```none
+   apt list --installed | grep holoscan
+   ```
+
+   Make sure that the list has no 4.x version. Remove the 4.x packages.
+
+1. Find the installed Holoscan Python packages:
+
+   ```none
+   pip freeze | grep -i holoscan
+   ```
+
+   Make sure that the list has no 4.x version. The Holoscan SDK 5 wheels are
+   `holoscan-core-cu13`, `holoscan-vision-cu13`, `holoscan-visualization-cu13` and
+   `holoscan-inference-cu13`, version 5.0.0. The `holoscan-cu13` metapackage installs
+   all four.
+
+## An HSB 2.7 container fails after a native HSB 3.0 installation
+
+The [native build steps](build.mdx#NativeBuildTarget) install `hololink`,
+`holoscan-cu13` and numpy in `~/.local/lib/python3.12/site-packages`. The HSB 2.7
+`docker/demo.sh` sets the `HOME` variable in the container to your home directory when a
+PulseAudio socket is on the host (for example, in a desktop session). Python in an HSB
+2.7 container then imports the HSB 3.0 packages from `~/.local` and fails, for example
+with `ImportError: libholoscan_sensor_io.so.5`. The HSB 3.0 `docker/demo.sh` mounts your
+home directory but does not set `HOME`. Thus, the HSB 3.0 container does not use
+`~/.local`.
+
+To find which `hololink` package Python uses, run this command in the HSB 2.7 container:
+
+```none
+python3 -c "import hololink; print(hololink.__file__)"
+```
+
+The path must start with `/usr/local/lib/python3.12/dist-packages`. If the path is in
+`~/.local`, disable the user site-packages directory in the HSB 2.7 container:
+
+```none
+export PYTHONNOUSERSITE=1
+```
+
+## AGX Thor: Linux socket applications lose packets after a FuSa CoE application
+
+On AGX Thor with JetPack 7.2.1, a FuSa CoE application (`fusa_coe_` examples) leaves the
+`macsec_ns` interrupt of the MGBE port active after it closes. This is an L4T problem.
+The fix is expected in JetPack 7.2.2. When this interrupt runs on CPU 0, Linux socket
+(`linux_` and `linux_coe_`) applications on that port lose packets and show corrupted
+images or lost frames.
+
+When a FuSa CoE application stops normally, `FusaCoeCaptureOp` moves this interrupt to
+CPU 6. This step needs root privileges. The demo container has these privileges. Outside
+the container, run the FuSa CoE application with `sudo`. When the move is successful,
+the operator logs `macsec_ns IRQ <n> stays armed after CoE teardown; moved it to CPU 6`.
+No action is necessary. If the operator cannot move the interrupt, it logs a message
+that ends with `reboot before running Linux-socket applications on this interface`.
+
+A link down and link up of `mgbe0_0` does not correct the problem. Reboot the host
+before you run Linux socket applications on that port in these cases:
+
+- You killed a FuSa CoE application, and it did not stop normally.
+- The application logged a message that tells you to reboot before you run Linux-socket
+  applications on this interface.
+
+## SIPL camera capture
+
+Holoscan Sensor Bridge does not include SIPL-based capture or SIPL example applications.
+SIPL camera capture for Holoscan SDK 5 applications is provided by the separate Holoscan
+Camera module (`holoscan_camera`); for SIPL capture issues, see the Holoscan Camera
+documentation and the JetPack release notes.
 
 ## Sensor Bridge LED indications
 
-The Holoscan Sensor Bridge board has two leds that depending on their state have the
-following indications:
+The LED indications in this section apply only to the Lattice CPNX100-ETH-SENSOR-BRIDGE
+board. For other Holoscan Sensor Bridge boards, refer to the documentation of the board
+vendor.
+
+The Lattice CPNX100-ETH-SENSOR-BRIDGE board has two leds that depending on their state
+have the following indications:
 
 1. **Both leds are off** - The Holoscan Sensor Bridge Board is not powered.
 1. **Both leds are on with green color** - The Holoscan Sensor Bridge Board is powered

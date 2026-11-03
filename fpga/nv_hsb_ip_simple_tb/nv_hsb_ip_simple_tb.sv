@@ -37,6 +37,28 @@
 
 // Include Hololink macro definitions first (required by the package)
 `include "HOLOLINK_def.svh"
+// Per-Sensor-RX packetizer parameters from HOLOLINK_def.svh (imported by name,
+// no wildcard). SIF_RX_WIDTH is used by the included hololink_sensor_stim.svh.
+// The def only declares these inside `ifdef SENSOR_RX_IF_INST, so configs
+// without a sensor RX interface (e.g. bajoran_nano) must not import them.
+`ifdef SENSOR_RX_IF_INST
+import HOLOLINK_pkg::SIF_RX_PACKETIZER_EN;
+import HOLOLINK_pkg::SIF_RX_VP_COUNT;
+import HOLOLINK_pkg::SIF_RX_WIDTH;
+// VP_SIZE/SORT_RESOLUTION/NUM_CYCLES describe how the packetizer splits a
+// sensor word across virtual ports; program_packetizer_passthrough() needs
+// them to build the pattern that reassembles one full-width word on VP0.
+import HOLOLINK_pkg::SIF_RX_VP_SIZE;
+import HOLOLINK_pkg::SIF_RX_SORT_RESOLUTION;
+import HOLOLINK_pkg::SIF_RX_NUM_CYCLES;
+`endif
+`ifdef SENSOR_TX_IF_INST
+// SIF_TX_WIDTH and SIF_TX_BUF_SIZE size the TX buffer thresholds in
+// hololink_host2sen_stim.svh; HOLOLINK_top hands the same two to tx_stream_buffer
+// as SENSOR_DWIDTH and FIFO_DEPTH.
+import HOLOLINK_pkg::SIF_TX_WIDTH;
+import HOLOLINK_pkg::SIF_TX_BUF_SIZE;
+`endif
 
 // Include the testbench package (after macros)
 `include "tb_pkg/hololink_tb_pkg.sv"
@@ -57,16 +79,68 @@ reg test_completed = 0;
 //==============================================================================
 // Testbench Configuration Parameters
 //==============================================================================
-// Clock periods (can be modified for different test scenarios)
-parameter CLK_PERIOD = 10;        // 100MHz system clock (APB)
-parameter PTP_CLK_PERIOD = 10;     // 100MHz PTP clock  
-parameter SIF_CLK_PERIOD = 6.4;    // 156.25MHz sensor interface clock
-parameter HIF_CLK_PERIOD = 5;      // 200MHz host interface clock
+// Clock periods in ns, derived from the compiled-in def's *_CLK_FREQ macros
+// (period = 1e9/freq). Deriving them here keeps the bench in step with the
+// frequency-derived parameters the DUT computes from those same macros
+// (eeprom_info's I2C divider, ptp_top, bridge_pkt_proc, streaming_cdc), which
+// silently mistune when the two disagree.
+// NOTE: the bajoran-lite family declares APB_CLK_FREQ = 19.53MHz (51.2ns) vs the
+// 100MHz (10ns) fallback, and at that slow an APB clock the DUT backpressures host
+// ingress for far longer. send_eth_packet holds the beat and fails the test if
+// tready stalls past its timeout, rather than advancing tdata under a high tvalid.
+// Every clock is guarded so an out-of-tree def that declares only some of the
+// macros still elaborates; the literal beside each `else is the fallback for that
+// case. In-tree defs all carry APB and HIF, bajoran_achronix omits PTP, and none
+// declares a sensor interface frequency.
+`ifdef APB_CLK_FREQ
+parameter real CLK_PERIOD = 1.0e9 / `APB_CLK_FREQ;      // system/APB clock (from def)
+`else
+parameter real CLK_PERIOD = 10.0;                       // 100MHz fallback
+`endif
+`ifdef PTP_CLK_FREQ
+parameter real PTP_CLK_PERIOD = 1.0e9 / `PTP_CLK_FREQ;  // PTP clock (from def)
+`else
+parameter real PTP_CLK_PERIOD = 10.0;                   // 100MHz fallback
+`endif
+`ifdef HIF_CLK_FREQ
+parameter real HIF_CLK_PERIOD = 1.0e9 / `HIF_CLK_FREQ;  // host interface clock (from def)
+`else
+parameter real HIF_CLK_PERIOD = 5.0;                    // 200MHz fallback
+`endif
+`ifdef SIF_CLK_FREQ
+parameter real SIF_CLK_PERIOD = 1.0e9 / `SIF_CLK_FREQ;  // sensor interface clock (from def)
+`else
+parameter real SIF_CLK_PERIOD = 6.4;                    // 156.25MHz fallback
+`endif
+
+// How long hololink_init() waits for the DUT's o_init_done before giving up and
+// programming registers anyway. See wait_init_done().
+`ifdef ENUM_EEPROM
+// eeprom_info reads all 256 EEPROM bytes over I2C before o_init_done, so size the
+// wait from that. Divider and bit count mirror eeprom_info/i2c_ctrl_fsm: SCL period
+// = 2*CLK_DIV_CNT APB clocks, and each 32-byte transaction sends {dev addr+W,
+// reg addr, restart dev addr+R, 32 data} at 9 bits per byte plus START/RESTART/STOP.
+// Actual SCL lands just under the 400kHz target because the divider rounds up.
+localparam int  EEPROM_SCL_DIV      = ((`APB_CLK_FREQ - 1) / 400000 / 2) + 1;
+localparam real EEPROM_SCL_PERIOD   = 2.0 * EEPROM_SCL_DIV * CLK_PERIOD;   // ns
+localparam int  EEPROM_BYTES_PER_TR = 32;
+localparam int  EEPROM_TRANSACTIONS = 256 / EEPROM_BYTES_PER_TR;
+localparam int  EEPROM_ADDR_BYTES   = (`EEPROM_REG_ADDR_BITS + 7) / 8;
+localparam int  EEPROM_SCL_BITS     = EEPROM_TRANSACTIONS *
+                                      (9 * (2 + EEPROM_ADDR_BYTES + EEPROM_BYTES_PER_TR) + 3);
+// ~15 APB accesses per transaction, each a transfer plus a 32-cycle wait.
+localparam real EEPROM_APB_TIME     = EEPROM_TRANSACTIONS * 15 * 35 * CLK_PERIOD;  // ns
+parameter  real INIT_DONE_TIMEOUT   = (EEPROM_SCL_BITS * EEPROM_SCL_PERIOD) +
+                                      EEPROM_APB_TIME + 1ms;
+`else
+// eeprom_dval follows i_enum_vld here, asserted a few cycles after reset.
+parameter  real INIT_DONE_TIMEOUT   = 1500us;
+`endif
 
 // Network configuration (modify as needed for your test environment)
 parameter [31:0] TB_FPGA_IP = DEFAULT_FPGA_IP;  // FPGA IP address
 parameter [31:0] TB_HOST_IP = DEFAULT_HOST_IP;  // Host IP address
-parameter [47:0] TB_HOST_MAC = 48'h123456789ABC; // Host MAC address
+parameter [47:0] TB_HOST_MAC = DEFAULT_HOST_MAC; // Host MAC address
 
 // RoCE/COE Protocol Configuration (from package; avoid duplication)
 // Using TB_ROCE_* and ROCE_VADDR_* constants from hololink_tb_pkg.sv
@@ -74,10 +148,12 @@ parameter [47:0] TB_HOST_MAC = 48'h123456789ABC; // Host MAC address
 //==============================================================================
 // Clock and Reset Signals
 //==============================================================================
-logic clk_100;    // 100MHz APB clock
-logic ptp_clk;    // 100MHz PTP clock
-logic sif_clk;    // 156.25MHz sensor interface clock
-logic hif_clk;    // 200MHz host interface clock
+// Frequencies come from the def (see the *_CLK_PERIOD parameters above), so the
+// clk_100 name is historical - it is only 100MHz when APB_CLK_FREQ says so.
+logic clk_100;    // APB / system clock, CLK_PERIOD
+logic ptp_clk;    // PTP clock, PTP_CLK_PERIOD
+logic sif_clk;    // sensor interface clock, SIF_CLK_PERIOD
+logic hif_clk;    // host interface clock, HIF_CLK_PERIOD
 logic rstn;
 logic init_done;
 // New per-direction SIF clocks and DUT resets (rev112)
@@ -106,6 +182,17 @@ logic [`HOSTKEEP_WIDTH-1:0] o_hif_axis_tkeep [`HOST_IF_INST-1:0];
 logic [`HOSTUSER_WIDTH-1:0] o_hif_axis_tuser [`HOST_IF_INST-1:0];
 logic [`HOST_IF_INST-1:0] i_hif_axis_tready;
 
+// Enumeration handshake - only present when the DUT is built WITHOUT EEPROM
+// enumeration. In that build HOLOLINK_top ties eeprom_dval = i_enum_vld and takes
+// dev_mac_addr/board_sn straight from these ports, so o_init_done (and therefore
+// o_hif_axis_tready) never asserts unless the TB drives the handshake itself.
+// The EEPROM build has no such ports and gets its info from eeprom_i2c_model.
+`ifndef ENUM_EEPROM
+logic [47:0] i_mac_addr [`HOST_IF_INST-1:0];
+logic [55:0] i_board_sn;
+logic        i_enum_vld;
+`endif
+
 // Sensor Interface (rev112 split RX/TX instance counts)
 // RX into DUT
 `ifdef SENSOR_RX_IF_INST
@@ -130,6 +217,7 @@ logic [`SENSOR_TX_IF_INST-1:0] i_sif_axis_tready;
 // GPIO and other signals
 logic [`GPIO_INST-1:0] i_gpio;
 logic [`GPIO_INST-1:0] o_gpio;
+logic [`GPIO_INST-1:0] o_gpio_dir;
 logic [HLNK_USER_EVT_WIDTH-1:0] i_sif_event;
 
 //==============================================================================
@@ -151,7 +239,7 @@ logic [`SPI_INST-1:0] o_spi_csn;
 logic [`SPI_INST-1:0] o_spi_sck;
 logic [3:0] i_spi_sdio [`SPI_INST-1:0];
 logic [3:0] o_spi_sdio [`SPI_INST-1:0];
-logic [`SPI_INST-1:0] o_spi_oen;
+logic [3:0] o_spi_oen [`SPI_INST-1:0];
 `endif
 
 `ifdef I2C_INST
@@ -161,13 +249,17 @@ logic [`I2C_INST-1:0] o_i2c_scl_en;
 logic [`I2C_INST-1:0] o_i2c_sda_en;
 `endif
 
+`ifdef UART_INST
+logic i_uart_rx;
+logic o_uart_tx;
+logic o_uart_busy;
+logic o_uart_rts;
+logic i_uart_cts;
+`endif
+
 // PTP and system control
 logic o_sw_sys_rst;
-`ifdef SENSOR_RX_IF_INST
-logic [`SENSOR_RX_IF_INST-1:0] o_sw_sen_rst;
-`else
 logic [31:0] o_sw_sen_rst;  // DUT always has 32-bit output
-`endif
 logic [47:0] o_ptp_sec;
 logic [31:0] o_ptp_nanosec;
 logic o_pps;
@@ -196,10 +288,36 @@ initial begin
     forever #((SIF_CLK_PERIOD/2)*1ns) sif_clk = ~sif_clk;
 end
 
-// 200MHz Host Interface Clock
+// Host Interface Clock
 initial begin
     hif_clk = 0;
     forever #((HIF_CLK_PERIOD/2)*1ns) hif_clk = ~hif_clk;
+end
+
+// Report the resolved clock periods (helps confirm the def's *_CLK_FREQ took effect)
+initial begin
+    `TB_LOG_LOW(LOG_INFO, $sformatf(
+        "Clock periods (ns): APB=%.3f (%.2f MHz)  PTP=%.3f (%.2f MHz)  SIF=%.3f (%.2f MHz)  HIF=%.3f (%.2f MHz)",
+        CLK_PERIOD,     1000.0/CLK_PERIOD,
+        PTP_CLK_PERIOD, 1000.0/PTP_CLK_PERIOD,
+        SIF_CLK_PERIOD, 1000.0/SIF_CLK_PERIOD,
+        HIF_CLK_PERIOD, 1000.0/HIF_CLK_PERIOD));
+end
+
+//==============================================================================
+// FSDB Waveform Dump (opt-in via +FSDB_DUMP, driven by Makefile DUMP=1)
+//==============================================================================
+// Standalone dumping: dump nothing unless +FSDB_DUMP is present on the command
+// line. Filename defaults to waves.fsdb, overridable with +FSDB_FILE=<name>.
+initial begin
+    string fsdb_name;
+    if ($test$plusargs("FSDB_DUMP")) begin
+        if (!$value$plusargs("FSDB_FILE=%s", fsdb_name))
+            fsdb_name = "waves.fsdb";
+        $fsdbDumpfile(fsdb_name);
+        $fsdbDumpvars(0, nv_hsb_ip_simple_tb, "+all");   // full hierarchy incl. MDAs
+        `TB_LOG_LOW(LOG_INFO, $sformatf("FSDB dumping ENABLED -> %s", fsdb_name));
+    end
 end
 
 // Drive the per-direction SIF clock vectors from the single TB SIF clock
@@ -227,10 +345,54 @@ initial begin
 end
 
 //==============================================================================
+// Enumeration Handshake (non-EEPROM builds only)
+//==============================================================================
+// When the DUT is built without EEPROM enumeration, o_init_done is gated by
+// i_enum_vld (eeprom_dval = i_enum_vld) and the device MAC / board serial come
+// from these ports. We provide a static device MAC that matches the FPGA MAC the
+// ECB frames are addressed to (DEFAULT_FPGA_MAC) and pulse the enumeration valid
+// after reset so initialization completes exactly as the EEPROM path would.
+// EEPROM builds skip this entirely; enumeration comes from eeprom_i2c_model.
+// BOOTP responder state. In a non-EEPROM build the DUT has no device IP and
+// broadcasts BOOTP requests to obtain one; without a reply o_dev_ip_addr never
+// becomes valid and the DUT can source neither ECB responses nor RoCE frames.
+// The egress monitor pulses bootp_req_seen when it observes a request; the
+// responder process below replies with a BOOTP response carrying yiaddr = FPGA IP.
+event bootp_req_seen;
+int   bootp_rsp_sent = 0;
+// Serializes host ingress (i_hif_axis[0]) between ECB tasks and the BOOTP reply,
+// since both drive the same AXIS and the DUT interleaves BOOTP with register I/O.
+semaphore hif_tx_sem = new(1);
+
+`ifndef ENUM_EEPROM
+initial begin
+    i_enum_vld = 1'b0;
+    i_board_sn = 56'h0;
+    foreach (i_mac_addr[i]) i_mac_addr[i] = DEFAULT_FPGA_MAC + i;
+    wait(rstn == 1'b1);
+    repeat(10) @(posedge clk_100);
+    i_enum_vld = 1'b1;   // held high: latched into eeprom_dval_r inside the DUT
+    `TB_LOG_LOW(LOG_INFO, "Enumeration handshake asserted (non-EEPROM build)");
+end
+
+// BOOTP responder: reply to every DUT BOOTP request so it acquires a device IP.
+// The egress monitor pulses bootp_req_seen on each observed request.
+initial begin
+    forever begin
+        @(bootp_req_seen);
+        send_bootp_response();
+    end
+end
+`endif
+
+//==============================================================================
 // Test Variables
 //==============================================================================
 int test_status = 0;
 int ecb_sequence_id = 0;
+// Raised by a task that has hit a condition it cannot legally drive through, so the
+// main fork unblocks and the run ends via the shared reporting path.
+bit fatal_error = 1'b0;
 
 
 // Self-checking variables
@@ -246,7 +408,59 @@ integer        completed_sensor_frames = 0;
 logic [7:0] expected_sensor_data[int][];  // [frame_id][byte_index] - stores expected data per frame
 integer sensor_frames_generated = 0;
 
+// Optional all-sensors demo mode.  Default remains the original single-sensor
+// behavior unless +ALL_SENSORS or +TEST_MODE=ALL_SENSORS is provided.
+bit all_sensors_mode = 1'b0;
+int target_host_id = 0;
+int expected_total_frames = TOTAL_TEST_FRAMES;
+
+`ifdef SENSOR_RX_IF_INST
+integer sensor_frames_generated_by_sensor [`SENSOR_RX_IF_INST];
+integer sensor_packets_sent_by_sensor [`SENSOR_RX_IF_INST];
+integer frames_received_by_sensor [`SENSOR_RX_IF_INST];
+bit frame_received_by_sensor [`SENSOR_RX_IF_INST][TOTAL_TEST_FRAMES];
+logic [31:0] dp_roce_rkey_by_sensor [`SENSOR_RX_IF_INST];
+logic [23:0] dp_roce_qp_by_sensor [`SENSOR_RX_IF_INST];
+logic [31:0] dp_roce_psn_by_sensor [`SENSOR_RX_IF_INST];
+logic [31:0] dp_roce_vaddr_cfg_words_by_sensor [`SENSOR_RX_IF_INST][4];
+logic [63:0] dp_roce_vaddr_cfg_bytes_by_sensor [`SENSOR_RX_IF_INST][4];
+`endif
+
 // Simple frame tracking for basic validation
+
+//==============================================================================
+// Host-to-sensor (TX) path state (UC RoCE SEND).  Enabled with +HOST2SEN.
+//==============================================================================
+bit host2sen_mode = 1'b0;
+bit host2sen_requested = 1'b0; // +HOST2SEN was passed (regardless of TX support)
+`ifdef SENSOR_TX_IF_INST
+// Byte stream the host pushed to each sensor, awaiting egress comparison.
+logic [7:0] expected_stx_bytes    [`SENSOR_TX_IF_INST][$];
+integer     host2sen_bytes_sent   [`SENSOR_TX_IF_INST];
+integer     host2sen_bytes_checked[`SENSOR_TX_IF_INST];
+integer     host2sen_mismatches   [`SENSOR_TX_IF_INST];
+integer     stx_gen_byte          [`SENSOR_TX_IF_INST]; // running data pattern counter
+integer     host2sen_psn          [`SENSOR_TX_IF_INST]; // running BTH PSN per sensor
+`endif
+
+// Host-side Ethernet PAUSE (802.3x) honoring for the TX push path. When the DUT
+// asserts backpressure it transmits a PAUSE frame on host egress; the monitor
+// loads pause_release_cycle with quanta*(512/HOST_WIDTH) hif cycles and the
+// countdown process below keeps host_tx_paused asserted until it expires. The
+// host2sen sender waits on host_tx_paused between packets.
+bit     host_tx_paused      = 1'b0;
+integer pause_release_cycle = 0;
+localparam int NUM_HIF_CLK_PER_QUANTA = ((512/`HOST_WIDTH) == 0) ? 1 : (512/`HOST_WIDTH);
+
+// Sole writer of host_tx_paused: derive it from the pause countdown each hif clk.
+initial begin
+    forever begin
+        @(posedge hif_clk);
+        if (pause_release_cycle > 0)
+            pause_release_cycle = pause_release_cycle - 1;
+        host_tx_paused = (pause_release_cycle > 0);
+    end
+end
 
 // COE mode detection for conditional register configuration
 bit enable_coe_mode = 1'b0;
@@ -263,6 +477,68 @@ int num_apb_transactions = 0;
 //===============================================================================
 logic [31:0] dp_roce0_vaddr_cfg_words [4];
 logic [63:0] dp_roce0_vaddr_cfg_bytes [4];
+
+`ifdef SENSOR_RX_IF_INST
+function automatic int get_sensor_physical_vp_count(input int sensor_id);
+    if (SIF_RX_PACKETIZER_EN[sensor_id]) begin
+        return (SIF_RX_VP_COUNT[sensor_id] == 0) ? 1 : SIF_RX_VP_COUNT[sensor_id];
+    end else begin
+        return 1;
+    end
+endfunction
+
+function automatic int get_sensor_first_vp(input int sensor_id);
+    int base;
+    base = 0;
+    for (int s = 0; s < sensor_id; s++) begin
+        base += get_sensor_physical_vp_count(s);
+    end
+    return base;
+endfunction
+
+function automatic logic [31:0] get_default_sensor_vp_mask();
+    logic [31:0] mask;
+    int vp;
+    mask = 32'h0;
+    for (int s = 0; s < `SENSOR_RX_IF_INST; s++) begin
+        vp = get_sensor_first_vp(s);
+        if (vp < 32) begin
+            mask[vp] = 1'b1;
+        end else begin
+            `TB_LOG_LOW(LOG_ERR, $sformatf("Default VP index %0d for sensor %0d exceeds 32-bit dp_pkt_vip_mask", vp, s));
+        end
+    end
+    return mask;
+endfunction
+
+function automatic int get_all_sensor_global_frame_id(input int sensor_id, input int frame_id);
+    return (sensor_id * TOTAL_TEST_FRAMES) + frame_id;
+endfunction
+
+function automatic int get_sensor_id_from_qp(input logic [23:0] dest_qp);
+    int sensor_id;
+    if (dest_qp < TB_ROCE_DEST_QP) begin
+        return -1;
+    end
+    sensor_id = dest_qp - TB_ROCE_DEST_QP;
+    if (sensor_id < 0 || sensor_id >= `SENSOR_RX_IF_INST) begin
+        return -1;
+    end
+    return sensor_id;
+endfunction
+
+// COE frames carry no full QP; the sensor is identified by the 6-bit COE
+// channel_number, which the RTL drives from roce_dest_qp[5:0]. Map it back to
+// a sensor index the same way get_sensor_id_from_qp() does for RoCE.
+function automatic int get_sensor_id_from_coe_channel(input logic [5:0] channel_number);
+    int sensor_id;
+    sensor_id = int'(channel_number) - int'(TB_ROCE_DEST_QP[5:0]);
+    if (sensor_id < 0 || sensor_id >= `SENSOR_RX_IF_INST) begin
+        return -1;
+    end
+    return sensor_id;
+endfunction
+`endif
 
 //==============================================================================
 // I2C Bus Interface for EEPROM Model
@@ -358,12 +634,21 @@ end
 
 // Monitor sensor data transmission and check patterns
 `ifdef SENSOR_RX_IF_INST
-always @(posedge i_sif_rx_clk[0]) begin
-    if (i_sif_axis_tvalid[0] && o_sif_axis_tready[0] && i_sif_axis_tlast[0]) begin
-        sensor_packets_sent++;
-        `TB_LOG_MED(LOG_INFO, $sformatf("SENSOR: Frame %0d complete, last word=0x%0h", sensor_packets_sent, i_sif_axis_tdata[0]));
+generate
+    for (genvar mon_s = 0; mon_s < `SENSOR_RX_IF_INST; mon_s++) begin : gen_sensor_packet_counter
+        initial begin
+            forever begin
+                @(posedge i_sif_rx_clk[mon_s]);
+                if (i_sif_axis_tvalid[mon_s] && o_sif_axis_tready[mon_s] && i_sif_axis_tlast[mon_s]) begin
+                    sensor_packets_sent++;
+                    sensor_packets_sent_by_sensor[mon_s]++;
+                    `TB_LOG_MED(LOG_INFO, $sformatf("SENSOR[%0d]: Frame %0d complete, last word=0x%0h",
+                             mon_s, sensor_packets_sent_by_sensor[mon_s], i_sif_axis_tdata[mon_s]));
+                end
+            end
+        end
     end
-end
+endgenerate
 
 // Monitor sensor interface ready with backpressure tolerance
 int sif_tready_low_cycles = 0;
@@ -437,12 +722,19 @@ endtask
 // RoCE/validation helper functions (included from tb_lib)
 `include "tb_lib/hololink_roce_helpers.svh"
 
+//==============================================================================
+// Host-to-sensor (TX) UC RoCE SEND stimulus + streaming scoreboard
+//==============================================================================
+`include "tb_lib/hololink_host2sen_stim.svh"
+`include "tb_lib/hololink_host2sen_scbd.svh"
+
 // Validation function moved to RoCE helpers library
 
 task report_test_results();
     // Local declarations must appear before any procedural statements
     logic comprehensive_pass;
     integer i;
+    integer s;
 
     `TB_LOG_LOW(LOG_INFO, "=== TEST RESULTS SUMMARY (SENSOR-TO-HOST DATA PATH VALIDATION) ===");
     `TB_LOG_LOW(LOG_INFO, $sformatf("Sensor frames generated: %0d", sensor_frames_generated));
@@ -459,20 +751,47 @@ task report_test_results();
     
     // COMPREHENSIVE FRAME COVERAGE VALIDATION
     `TB_LOG_LOW(LOG_INFO, "=== FRAME COVERAGE ANALYSIS ===");
-    `TB_LOG_LOW(LOG_INFO, $sformatf("Unique frames received: %0d/3", unique_frames_received));
-    for (i = 0; i < 3; i++) begin
-        `TB_LOG_LOW(LOG_INFO, $sformatf("  Frame %0d: %s", i, frame_received[i] ? "[OK] RECEIVED" : "[ERROR] MISSING"));
-        if (!frame_received[i]) begin
-            errors_detected++;
-        end
-    end
-    
+
     // Check for comprehensive test pass
     comprehensive_pass = 1;
-    if (unique_frames_received != 3) begin
-        comprehensive_pass = 0;
-        `TB_LOG_LOW(LOG_ERR, $sformatf("COVERAGE FAILURE: Missing sensor frames - only %0d/3 received", unique_frames_received));
+`ifdef SENSOR_RX_IF_INST
+    if (all_sensors_mode) begin
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Unique frames received: %0d/%0d", unique_frames_received, expected_total_frames));
+        for (s = 0; s < `SENSOR_RX_IF_INST; s++) begin
+            `TB_LOG_LOW(LOG_INFO, $sformatf("  Sensor %0d: generated=%0d packets_sent=%0d received=%0d/%0d QP=0x%06x RKEY=0x%08x",
+                     s, sensor_frames_generated_by_sensor[s], sensor_packets_sent_by_sensor[s], frames_received_by_sensor[s],
+                     TOTAL_TEST_FRAMES, dp_roce_qp_by_sensor[s], dp_roce_rkey_by_sensor[s]));
+            for (i = 0; i < TOTAL_TEST_FRAMES; i++) begin
+                `TB_LOG_LOW(LOG_INFO, $sformatf("    Frame %0d: %s", i, frame_received_by_sensor[s][i] ? "[OK] RECEIVED" : "[ERROR] MISSING"));
+                if (!frame_received_by_sensor[s][i]) begin
+                    errors_detected++;
+                    comprehensive_pass = 0;
+                end
+            end
+        end
+        if (unique_frames_received != expected_total_frames) begin
+            comprehensive_pass = 0;
+            `TB_LOG_LOW(LOG_ERR, $sformatf("COVERAGE FAILURE: Missing all-sensor frames - only %0d/%0d received",
+                     unique_frames_received, expected_total_frames));
+        end
+    end else begin
+`endif
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Unique frames received: %0d/3", unique_frames_received));
+        for (i = 0; i < 3; i++) begin
+            `TB_LOG_LOW(LOG_INFO, $sformatf("  Frame %0d: %s", i, frame_received[i] ? "[OK] RECEIVED" : "[ERROR] MISSING"));
+            if (!frame_received[i]) begin
+                errors_detected++;
+                comprehensive_pass = 0;
+            end
+        end
+        if (unique_frames_received != 3) begin
+            comprehensive_pass = 0;
+            `TB_LOG_LOW(LOG_ERR, $sformatf("COVERAGE FAILURE: Missing sensor frames - only %0d/3 received", unique_frames_received));
+        end
+`ifdef SENSOR_RX_IF_INST
     end
+`endif
+
     if (completed_sensor_frames == 0) begin
         comprehensive_pass = 0;
         if (enable_coe_mode) begin
@@ -491,7 +810,8 @@ task report_test_results();
     end
     
     if (comprehensive_pass) begin
-        `TB_LOG_LOW(LOG_PASS, "COMPREHENSIVE VALIDATION PASSED: All sensor frames (0,1,2) received and validated");
+        `TB_LOG_LOW(LOG_PASS, all_sensors_mode ? "COMPREHENSIVE VALIDATION PASSED: All enabled sensors received and validated" :
+                                               "COMPREHENSIVE VALIDATION PASSED: All sensor frames (0,1,2) received and validated");
     end else begin
         `TB_LOG_LOW(LOG_FAIL, "COMPREHENSIVE VALIDATION FAILED: Missing critical sensor data");
     end
@@ -629,6 +949,7 @@ task send_eth_packet(input int intf_id, input logic [7:0] payload[], input int p
     automatic int byte_in_word;
     automatic logic [`HOST_WIDTH-1:0] current_word;
     automatic logic [`HOSTKEEP_WIDTH-1:0] current_keep;
+    automatic bit   stalled = 1'b0;
     
     `TB_LOG_LOW(LOG_INFO, "===> SEND_ETH_PACKET START");
     `TB_LOG_LOW(LOG_INFO, $sformatf("     Interface ID: %0d", intf_id));
@@ -636,6 +957,10 @@ task send_eth_packet(input int intf_id, input logic [7:0] payload[], input int p
     `TB_LOG_LOW(LOG_INFO, $sformatf("     HOST_WIDTH: %0d bits (%0d bytes)", `HOST_WIDTH, `HOST_WIDTH/8));
     
     word_count = (payload_size + (`HOST_WIDTH/8) - 1) / (`HOST_WIDTH/8);
+
+    // Grab exclusive access to the ingress AXIS so a concurrent BOOTP reply /
+    // ECB frame cannot interleave beats on the same wires.
+    hif_tx_sem.get(1);
 
     // Wait one cycle before starting
     @(posedge hif_clk);
@@ -666,11 +991,25 @@ task send_eth_packet(input int intf_id, input logic [7:0] payload[], input int p
             @(posedge hif_clk);
             ready_timeout++;
             if (ready_timeout >= 10000) begin
-                `TB_LOG_LOW(LOG_WARN, $sformatf("TIMEOUT: o_hif_axis_tready[%0d] never asserted!", intf_id));
-                `TB_LOG_LOW(LOG_WARN, "Proceeding anyway - this may cause protocol violations");
+                stalled = 1'b1;
                 break;
             end
         end while (!o_hif_axis_tready[intf_id]);
+
+        // There is no legal way out of a stalled beat: axis_checker requires tvalid
+        // to stay high and tdata/tkeep/tlast to hold until tready, so both dropping
+        // tvalid and advancing to the next word are protocol violations, and
+        // advancing also silently loses this word from the frame. Holding the beat
+        // is the only legal state, so raise fatal_error and block here, leaving the
+        // beat driven while the main fork's fatal arm ends the run.
+        if (stalled) begin
+            `TB_LOG_LOW(LOG_FAIL, $sformatf(
+                "o_hif_axis_tready[%0d] low for %0d hif_clk cycles at word %0d of %0d - host ingress is not draining",
+                intf_id, ready_timeout, i, word_count));
+            test_status = 3;
+            fatal_error = 1'b1;
+            wait (0);
+        end
     end
 
     // Clear interface
@@ -681,6 +1020,58 @@ task send_eth_packet(input int intf_id, input logic [7:0] payload[], input int p
     i_hif_axis_tuser[intf_id]  <= '0;
 
     @(posedge hif_clk);
+    hif_tx_sem.put(1);
+endtask
+
+//==============================================================================
+// BOOTP Responder
+//==============================================================================
+// Builds and drives a minimal BOOTP reply (opcode 0x02) so the DUT latches a
+// device IP (yiaddr = TB_FPGA_IP). Packet layout mirrors the ethernet VIP
+// eth_bootp_rsp_sequence: server->device UDP (src=BOOTP_DST, dst=BOOTP_SRC),
+// IP dst = yiaddr, and the BOOTP fixed header with yiaddr at byte offset 16.
+// The DUT only consumes opcode and yiaddr; remaining fields are left zeroed.
+task automatic send_bootp_response();
+    automatic logic [7:0] bootp_pld[];
+    automatic logic [7:0] eth_frame[];
+    automatic int         frame_size;
+
+    // Canonical 300-byte BOOTP message (matches the DUT's own request length).
+    bootp_pld = new[300];
+    foreach (bootp_pld[i]) bootp_pld[i] = 8'h00;
+
+    bootp_pld[0]  = 8'h02;                 // op    = BOOTREPLY
+    bootp_pld[1]  = 8'h01;                 // htype = Ethernet
+    bootp_pld[2]  = 8'h06;                 // hlen  = 6
+    bootp_pld[3]  = 8'h00;                 // hops
+    // xid (4), secs (2), flags (2), ciaddr (4) left as 0 (DUT does not check them)
+    // yiaddr @ byte offset 16 = assigned device IP (network byte order)
+    bootp_pld[16] = TB_FPGA_IP[31:24];
+    bootp_pld[17] = TB_FPGA_IP[23:16];
+    bootp_pld[18] = TB_FPGA_IP[15:8];
+    bootp_pld[19] = TB_FPGA_IP[7:0];
+    // chaddr @ byte offset 28 = device MAC (informational only)
+    bootp_pld[28] = DEFAULT_FPGA_MAC[47:40];
+    bootp_pld[29] = DEFAULT_FPGA_MAC[39:32];
+    bootp_pld[30] = DEFAULT_FPGA_MAC[31:24];
+    bootp_pld[31] = DEFAULT_FPGA_MAC[23:16];
+    bootp_pld[32] = DEFAULT_FPGA_MAC[15:8];
+    bootp_pld[33] = DEFAULT_FPGA_MAC[7:0];
+
+    build_ethernet_frame(bootp_pld, 300,
+                         DEFAULT_FPGA_MAC, TB_HOST_MAC,            // dst=device, src=host
+                         TB_FPGA_IP,       TB_HOST_IP,             // dst IP = yiaddr, src = host
+                         ETH_UDP_BOOTP_SRC_PORT,                   // dst port = device BOOTP port
+                         ETH_UDP_BOOTP_DST_PORT,                   // src port = server BOOTP port
+                         eth_frame, frame_size);
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf(
+        "BOOTP: replying with yiaddr=%0d.%0d.%0d.%0d (frame=%0d bytes)",
+        TB_FPGA_IP[31:24], TB_FPGA_IP[23:16],
+        TB_FPGA_IP[15:8],  TB_FPGA_IP[7:0], frame_size));
+
+    send_eth_packet(0, eth_frame, frame_size);
+    bootp_rsp_sent++;
 endtask
 
 // Note: COE (Camera over Ethernet) functions removed for simplicity
@@ -688,29 +1079,297 @@ endtask
 //==============================================================================
 // Hololink Initialization Sequence
 //==============================================================================
-task hololink_init();
-    `TB_LOG_LOW(LOG_INFO, "===== HOLOLINK INITIALIZATION START =====");
-    
-    // Wait for system to be ready with timeout
-    `TB_LOG_LOW(LOG_INFO, "Waiting for init_done signal (with timeout)...");
-    `TB_LOG_LOW(LOG_INFO, $sformatf("Current init_done = %b", init_done));
-    
-    // Wait for init_done with timeout
+// Shared by both init paths: wait for the DUT to report init complete, then settle
+// before the first register write. INIT_DONE_TIMEOUT covers the slowest legitimate
+// bring-up for the compiled-in def, so expiry means the DUT did not come up; log
+// and continue anyway rather than hang.
+task wait_init_done();
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Waiting for init_done signal (currently %b, timeout %.3f ms)...",
+                                    init_done, INIT_DONE_TIMEOUT / 1.0e6));
     fork
         begin
             wait(init_done == 1'b1);
             `TB_LOG_LOW(LOG_INFO, "*** Init done signal asserted! ***");
         end
         begin
-            #(1500us);
+            #(INIT_DONE_TIMEOUT);
             `TB_LOG_LOW(LOG_WARN, "*** TIMEOUT: init_done never asserted, proceeding anyway ***");
             `TB_LOG_LOW(LOG_INFO, "*** This may be expected for this simple testbench ***");
         end
     join_any
     disable fork;
-    
-    // Add delay before register programming
+
     repeat(50) @(posedge clk_100);
+endtask
+
+`ifdef SENSOR_RX_IF_INST
+// Number of odd-even swap selects for a 2^n-wide sorter. Mirrors
+// ODD_EVEN_SIZE_VEC in vrtl/hololink/packetizer/packetizer.sv, ascending so
+// that index n corresponds to clog2(DIN_WIDTH)-clog2(SORT_RESOLUTION).
+localparam int PACK_ODD_EVEN_SIZE [13] = '{1, 1, 5, 19, 63, 191, 543, 1471,
+                                           3839, 9727, 24063, 58367, 139263};
+
+//--------------------------------------------------------------------------
+// pack_vp_ram_index: index of the first pattern RAM holding the VP selects
+//
+// packetizer.sv splits its config into 32-bit RAMs laid out [CLEAR][SORT][VP],
+// so the VP group starts after the clear and sort RAMs. Recomputing
+// RAM_OFFSET_VEC[2] here keeps the programming def-driven instead of
+// hard-coding a RAM number per variant; it reproduces both hand-coded numbers
+// used by the UVM PKTZR_BYPASS_MODE tables (7 for 512b/16b, 19 for 1024b/16b).
+//--------------------------------------------------------------------------
+function automatic int pack_vp_ram_index(input int din_width, input int sort_resolution,
+                                         input int num_cycles);
+    int clear_bits;
+    int sort_bits;
+    clear_bits = (din_width / sort_resolution) * $clog2(num_cycles + 1);
+    sort_bits  = PACK_ODD_EVEN_SIZE[$clog2(din_width) - $clog2(sort_resolution)] * num_cycles;
+    return ((clear_bits + 31) / 32) + ((sort_bits + 31) / 32);
+endfunction
+
+//--------------------------------------------------------------------------
+// pack_clear_ram_count: number of 32-bit RAMs the clear/cycle-select occupies
+//--------------------------------------------------------------------------
+function automatic int pack_clear_ram_count(input int din_width, input int sort_resolution,
+                                            input int num_cycles);
+    return (((din_width / sort_resolution) * $clog2(num_cycles + 1)) + 31) / 32;
+endfunction
+
+//--------------------------------------------------------------------------
+// program_packetizer_passthrough: make one sensor word fill one host word
+//
+// At its reset value pack_ctrl leaves the packetizer in its internal bypass
+// path (bypass_packetizer = !pack_ctrl[28]), where VP0 commits only
+// din[VP_SIZE-1:0] of *every* sensor beat. A VP's output FIFO widens VP_SIZE
+// up to HOST_WIDTH, so that packs HOST_WIDTH/VP_SIZE different beats into each
+// host word and the received stream is no longer 1:1 with the sensor stream --
+// which is what the TB's expected-data model assumes.
+//
+// Engaging the pattern RAM instead holds one input word for DIN/VP_SIZE
+// pattern addresses (ld_arr=1 loads a new word only at address 0) while VP0
+// commits successive VP_SIZE slices of it in order, so the FIFO reassembles
+// the original full-width word and the remaining VPs stay idle. This mirrors
+// PKTZR_BYPASS_MODE in
+// dvlib/ec/integration/fpga_sensor_ip/src/fpga_sensor_ip/seqs/hololink_init_seq_lib.svh.
+//--------------------------------------------------------------------------
+task program_packetizer_passthrough(input int sensor_id);
+    int din_width;
+    int vp_size;
+    int slices;
+    int vp_ram;
+    int clear_rams;
+    logic [31:0] pack_base;
+    logic [31:0] pack_cfg;
+
+    if (!SIF_RX_PACKETIZER_EN[sensor_id]) begin
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Sensor %0d: packetizer not instantiated; VPs already pass full sensor words",
+                 sensor_id));
+        return;
+    end
+
+    din_width = SIF_RX_WIDTH[sensor_id];
+    vp_size   = SIF_RX_VP_SIZE[sensor_id];
+
+    if (vp_size >= din_width) begin
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Sensor %0d: VP_SIZE=%0d already spans the %0d-bit sensor word; no pattern needed",
+                 sensor_id, vp_size, din_width));
+        return;
+    end
+
+    slices = din_width / vp_size;
+    // max_addr is 4 bits and the pattern RAM is 16 entries deep.
+    if ((slices * vp_size) != din_width || slices > 16) begin
+        `TB_LOG_LOW(LOG_WARN, $sformatf("Sensor %0d: cannot build pass-through pattern for DIN=%0d VP_SIZE=%0d (%0d slices)",
+                 sensor_id, din_width, vp_size, slices));
+        return;
+    end
+
+    pack_base  = REG_PACK_CTRL_BASE + (sensor_id * REG_PACK_CTRL_STRIDE);
+    vp_ram     = pack_vp_ram_index(din_width, SIF_RX_SORT_RESOLUTION[sensor_id],
+                                   SIF_RX_NUM_CYCLES[sensor_id]);
+    clear_rams = pack_clear_ram_count(din_width, SIF_RX_SORT_RESOLUTION[sensor_id],
+                                      SIF_RX_NUM_CYCLES[sensor_id]);
+
+    pack_cfg = (32'h1 << PACK_CFG_ENABLE_BIT) |
+               (32'(slices - 1) << PACK_CFG_MAX_ADDR_LSB) |
+               (32'h1 << PACK_CFG_LD_ARR_LSB);
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Sensor %0d: programming packetizer pass-through (DIN=%0d VP_SIZE=%0d slices=%0d vp_ram=%0d clear_rams=%0d pack_cfg=0x%08x)",
+             sensor_id, din_width, vp_size, slices, vp_ram, clear_rams, pack_cfg));
+
+    // pack_ctrl first: each RAM_DATA write latches ld_arr into the shift
+    // register, so ld_arr/max_addr must already be in place.
+    ecb_write(pack_base + PACK_OFF_PACK_CFG, pack_cfg);
+
+    for (int e = 0; e < slices; e++) begin
+        // Cycle select: keep every sorted region (0 would clear it).
+        for (int r = 0; r < clear_rams; r++) begin
+            ecb_write(pack_base + PACK_OFF_RAM_ADDR, 32'((r << 4) | e));
+            ecb_write(pack_base + PACK_OFF_RAM_DATA, 32'hFFFF_FFFF);
+        end
+        // VP select: {select=e, commit=1} sends slice e of the held word to
+        // VP0. The other VPs read 0 from this RAM and stay idle.
+        ecb_write(pack_base + PACK_OFF_RAM_ADDR, 32'((vp_ram << 4) | e));
+        ecb_write(pack_base + PACK_OFF_RAM_DATA, 32'((e << 1) | 1));
+    end
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Sensor %0d: packetizer pass-through programmed (%0d pattern entries)",
+             sensor_id, slices));
+endtask
+
+task automatic clear_all_physical_dp_roce_blocks();
+    int first_vp;
+    int vp_count;
+    int vp;
+    int cleared_vp_count;
+
+    cleared_vp_count = 0;
+    for (int sensor_id = 0; sensor_id < `SENSOR_RX_IF_INST; sensor_id++) begin
+        first_vp = get_sensor_first_vp(sensor_id);
+        vp_count = get_sensor_physical_vp_count(sensor_id);
+        for (int vp_offset = 0; vp_offset < vp_count; vp_offset++) begin
+            vp = first_vp + vp_offset;
+            ecb_write(reg_roce(vp, ROCE_OFF_VADDR_FIXED_MSB), 32'h0);
+            ecb_write(reg_roce(vp, ROCE_OFF_PCP),             32'h0);
+            ecb_write(reg_roce(vp, ROCE_OFF_RSVD_2),          32'h0);
+            cleared_vp_count++;
+        end
+    end
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf(
+        "Cleared RoCE vaddr_fixed_msb/pcp/rsvd_2 for %0d physical VP block(s)",
+        cleared_vp_count));
+endtask
+
+task program_roce_for_sensor(input int sensor_id, input int host_id);
+    int vp_id;
+    logic [23:0] sensor_qp;
+    logic [31:0] sensor_rkey;
+    logic [31:0] sensor_psn;
+    logic [63:0] sensor_base_addr;
+
+    vp_id = get_sensor_first_vp(sensor_id);
+    sensor_qp = TB_ROCE_DEST_QP + 24'(sensor_id);
+    sensor_rkey = TB_ROCE_RKEY + sensor_id;
+    sensor_psn = TB_ROCE_PSN + (sensor_id * 32'h0000_1000);
+    sensor_base_addr = {ROCE_BUF_ADDR_MSB, ROCE_BUF_ADDR_LSB} + (64'(sensor_id) * 64'(ROCE_SENSOR_ADDR_STRIDE_BYTES));
+
+    dp_roce_qp_by_sensor[sensor_id] = sensor_qp;
+    dp_roce_rkey_by_sensor[sensor_id] = sensor_rkey;
+    dp_roce_psn_by_sensor[sensor_id] = sensor_psn;
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Programming sensor %0d default VP %0d RoCE context: QP=0x%06x RKEY=0x%08x PSN=0x%08x BASE=0x%016x",
+             sensor_id, vp_id, sensor_qp, sensor_rkey, sensor_psn, sensor_base_addr));
+
+    ecb_write(reg_roce(vp_id, ROCE_OFF_DEST_QP), {7'd0, enable_coe_mode, sensor_qp});
+    ecb_write(reg_roce(vp_id, ROCE_OFF_RKEY), sensor_rkey);
+    ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_LEN), FRAME_SIZE_BYTES);
+    ecb_write(reg_roce(vp_id, ROCE_OFF_PSN), sensor_psn);
+
+    if (USE_4K_BUFFER_SCHEME) begin
+        ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_ADDR_LSB), sensor_base_addr[31:0]);
+        ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_ADDR_MSB), sensor_base_addr[63:32]);
+        ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_INC), {6'b0, ROCE_BUF_INC});
+        ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_PTR), {4'b0, ROCE_BUF_PTR_START, 4'b0, ROCE_BUF_PTR_END});
+
+        for (int vi = 0; vi < 4; vi++) begin
+            dp_roce_vaddr_cfg_bytes_by_sensor[sensor_id][vi] = sensor_base_addr +
+                                                               (64'(ROCE_BUF_INC) << 7) * (ROCE_BUF_PTR_START + vi);
+            dp_roce_vaddr_cfg_words_by_sensor[sensor_id][vi] = dp_roce_vaddr_cfg_bytes_by_sensor[sensor_id][vi][38:7];
+        end
+    end else begin
+        ecb_write(reg_roce(vp_id, REG_DP_ROCE_0_BUF_MASK - REG_DP_ROCE_0_DEST_QP), 32'h0000_000F);
+        for (int vi = 0; vi < ROCE_VADDR_COUNT; vi++) begin
+            dp_roce_vaddr_cfg_words_by_sensor[sensor_id][vi] = ROCE_VADDR_WORD_BASE +
+                                                               (sensor_id * (ROCE_VADDR_FRAME_STRIDE * ROCE_VADDR_COUNT)) +
+                                                               (ROCE_VADDR_FRAME_STRIDE * vi);
+            ecb_write(reg_roce(vp_id, ROCE_OFF_BUF_ADDR_LSB + (vi * 4)), dp_roce_vaddr_cfg_words_by_sensor[sensor_id][vi]);
+            dp_roce_vaddr_cfg_bytes_by_sensor[sensor_id][vi] = {32'h0, dp_roce_vaddr_cfg_words_by_sensor[sensor_id][vi]} << 7;
+        end
+    end
+
+    ecb_write(reg_roce(vp_id, ROCE_OFF_HOST_MAC_LO), TB_HOST_MAC[31:0]);
+    ecb_write(reg_roce(vp_id, ROCE_OFF_HOST_MAC_HI), TB_HOST_MAC[47:32]);
+    ecb_write(reg_roce(vp_id, ROCE_OFF_HOST_IP), TB_HOST_IP);
+    ecb_write(reg_roce(vp_id, ROCE_OFF_HOST_UDP_PORT), enable_coe_mode ? ETH_UDP_COE_PORT : ETH_UDP_ROCE_PORT);
+endtask
+
+task hololink_init_all_sensors();
+    logic [31:0] default_vp_mask;
+
+    // init_done was already awaited by hololink_init() before it dispatched here.
+    `TB_LOG_LOW(LOG_INFO, "===== HOLOLINK ALL-SENSORS INITIALIZATION START =====");
+
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Programming one default VP per Sensor RX interface into host %0d", target_host_id));
+
+    for (int sensor_id = 0; sensor_id < `SENSOR_RX_IF_INST; sensor_id++) begin
+        program_roce_for_sensor(sensor_id, target_host_id);
+        program_packetizer_passthrough(sensor_id);
+    end
+
+    default_vp_mask = get_default_sensor_vp_mask();
+    `TB_LOG_LOW(LOG_INFO, $sformatf("Default sensor VP mask for host %0d = 0x%08x", target_host_id, default_vp_mask));
+
+    for (int host_id = 0; host_id < `HOST_IF_INST; host_id++) begin
+        ecb_write(reg_dp_pkt(host_id, DP_PKT_OFF_LEN), DP_PKT_LEN_VALUE);
+        ecb_write(reg_dp_pkt(host_id, DP_PKT_OFF_FPGA_UDP_PORT),
+                  enable_coe_mode ? {16'h0001, ETH_UDP_COE_PORT} : {16'h0000, ETH_UDP_ROCE_PORT});
+        ecb_write(reg_dp_pkt(host_id, DP_PKT_OFF_VIP_MASK), (host_id == target_host_id) ? default_vp_mask : 32'h0);
+    end
+
+    // Preserve the legacy ECB-port write and also program the CSV-canonical
+    // inst_dec ecb_udp_port offset for the selected host.
+    ecb_write(REG_INST_DEC_0_ECB_UDP_PORT, ETH_UDP_CMD_PORT);
+    ecb_write(reg_inst_dec(target_host_id, INST_DEC_OFF_ECB_UDP_PORT), ETH_UDP_CMD_PORT);
+
+    repeat(100) @(posedge clk_100);
+    `TB_LOG_LOW(LOG_INFO, "===== HOLOLINK ALL-SENSORS INITIALIZATION COMPLETE =====");
+endtask
+`endif
+
+task hololink_init();
+`ifndef ENUM_EEPROM
+    // Non-EEPROM builds: the DUT cannot process/ACK ECB register writes until it
+    // has acquired a device IP via BOOTP. Stall the init sequence until we have
+    // replied to at least one BOOTP request, so no register write is dropped.
+    // A safety timeout prevents an infinite hang if no request is ever seen.
+    if (bootp_rsp_sent == 0) begin
+        `TB_LOG_LOW(LOG_INFO, "Waiting for BOOTP reply before starting register init...");
+        fork
+            wait(bootp_rsp_sent > 0);
+            begin
+                #(1500us);
+                `TB_LOG_LOW(LOG_WARN, "*** TIMEOUT: no BOOTP request seen, starting init anyway ***");
+            end
+        join_any
+        disable fork;
+    end
+    if (bootp_rsp_sent > 0) begin
+        // Give the DUT time to parse the BOOTP reply and propagate the new device
+        // IP (yiaddr -> ciaddr -> o_dev_ip_addr, which crosses clock domains)
+        // before issuing ECB writes. Without this settle the very first ECB write
+        // races the IP update and gets silently dropped (observed ACK timeout on
+        // the first register, subsequent writes fine).
+        #(10us);
+        `TB_LOG_LOW(LOG_INFO, $sformatf("BOOTP reply sent (count=%0d); IP settle done, proceeding with register init", bootp_rsp_sent));
+    end
+`endif
+
+    // Both init paths below need the DUT initialized, so gate once here.
+    wait_init_done();
+
+`ifdef SENSOR_RX_IF_INST
+    // These fields are backed by block RAM and are not reset by the DUT. Clear
+    // every physical VP before either initialization path programs active VPs.
+    clear_all_physical_dp_roce_blocks();
+
+    if (all_sensors_mode) begin
+        hololink_init_all_sensors();
+        return;
+    end
+`endif
+
+    `TB_LOG_LOW(LOG_INFO, "===== HOLOLINK INITIALIZATION START =====");
     `TB_LOG_LOW(LOG_INFO, "Starting register programming sequence...");
     
     //==========================================================================
@@ -722,7 +1381,12 @@ task hololink_init();
     //----------------------------------------------------------------------
     // RoCE Data Path Configuration
     //----------------------------------------------------------------------
-    // Configure RoCE (RDMA over Converged Ethernet) for sensor data transmission
+    // Configure RoCE (RDMA over Converged Ethernet) for sensor data transmission.
+    // The dp_roce register blocks are instantiated per sensor VP, so a config with
+    // no sensor RX interface has none of them and every write below returns an ECB
+    // ACCESS_ERROR. Those errors are counted against the test, which would fail an
+    // otherwise clean TX-only run (e.g. bajoran_nano host2sen).
+`ifdef SENSOR_RX_IF_INST
     `TB_LOG_LOW(LOG_INFO, "Programming RoCE data path registers...");
     
     // Configure protocol mode and destination queue pair
@@ -801,7 +1465,7 @@ task hololink_init();
     `TB_LOG_LOW(LOG_INFO, "Programming host network addresses...");
     ecb_write(REG_DP_ROCE_0_HOST_MAC_LO, TB_HOST_MAC[31:0]);     // Host Ethernet MAC address (lower 32 bits)
     ecb_write(REG_DP_ROCE_0_HOST_MAC_HI, TB_HOST_MAC[47:32]);   // Host Ethernet MAC address (upper 16 bits)
-    ecb_write(REG_DP_ROCE_0_HOST_IP, DEFAULT_HOST_IP);          // Host IP address
+    ecb_write(REG_DP_ROCE_0_HOST_IP, TB_HOST_IP);               // Host IP address
     if (enable_coe_mode) begin
         ecb_write(REG_DP_ROCE_0_HOST_UDP_PORT, ETH_UDP_COE_PORT); // COE protocol UDP port
         `TB_LOG_LOW(LOG_INFO, $sformatf("Configured for COE protocol on UDP port 0x%04x", ETH_UDP_COE_PORT));
@@ -809,6 +1473,18 @@ task hololink_init();
         ecb_write(REG_DP_ROCE_0_HOST_UDP_PORT, ETH_UDP_ROCE_PORT); // RoCE protocol UDP port
         `TB_LOG_LOW(LOG_INFO, $sformatf("Configured for RoCE protocol on UDP port 0x%04x", ETH_UDP_ROCE_PORT));
     end
+
+    //----------------------------------------------------------------------
+    // Sensor RX Packetizer Configuration
+    //----------------------------------------------------------------------
+    // Only configs whose VP slice is narrower than the sensor bus need this;
+    // the task no-ops for everything else.
+    for (int sensor_id = 0; sensor_id < `SENSOR_RX_IF_INST; sensor_id++) begin
+        program_packetizer_passthrough(sensor_id);
+    end
+`else
+    `TB_LOG_LOW(LOG_INFO, "Skipping RoCE data path registers: no sensor RX interface in this config");
+`endif
     
     
     //----------------------------------------------------------------------
@@ -861,6 +1537,8 @@ endtask
 // Main Test Sequence
 //==============================================================================
 initial begin
+    string test_mode_str;
+
     // Initialize interface signals
     i_hif_axis_tvalid = '0;
     i_hif_axis_tlast = '0;
@@ -875,9 +1553,29 @@ initial begin
     foreach (i_sif_axis_tdata[i]) i_sif_axis_tdata[i] = '0;
     foreach (i_sif_axis_tkeep[i]) i_sif_axis_tkeep[i] = '0;
     foreach (i_sif_axis_tuser[i]) i_sif_axis_tuser[i] = '0;
+    for (int s = 0; s < `SENSOR_RX_IF_INST; s++) begin
+        sensor_frames_generated_by_sensor[s] = 0;
+        sensor_packets_sent_by_sensor[s] = 0;
+        frames_received_by_sensor[s] = 0;
+        for (int f = 0; f < TOTAL_TEST_FRAMES; f++) begin
+            frame_received_by_sensor[s][f] = 1'b0;
+        end
+        for (int vi = 0; vi < 4; vi++) begin
+            dp_roce_vaddr_cfg_words_by_sensor[s][vi] = '0;
+            dp_roce_vaddr_cfg_bytes_by_sensor[s][vi] = '0;
+        end
+    end
 `endif
 `ifdef SENSOR_TX_IF_INST
     i_sif_axis_tready = '1; // Always ready to receive from DUT TX
+    for (int s = 0; s < `SENSOR_TX_IF_INST; s++) begin
+        expected_stx_bytes[s]     = {};
+        host2sen_bytes_sent[s]    = 0;
+        host2sen_bytes_checked[s] = 0;
+        host2sen_mismatches[s]    = 0;
+        stx_gen_byte[s]           = 0;
+        host2sen_psn[s]           = 0;
+    end
 `endif
     
     i_gpio = '0;
@@ -890,6 +1588,11 @@ initial begin
 `ifdef SPI_INST
     foreach (i_spi_sdio[i]) i_spi_sdio[i] = '0;
 `endif
+`ifdef UART_INST
+    i_uart_rx = '1;
+    i_uart_cts = '0;
+`endif
+
     // I2C signals are now handled by the EEPROM target model
     // i_i2c_scl and i_i2c_sda are driven by the I2C EEPROM target
     
@@ -908,6 +1611,55 @@ initial begin
     end
     
     // Packet dumping controlled solely by verbosity now
+
+    // Runtime test mode selection.  Default is the original single-sensor demo.
+    all_sensors_mode = 1'b0;
+    expected_total_frames = TOTAL_TEST_FRAMES;
+    if ($test$plusargs("ALL_SENSORS")) begin
+        all_sensors_mode = 1'b1;
+    end
+    if ($value$plusargs("TEST_MODE=%s", test_mode_str)) begin
+        if (test_mode_str == "ALL_SENSORS") begin
+            all_sensors_mode = 1'b1;
+        end else begin
+            all_sensors_mode = 1'b0;
+        end
+    end
+    if ($value$plusargs("TARGET_HOST=%d", target_host_id)) begin
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Target host selected via +TARGET_HOST=%0d", target_host_id));
+    end else begin
+        target_host_id = 0;
+    end
+    if (target_host_id < 0 || target_host_id >= `HOST_IF_INST) begin
+        `TB_LOG_LOW(LOG_WARN, $sformatf(
+            "Requested TARGET_HOST=%0d is out of range [0:%0d]; using host 0",
+            target_host_id, `HOST_IF_INST-1));
+        target_host_id = 0;
+    end
+
+    // Host-to-sensor (TX) push path.  When +HOST2SEN is supplied the test drives
+    // UC RoCE SEND traffic from the host to the sensors instead of the default
+    // sensor-to-host (RX) frame generation.
+    if ($test$plusargs("HOST2SEN")) begin
+        host2sen_requested = 1'b1;
+`ifdef SENSOR_TX_IF_INST
+        host2sen_mode = 1'b1;
+        `TB_LOG_LOW(LOG_INFO, "Host-to-sensor (TX) mode enabled via +HOST2SEN");
+`else
+        `TB_LOG_LOW(LOG_INFO, "+HOST2SEN requested but this config has no sensor TX path (SENSOR_TX_IF_INST undefined)");
+`endif
+    end
+`ifdef SENSOR_RX_IF_INST
+    if (all_sensors_mode) begin
+        expected_total_frames = `SENSOR_RX_IF_INST * TOTAL_TEST_FRAMES;
+        `TB_LOG_LOW(LOG_INFO, $sformatf("Test mode: ALL_SENSORS -> host %0d (%0d sensors, %0d expected frames)",
+                 target_host_id, `SENSOR_RX_IF_INST, expected_total_frames));
+    end else begin
+        `TB_LOG_LOW(LOG_INFO, "Test mode: SINGLE_SENSOR -> host 0 (legacy default)");
+    end
+`else
+    `TB_LOG_LOW(LOG_INFO, "Test mode: SENSOR_RX_IF_INST undefined; sensor data generation disabled");
+`endif
     
     // Check for COE mode enablement
     if ($test$plusargs("ENABLE_COE")) begin
@@ -918,12 +1670,13 @@ initial begin
         `TB_LOG_LOW(LOG_INFO, "RoCE (RDMA over Converged Ethernet) mode enabled (default)");
     end
     
-    `TB_LOG_LOW(LOG_INFO, "All sensor interfaces initialized to IDLE (only sensor 0 will be used)");
+    `TB_LOG_LOW(LOG_INFO, all_sensors_mode ? "All sensor interfaces initialized to IDLE (all sensors mode)" :
+                                            "All sensor interfaces initialized to IDLE (only sensor 0 will be used)");
     
     // EEPROM model is now automatically initialized by the separate eeprom_model.sv module
     
     `TB_LOG_LOW(LOG_INFO, "========================================");
-    `TB_LOG_LOW(LOG_INFO, "=== Hololink Simple Testbench Started ===");
+    `TB_LOG_LOW(LOG_INFO, "=== NV HSB IP Simple Testbench Started ===");
     `TB_LOG_LOW(LOG_INFO, "========================================");
     
     // Wait for reset deassertion
@@ -931,21 +1684,37 @@ initial begin
     `TB_LOG_LOW(LOG_INFO, $sformatf("Current rstn = %b", rstn));
     wait(rstn == 1'b1);
     `TB_LOG_LOW(LOG_INFO, "Reset deasserted! Starting test sequence...");
+
+    // Start monitoring before the settle below. The monitor carries the BOOTP
+    // responder, and a non-EEPROM DUT issues its BOOTP request within a few hundred
+    // ns of enumeration; with HOST_IF_INST=1 it never retries, because repeats wait
+    // on the 1Hz PPS that no simulation reaches. The settle is 100 APB cycles, which
+    // is 2us at a 50MHz APB, so arming the responder after it loses the only request
+    // and the DUT never acquires a device IP.
+    for (int host_id = 0; host_id < `HOST_IF_INST; host_id++) begin
+        automatic int monitor_host_id = host_id;
+        fork
+            begin
+                `TB_LOG_LOW(LOG_INFO, $sformatf(
+                    ">>> Starting host %0d monitor with traffic classification <<<",
+                    monitor_host_id));
+                monitor_host_with_classification(monitor_host_id);
+            end
+        join_none
+    end
+
     repeat(100) @(posedge clk_100);
     
     // Check DUT signals before starting
     `TB_LOG_LOW(LOG_INFO, "DUT Status Check:");
     `TB_LOG_LOW(LOG_INFO, $sformatf("  init_done = %b", init_done));
-    `TB_LOG_LOW(LOG_INFO, $sformatf("  o_hif_axis_tready[0] = %b", o_hif_axis_tready[0]));
-    `TB_LOG_LOW(LOG_INFO, $sformatf("  i_hif_axis_tvalid[0] = %b", i_hif_axis_tvalid[0]));
+    for (int host_id = 0; host_id < `HOST_IF_INST; host_id++) begin
+        `TB_LOG_LOW(LOG_INFO, $sformatf(
+            "  host[%0d]: o_hif_axis_tready=%b i_hif_axis_tvalid=%b",
+            host_id, o_hif_axis_tready[host_id], i_hif_axis_tvalid[host_id]));
+    end
     
     fork
-        // Start unified host monitoring with traffic classification
-        begin
-            `TB_LOG_LOW(LOG_INFO, ">>> Starting unified host monitor with traffic classification <<<");
-            monitor_host_with_classification();
-        end
-        
         // Main test sequence
         begin
             `TB_LOG_LOW(LOG_INFO, ">>> Starting main test sequence <<<");
@@ -957,14 +1726,63 @@ initial begin
             
             // Verify register programming with a register we actually wrote
             `TB_LOG_LOW(LOG_INFO, "STEP 2: Verifying register access...");
-            verify_register_access(REG_DP_ROCE_0_RKEY, TB_ROCE_RKEY);
+`ifdef SENSOR_RX_IF_INST
+            if (all_sensors_mode) begin
+                verify_register_access(reg_roce(get_sensor_first_vp(0), ROCE_OFF_RKEY), TB_ROCE_RKEY);
+            end else begin
+                verify_register_access(REG_DP_ROCE_0_RKEY, TB_ROCE_RKEY);
+            end
+`else
+            // No sensor RX interface means no dp_roce block to read back; the
+            // read would return an ECB ACCESS_ERROR and count as a test error.
+            `TB_LOG_LOW(LOG_INFO, "Skipping RoCE register readback: no sensor RX interface in this config");
+`endif
             `TB_LOG_LOW(LOG_INFO, "STEP 2 COMPLETE: Register verification finished");
-            
+
+          if (host2sen_requested && !host2sen_mode) begin
+            // TX push path was requested but this build has no sensor TX interface.
+            // Skip gracefully rather than silently running the RX flow instead.
+            `TB_LOG_LOW(LOG_INFO, "========================================");
+            `TB_LOG_LOW(LOG_INFO, "=== HOST-TO-SENSOR TEST SKIPPED ===");
+            `TB_LOG_LOW(LOG_INFO, "    SENSOR_TX_IF_INST is not defined in this build;");
+            `TB_LOG_LOW(LOG_INFO, "    nothing to drive on the host->sensor (TX) path.");
+            `TB_LOG_LOW(LOG_INFO, "========================================");
+            test_status = 1; // clean, non-failing exit (test not applicable)
+          end else if (host2sen_mode) begin
+`ifdef SENSOR_TX_IF_INST
+            // ---- Host-to-sensor (TX) UC RoCE SEND path ----
+            `TB_LOG_LOW(LOG_INFO, "STEP 3 (TX): Programming host-to-sensor stream buffers...");
+            program_tx_strm_buff();
+
+            // Launch a streaming byte-compare collector per sensor TX interface.
+            for (int s = 0; s < `SENSOR_TX_IF_INST; s++) begin
+                fork
+                    automatic int sn = s;
+                    monitor_sensor_egress(sn);
+                join_none
+            end
+            repeat(200) @(posedge hif_clk); // let collectors arm
+
+            `TB_LOG_LOW(LOG_INFO, "STEP 4 (TX): Driving host-to-sensor UC RoCE SEND traffic...");
+            run_host2sen_traffic();
+
+            `TB_LOG_LOW(LOG_INFO, "STEP 5 (TX): Draining sensor egress...");
+            repeat(200000) @(posedge hif_clk);
+
+            `TB_LOG_LOW(LOG_INFO, "STEP 6 (TX): Reporting host-to-sensor results...");
+            report_host2sen_results();
+            `TB_LOG_LOW(LOG_INFO, "STEP 6 COMPLETE: Host-to-sensor results reported");
+`endif
+          end else begin
             // Generate sensor data patterns for DUT to process
 `ifdef SENSOR_RX_IF_INST
             `TB_LOG_LOW(LOG_INFO, "STEP 3: Starting sensor data generation...");
             `TB_LOG_LOW(LOG_INFO, "         DUT needs sensor interface stimulus to generate RoCE packets");
-            generate_sensor_data_patterns();
+            if (all_sensors_mode) begin
+                generate_all_sensor_data_patterns();
+            end else begin
+                generate_sensor_data_patterns();
+            end
             // Minimal delay - frames are sent back-to-back now
             `TB_LOG_LOW(LOG_INFO, "         All frames sent back-to-back - DUT should stay active");
             repeat(1000) @(posedge clk_100);  // Short delay for pipeline to start
@@ -988,6 +1806,7 @@ initial begin
             `TB_LOG_LOW(LOG_INFO, "STEP 6: Reporting test results...");
             report_test_results();
             `TB_LOG_LOW(LOG_INFO, "STEP 6 COMPLETE: Test results reported");
+          end
             
             `TB_LOG_LOW(LOG_INFO, "========================================");
             `TB_LOG_LOW(LOG_INFO, "=== Main Test Sequence Completed ===");
@@ -1000,6 +1819,13 @@ initial begin
             `TB_LOG_LOW(LOG_FAIL, "*** TIMEOUT WATCHDOG TRIGGERED ***");
             test_status = 2; // Timeout
         end
+
+        // Fatal abort: a task that cannot legally continue blocks itself and raises
+        // fatal_error, so release the join_any and report through the path below.
+        begin
+            wait (fatal_error);
+            `TB_LOG_LOW(LOG_FAIL, "*** FATAL ERROR REPORTED - ABORTING TEST ***");
+        end
     join_any
     
     // Final status - One-line test summary
@@ -1009,6 +1835,7 @@ initial begin
             `TB_LOG_LOW(LOG_PASS, "Simulation PASSED");
         end
         2: `TB_LOG_LOW(LOG_FAIL, "TEST FAILED: TIMEOUT");
+        3: `TB_LOG_LOW(LOG_FAIL, "TEST FAILED: FATAL ERROR");
         default: `TB_LOG_LOW(LOG_FAIL, "TEST FAILED: UNKNOWN");
     endcase
     
@@ -1040,7 +1867,14 @@ HOLOLINK_top #(
     .i_apb_pready(i_apb_pready),
     .i_apb_prdata(i_apb_prdata),
     .i_apb_pserr(i_apb_pserr),
-    
+
+`ifndef ENUM_EEPROM
+    // Enumeration inputs (only exist when the DUT is built without EEPROM enum)
+    .i_mac_addr(i_mac_addr),
+    .i_board_sn(i_board_sn),
+    .i_enum_vld(i_enum_vld),
+`endif
+
     // Initialization Done
     .o_init_done(init_done),
     
@@ -1107,8 +1941,16 @@ HOLOLINK_top #(
     .o_i2c_scl_en(o_i2c_scl_en),
     .o_i2c_sda_en(o_i2c_sda_en),
 `endif
+`ifdef UART_INST
+    .i_uart_rx(i_uart_rx),
+    .o_uart_tx(o_uart_tx),
+    .o_uart_busy(o_uart_busy),
+    .o_uart_rts(o_uart_rts),
+    .i_uart_cts(i_uart_cts),
+`endif
     // GPIO
     .o_gpio(o_gpio),
+    .o_gpio_dir(o_gpio_dir),
     .i_gpio(i_gpio),
     
     // System Control
@@ -1159,15 +2001,8 @@ initial begin
     `TB_LOG_LOW(LOG_INFO, "\u2713 All alignment requirements satisfied!");
 end
 
-//==============================================================================
-// FSDB Waveform Dumping (Optional)
-//==============================================================================
-// Uncomment the following block to enable FSDB waveform dumping for debug
-//initial begin
-//    string fsdb_dump_name = "nv_hsb_ip_simple_tb.fsdb";
-//    `TB_LOG_LOW(LOG_INFO, $sformatf("FSDB waveform dumping enabled: %s", fsdb_dump_name));
-//    $fsdbDumpfile(fsdb_dump_name);
-//    $fsdbDumpvars(0, nv_hsb_ip_simple_tb);
-//end
+// Waveform dumping: opt-in via +FSDB_DUMP (Makefile DUMP=1). The $fsdbDump* calls
+// live in the FSDB dump block near the clock section above; nothing is dumped
+// unless +FSDB_DUMP is passed. 'make verdi'/'make gui' remain for interactive use.
 
 endmodule

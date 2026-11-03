@@ -246,9 +246,13 @@ operator bindings (Phase 6) ship in their own `_hololink_module_operators.so` ex
 
 ```bash
 BUILD=/tmp/build-hololink
-cmake -S . -B "$BUILD" -DHOLOLINK_BUILD_PYTHON=ON
+cmake -S . -B "$BUILD"    # HOLOLINK_BUILD_MODULE and HOLOLINK_BUILD_PYTHON default to ON
 cmake --build "$BUILD" --target _hololink_py_module
 ```
+
+`cmake --install "$BUILD"` installs the packages under `<prefix>/python`
+(`-DHOLOLINK_PYTHON_INSTALL_DIR=<dir>` changes that); put that directory on `PYTHONPATH`. To
+run without installing, use the build tree instead (`export PYTHONPATH=${BUILD}/python`).
 
 **Test-run commands.**
 
@@ -498,9 +502,11 @@ grid). All control flow goes through the V1 surface:
 - Default IPs: board 1 at `192.168.0.200/.201`, board 2 at `192.168.0.202/.203` — each
   pair is one HSB-Lite's two RoCE data channels.
 
-A C++ sibling lives at `examples/module_imx274_player.cpp`. It mirrors the Python
-example one-for-one: same default IPs, same camera mode, same lifecycle, same Holoscan
-pipeline. Camera control goes through a V1-native C++ IMX274 driver under
+The example is now `examples/module_quad_imx274_player.py`, and its C++ sibling, ported
+to Holoscan SDK 5, is `examples/module_quad_imx274_player.cpp`
+(`examples/module_imx274_player.cpp` is now a single-camera player). The C++ sibling
+mirrors the Python example: same default IPs, same camera mode, same lifecycle, same
+operators. Camera control goes through a V1-native C++ IMX274 driver under
 `hololink_module/host/sensors/imx274/` (`Imx274Cam`, `LII2CExpander`) that takes
 `shared_ptr<HololinkInterfaceV1>` directly. The driver re-uses the legacy IMX274
 register tables from `src/hololink/sensors/camera/imx274/imx274_mode.hpp` (the data is
@@ -508,8 +514,8 @@ byte-for-byte identical to the Python version and the module rework's policy all
 reading legacy headers, just not extending or rewriting them). The CMake target is
 `hololink::module::sensors::imx274`.
 
-`examples/CMakeLists.txt` appends `module_imx274_player.py` to `EXAMPLE_INSTALL_FILES`
-so it ships next to the other example scripts.
+`examples/CMakeLists.txt` appends `module_quad_imx274_player.py` to
+`EXAMPLE_INSTALL_FILES` so it ships next to the other example scripts.
 
 The HSB-Lite supplement now publishes the full per-board + per-channel V1 service chain
 the example exercises:
@@ -535,27 +541,38 @@ canonical `${BUILD}/lib/hololink/modules/` directory so the example's `--module-
 argument points at one consistent location regardless of which module subdirectory
 contributed the source.
 
-A ctest entry `module_imx274_player_test` is always registered when the build includes
-Python + operators (`HOLOLINK_BUILD_PYTHON=ON` + `HOLOLINK_MODULE_BUILD_OPERATORS=ON`,
-both default ON when their respective dependencies are available). The test SKIPS by
-default and runs only when the runtime opt-in env var `HOLOLINK_TEST_IMX274=1` is set —
-its command is wrapped to exit 77 (the autotools "skip" code) when the env var is
-absent, and `SKIP_RETURN_CODE 77` makes ctest report SKIPPED. The test is also tagged
-with `LABELS imx274` so `ctest -L imx274` filters in just the hardware-dependent slice.
+The ctest entry `module_quad_imx274_player_test` (`tests/CMakeLists.txt`) runs the C++
+`module_quad_imx274_player` binary with `--frame-limit=10 --headless` and
+`--module-dir=$BUILD/lib/hololink/modules`, with a 120 s timeout. It is registered
+whenever that example target is built, which takes `HOLOLINK_BUILD_ROCE`,
+`HOLOLINK_BUILD_MODULE` and `HOLOLINK_MODULE_BUILD_OPERATORS` on, HoloViz and
+holoscan-vision found (`HOLOLINK_HAS_VIZ`, `HOLOLINK_HAS_BAYER_DEMOSAIC`), and examples
+and tests enabled (`HOLOLINK_BUILD_EXAMPLES` and `HOLOLINK_BUILD_TESTS` on,
+`HOLOLINK_BUILD_ONLY_NATIVE` off); it doesn't need Python. The test SKIPS by default and
+runs only when the runtime opt-in env var
+`HOLOLINK_TEST_IMX274=1` is set — its command is wrapped to exit 77 (the autotools
+"skip" code) when the env var is absent, and `SKIP_RETURN_CODE 77` makes ctest report
+SKIPPED. The test is also tagged with `LABELS imx274`, which it shares with the IMX274
+hardware tests that use one board at 192.168.0.2 (`module_linux_imx274_player_test` and
+the native IMX274 players): `ctest -L imx274` runs both setups, so on a single-board rig
+run those by name, and run this one with `-R module_quad_imx274_player_test`.
 
 **Hardware.** Real HSB-Lite hardware (2 boards × 2 IMX274 cameras), no HSB emulator (the
 emulator does not model IMX274 on the I2C bus), Holoscan SDK, CUDA toolkit, RoCE-capable
-IB device(s). The example accepts `--ibv-name` multiple times so each receiver can be
-pinned to a separate IB device.
+IB device(s). Each receiver uses the IB device of the NIC its board's bootp announcement
+arrived on (`metadata["interface"]`), so boards that share the default subnet behind
+separate NICs need no host routes; it looks the device up from the board's IP address
+only when that interface is unknown (see "`RoceReceiverOp` derives ibv_name / ibv_port
+from peer_ip" below, and its "Later refinement").
 
 **Run command (manual).**
 
 ```bash
-PYTHONPATH=$BUILD/python python3 examples/module_imx274_player.py \
-    --hololink-board1 192.168.0.200 \
-    --hololink-board1-channel-2 192.168.0.201 \
-    --hololink-board2 192.168.0.202 \
-    --hololink-board2-channel-2 192.168.0.203 \
+$BUILD/examples/module_quad_imx274_player \
+    --device-0 192.168.0.200 \
+    --device-1 192.168.0.201 \
+    --device-2 192.168.0.202 \
+    --device-3 192.168.0.203 \
     --module-dir $BUILD/lib/hololink/modules \
     --frame-limit=10 --headless
 ```
@@ -566,7 +583,8 @@ PYTHONPATH=$BUILD/python python3 examples/module_imx274_player.py \
 BUILD=/tmp/build-hololink
 cmake -S . -B "$BUILD"
 cmake --build "$BUILD"
-HOLOLINK_TEST_IMX274=1 ctest --test-dir "$BUILD" -R module_imx274_player_test --output-on-failure
+HOLOLINK_TEST_IMX274=1 ctest --test-dir "$BUILD" -R module_quad_imx274_player_test \
+    --output-on-failure
 ```
 
 Without `HOLOLINK_TEST_IMX274=1`, the test reports SKIPPED and ctest exits clean — the
@@ -758,8 +776,9 @@ ctest --test-dir "$BUILD" -R hololink_module_hsb_lite_test --output-on-failure
     contract.
 - `Adapter::enumerate` gained a raw-packet overload; the original `enumerate(metadata)`
   form forwards to it with `nullptr` / `0`.
-- `Adapter::stop_bootp_listener()` removes the fd callback and closes the socket. The
-  destructor calls it for clean shutdown.
+- `Adapter::stop_bootp_listener()` removes the fd callback, which owns the socket: the
+  socket closes once the reactor lets go of the callback, which can be on the reactor
+  thread a moment later. The destructor calls it for clean shutdown.
 - The pybind binding exposes both methods so applications use
   `hololink_module.Adapter.get_adapter().start_bootp_listener(port)` instead of (or in
   addition to) manual `enumerate(metadata)` calls.
@@ -1007,6 +1026,14 @@ The `RoceReceiverInterfaceV1::start(...)` contract is unchanged — it still tak
 `ibv_name` / `ibv_port` as the first two of its ten arguments, because the V1 receiver
 service intentionally pins which device the QP is bound to. This change only relocates
 *where the lookup happens*: the operator now does it once, internally, from `peer_ip`.
+
+**Later refinement.** `ibv_device_for_peer` takes a second, defaulted `interface`
+argument, and the operator passes `metadata["interface"]` — the NIC the board's bootp
+announcement arrived on. The original route lookup remains as the fallback for an empty interface,
+but it cannot distinguish two boards that share the default 192.168.0.x data-plane
+subnet: it returns the same NIC for both, so one leg's QP lands on an IB device its
+board cannot reach and receives nothing. `RoceReceiverInterfaceV1` is again unaffected
+— only the inputs to the lookup that precedes `start(...)` changed.
 
 **Build commands.**
 
@@ -2886,12 +2913,14 @@ versus the receiver's device address + the fixed RoCEv2 port).
   `examples/module_linux_vb1940_player.{cpp,py}` — the IMX274 and single-camera VB1940
   pipelines driven through `LinuxReceiverOp` (drop-in swap for `RoceReceiverOp`); the
   Python players feed `configure_converter` through `examples/legacy_csi_converter.py`.
-  `examples/CMakeLists.txt` registers the C++ players under
-  `HOLOLINK_MODULE_BUILD_OPERATORS` (not `HOLOLINK_BUILD_ROCE`).
+  `examples/CMakeLists.txt` builds the C++ players when `HOLOLINK_BUILD_MODULE` and
+  `HOLOLINK_MODULE_BUILD_OPERATORS` are on, `HOLOLINK_BUILD_ONLY_NATIVE` is off, and
+  HoloViz and holoscan-vision are found (`HOLOLINK_HAS_VIZ`,
+  `HOLOLINK_HAS_BAYER_DEMOSAIC`); they don't need `HOLOLINK_BUILD_ROCE`.
 - `tests/CMakeLists.txt` — `module_linux_imx274_player_test` /
-  `module_linux_vb1940_player_test` C++ smoke tests (gated on
-  `HOLOLINK_MODULE_BUILD_OPERATORS`, runtime-gated on `HOLOLINK_TEST_IMX274` /
-  `HOLOLINK_TEST_VB1940`, labels `imx274` / `vb1940`).
+  `module_linux_vb1940_player_test` C++ smoke tests (registered whenever their example
+  target is built, runtime-gated on `HOLOLINK_TEST_IMX274` / `HOLOLINK_TEST_VB1940`,
+  labels `imx274` / `vb1940`).
   `tests/test_module_linux_imx274_player.py` (`@pytest.mark.skip_unless_imx274`) and
   `tests/test_module_linux_vb1940_player.py` (`@pytest.mark.skip_unless_vb1940`) drive
   the Python players — neither carries `@pytest.mark.accelerated_networking`, so they
@@ -3354,7 +3383,8 @@ so no `V2` was introduced).
   `host/operators/python/operators_py.cpp`. `RoceReceiverOp` additionally emits
   `imm_data` / `page_number` (from `RoceReceiverFrameInfoV1::imm_data`), matching
   `LinuxReceiverOp`. Stereo flows pass `lambda name: f"left_"/"right_" + name` so the
-  two legs' metadata don't collide.
+  two legs' metadata don't collide. The Holoscan SDK 5 port removed `rename_metadata`
+  again (`MIGRATION.md`, Receiver Operators §5).
 
 - **`on_reset` on `HololinkInterfaceV1`.** New
   `virtual std::shared_ptr<ResetRegistration> on_reset(std::function<void()> callback)`
@@ -3381,7 +3411,10 @@ so no `V2` was introduced).
   `hololink_module.operators.ComputeCrcOp` / `CheckCrcOp`; the CRC operators run in both
   the RoCE and Linux pipelines, with the strict received-vs-computed assertion kept on
   the lossless RoCE path (matching the legacy test, which only validates CRCs on the
-  RoCE legs).
+  RoCE legs). Since the Holoscan SDK 5 port, `ComputeCrcOp` hands each frame's CRC to
+  `CheckCrcOp` through a `CrcChannel` (`MIGRATION.md`, CRC Operators), and neither is
+  bound in `operators_py.cpp`, like the module's other ported operators (see the note
+  there), so this test, which still uses the Holoscan SDK 4 Python API, can't run yet.
 
 **Build commands.**
 
@@ -3423,7 +3456,10 @@ modes) through the parametrized result tuples.
   `host/operators/python/operators_py.cpp`. This matches the existing `out_tensor_name`
   convention on `CsiToBayerOp` / `PackedFormatConverterOp` / `FusaCoeCaptureOp`. The
   receivers already emit `timestamp_s` / `timestamp_ns` under the per-leg renamed keys,
-  so no other receiver change was needed.
+  so no other receiver change was needed. The Holoscan SDK 5 port removed
+  `out_tensor_name` from all of these operators again: each publishes the frame on a
+  `tensor` port of its own, next to its `metadata` port, and has no Python binding yet
+  (`MIGRATION.md`, Receiver Operators §2 and §12).
 
 - **Pipeline placement.** The aligner is the first hop: both receivers feed it and it
   fans paired frames out to each leg's `ComputeCrcOp`, so CRC and everything downstream
@@ -3456,7 +3492,9 @@ modes) through the parametrized result tuples.
   schedule correctly. (Unlike legacy, there is no blocking-mode toggle — the blocking
   path is strictly a footgun that deadlocks joins for a negligible latency win.) The
   callback is forwarded to the legacy backing receiver in
-  `module/core/{roce,linux}_receiver_default.hpp`.
+  `module/core/{roce,linux}_receiver_default.hpp`. In the Holoscan SDK 5 port, a
+  notification source and an `OnNotified` trigger replace the `AsynchronousCondition`
+  (`MIGRATION.md`, Receiver Operators §6).
 
 **Test-run commands.**
 
@@ -3673,6 +3711,16 @@ legacy `FusaCoeCaptureOp::compute()` (`src/hololink/operators/fusa_coe_capture/`
 consumes the same contract — it returns early (skip-and-retry) on `false` and lets a
 failure throw out of `compute()` (where GXF tears the graph down).
 
+In the Holoscan SDK 5 port, `FusaCoeCaptureOp` (native and `hololink_module`) is
+configured through `FusaCoeCaptureParams` and publishes each frame on `tensor` and
+`metadata` ports, `received_s` / `received_ns` included. `rename_metadata` and
+`out_tensor_name` are gone (`name` labels its log messages), it is no longer a
+`CsiConverterV1` (`make_geometry_adapter()` takes that role), the core's acquire thread
+posts a notification instead of signaling an `AsynchronousCondition` -- one for each
+frame `compute()` can take, which then takes the newest frame without waiting
+(`FusaCoeCaptureCore::take_acquired_buffer()` replaces `wait_for_acquired_buffer()`) --
+and it has no Python binding yet (`MIGRATION.md`, FuSa CoE Capture Operator).
+
 ## Phase 8 extension — module port of the CoE test
 
 **Implemented.** `tests/test_module_coe.py` is the module port of the legacy
@@ -3879,3 +3927,291 @@ and, being the only caller of the gate, hit it.
 ```bash
 pytest tests/test_module_coe.py::test_imx274_mono_linux_naive --imx274 --headless -vv
 ```
+
+## Phase 5 extension — `HsbIp` base publisher + `leopard_vb1940_2510`
+
+**Implemented; the hardware run against a 2510 VB1940 board is pending.** A 2510-FPGA
+Leopard VB1940 now has a module, and the publisher hierarchy it needed was factored out
+of `HsbLitePublisher` first.
+
+- **`module/core/hsb_ip_publisher.hpp` — `module_core::HsbIpPublisher`.** The canonical
+  publisher for every board whose control plane, data planes, sequencer and I2C speak
+  the HSB IP register map: the `construct_service` chain, the `update_metadata`
+  enumeration body, `setup()` and the `publish_*` hooks. It names nothing
+  carrier-specific — no clock generator, no MIPI D-PHY, no board supplement, no sensor
+  layout. `construct_oscillator` publishes nothing by default and
+  `publish_channel_configuration` is pure virtual, so every board states its own sensor
+  layout. Neither `construct_mipi_dphy` nor `set_mipi_dphy_metadata` exists on it — a
+  board publishes its D-PHY from `construct_board_services` and stamps the matching
+  register shape from `update_board_metadata`, the two new tail hooks mirroring
+  `construct_overrides` at the head of the construct chain. The two construct hooks
+  divide by intent: `construct_overrides` substitutes a board's impl for a service the
+  canonical chain would otherwise build, `construct_board_services` publishes services
+  the chain knows nothing about — the board's own supplement and its carrier-specific
+  peripherals. Every in-tree board's supplement moved from the first to the second. The
+  other addition of its own is
+  `construct_shared_oscillator<Impl>`, which holds the share-by-serial caching that
+  `HsbLitePublisher` and the Leopard publisher each open-coded.
+  `hsb_lite_sensor_metadata` is renamed `hsb_ip_sensor_metadata` (it is the HSB IP
+  addressing formula, not an HSB-Lite one), and `HsbIpChannelConfigurationV1` carries the
+  `channel_configuration.module_core.v1` type_id plus the board-independent `use_mtu` /
+  `use_multicast`.
+
+- **`HsbLitePublisher` is now the HSB-Lite carrier definition**, deriving from
+  `HsbIpPublisher` and adding only what makes a board an HSB-Lite one: the CrossLink-NX
+  D-PHY (both halves of the pairing), the Renesas Bajoran TS1 oscillator, the 3-sensor /
+  two-SIF `HsbLiteChannelConfigurationV1`, and the `HsbLiteInterfaceV1` supplement.
+
+- **The two D-PHY publish helpers moved next to their implementations** as free
+  functions — `construct_clnx_mipi_dphy(publisher, instance_id, type_id)` in
+  `mipi_dphy/clnx.hpp` and `construct_cpnx_mipi_dphy(...)` in `mipi_dphy/cpnx.hpp` — so
+  boards on either FPGA design reach the one matching theirs without the base publisher
+  including either. `HsbLitePublisher::mipi_dphy_parent` became
+  `HsbIpPublisher::configured_hololink(instance_id, what)`, which `construct_i2c` and
+  `construct_ptp_pps_output` now share.
+
+- **`leopard_vb1940` and `taurotech_da326` derive from `HsbIpPublisher`.** Leopard drops
+  the `construct_hsb_lite` override that existed only to suppress the HSB-Lite
+  supplement, and the DA326 stops publishing `hsb_lite.v1` — it is not expected to
+  implement it; the type_id resolved there only as an accident of inheritance. The DA326
+  names `HsbLiteOscillatorV1` explicitly (it carries the same Bajoran TS1) and its
+  channel configuration gained an `is_sensor_valid` bounded by its own two sensors —
+  previously it inherited HSB-Lite's three, so `update_metadata` accepted a bootp
+  `data_plane` of 2 and then threw out of `use_sensor` in the reactor's bootp callback.
+  `module/tutorial/` stays on `HsbLitePublisher`: it is an HSB-Lite-shaped device, and
+  `docs/user_guide/module_device_tutorial.mdx` describes that inheritance.
+
+- **The 2510 implementations are now `HsbIp2510*`** in `hsb_ip_2510_data_channel.hpp`,
+  `hsb_ip_2510_roce_receiver.hpp` and `hsb_ip_2510_linux_receiver.hpp` — the pre-0x2602
+  memory map and pre-0x2603 immediate-data layout are properties of the HSB IP revision,
+  not of a carrier. The `HsbLite2510*` transport names and their `*.hsb_lite_2510.v1`
+  type_ids are **retired**, and the three `hsb_lite_2510_*.hpp` headers that held them
+  deleted: nothing in-tree resolved those strings, and `INTERFACES.md` lists them among
+  the internal override targets that stay editable. Both `HsbLite2510Publisher` and the
+  Leopard 2510 publisher now construct the `HsbIp2510*` types directly.
+
+- **New `module/leopard_vb1940_2510/`.** `LeopardVb1940_2510_Publisher` derives from
+  `LeopardVb1940Publisher` — the D-PHY configuration (CertusPro-NX, 60 MHz settle clock)
+  and Bajoran TS2 oscillator are identical on both FPGA revisions, so it inherits them
+  and carries only the four transport branches (`HsbIp2510RoceDataChannelV1`,
+  `HsbIp2510LinuxDataChannelV1`, `HsbIp2510RoceReceiverV1`, `HsbIp2510LinuxReceiverV1`)
+  plus an FPGA-version gate. `LeopardVb1940Publisher` and the three impls it constructs
+  moved out of `module/leopard_vb1940/module_entry.cpp` into a module-private
+  `leopard_vb1940_publisher.hpp` that both module directories include.
+
+- **Filenames follow the `hsb_lite` pair.** The 2510 VB1940 reports `compat_id` 0, so it
+  cannot be selected by filename: `module/leopard_vb1940_2510/` ships the bare
+  `hololink_f1627640-b4dc-48af-a360-c55b09b3d230.so` and is the catch-all for the UUID,
+  while `module/leopard_vb1940/` drops `NO_COMPAT_SUFFIX` and builds as
+  `hololink_f1627640-b4dc-48af-a360-c55b09b3d230_2603.so` for the current FPGA, which
+  does report `compat_id` 0x2603.
+
+- **The version gate has an upper bound only** — it declines `hsb_ip_version > 0x2603`,
+  unlike `hsb_lite_2510`, which also declines below 0x2510. A 2510 VB1940 is known only
+  to report *some* version below 0x2603, and this module is its UUID's catch-all, so a
+  lower bound guessed too high would decline the board the module exists for. Add one
+  once the exact reported version is known; the `hsb_ip_version={:#x}` log line in
+  `make_backing` prints it on the first channel configuration. Both revisions are driven
+  correctly meanwhile: each transport's `make_backing` / `make_receiver` compares the
+  reported version and picks the modern class at or above the cutover.
+
+**Out of scope.** Any 2510-specific behavior beyond what `hsb_lite_2510` already
+encodes; real deltas land when 2510 VB1940 hardware verification surfaces them. Also:
+moving `roce_receiver_construct.cpp` / `linux_receiver_construct.cpp` into
+`hololink_module_core` proper — the split removes the reason they must be compiled
+per-module (`HsbIpPublisher` no longer includes a board supplement header), but retiring
+`add_hololink_module()`'s injection is a separate change.
+
+**Build commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+cmake -S . -B "$BUILD"
+cmake --build "$BUILD" --target leopard_vb1940
+cmake --build "$BUILD" --target leopard_vb1940_2510
+cmake --build "$BUILD" --target hololink_module_leopard_vb1940_test
+```
+
+**Test-run commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+ctest --test-dir "$BUILD" -R "hololink_module_leopard_vb1940_test|hololink_module_hsb_lite_test" --output-on-failure
+ls "$BUILD"/lib/hololink/modules/
+```
+
+## `release_version` on every service interface
+
+**Implemented.** The release that froze an interface is a member of the class rather than
+a line in its comment. Every interface reachable through the service locator declares one
+next to its `type_id` — the version string of the release that froze it:
+
+```cpp
+class HololinkInterfaceV1 : public ConfigurableService<HololinkInterfaceV1> {
+public:
+    static constexpr const char* type_id = "hololink.v1";
+    static constexpr const char* release_version = "2.7.0";
+```
+
+An interface no release has published yet names a sentinel instead, and stays editable in
+place with its callers updated in the same commit:
+
+```cpp
+    static constexpr const char* release_version = UNRELEASED;
+```
+
+A second sentinel marks an interface application code must not use at all:
+
+```cpp
+    static constexpr const char* release_version = TEST_ONLY;
+```
+
+`TEST_ONLY` is for the fixtures under `tests/` that exercise the framework — the stub
+modules' services, the bootp capture. It is not a step toward a release the way
+`UNRELEASED` is: no release will ever freeze one, none is listed in `INTERFACES.md`, and
+an application reaching for one is reaching for something the next change may delete.
+
+`UNRELEASED` comes from the new `hololink/module/release.hpp`, which `service.hpp`
+includes, so any class deriving from `Service<T>` / `ConfigurableService<T>` picks it up.
+The four released classes that are not locator services — `I2cLockV1`, `CsiConverterV1`,
+`RoceReceiverFrameInfoV1`, `LinuxReceiverFrameInfoV1` — carry the marker with no
+`type_id`. A `static constexpr` member changes neither object layout nor vtable, so
+marking the released 2.7.0 classes is not a change to those interfaces.
+
+**Implementations inherit it.** `module_core::CoeDataChannelV1` derives from
+`CoeDataChannelInterfaceV1` and so reports `"2.7.0"` without declaring anything, and that
+is the reading of the marker: it names the release that froze the *contract being served*,
+not a promise about the implementation's own declaration. Implementations stay editable —
+they are override targets, not the application boundary — and the thing that says so is
+where they live (`module/core/`, a module tree) rather than a marker each one repeats.
+The classes that do declare their own are the ones with no interface base to inherit
+from: `MipiDphyInterfaceV1` (added after 2.7.0, so `UNRELEASED`) and the three test
+fixtures (`TEST_ONLY`).
+
+**One `static_assert` in the framework** (`service.hpp`), placed in member-function
+bodies since `Service<Derived>` is a CRTP base and `Derived` is incomplete in the base's
+class body: `check_release_version<T>()` runs in `Service<Derived>::get_service` (both
+forms), `Service<Derived>::for_each_type_id`, and `ServicePublisher<T>::publish`, so a
+class that reaches the locator with no marker in reach fails to build. In practice that
+means a new interface: an implementation inherits one.
+
+Two gaps the compile-time check does not close, both left to the release process:
+
+- A class that is neither published nor consumed in-tree is never instantiated, so nothing
+  asserts on it. Catching that takes a scan of the public interface trees.
+- A future `FooInterfaceV2 : FooInterfaceV1` that forgets to redeclare would silently
+  report the release that froze V1. Because an implementation of a frozen interface is
+  structurally identical to such a V2 — both derive from it, both carry their own
+  `type_id` and `ServiceAlias` — no compile-time rule can separate them. What separates
+  them is the file they are declared in, so the same public-tree scan is what catches it:
+  every class declared in a public interface tree declares its own marker.
+
+**Python.** The 17 `py::class_` sites that carried a `"Frozen: 2.7.0"` docstring now
+publish real attributes read from the C++ members:
+
+```cpp
+py::object cls = m.attr("HololinkInterfaceV1");
+cls.attr("type_id") = ad::HololinkInterfaceV1::type_id;
+cls.attr("release_version") = ad::HololinkInterfaceV1::release_version;
+```
+
+so `help()`, generated docs, and any test read one source instead of a hand-copied
+string.
+
+**Build commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+cmake -S . -B "$BUILD"
+cmake --build "$BUILD"
+```
+
+**Test-run commands.**
+
+```bash
+BUILD=/tmp/build-hololink
+ctest --test-dir "$BUILD" -R hololink_module --output-on-failure
+python3 -c "import hololink_module; print(hololink_module.HololinkInterfaceV1.release_version)"
+```
+
+## Discovery is bootp-only; the kernel driver announces PCIe endpoints
+
+**Implemented.** The `Adapter` discovers devices through exactly one mechanism, its bootp listener
+on UDP 12267, as it did before the PCIe work. The transport-provider abstraction that briefly sat
+underneath it (`DiscoveryProvider`, a PCIe provider walking `/sys/class/hololink_pcie` and
+listening for uevents, `Adapter::rescan()`, `Adapter::discovery_providers()`) has been removed
+again; `adapter.hpp` carries nothing PCIe-specific.
+
+PCIe endpoints reach the listener the same way Ethernet boards do. The `hololink_pcie` kernel
+driver (built from its own tree, `hsb_pcie/driver/`) runs one delayed work on the shared system
+workqueue that, once per
+second, synthesizes a 300-byte RFC 951 bootp announcement per bound endpoint -- the HSB vendor
+extension (`0xE0`, `'NVDA'`, enum version 2, the board UUID, `hsb_ip_version`) exactly as the
+Ethernet firmware sends it -- and injects it into the loopback interface with `netif_rx()`
+(`<packed BDF>:12268 -> 127.255.255.255:12267`: the destination is the loopback subnet
+broadcast, so -- as an Ethernet board's broadcast does -- the announcement reaches every socket
+bound to port 12267 on `INADDR_ANY` instead of the single sharer of the port a unicast to
+`127.0.0.1` is delivered to (most specific bind wins, so a later `INADDR_ANY` binder would take
+it away from the daemon); the IP source is the BDF packed as `(domain << 16) | (bus << 8) |
+devfn`, the same value as `ciaddr`; the local table's `broadcast 127.255.255.255 dev lo` route is
+attached so the frame passes with no sysctl changes. A raw listener bound to `127.0.0.1` rather
+than `INADDR_ANY` does not receive it; a userspace sender mimicking the driver sends to
+`127.255.255.255` with `SO_BROADCAST`). The layout is `hololink_module/module/hsb_pcie/hololink_pcie_bootp.h`,
+plain C over `__u8`; the driver tree carries a byte-identical copy, so
+`hololink_module_pcie_bootp_test` can pin it to the host parser without a kernel.
+
+The announcement's header says what the carrier is: `htype = 0x50` ('P'; Ethernet boards send
+1) with a 4-byte `chaddr` = the BDF big-endian. Both host parsers (`bootp.cpp` and the legacy
+`enumerator.cpp`) select on it and render the BDF text (`"0005:01:00.0"`) into `peer_ip` -- the
+channel key -- and `mac_id`; the datagram's IPv4 source (the driver packs the BDF there too,
+`"0.5.1.0"`) is not kept separately, since `client_ip_address` carries that same packed BDF
+for older parsers. The vendor area follows the Ethernet firmware's layout to the end (tag length 56): the
+7-byte serial is the endpoint's PCIe Device Serial Number when it has one (status bit1) or the
+`"PCIE"`+BDF placeholder, and bytes 45..54 carry a snapshot of the endpoint's PTP clock when the
+driver runs with `bootp_ptp=1` (status bit0); the parsers decode `ptp_timestamp_s/ns`,
+`bootp_psn` and `bootp_status` for Ethernet and PCIe alike. The `hsb_pcie` module (selected by
+the board UUID like any module) then stamps, inside `EnumerationInterfaceV1::update_metadata`
+-- which the Adapter runs *before* it matches `register_ip` / `wait_for_channel` subscribers --
+`pcie_bdf`, `pcie_domain/bus/device/function`, `transport = pcie`, and decides
+`serial_number`: a Device Serial Number is kept (`pcie_serial_source = dsn`), the placeholder
+becomes `pcie-<bdf>` (`bdf`). An older driver's `htype 1` record (IPv4 `peer_ip` + packed BDF in
+`client_ip_address`) is still restored to the BDF the same way. Applications keep addressing
+and waiting for the endpoint by BDF (`wait_for_channel("0005:01:00.0")`). Raw subscribers
+(`register_raw_*`, and the legacy `hololink-enumerate`) see `peer_ip = mac_id = 0005:01:00.0`
+already; only the `pcie_*` stamps and the serial decision are the module's.
+
+Consequences: a hot-plugged board is announced within a second; there is no "gone" message
+(as for Ethernet); only the initial network namespace sees the announcements; and the examples
+simply `wait_for_channel(bdf)` -- no scan, no replay. `bootp_announce=0` on the driver disables
+publishing. `adapter_enumerator -d` dedups on the post-enrichment `peer_ip`, the BDF.
+
+## The PCIe receiver is a module service
+
+**Implemented.** `PcieReceiverOp` no longer constructs the receive path itself. The `hsb_pcie`
+module publishes `PcieReceiverInterfaceV1` (`pcie_receiver.v1`, public header
+`hololink/module/hsb_pcie/pcie_receiver.hpp`, keyed `serial=<n>;data_channel=<k>` like the
+channel) next to `PcieDataChannelInterfaceV1`, and the operator obtains it with
+`PcieReceiverInterfaceV1::get_service(metadata)` exactly as `RoceReceiverOp` obtains
+`RoceReceiverInterfaceV1`. The service object is also the `PcieReceiverAttachmentV1` the channel
+programs the endpoint from, so `channel->attach_receiver(receiver, chunk_pages)` takes it
+directly. `start(cu_buffer, cu_buffer_size, cu_frame_size, cu_page_size, pages)` has
+`RoceReceiverInterfaceV1::start()`'s shape (minus the ibverbs arguments and `metadata_offset`,
+which the endpoint fixes at `round_up(cu_frame_size, 128)`): the receiver knows a frame only
+by its size, the CSI converter's length, and the operator lays the pages out and allocates
+them with `ReceiverMemoryDescriptor` exactly as `RoceReceiverOp` does. `start()` resolves
+`peer_ip` (the BDF) to the device node through sysfs, opens it and builds a fresh backing
+`pcie::PcieReceiver` per run. Before `start()` and after `close()` the attachment accessors
+throw rather than report a ring that does not exist.
+
+Consequently `hololink_module/host/pcie/` is gone: the receiver, its device access, the ring
+layout and the kernel driver's uapi / bootp mirrors all live under
+`hololink_module/module/hsb_pcie/` and compile into `hololink_58c1419b-....so` (the header-only
+pieces behind `hololink::hsb_pcie::abi_headers`, the backing behind `hololink::hsb_pcie::core`
+for the tests). The sysfs/ioctl scan (`PcieDeviceInfo`) is private to `hololink_pcie_identity`
+under `hololink_module/tools/`; the application path discovers endpoints through bootp only. `hololink::operators` links only the header-only
+`hololink::hsb_pcie::headers`. A future PCIe FPGA revision with a different ring or metadata
+layout ships a module publishing a different `PcieReceiverV1` subclass (the `make_device_access`
+/ `make_backing` hooks), with no change on the host.
+
+**Build / test.** `-DHOLOLINK_BUILD_PCIE=ON`, then
+`ctest --test-dir <build> -R 'hololink_module_(hsb_pcie|pcie_|imx258)'`.

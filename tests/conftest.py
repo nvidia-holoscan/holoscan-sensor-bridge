@@ -15,11 +15,14 @@
 
 # See README.md for detailed information.
 
+import functools
 import gc
+import hashlib
 import json
 import logging
 import logging.handlers
 import os
+import pathlib
 import re
 import socket
 import subprocess
@@ -29,8 +32,133 @@ from unittest.mock import patch
 
 import pytest
 
-import hololink as hololink_legacy
+import hololink
 import hololink_module
+
+# Without an installed hololink_module, the repo root's hololink_module/ (C++ sources, no
+# __init__.py) imports as an empty namespace package, and every test would fail on a missing
+# attribute instead.
+if not hasattr(hololink_module, "hsb_log_info"):
+    raise ImportError(
+        "hololink_module isn't installed; only its source directory was found"
+    )
+
+# pytest.ini's log_format stamps each line like the SDK's own log messages: the SDK log
+# clock and the thread id. internal's hololink package added these fields to the root
+# logger's records; HSDK5's doesn't, and a record without them fails the test that logged
+# it. The record factory covers every logger.
+_make_log_record = logging.getLogRecordFactory()
+
+
+def _make_log_record_with_hsb_fields(*args, **kwargs):
+    record = _make_log_record(*args, **kwargs)
+    record.log_timestamp_s = hololink.log_timestamp_s()
+    record.tid = threading.get_native_id()
+    return record
+
+
+logging.setLogRecordFactory(_make_log_record_with_hsb_fields)
+
+# Test files that still use the HSDK4 API. Each one is reported as a single skipped
+# test with its reason instead of failing to import, which would stop the whole run.
+# Delete a file's entry once it is ported.
+NOT_PORTED = {
+    "test_hololink_acks.py": "subclasses hololink.Hololink to override send_control/receive_control/executed; HSDK5's HololinkDevice binds none of these hooks",
+    "test_hsb_sequence_checking.py": "needs a HololinkDevice with sequence_number_checking, which HSDK5 doesn't bind",
+    "test_module_imx274_reconnect.py": "needs hololink_module.hsb_lite, whose Python binding hsb_lite/CMakeLists.txt doesn't build; reconnecting_imx274_player.run() also returns an int, not its application",
+}
+# A stale entry would never be noticed and cleaned up.
+_stale = sorted(
+    name for name in NOT_PORTED if not (pathlib.Path(__file__).parent / name).is_file()
+)
+if _stale:
+    raise RuntimeError(f"NOT_PORTED lists files that don't exist: {', '.join(_stale)}")
+
+
+class _NotPortedFile(pytest.File):
+    def collect(self):
+        item = _NotPortedItem.from_parent(self, name=self.path.stem)
+        # A skip mark (rather than pytest.skip() here) reports the test file, not this one.
+        item.add_marker(
+            pytest.mark.skip(
+                reason=f"not ported to HSDK5 yet: {NOT_PORTED[self.path.name]}"
+            )
+        )
+        yield item
+
+
+class _NotPortedItem(pytest.Item):
+    def runtest(self):
+        pass  # Never called: the item is marked skipped.
+
+    def reportinfo(self):
+        return self.path, 0, self.name
+
+
+def pytest_pycollect_makemodule(module_path, parent):
+    # Collect the file without importing it.
+    if module_path.name in NOT_PORTED:
+        return _NotPortedFile.from_parent(parent, path=module_path)
+    return None
+
+
+# pytest rewrites the asserts in test modules so they keep running under
+# "python -O"; the helper modules here are compiled by the interpreter, which
+# drops their asserts.  Register them for the same rewriting, so a check that
+# fails still fails.
+_REWRITE = sorted(
+    path.stem
+    for path in pathlib.Path(__file__).parent.glob("*.py")
+    if path.name != "conftest.py" and not path.name.startswith("test_")
+)
+pytest.register_assert_rewrite(*_REWRITE)
+
+
+@functools.cache
+def _default_scheduler_matrix():
+    """Cover default, Greedy, and EventBased without equivalent runs."""
+    try:
+        import holoscan.core
+        import holoscan.schedulers
+    except ImportError:
+        # Holoscan SDK 5's Python package has neither module; don't fail the collection of every
+        # test that takes a scheduler.
+        return ["default", "greedy", "multithread", "event"]
+
+    application = holoscan.core.Application()
+    default_scheduler = application.scheduler()
+    explicit_schedulers = (
+        ("greedy", holoscan.schedulers.GreedyScheduler),
+        ("event", holoscan.schedulers.EventBasedScheduler),
+    )
+
+    return [
+        "default",
+        *(
+            name
+            for name, scheduler_type in explicit_schedulers
+            if not isinstance(default_scheduler, scheduler_type)
+        ),
+    ]
+
+
+def pytest_runtest_logreport(report):
+    """Recover marked HSB tests after a failed attempt and before its retry."""
+    if report.outcome != "rerun" or "reset_hsb_before_retry" not in report.keywords:
+        return
+
+    repository_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    recovery_script = os.path.join(repository_root, "ci", "hsb_recovery.sh")
+    logging.warning(
+        "Resetting HSB and checking health before retrying %s", report.nodeid
+    )
+    recovery = subprocess.run(["sh", recovery_script])
+    if recovery.returncode != 0:
+        pytest.exit(
+            f"HSB recovery failed before retrying {report.nodeid}; "
+            "refusing to run the retry on an unhealthy board"
+        )
+
 
 # If desired, forward python logging to UDP port 514 in not exactly a SYSLOG
 # compatible way but a way that works great with wireshark.  This
@@ -82,22 +210,15 @@ def forward_exception():
 
 
 def _hololink_session_finalizer():
-    hololink_legacy.Hololink.reset_framework()
+    # Drops the boards hololink cached. Its leak check covers only hololink's core reactor, which
+    # nothing reachable from Python uses on HSDK5; hololink_module's Adapter reactor (bootp
+    # listener, watchdog, register_ip callbacks) isn't checked.
+    hololink.HololinkDevice.reset_framework()
 
 
 @pytest.fixture(scope="function", autouse=True)
 def hololink_session(request):
     request.addfinalizer(_hololink_session_finalizer)
-
-
-def _reactor_session_finalizer():
-    reactor = hololink_legacy.Reactor.get_reactor()
-    reactor.reset_framework()
-
-
-@pytest.fixture(scope="function", autouse=True)
-def reactor_session(request):
-    request.addfinalizer(_reactor_session_finalizer)
 
 
 # Produce a default list of COE interfaces.  For now
@@ -164,17 +285,22 @@ def pytest_addoption(parser):
         default=False,
         help="Don't skip dgpu based test.",
     )
-    infiniband_interfaces = hololink_legacy.infiniband_devices()
+    parser.addoption(
+        "--no-xvfb",
+        action="store_true",
+        default=False,
+        help="Run ci/unit_test.sh pytest processes without xvfb-run.",
+    )
     parser.addoption(
         "--ibv-name",
-        default=infiniband_interfaces[0] if infiniband_interfaces else None,
-        help="IBV device to use",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
     )
     parser.addoption(
         "--ibv-port",
         type=int,
         default=1,
-        help="IBVerbs device port to use",
+        help="IBVerbs device port to use (with --ibv-name)",
     )
     parser.addoption(
         "--unaccelerated-only",
@@ -239,15 +365,28 @@ def pytest_addoption(parser):
     )
     parser.addoption(
         "--schedulers",
-        default=["default", "greedy", "multithread", "event"],
+        default=None,
         nargs="+",
-        help="Use these schedulers.",
+        help="Use these schedulers. By default, cover default, Greedy, and "
+        "EventBased without running the default scheduler type twice.",
+    )
+    parser.addoption(
+        "--reduced-mtu-matrix",
+        action="store_true",
+        default=False,
+        help="Use representative MTU pairs instead of the full cross-product.",
     )
     parser.addoption(
         "--vb1940",
         action="store_true",
         default=False,
         help="Don't skip tests using VB1940.",
+    )
+    parser.addoption(
+        "--vb1940-test-shard",
+        choices=("A", "B"),
+        default=None,
+        help="Run one deterministic half of the selected VB1940 tests.",
     )
     coe_interfaces = coe_devices()
     parser.addoption(
@@ -292,11 +431,6 @@ def pytest_addoption(parser):
         help="hardware loopback interface names (2 required) First value is the interface that will be isolated within a network namespace if present.",
     )
     parser.addoption(
-        "--json-config",
-        default=None,
-        help="Path to the JSON configuration file to use, e.g. for SIPL capture.",
-    )
-    parser.addoption(
         "--cuda-subprocesses",
         action="store_true",
         default=False,
@@ -312,11 +446,6 @@ def pytest_addoption(parser):
         "--tx-hololink",
         default="192.168.0.3",
         help="IP address of TX Hololink board for signal generator tests.",
-    )
-    parser.addoption(
-        "--tx-ibv-name",
-        default=infiniband_interfaces[1] if len(infiniband_interfaces) >= 2 else None,
-        help="IBV device name used for TX in signal generator tests.",
     )
     parser.addoption(
         "--stm32f767zi",
@@ -357,6 +486,24 @@ def is_jetpack_7():
 
 
 def pytest_collection_modifyitems(config, items):
+    vb1940_test_shard = config.getoption("--vb1940-test-shard")
+    if vb1940_test_shard:
+        selected = []
+        deselected = []
+        # Keep assignments stable across processes and runners. The versioned
+        # prefix can be changed when measured test costs need rebalancing; this
+        # value splits recent dGPU and iGPU VB1940 runtimes within about 22s.
+        shard_prefix = b"vb1940-v1-balanced:"
+        for item in items:
+            digest = hashlib.sha256(shard_prefix + item.nodeid.encode()).digest()
+            item_shard = "A" if digest[0] % 2 == 0 else "B"
+            if item_shard == vb1940_test_shard:
+                selected.append(item)
+            else:
+                deselected.append(item)
+        items[:] = selected
+        config.hook.pytest_deselected(items=deselected)
+
     if is_jetpack_7():
         skip_jetpack_7 = pytest.mark.skip(
             reason="Test is not supported on JetPack 7.x (Jetson Linux / L4T R38.x, e.g. AGX Thor)."
@@ -369,7 +516,7 @@ def pytest_collection_modifyitems(config, items):
         for item in items:
             if "skip_unless_imx274" in item.keywords:
                 item.add_marker(skip_imx274)
-    infiniband_interfaces = hololink_legacy.infiniband_devices()
+    infiniband_interfaces = hololink.infiniband_devices()
     if config.getoption("--unaccelerated-only") or (not infiniband_interfaces):
         skip_accelerated_networking = pytest.mark.skip(
             reason="Don't run network accelerated tests when --unaccelerated-only is specified."
@@ -558,11 +705,6 @@ def ptp_enable(request):
 
 
 @pytest.fixture
-def json_config(request):
-    return request.config.getoption("--json-config")
-
-
-@pytest.fixture
 def audio_enable(request):
     return request.config.getoption("--audio")
 
@@ -570,11 +712,6 @@ def audio_enable(request):
 @pytest.fixture
 def tx_hololink_address(request):
     return request.config.getoption("--tx-hololink")
-
-
-@pytest.fixture
-def tx_ibv_name(request):
-    return request.config.getoption("--tx-ibv-name")
 
 
 # given an interface name, return the current, first, IPv4 address in CIDR notation, if it has one or None if it does not.
@@ -667,15 +804,17 @@ def pytest_generate_tests(metafunc):
     # from the list given on the command line.
     if "scheduler" in metafunc.fixturenames:
         schedulers = metafunc.config.getoption("--schedulers")
+        if schedulers is None:
+            schedulers = _default_scheduler_matrix()
         metafunc.parametrize("scheduler", schedulers)
 
 
 @pytest.fixture(autouse=True)
 def report_test_name(request):
+    # Mark each test's start in both SDK logs: hololink's, and hololink_module's, which
+    # prints only once a test has created the Adapter.
     test_name = request.node.name
-    hololink_legacy.hsb_log_info(f"Starting {test_name}")
-    # Also emit the marker on the hololink_module logging path (additive; the
-    # legacy call above stays authoritative).
+    hololink.hsb_log_info(f"Starting {test_name}")
     hololink_module.hsb_log_info(f"Starting {test_name}")
 
 

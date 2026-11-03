@@ -216,8 +216,8 @@ void Imx274Cam::configure_camera(Imx274_Mode mode)
     case Imx274_Mode::IMX274_MODE_1920X1080_60FPS:
         apply_register_table(*this, IMX274_MODE_1920X1080_60FPS_SEQUENCE);
         break;
-    case Imx274_Mode::IMX274_MODE_3840X2160_60FPS_12BITS:
-        apply_register_table(*this, IMX274_MODE_3840X2160_60FPS_12BITS_SEQUENCE);
+    case Imx274_Mode::IMX274_MODE_3840X2160_30FPS_12BITS:
+        apply_register_table(*this, IMX274_MODE_3840X2160_30FPS_12BITS_SEQUENCE);
         break;
     default:
         throw std::runtime_error(
@@ -288,19 +288,22 @@ void Imx274Cam::configure_converter(std::shared_ptr<CsiConverterV1> converter)
     const uint32_t received_line_bytes
         = converter->received_line_bytes(transmitted_line_bytes);
 
-    // 175 bytes of metadata precede image data.
-    start_byte += converter->received_line_bytes(175);
+    // Sensor metadata precedes image data: 175 bytes for RAW_10, and
+    // 175 + 35 = 210 bytes for RAW_12.
+    uint32_t embedded_data_bytes = 175;
     if (pixel_format_ == PixelFormat::RAW_10) {
         // 8 lines of optical black before real image data.
         start_byte += received_line_bytes * 8;
     } else if (pixel_format_ == PixelFormat::RAW_12) {
         // 16 lines of optical black before real image data.
+        embedded_data_bytes += 35;
         start_byte += received_line_bytes * 16;
     } else {
         throw std::runtime_error(
             "While configuring the CSI converter for Imx274Cam: pixel format "
             "is not supported");
     }
+    start_byte += converter->received_line_bytes(embedded_data_bytes);
     converter->configure(start_byte, received_line_bytes, width_, height_, pixel_format_);
 }
 

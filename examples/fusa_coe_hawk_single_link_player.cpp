@@ -15,33 +15,65 @@
  * limitations under the License.
  */
 
+// Hawk module (one GMSL link, --sensor left|right|both) live viewer over FuSa CoE:
+//   FusaCoeCaptureOp -> [PackedFormatConverterOp | CsiToBayerOp] -> ImageProcessorOp ->
+//     BayerDemosaicOp -> HolovizOp
+//
+// The unpack stage depends on the sensor mode's pixel format: RAW_8 modes are always captured
+// unpacketized (the HSB packetizer only has programs for RAW_10/RAW_12), so those use
+// CsiToBayerOp; RAW_10/RAW_12 modes default to packetized capture (override with
+// --no-packetizer), which uses PackedFormatConverterOp instead.
+//
+// hololink_module's Hawk/Ar0234/Max9295d/Max96716a/TauroTechDa326InterfaceV1 sensor driver is
+// unchanged; only the receiver (hololink::module::operators::FusaCoeCaptureOp, itself ported to
+// HSDK5's Operator<Params> shape) and the downstream converters (native, already-ported
+// hololink::operators::{CsiToBayerOp,PackedFormatConverterOp,ImageProcessorOp}) changed.
+// Geometry resolution reuses native FusaCoeCaptureOp::make_geometry_adapter() (a static, HSB-
+// packetizer-alignment-aware helper -- see its declaration comment), since module Hawk's
+// configure_converter() speaks the same native hololink::csi::CsiConverter interface; the
+// resulting hololink::csi::CsiGeometry is then copied into the module-tree
+// hololink::module::csi::CsiGeometry my ported FusaCoeCaptureOp's Params expects.
+
 #include <chrono>
-#include <iostream>
+#include <cstdint>
 #include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
+
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
 
 #include "hawk.hpp"
 #include "hololink/module/adapter.hpp"
-#include "hololink/module/csi_converter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/mipi_dphy.hpp"
-#include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
-#include "hololink/module/operators/packed_format_converter_op.hpp"
 #include "hololink/module/taurotech_da326/taurotech_da326.hpp"
 #include "max96716a.hpp"
 #include <hololink/common/holoargs.hpp>
 #include <hololink/common/tools.hpp>
+#include <hololink/core/csi_controller.hpp>
 #include <hololink/core/logging.hpp>
+#include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
+#include <hololink/operators/fusa_coe_capture/fusa_coe_capture.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
+#include <hololink/operators/packed_format_converter/packed_format_converter.hpp>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include "player_support.hpp"
+
+namespace hx = hololink::examples;
 
 namespace {
 
@@ -86,170 +118,307 @@ std::vector<int> sensor_arg_to_sif(const std::string& sensor)
     throw std::runtime_error("Invalid --sensor value: " + sensor);
 }
 
-class Application : public holoscan::Application {
-public:
-    Application(bool headless, bool fullscreen,
-        std::vector<hololink::module::EnumerationMetadata> sif_metadatas,
-        std::shared_ptr<Hawk> hawk,
-        std::vector<std::shared_ptr<Ar0234>> cameras,
-        hololink::module::sensors::ar0234::ar0234_mode::Mode camera_mode,
-        uint32_t timeout,
-        int32_t width, int32_t height,
-        int64_t frame_limit,
-        const std::string& interface,
-        std::vector<std::string> window_titles,
-        bool no_packetizer)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , sif_metadatas_(std::move(sif_metadatas))
-        , hawk_(std::move(hawk))
-        , cameras_(std::move(cameras))
-        , camera_mode_(camera_mode)
-        , timeout_(timeout)
-        , width_(width)
-        , height_(height)
-        , frame_limit_(frame_limit)
-        , interface_(interface)
-        , window_titles_(std::move(window_titles))
-        , no_packetizer_(no_packetizer)
-    {
-        enable_metadata(true);
-        metadata_policy(holoscan::MetadataPolicy::kReject);
-    }
+// Runs the player on the options main() parsed.
+int run(hololink::args::VariablesMap& variables_map, holoscan::ManagedShutdownSignals& signals)
+{
+    const auto hololink_ip = variables_map["hololink"].as<std::string>();
+    const auto sensor_arg = variables_map["sensor"].as<std::string>();
+    const auto channel_arg = variables_map["channel"].as<std::string>();
+    const auto interface_arg = variables_map["interface"].as<std::string>();
+    const auto title = variables_map["title"].as<std::string>();
+    const auto headless = variables_map["headless"].as<bool>();
+    const auto fullscreen = variables_map["fullscreen"].as<bool>();
+    const auto skip_reset = variables_map["skip-reset"].as<bool>();
+    const auto no_packetizer = variables_map["no-packetizer"].as<bool>();
+    const int64_t frame_limit = variables_map["frame-limit"].as<int>();
+    const int32_t window_width = variables_map["width"].as<int>();
+    const int32_t window_height = variables_map["height"].as<int>();
+    const uint32_t timeout_ms = static_cast<uint32_t>(variables_map["timeout"].as<int>());
+    const uint16_t exposure = static_cast<uint16_t>(variables_map["exposure"].as<int>());
+    const int32_t pattern = variables_map["pattern"].as<int>();
+    const auto camera_mode_int = variables_map["camera-mode"].as<int>();
 
-    void compose() override
-    {
-        using namespace holoscan;
+    std::shared_ptr<hololink::module::HololinkInterfaceV1> holo_iface;
 
-        auto interface = interface_.empty()
-            ? sif_metadatas_[0].get<std::string>("interface", "")
-            : interface_;
-        auto mac_str = sif_metadatas_[0].get<std::string>("mac_id", "");
-        auto mac_bytes = parse_mac_address(mac_str);
+    try {
+        auto sif_list = sensor_arg_to_sif(sensor_arg);
+        const std::vector<std::string> sif_name = { "left", "right" };
+
+        auto& adapter = hololink::module::Adapter::get_adapter();
+        hololink::module::EnumerationMetadata adapter_metadata
+            = adapter.wait_for_channel(hololink_ip, std::chrono::seconds(30));
+
+        std::vector<hololink::module::EnumerationMetadata> sif_metadatas;
+        for (int sif : sif_list) {
+            hololink::module::EnumerationMetadata sif_meta(adapter_metadata);
+            adapter.use_sensor(sif_meta, sif);
+            sif_metadatas.push_back(std::move(sif_meta));
+        }
+
+        holo_iface = hololink::module::HololinkInterfaceV1::get_service(adapter_metadata);
+        holo_iface->start();
+        auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(adapter_metadata);
+        auto legacy_holo = board->hololink();
+        auto deserializer = std::make_shared<Max96716a>(legacy_holo);
+        auto hawk = std::make_shared<Hawk>(legacy_holo);
+        auto camera_mode = static_cast<hololink::module::sensors::ar0234::ar0234_mode::Mode>(camera_mode_int);
+
+        std::vector<std::shared_ptr<Ar0234>> cameras;
+        auto hawk_sensors = hawk->sensors();
+        for (int sif : sif_list) {
+            cameras.push_back(hawk_sensors[sif]);
+        }
+
+        if (!skip_reset) {
+            holo_iface->reset();
+        }
+        board->release_reset();
+        board->power_cycle();
+        board->check_power();
+        board->setup_clock();
+
+        uint8_t dev_id = deserializer->get_register(Max96716a::DEV_ID_REG);
+        if (dev_id != Max96716a::DEV_ID) {
+            throw std::runtime_error(fmt::format(
+                "Deserializer mismatch: expected 0x{:02X}, got 0x{:02X}",
+                Max96716a::DEV_ID, dev_id));
+        }
+
+        auto link = (channel_arg == "B") ? Max96716a::GmslLink::LINK_B
+                                         : Max96716a::GmslLink::LINK_A;
+        deserializer->enable_link_exclusive(link);
+
+        uint8_t ser_id = hawk->serializer().get_register(hololink::module::sensors::max9295d::Max9295d::DEV_ID_REG);
+        if (ser_id != hololink::module::sensors::max9295d::Max9295d::DEV_ID) {
+            throw std::runtime_error(fmt::format(
+                "Serializer mismatch: expected 0x{:02X}, got 0x{:02X}",
+                hololink::module::sensors::max9295d::Max9295d::DEV_ID, ser_id));
+        }
+
+        for (auto& s : hawk->sensors()) {
+            uint16_t s_id = s->get_register(Ar0234::DEV_ID_REG);
+            if (s_id != Ar0234::DEV_ID) {
+                throw std::runtime_error(fmt::format(
+                    "Sensor mismatch at i2c=0x{:02X}: expected 0x{:04X}, got 0x{:04X}",
+                    s->get_i2c_address(), Ar0234::DEV_ID, s_id));
+            }
+        }
+
+        deserializer->configure_video_pipe();
+        uint8_t left = deserializer->stream_id_to_pipe_mapping(
+            link, 0, Max96716a::VideoPipe::PIPE_Y);
+        uint8_t right = deserializer->stream_id_to_pipe_mapping(
+            link, 2, Max96716a::VideoPipe::PIPE_Z);
+        deserializer->set_register(Max96716a::VIDEO_PIPE_SEL,
+            static_cast<uint8_t>(left | right));
+
+        constexpr unsigned MIPI_LANE_COUNT = 4;
+        constexpr unsigned MIPI_LINE_RATE_MBPS = 450;
+        auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(adapter_metadata);
+        // Currently, each SIF corresponds with the physical MIPI interface of the same index.
+        for (int physical_mipi_interface : sif_list) {
+            const auto status = dphy->program(static_cast<unsigned>(physical_mipi_interface),
+                MIPI_LANE_COUNT, MIPI_LINE_RATE_MBPS);
+            if (status != HOLOLINK_MODULE_OK) {
+                throw std::runtime_error(fmt::format(
+                    "Could not program MIPI interface {}: status {}",
+                    physical_mipi_interface, status));
+            }
+        }
+
+        hawk->configure(camera_mode);
+        if (pattern) {
+            hawk->test_pattern(static_cast<uint16_t>(pattern));
+        }
+        hawk->set_exposure_reg(exposure);
+
+        // Same physical NIC interface/MAC for every sensor on this board.
+        const std::string interface = interface_arg.empty()
+            ? sif_metadatas[0].get<std::string>("interface", "")
+            : interface_arg;
+        const auto mac_str = sif_metadatas[0].get<std::string>("mac_id", "");
+        const auto mac_bytes = parse_mac_address(mac_str);
         HOLOSCAN_LOG_INFO("Using interface={} mac={}", interface, mac_str);
 
-        for (uint32_t i = 0; i < cameras_.size(); ++i) {
-            compose_pipeline(i, mac_bytes, interface);
+        int32_t per_w = window_width;
+        int32_t per_h = window_height;
+        if (sif_list.size() > 1) {
+            per_w /= 2;
+            per_h /= 2;
         }
+
+        // Build the graph.
+        holoscan::Graph graph { "fusa_coe_hawk_single_link_player" };
+        holoscan::CompileOptions compile_options;
+
+        std::vector<std::string_view> tensor_output_operator_paths;
+        std::vector<std::string> image_output_operator_paths;
+
+        for (size_t i = 0; i < cameras.size(); ++i) {
+            auto camera = cameras[i];
+            const std::string name = std::to_string(i);
+            const std::string window_title = title + " - " + sif_name[sif_list[i]];
+
+            const auto pixel_format = camera->get_pixel_format();
+            const auto bayer_format = camera->get_bayer_format();
+
+            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+            // always captured unpacketized.
+            const bool packetizer_enabled = !no_packetizer
+                && pixel_format != hololink::csi::PixelFormat::RAW_8;
+
+            // Resolve geometry using native FusaCoeCaptureOp's HSB-alignment-aware adapter
+            // (needs no live instance -- see its declaration comment), then copy the result
+            // into the module-tree geometry struct my ported FusaCoeCaptureOp's Params expects.
+            hololink::csi::CsiGeometry native_geometry;
+            camera->configure_converter(hololink::operators::FusaCoeCaptureOp::make_geometry_adapter(
+                native_geometry, packetizer_enabled));
+            hololink::module::csi::CsiGeometry geometry {
+                .start_byte = native_geometry.start_byte,
+                .bytes_per_line = native_geometry.bytes_per_line,
+                .pixel_width = native_geometry.pixel_width,
+                .pixel_height = native_geometry.pixel_height,
+                .pixel_format = static_cast<hololink::module::csi::PixelFormat>(
+                    static_cast<int>(native_geometry.pixel_format)),
+                .trailing_bytes = native_geometry.trailing_bytes,
+            };
+
+            holoscan::visualization::LayerStack layers;
+            // The sensor's image; HolovizOp scales it into the window.
+            layers.add_image_layer("video", hx::rgba16_layer(native_geometry.pixel_width, native_geometry.pixel_height));
+
+            auto viz = hx::add_holoviz(graph, "holoviz_" + name, std::move(layers),
+                hx::DisplayConfig {
+                    .title = window_title,
+                    .width = static_cast<uint32_t>(per_w),
+                    .height = static_cast<uint32_t>(per_h),
+                    .fullscreen = fullscreen,
+                    .headless = headless,
+                },
+                compile_options, /*cuda_device_ordinal=*/0);
+
+            auto capture = graph.op<hololink::module::operators::FusaCoeCaptureOp>(
+                fmt::format("capture_{}", name));
+            capture.set_params(hololink::module::operators::FusaCoeCaptureParams {
+                .metadata = sif_metadatas[i],
+                .device_start = [hawk] { hawk->start(); },
+                .device_stop = [hawk] { hawk->stop(); },
+                .interface = interface,
+                .mac_addr = mac_bytes,
+                .timeout = timeout_ms,
+                .pixel_format = static_cast<hololink::module::csi::PixelFormat>(
+                    static_cast<int>(pixel_format)),
+                .bayer_format = static_cast<hololink::module::csi::BayerFormat>(
+                    static_cast<int>(bayer_format)),
+                .packetizer_enabled = packetizer_enabled,
+                .geometry = geometry,
+                // Stop after --frame-limit frames, as HSDK4's CountCondition on the receiver did.
+                .frame_limit = frame_limit,
+                .frame_limit_ends_run = true,
+                // Names this camera in the capture's stall messages.
+                .name = std::string(capture.name()),
+            });
+
+            auto image_processor = graph.op<hololink::operators::ImageProcessorOp>(
+                fmt::format("image_processor_{}", name));
+            image_processor.set_params(hololink::operators::ImageProcessorParams {
+                .pixel_format = int(pixel_format),
+                .bayer_format = int(bayer_format),
+                .optical_black = 50,
+                .cuda_device_ordinal = 0,
+                .pixel_width = geometry.pixel_width,
+                .pixel_height = geometry.pixel_height,
+            });
+
+            const auto bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format);
+            auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>(
+                fmt::format("bayer_demosaic_{}", name));
+            demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+                .bayer_grid_pos = bayer_grid_pos,
+                .generate_alpha = true,
+                .alpha_value = 65535U,
+            });
+
+            if (packetizer_enabled) {
+                auto converter = graph.op<hololink::operators::PackedFormatConverterOp>(
+                    fmt::format("packed_format_converter_{}", name));
+                converter.set_params(hololink::operators::PackedFormatConverterParams {
+                    .cuda_device_ordinal = 0,
+                    .bayer_format = bayer_format,
+                    .geometry = native_geometry,
+                });
+                graph.add_flow(capture->tensor, converter->input_tensor, hx::pipeline_edge());
+                graph.add_flow(capture->metadata, converter->input_metadata, hx::pipeline_edge());
+                graph.add_flow(converter->output_tensor, image_processor->input_tensor, hx::pipeline_edge());
+                graph.add_flow(converter->output_metadata, image_processor->input_metadata, hx::pipeline_edge());
+                tensor_output_operator_paths.push_back(converter.name());
+            } else {
+                auto converter = graph.op<hololink::operators::CsiToBayerOp>(
+                    fmt::format("csi_to_bayer_{}", name));
+                converter.set_params(hololink::operators::CsiToBayerParams {
+                    .cuda_device_ordinal = 0,
+                    .geometry = native_geometry,
+                    .bayer_format = bayer_format,
+                    // Fed by FusaCoeCaptureOp, which already strips the CSI header before emitting.
+                    .header_included = false,
+                });
+                graph.add_flow(capture->tensor, converter->input_tensor, hx::pipeline_edge());
+                graph.add_flow(capture->metadata, converter->input_metadata, hx::pipeline_edge());
+                graph.add_flow(converter->output_tensor, image_processor->input_tensor, hx::pipeline_edge());
+                graph.add_flow(converter->output_metadata, image_processor->input_metadata, hx::pipeline_edge());
+                tensor_output_operator_paths.push_back(converter.name());
+            }
+
+            graph.add_flow(image_processor->output_tensor, demosaic->input, hx::pipeline_edge());
+            graph.add_flow(demosaic->output, viz->image_layer_input(0), hx::display_edge());
+
+            tensor_output_operator_paths.push_back(capture.name());
+            tensor_output_operator_paths.push_back(image_processor.name());
+            image_output_operator_paths.push_back(fmt::format("bayer_demosaic_{}", name));
+        }
+
+        graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+        for (const auto& operator_path : tensor_output_operator_paths) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = operator_path,
+                    .output_port = "tensor",
+                    .device = holoscan::DeviceId { 0 },
+                });
+        }
+        for (const auto& operator_path : image_output_operator_paths) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = operator_path,
+                    .output_port = "output",
+                    .device = holoscan::DeviceId { 0 },
+                });
+        }
+
+        const auto plan = holoscan::compile(graph, std::move(compile_options));
+        if (!plan.ok()) {
+            hx::print_compile_failure(plan);
+            holo_iface->stop();
+            return -1;
+        }
+
+        auto session = holoscan::run_async(plan, signals);
+        session.wait();
+        const bool failed = hx::report_session(session, plan);
+
+        holo_iface->stop();
+        return failed ? -1 : 0;
+    } catch (const std::exception& e) {
+        if (holo_iface) {
+            holo_iface->stop();
+        }
+        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+        return -1;
     }
+}
 
-private:
-    void compose_pipeline(uint32_t i, const std::vector<uint8_t>& mac_bytes,
-        const std::string& interface)
-    {
-        using namespace holoscan;
-
-        std::shared_ptr<Condition> condition;
-        if (frame_limit_) {
-            condition = make_condition<CountCondition>(fmt::format("count_{}", i), frame_limit_);
-        } else {
-            condition = make_condition<BooleanCondition>(fmt::format("ok_{}", i), true);
-        }
-
-        cameras_[i]->set_mode(camera_mode_);
-        auto pixel_format = cameras_[i]->get_pixel_format();
-        auto bayer_format = cameras_[i]->get_bayer_format();
-        auto width = cameras_[i]->get_width();
-        auto height = cameras_[i]->get_height();
-        auto name = std::to_string(i);
-
-        // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
-        // always captured unpacketized.
-        const bool packetizer_enabled = !no_packetizer_
-            && pixel_format != hololink::csi::PixelFormat::RAW_8;
-
-        auto fusa_coe_capture = make_operator<hololink::module::operators::FusaCoeCaptureOp>(
-            fmt::format("fusa_coe_capture_{}", name),
-            Arg("enumeration_metadata", sif_metadatas_[i]),
-            Arg("out_tensor_name", name),
-            Arg("timeout", timeout_),
-            Arg("interface", interface),
-            Arg("mac_addr", mac_bytes),
-            Arg("device_start", std::function<void()>([this] { hawk_->start(); })),
-            Arg("device_stop", std::function<void()>([this] { hawk_->stop(); })),
-            condition);
-        {
-            const auto apf = static_cast<hololink::module::csi::PixelFormat>(static_cast<int>(pixel_format));
-            const auto abf = static_cast<hololink::module::csi::BayerFormat>(static_cast<int>(bayer_format));
-            fusa_coe_capture->configure_format(apf, abf, packetizer_enabled);
-            const uint32_t start_byte = fusa_coe_capture->receiver_start_byte();
-            const uint32_t transmitted = fusa_coe_capture->transmitted_line_bytes(apf, static_cast<uint32_t>(width));
-            const uint32_t received = fusa_coe_capture->received_line_bytes(transmitted);
-            fusa_coe_capture->configure(start_byte, received, static_cast<uint32_t>(width), static_cast<uint32_t>(height), apf, 0u);
-        }
-
-        const int32_t storage_type_device_memory = 1;
-        const size_t num_blocks = 4;
-        size_t size = width * height * 2; // 16-bit Bayer
-        // Which converter is correct depends on the packetizer: enabled, the buffer holds
-        // HSB-packed data; disabled, it is still CSI-2 exactly as the sensor sent it.
-        auto converter_pool = make_resource<BlockMemoryPool>(
-            fmt::format("converter_pool_{}", name),
-            storage_type_device_memory, size, num_blocks);
-        std::shared_ptr<Operator> converter;
-        if (packetizer_enabled) {
-            auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
-                fmt::format("packed_format_converter_{}", name),
-                Arg("allocator", converter_pool),
-                Arg("in_tensor_name", name));
-            fusa_coe_capture->configure_converter(*packed_format_converter.get());
-            converter = packed_format_converter;
-        } else {
-            auto csi_to_bayer = make_operator<hololink::module::operators::CsiToBayerOp>(
-                fmt::format("csi_to_bayer_{}", name),
-                Arg("allocator", converter_pool));
-            fusa_coe_capture->configure_converter(*csi_to_bayer.get());
-            converter = csi_to_bayer;
-        }
-
-        auto image_processor = make_operator<hololink::operators::ImageProcessorOp>(
-            fmt::format("image_processor_{}", name),
-            Arg("optical_black", 50),
-            Arg("bayer_format", static_cast<int>(bayer_format)),
-            Arg("pixel_format", static_cast<int>(pixel_format)));
-
-        size = width * height * 2 * 4; // 16-bit RGBA
-        auto demosaic_pool = make_resource<BlockMemoryPool>(
-            fmt::format("demosaic_pool_{}", name),
-            storage_type_device_memory, size, num_blocks);
-        auto bayer_demosaic = make_operator<ops::BayerDemosaicOp>(
-            fmt::format("bayer_demosaic_{}", name),
-            Arg("pool", demosaic_pool),
-            Arg("generate_alpha", true),
-            Arg("alpha_value", 65535),
-            Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
-            Arg("interpolation_mode", 0));
-
-        auto visualizer = make_operator<ops::HolovizOp>(fmt::format("holoviz_{}", name),
-            Arg("framebuffer_srgb", true),
-            Arg("fullscreen", fullscreen_),
-            Arg("headless", headless_),
-            Arg("height", height_),
-            Arg("width", width_),
-            Arg("window_title", window_titles_[i]));
-
-        add_flow(fusa_coe_capture, converter, { { "output", "input" } });
-        add_flow(converter, image_processor, { { "output", "input" } });
-        add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
-        add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
-    }
-
-    const bool headless_;
-    const bool fullscreen_;
-    std::vector<hololink::module::EnumerationMetadata> sif_metadatas_;
-    std::shared_ptr<Hawk> hawk_;
-    std::vector<std::shared_ptr<Ar0234>> cameras_;
-    hololink::module::sensors::ar0234::ar0234_mode::Mode camera_mode_;
-    const uint32_t timeout_;
-    const int32_t width_;
-    const int32_t height_;
-    const int64_t frame_limit_;
-    const std::string interface_;
-    std::vector<std::string> window_titles_;
-    const bool no_packetizer_;
-};
-
-} // anonymous namespace
+} // namespace
 
 int main(int argc, char** argv)
 {
@@ -282,139 +451,8 @@ int main(int argc, char** argv)
 
     auto variables_map = Parser().parse_command_line(argc, argv, options_description);
 
-    const auto hololink_ip = variables_map["hololink"].as<std::string>();
-    const auto sensor_arg = variables_map["sensor"].as<std::string>();
-    const auto channel_arg = variables_map["channel"].as<std::string>();
-    const auto interface = variables_map["interface"].as<std::string>();
-    const auto title = variables_map["title"].as<std::string>();
-    const auto headless = variables_map["headless"].as<bool>();
-    const auto fullscreen = variables_map["fullscreen"].as<bool>();
-    const auto skip_reset = variables_map["skip-reset"].as<bool>();
-    const auto no_packetizer = variables_map["no-packetizer"].as<bool>();
-    const int64_t frame_limit = variables_map["frame-limit"].as<int>();
-    const int32_t window_width = variables_map["width"].as<int>();
-    const int32_t window_height = variables_map["height"].as<int>();
-    const uint32_t timeout = static_cast<uint32_t>(variables_map["timeout"].as<int>());
-    const uint16_t exposure = static_cast<uint16_t>(variables_map["exposure"].as<int>());
-    const int32_t pattern = variables_map["pattern"].as<int>();
-    const auto camera_mode_int = variables_map["camera-mode"].as<int>();
-
-    try {
-        auto sif_list = sensor_arg_to_sif(sensor_arg);
-        const std::vector<std::string> sif_name = { "left", "right" };
-
-        auto& adapter = hololink::module::Adapter::get_adapter();
-        hololink::module::EnumerationMetadata adapter_metadata
-            = adapter.wait_for_channel(hololink_ip, std::chrono::seconds(30));
-
-        std::vector<hololink::module::EnumerationMetadata> sif_metadatas;
-        for (int sif : sif_list) {
-            hololink::module::EnumerationMetadata sif_meta(adapter_metadata);
-            adapter.use_sensor(sif_meta, sif);
-            sif_metadatas.push_back(std::move(sif_meta));
-        }
-
-        auto holo_iface = hololink::module::HololinkInterfaceV1::get_service(adapter_metadata);
-        holo_iface->start();
-        auto board = hololink::module::taurotech_da326::TauroTechDa326InterfaceV1::get_service(adapter_metadata);
-        auto legacy_holo = board->hololink();
-        auto deserializer = std::make_shared<Max96716a>(legacy_holo);
-        auto hawk = std::make_shared<Hawk>(legacy_holo);
-        auto camera_mode = static_cast<hololink::module::sensors::ar0234::ar0234_mode::Mode>(camera_mode_int);
-
-        std::vector<std::shared_ptr<Ar0234>> cameras;
-        std::vector<std::string> window_titles;
-        auto hawk_sensors = hawk->sensors();
-        for (int sif : sif_list) {
-            cameras.push_back(hawk_sensors[sif]);
-            window_titles.push_back(title + " - " + sif_name[sif]);
-        }
-
-        int32_t per_w = window_width;
-        int32_t per_h = window_height;
-        if (sif_list.size() > 1) {
-            per_w /= 2;
-            per_h /= 2;
-        }
-
-        auto application = holoscan::make_application<Application>(headless, fullscreen,
-            sif_metadatas, hawk, std::move(cameras), camera_mode, timeout,
-            per_w, per_h, frame_limit, interface, window_titles, no_packetizer);
-
-        try {
-            if (!skip_reset) {
-                holo_iface->reset();
-            }
-            board->release_reset();
-            board->power_cycle();
-            board->check_power();
-            board->setup_clock();
-
-            uint8_t dev_id = deserializer->get_register(Max96716a::DEV_ID_REG);
-            if (dev_id != Max96716a::DEV_ID) {
-                throw std::runtime_error(fmt::format(
-                    "Deserializer mismatch: expected 0x{:02X}, got 0x{:02X}",
-                    Max96716a::DEV_ID, dev_id));
-            }
-
-            auto link = (channel_arg == "B") ? Max96716a::GmslLink::LINK_B
-                                             : Max96716a::GmslLink::LINK_A;
-            deserializer->enable_link_exclusive(link);
-
-            uint8_t ser_id = hawk->serializer().get_register(hololink::module::sensors::max9295d::Max9295d::DEV_ID_REG);
-            if (ser_id != hololink::module::sensors::max9295d::Max9295d::DEV_ID) {
-                throw std::runtime_error(fmt::format(
-                    "Serializer mismatch: expected 0x{:02X}, got 0x{:02X}",
-                    hololink::module::sensors::max9295d::Max9295d::DEV_ID, ser_id));
-            }
-
-            for (auto& s : hawk->sensors()) {
-                uint16_t s_id = s->get_register(Ar0234::DEV_ID_REG);
-                if (s_id != Ar0234::DEV_ID) {
-                    throw std::runtime_error(fmt::format(
-                        "Sensor mismatch at i2c=0x{:02X}: expected 0x{:04X}, got 0x{:04X}",
-                        s->get_i2c_address(), Ar0234::DEV_ID, s_id));
-                }
-            }
-
-            deserializer->configure_video_pipe();
-            uint8_t left = deserializer->stream_id_to_pipe_mapping(
-                link, 0, Max96716a::VideoPipe::PIPE_Y);
-            uint8_t right = deserializer->stream_id_to_pipe_mapping(
-                link, 2, Max96716a::VideoPipe::PIPE_Z);
-            deserializer->set_register(Max96716a::VIDEO_PIPE_SEL,
-                static_cast<uint8_t>(left | right));
-
-            constexpr unsigned MIPI_LANE_COUNT = 4;
-            constexpr unsigned MIPI_LINE_RATE_MBPS = 450;
-            auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(adapter_metadata);
-            // Currently, each SIF corresponds with the physical MIPI
-            for (int physical_mipi_interface : sif_list) {
-                const auto status = dphy->program(static_cast<unsigned>(physical_mipi_interface),
-                    MIPI_LANE_COUNT, MIPI_LINE_RATE_MBPS);
-
-                if (status != HOLOLINK_MODULE_OK) {
-                    throw std::runtime_error(fmt::format(
-                        "Could not program MIPI interface {}: status {}",
-                        physical_mipi_interface, status));
-                }
-            }
-
-            hawk->configure(camera_mode);
-            if (pattern) {
-                hawk->test_pattern(static_cast<uint16_t>(pattern));
-            }
-            hawk->set_exposure_reg(exposure);
-
-            application->run();
-        } catch (...) {
-            holo_iface->stop();
-            throw;
-        }
-        holo_iface->stop();
-        return 0;
-    } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
-        return -1;
-    }
+    // With managed signals, Ctrl+C stops the session cooperatively, so the cameras and the board
+    // are stopped on the way out.
+    return hx::run_with_managed_signals(
+        [&](holoscan::ManagedShutdownSignals& signals) { return run(variables_map, signals); });
 }

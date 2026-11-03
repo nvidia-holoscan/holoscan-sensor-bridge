@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -16,172 +16,184 @@
  */
 #include "sig_viewer_op.hpp"
 
+#include <algorithm>
+#include <cfloat>
 #include <cmath>
 
-#include <cuda.h>
+#include <holoviz/imgui/ui.hpp>
 
-#include <imgui.h>
-
-#include <holoscan/core/operator.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/operator_spec.hpp>
 
 #include <hololink/common/cuda_error.hpp>
+#include <hololink/common/gui_staging.hpp>
 #include <hololink/core/logging_internal.hpp>
+
+#include "sig_viewer_spectrum.hpp"
 
 namespace hololink::operators {
 namespace {
-    constexpr size_t plot_width = 1024;
-    static const char* input_name = "input";
+    constexpr float plot_width = 1024;
+    const char* const signal_component_names[] = { "In-Phase", "Quadrature" };
+    const char* const spectrum_output_names = "Power\0Amplitude\0";
 }
 
-SignalViewerOp::SignalView::SignalView()
-    : signal_ {
-        SignalComponent("In-Phase"),
-        SignalComponent("Quadrature")
-    }
+SignalViewerOp::SignalViewerOp(std::shared_ptr<hololink::ImGuiRenderer> renderer)
+    : renderer_(std::move(renderer))
 {
 }
 
-SignalViewerOp::SignalView::SignalComponent::SignalComponent(const std::string& name)
-    : name_(name)
+SignalViewerOp::~SignalViewerOp() = default;
+
+void SignalViewerOp::setup(holoscan::OperatorSpec& spec)
 {
+    spec.input(input, "input");
+}
+
+holoscan::Contract SignalViewerOp::contract() const
+{
+    holoscan::Contract contract;
+    contract.trigger(holoscan::OnEach { input });
+    return contract;
 }
 
 void SignalViewerOp::start()
 {
-    CUDA_CHECK(cudaStreamCreate(&stream_));
-    if (renderer_.has_value() && renderer_.get())
-        renderer_handle_ = renderer_->add_draw_function(name(), [this] {
-            std::unique_lock<std::mutex> lock(mutex_);
-            auto tensor_iq = std::move(input_ready_tensor_);
-            lock.unlock();
-
-            ImGui::Checkbox("Show Time Domain", &signal_view_.show_);
-            ImGui::Checkbox("Show Frequency Domain", &spectrum_view_.show_);
-
-            signal_view_.draw(tensor_iq, stream_);
-            spectrum_view_.draw(tensor_iq, stream_);
-        });
+    if (!renderer_)
+        return;
+    staging_ = std::make_unique<hololink::GuiStaging>();
+    renderer_handle_ = renderer_->add_draw_function("Signal Viewer", [this] { draw(); });
 }
 
 void SignalViewerOp::stop()
 {
-    if (renderer_.has_value() && renderer_.get())
-        renderer_->remove_draw_function(renderer_handle_);
-    CUDA_CHECK(cudaStreamDestroy(stream_));
-}
-
-void SignalViewerOp::initialize()
-{
-    // Create an allocator for the operator
-    allocator_ = fragment()->make_resource<holoscan::UnboundedAllocator>("pool");
-    // Add the allocator to the operator so that it is initialized
-    add_arg(allocator_);
-
-    // Call the base class initialize function
-    Operator::initialize();
-}
-
-void SignalViewerOp::setup(holoscan::OperatorSpec& spec)
-{
-    spec.input<Tensor>(input_name);
-
-    /// Register converters for arguments not defined by Holoscan
-    register_converter<hololink::ImGuiRenderer*>();
-
-    spec.param(renderer_, "renderer", "ImGuiRenderer", "Pointer to ImGuiRenderer object");
-}
-
-struct OnInputTensorReadyData {
-    SignalViewerOp* self_;
-    std::shared_ptr<holoscan::Tensor> tensor_iq;
-};
-
-void SignalViewerOp::on_input_tensors_ready(void* data)
-{
-    auto on_input_tensor_ready_data = static_cast<OnInputTensorReadyData*>(data);
-    auto self = on_input_tensor_ready_data->self_;
-    std::lock_guard<std::mutex> lock(self->mutex_);
-    if (on_input_tensor_ready_data->tensor_iq != self->input_pending_tensor_queue_.front()) {
-        HSB_LOG_ERROR("Synchronization error");
-        TensorsQueue empty_queue;
-        std::swap(self->input_pending_tensor_queue_, empty_queue);
-    } else {
-        self->input_ready_tensor_ = std::move(self->input_pending_tensor_queue_.front());
-        self->input_pending_tensor_queue_.pop();
+    // Synchronous: no draw() runs after this, so the staging and spectrum can go.
+    if (renderer_handle_) {
+        renderer_->remove_draw_function(*renderer_handle_);
+        renderer_handle_.reset();
     }
-    delete on_input_tensor_ready_data;
+    staging_.reset();
+    spectrum_.reset();
 }
 
-void SignalViewerOp::compute(holoscan::InputContext& op_input, [[maybe_unused]] holoscan::OutputContext& op_output,
-    [[maybe_unused]] holoscan::ExecutionContext& context)
+holoscan::expected<void, holoscan::Error> SignalViewerOp::compute(holoscan::ExecutionContext& context)
 {
-    auto maybe_tensor_iq = op_input.receive<Tensor>(input_name);
-    if (!maybe_tensor_iq) {
-        HSB_LOG_ERROR("Failed to receive message from port 'in'");
-        return;
+    auto maybe_sample = input.receive();
+    if (!maybe_sample) {
+        return holoscan::make_unexpected(std::move(maybe_sample).error());
     }
+    const holoscan::Tensor& tensor = maybe_sample->data;
+    if (tensor.size() % number_of_signal_components)
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument, "Invalid IQ signal" });
 
-    auto tensor_iq = maybe_tensor_iq.value();
-    if (tensor_iq->size() % number_of_signal_components)
-        throw std::runtime_error("Invalid IQ signal");
+    if (!renderer_ || !renderer_->is_running())
+        return {};
 
-    // If renderer is not enabled, or not running, return here
-    if (renderer_.has_value() && renderer_.get() && renderer_->is_running()) {
+    Settings settings;
+    {
         std::lock_guard<std::mutex> lock(mutex_);
-        input_pending_tensor_queue_.emplace(tensor_iq);
-        cudaLaunchHostFunc(0, &on_input_tensors_ready, new OnInputTensorReadyData { this, std::move(tensor_iq) });
+        settings = settings_;
     }
+    Layout layout { .total_samples = static_cast<int>(tensor.size() / number_of_signal_components) };
+    if (settings.show_signal) {
+        layout.signal_from = std::clamp(settings.signal_from, 0, layout.total_samples);
+        layout.signal_samples = std::clamp(settings.signal_to, layout.signal_from, layout.total_samples)
+            - layout.signal_from;
+    }
+    if (settings.show_spectrum) {
+        const int size = std::min(settings.spectrum_size, layout.total_samples);
+        layout.spectrum_size = (size >= 2) ? size : 0;
+    }
+    const size_t signal_floats = size_t(layout.signal_samples) * number_of_signal_components;
+    const size_t floats = signal_floats + layout.spectrum_size;
+    if (!floats)
+        return {};
+
+    // Everything below runs on the runtime's stream, so it's ordered after this input's
+    // producer and before the input is released.
+    const cudaStream_t stream = context.cuda_stream().get();
+    const float* samples = static_cast<const float*>(tensor.data());
+    staging_->stage(
+        floats,
+        [&](float* host) {
+            if (signal_floats) {
+                CUDA_CHECK(cudaMemcpyAsync(host,
+                    samples + size_t(layout.signal_from) * number_of_signal_components,
+                    signal_floats * sizeof(float),
+                    cudaMemcpyDeviceToHost,
+                    stream));
+            }
+            if (layout.spectrum_size) {
+                // Only staging when the GUI took the last batch means no earlier spectrum work is
+                // still in flight, so replacing the spectrum here is safe.
+                if (!spectrum_ || (spectrum_->count() != layout.spectrum_size))
+                    spectrum_ = std::make_unique<SignalSpectrum>(layout.spectrum_size);
+                spectrum_->calculate(samples, static_cast<SpectrumOutput>(settings.spectrum_output), stream);
+                CUDA_CHECK(cudaMemcpyAsync(host + signal_floats,
+                    spectrum_->data(),
+                    layout.spectrum_size * sizeof(float),
+                    cudaMemcpyDeviceToHost,
+                    stream));
+            }
+        },
+        stream,
+        { layout.signal_from, layout.signal_samples, layout.spectrum_size, layout.total_samples });
+    return {};
 }
 
-void SignalViewerOp::SignalView::draw(const std::shared_ptr<holoscan::Tensor>& tensor, cudaStream_t stream)
+void SignalViewerOp::draw()
 {
-    if (!show_)
-        return;
-    // Update the data
-    if (tensor || force_update_) {
-        if (tensor)
-            tensor_ = tensor;
-
-        if (tensor_) {
-            auto size = (to_ - from_) * number_of_signal_components;
-            samples_.resize(size);
-
-            CUDA_CHECK(cudaMemcpyAsync(
-                &samples_.front(),
-                reinterpret_cast<float*>(tensor_->data()) + from_ * number_of_signal_components,
-                size * sizeof(float),
-                cudaMemcpyDeviceToHost,
-                stream));
-            CUDA_CHECK(cudaStreamSynchronize(stream));
-            auto minmax = std::minmax_element(samples_.begin(), samples_.end());
+    // Pick up the latest staged batch, if one landed.
+    std::vector<int> tag;
+    if (staging_->take(batch_, &tag)) {
+        layout_ = Layout { tag[0], tag[1], tag[2], tag[3] };
+        const auto signal_end = batch_.begin() + layout_.signal_samples * number_of_signal_components;
+        signal_samples_.assign(batch_.begin(), signal_end);
+        spectrum_samples_.assign(signal_end, signal_end + layout_.spectrum_size);
+        if (!signal_samples_.empty()) {
+            auto minmax = std::minmax_element(signal_samples_.begin(), signal_samples_.end());
             max_value_ = std::max(std::abs(*minmax.first), std::abs(*minmax.second));
-            max_count_ = tensor_->size() / number_of_signal_components;
-            force_update_ = false;
         }
     }
-    // Nothing to draw
-    if (samples_.empty())
+
+    Settings settings;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        settings = settings_;
+    }
+    ImGui::Checkbox("Show Time Domain", &settings.show_signal);
+    ImGui::Checkbox("Show Frequency Domain", &settings.show_spectrum);
+    if (settings.show_signal)
+        draw_signal(settings);
+    if (settings.show_spectrum)
+        draw_spectrum(settings);
+    std::lock_guard<std::mutex> lock(mutex_);
+    settings_ = settings;
+}
+
+void SignalViewerOp::draw_signal(Settings& settings)
+{
+    if (signal_samples_.empty())
         return;
 
-    // Draw
-    auto from = from_;
-    auto to = to_;
+    // The plotted window takes effect with the next staged batch.
+    int from = settings.signal_from;
+    int to = settings.signal_to;
 
-    ImGui::PushID(&samples_.front());
+    ImGui::PushID("signal");
 
-    ImGui::PushID(&from_);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##from", ImGuiDataType_S32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::SameLine();
     ImGui::BeginGroup();
-    for (size_t component_index = 0; component_index < number_of_signal_components; ++component_index)
+    for (int component_index = 0; component_index < number_of_signal_components; ++component_index)
         ImGui::PlotLines("",
-            &samples_.front() + component_index, // Offset to get the right plot data
-            to_ - from_,
+            signal_samples_.data() + component_index, // Offset to get the right plot data
+            layout_.signal_samples,
             0,
-            signal_[component_index].name_.c_str(),
+            signal_component_names[component_index],
             -max_value_,
             max_value_,
             ImVec2(plot_width - 124, 128),
@@ -189,128 +201,67 @@ void SignalViewerOp::SignalView::draw(const std::shared_ptr<holoscan::Tensor>& t
     ImGui::EndGroup();
     ImGui::SameLine();
 
-    ImGui::PushID(&to_);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##to", ImGuiDataType_S32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::PopID();
 
-    if (from < 0)
-        from = from_;
-    if (to > max_count_)
-        to = to_;
-    if (from >= to)
-        from = from_;
-    if (to <= from)
-        to = to_;
-    if (to != to_ || from != from_)
-        force_update_ = true;
-    from_ = from;
-    to_ = to;
+    if ((from >= 0) && (from < to) && (to <= layout_.total_samples)) {
+        settings.signal_from = from;
+        settings.signal_to = to;
+    }
 }
 
-const std::vector<std::pair<std::string, SignalViewerOp::SpectrumView::OutputType>> SignalViewerOp::SpectrumView::output_types_ {
-    { "Power", OutputType::Power },
-    { "Amplitude", OutputType::Amplitude }
-};
-
-bool SignalViewerOp::SpectrumView::type_combo_handler(void* data, int idx, const char** out_text)
+void SignalViewerOp::draw_spectrum(Settings& settings)
 {
-    [[maybe_unused]] auto self = static_cast<SpectrumView*>(data);
-    *out_text = output_types_[idx].first.c_str();
-    return true;
-}
-
-void SignalViewerOp::SpectrumView::draw(const std::shared_ptr<holoscan::Tensor>& tensor_iq, cudaStream_t stream)
-{
-    if (!show_)
-        return;
-
-    int size = size_;
+    int size = settings.spectrum_size;
     ImGui::InputInt("Spectrum size", &size, 1, 0, ImGuiInputTextFlags_EnterReturnsTrue);
-    if (size <= 1)
-        size = 2;
-    if (size_ != size) {
-        size_ = size;
-        from_ = 0;
-        to_ = size_ / 2; // Only half of the spectrum is viewed
+    size = std::max(size, 2);
+    if (size != settings.spectrum_size) {
+        settings.spectrum_size = size;
+        spectrum_from_ = 0;
+        spectrum_to_ = size / 2; // Only half of the spectrum is viewed
     }
 
     ImGui::SameLine();
-    ImGui::Combo("Spectrum Output", &output_type_index_, &SignalViewerOp::SpectrumView::type_combo_handler, this, output_types_.size());
+    ImGui::Combo("Spectrum Output", &settings.spectrum_output, spectrum_output_names);
 
-    // Time to update the lines
-    if (tensor_iq || host_spectrum_.size() != size_) {
-        // The requested spectrum size changed
-        if (host_spectrum_.size() != size_)
-            host_spectrum_.resize(size_, 0);
-
-        // The input tensors changed
-        if (tensor_iq) {
-            tensor_iq_ = tensor_iq;
-        }
-        // Update the spectrum (only if tensors are available)
-        if (tensor_iq_) {
-            if (!device_spectrum_ || device_spectrum_->get_count() != size_)
-                device_spectrum_.reset(new Spectrum(size_));
-            device_spectrum_->calculate(
-                reinterpret_cast<const float*>(tensor_iq_->data()),
-                output_types_[output_type_index_].second,
-                stream);
-        }
-
-        // If spectrum is available, copy it to the Host memory
-        if (device_spectrum_ && device_spectrum_->get_data().size()) {
-            CUDA_CHECK(cudaMemcpyAsync(&host_spectrum_.front(), device_spectrum_->get_data().data().get(), size_ * sizeof(float), cudaMemcpyDeviceToHost, stream));
-            CUDA_CHECK(cudaStreamSynchronize(stream));
-        }
-    }
-
-    if (host_spectrum_.empty())
+    const int count = static_cast<int>(spectrum_samples_.size());
+    if (!count)
         return;
+    // A batch staged with a different size than requested shows until the next one lands.
+    spectrum_to_ = std::min(spectrum_to_, count);
+    spectrum_from_ = std::min(spectrum_from_, spectrum_to_ - 1);
+    int from = spectrum_from_;
+    int to = spectrum_to_;
 
-    auto data = &host_spectrum_.front();
-    auto from = from_;
-    auto to = to_;
+    ImGui::PushID("spectrum");
 
-    ImGui::PushID(data);
-
-    ImGui::PushID(&from);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##from", ImGuiDataType_S32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::SameLine();
 
     ImGui::PlotLines("",
-        data + from,
-        to_ - from_,
-        from_,
-        label_.c_str(),
+        spectrum_samples_.data() + spectrum_from_,
+        spectrum_to_ - spectrum_from_,
+        0,
+        "Spectrum",
         0,
         FLT_MAX,
         ImVec2(plot_width - 124, 128));
 
     ImGui::SameLine();
 
-    ImGui::PushID(&to);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##to", ImGuiDataType_S32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::PopID();
 
-    if (from < 0)
-        from = from_;
-    if (to > size)
-        to = to_;
-    if (from >= to)
-        from = from_;
-    if (to <= from)
-        to = to_;
-    from_ = from;
-    to_ = to;
+    if ((from >= 0) && (from < to) && (to <= count)) {
+        spectrum_from_ = from;
+        spectrum_to_ = to;
+    }
 }
 
 } // namespace hololink::operators

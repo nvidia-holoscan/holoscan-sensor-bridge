@@ -5,31 +5,33 @@
 
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 
+#include <array>
+#include <cerrno>
+#include <climits>
 #include <ctime> // clock_gettime, CLOCK_REALTIME, struct timespec
+#include <stdexcept>
+#include <utility>
 
-#include <gxf/std/tensor.hpp>
-#include <yaml-cpp/yaml.h>
+#include <cuda_runtime_api.h>
+#include <dlpack/dlpack.h>
+
+#include <fmt/format.h>
+
+#include <holoscan/core/domain/dlpack.hpp>
+#include <holoscan/core/tensor_output_loan.hpp>
+
+#include <hololink/core/on_scope_exit.hpp>
 
 #include "hololink/module/adapter.hpp"
 #include "hololink/module/logging.hpp" // HSB_LOG_*
 #include "hololink/module/status.h"
 
-#define HOLOLINK_MODULE_YAML_CONVERTER_UNSUPPORTED(TYPE)                                    \
-    template <>                                                                             \
-    struct YAML::convert<TYPE> {                                                            \
-        static Node encode(TYPE&) { throw std::runtime_error("Unsupported"); }              \
-        static bool decode(const Node&, TYPE&) { throw std::runtime_error("Unsupported"); } \
-    };
-
-HOLOLINK_MODULE_YAML_CONVERTER_UNSUPPORTED(hololink::module::EnumerationMetadata);
-HOLOLINK_MODULE_YAML_CONVERTER_UNSUPPORTED(std::function<void()>);
-HOLOLINK_MODULE_YAML_CONVERTER_UNSUPPORTED(
-    std::function<std::string(const std::string&)>);
-
 namespace hololink::module::operators {
 
-// File-local helper adapters, declared at namespace scope (the project style
-// avoids anonymous namespaces in .cpp files).
+using hololink::core::OnScopeExit;
+
+// File-local helper adapters, declared at namespace scope (the project style avoids
+// anonymous namespaces in .cpp files).
 class AdapterCoeChannelConfig : public hololink::operators::fusa_coe_capture::CoeChannelConfig {
 public:
     explicit AdapterCoeChannelConfig(
@@ -124,337 +126,443 @@ private:
     std::shared_ptr<FrameMetadataInterfaceV1> frame_metadata_;
 };
 
+// Adapter: captures the geometry a sensor driver computes via the CsiConverterV1
+// protocol, using FusaCoeCaptureOp/HSB-packetizer alignment rules (distinct from a
+// sensor's generic CsiToBayerOp-flavored adapter -- see make_geometry_adapter()'s
+// declaration comment).
+class GeometryCaptureConverter : public hololink::module::csi::CsiConverterV1 {
+public:
+    GeometryCaptureConverter(hololink::module::csi::CsiGeometry& out, bool packetizer_enabled)
+        : out_(out)
+        , packetizer_enabled_(packetizer_enabled)
+    {
+    }
+
+    uint32_t receiver_start_byte() override
+    {
+        return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::receiver_start_byte();
+    }
+
+    uint32_t received_line_bytes(uint32_t line_bytes) override
+    {
+        return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::received_line_bytes(
+            line_bytes, packetizer_enabled_);
+    }
+
+    uint32_t transmitted_line_bytes(
+        hololink::module::csi::PixelFormat pixel_format, uint32_t pixel_width) override
+    {
+        // The module csi enums carry the same integer values as the legacy ones by
+        // design, so they cast across the boundary without a conversion table.
+        return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::transmitted_line_bytes(
+            static_cast<hololink::csi::PixelFormat>(pixel_format), pixel_width, packetizer_enabled_);
+    }
+
+    void configure(uint32_t start_byte, uint32_t received_bytes_per_line,
+        uint32_t pixel_width, uint32_t pixel_height,
+        hololink::module::csi::PixelFormat pixel_format,
+        uint32_t trailing_bytes = 0) override
+    {
+        out_ = { start_byte, received_bytes_per_line, pixel_width, pixel_height,
+            pixel_format, trailing_bytes };
+    }
+
+private:
+    hololink::module::csi::CsiGeometry& out_;
+    bool packetizer_enabled_;
+};
+
+std::shared_ptr<hololink::module::csi::CsiConverterV1> FusaCoeCaptureOp::make_geometry_adapter(
+    hololink::module::csi::CsiGeometry& out, bool packetizer_enabled)
+{
+    return std::make_shared<GeometryCaptureConverter>(out, packetizer_enabled);
+}
+
 void FusaCoeCaptureOp::setup(holoscan::OperatorSpec& spec)
 {
-    spec.output<holoscan::gxf::Entity>("output");
+    static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
 
-    register_converter<EnumerationMetadata>();
-    register_converter<std::function<void()>>();
-    register_converter<std::function<std::string(const std::string&)>>();
+    // Tensor output port: raw pixel data (kCudaDevice 1-D byte tensor). kMaxFrameBytes
+    // is fixed at setup() time because frame geometry is only known once params() are
+    // bound (after configure()/request_format() equivalents run in start()).
+    spec.output(tensor, "tensor")
+        .max_emits_per_compute(1U)
+        .produces_tensor(holoscan::TensorOutputSpec {
+            .representation = holoscan::TensorRepresentation {
+                .memory_kind = holoscan::MemoryKind::kCudaDevice,
+                .dtype = kUInt8,
+            },
+            .bounds = holoscan::TensorBounds {
+                .max_rank = 1U,
+                .max_byte_span = kMaxFrameBytes,
+            },
+            .storage = holoscan::TensorOutputStorage::kRuntimePool,
+        });
 
-    spec.param(interface_, "interface", "Interface", "Interface for the CoE device.");
-    spec.param(mac_addr_, "mac_addr", "MACAddr", "MAC Address for the CoE device.");
-    spec.param(timeout_, "timeout", "Timeout", "Timeout for capture requests, in milliseconds");
-    spec.param(out_tensor_name_, "out_tensor_name", "OutputTensorName",
-        "Name of the output tensor", std::string(""));
-    spec.param(metadata_, "enumeration_metadata", "EnumerationMetadata",
-        "Enumeration metadata for the channel — used to resolve the CoeDataChannel "
-        "and frame-metadata services");
-    spec.param(device_start_, "device_start", "DeviceStart",
-        "Function to be called to start the device");
-    spec.param(device_stop_, "device_stop", "DeviceStop",
-        "Function to be called to stop the device");
-    spec.param(rename_metadata_, "rename_metadata", "RenameMetadata",
-        "Optional function mapping each emitted metadata key to a new "
-        "name (e.g. add a per-leg prefix). Defaults to identity.",
-        std::function<std::string(const std::string&)> {});
+    // Metadata output port: per-capture hardware metadata, correlated with the tensor
+    // above via the shared capture_time/frame_id stamped on both in compute().
+    spec.output(metadata, "metadata")
+        .max_emits_per_compute(1U);
 
-    // compute() is driven by an AsynchronousCondition that the monitor thread
-    // signals on each acquired frame, so it never blocks the scheduler waiting
-    // for a frame (the blocking wait_for_acquired_buffer lives on the monitor
-    // thread). The condition must be created and added as an arg during
-    // setup(), before start() runs.
-    auto* frag = fragment();
-    frame_ready_condition_ = frag->make_condition<holoscan::AsynchronousCondition>(
-        "frame_ready_condition");
-    add_arg(frame_ready_condition_);
-    frame_ready_condition_->event_state(holoscan::AsynchronousEventState::WAIT);
+    // Device-driven scheduling: Core's acquire thread posts a notification here for each
+    // frame compute() can take (Core keeps only the newest frame and posts when it stores
+    // one after compute() has taken the last), which wakes the HSDK5 scheduler to call
+    // compute(). A notification counts against the capacity until the activation it
+    // triggered retires, so at most two are outstanding: the running activation's and the
+    // next frame's. The rest is headroom; a full source makes Core retry (frame_ready()).
+    static constexpr uint32_t kFrameReadyNotificationCapacity = 8;
+    spec.notification_source(source_, "frame-ready")
+        .capacity(kFrameReadyNotificationCapacity)
+        .sender_reference_capacity(1);
+
+    // kArm runs after graph compile but before start(), so the NotificationSender is
+    // bound to the current run generation before the acquire thread can post.
+    spec.lifecycle()
+        .stage(holoscan::LifecycleStage::kArm,
+            static_cast<holoscan::LifecycleStatus (FusaCoeCaptureOp::*)(holoscan::LifecycleContext&) noexcept>(
+                &FusaCoeCaptureOp::on_arm));
+}
+
+holoscan::Contract FusaCoeCaptureOp::contract() const
+{
+    holoscan::Contract result;
+    result.trigger(holoscan::OnNotified { .event = source_ });
+    if (const int64_t frame_limit = this->params().frame_limit; frame_limit > 0) {
+        result.complete_after(holoscan::ComputeCalls { .limit = static_cast<uint64_t>(frame_limit) });
+    }
+    return result;
 }
 
 void FusaCoeCaptureOp::start()
 {
-    // Cache the (possibly renamed) metadata key names once, so compute() does
-    // no per-frame string work. Default to identity when no rename_metadata
-    // function was supplied.
-    auto rename = rename_metadata_.get();
-    if (!rename) {
-        rename = [](const std::string& name) { return name; };
+    const auto& p = this->params();
+
+    if (p.mac_addr.size() != 6U) {
+        throw std::invalid_argument("FusaCoeCaptureOp::start: mac_addr must contain 6 bytes");
     }
-    timestamp_s_key_ = rename("timestamp_s");
-    timestamp_ns_key_ = rename("timestamp_ns");
-    metadata_s_key_ = rename("metadata_s");
-    metadata_ns_key_ = rename("metadata_ns");
-    crc_key_ = rename("crc");
-    frame_number_key_ = rename("frame_number");
-    received_s_key_ = rename("received_s");
-    received_ns_key_ = rename("received_ns");
+    if (!p.device_start || !p.device_stop) {
+        throw std::invalid_argument("FusaCoeCaptureOp::start: device_start/device_stop must be set");
+    }
 
     auto& adapter = hololink::module::Adapter::get_adapter();
-    auto module = adapter.get_module(metadata_.get());
-    channel_ = CoeDataChannelInterfaceV1::get_service(metadata_.get());
+    auto module = adapter.get_module(p.metadata);
+    channel_ = CoeDataChannelInterfaceV1::get_service(p.metadata);
     frame_metadata_ = FrameMetadataInterfaceV1::get_service(module);
+
+    if (p.frame_size_bytes) {
+        // Opaque byte blob: no CFA, no packetizer -- see FusaCoeCaptureParams::frame_size_bytes.
+        core_.configure_frame_size(*p.frame_size_bytes);
+    } else {
+        // p.geometry.bytes_per_line was computed by the sensor driver from whatever
+        // packetizer_enabled value was passed to make_geometry_adapter() --
+        // independently of p.packetizer_enabled here, which the caller must also set to
+        // the same value. If the two diverge, NvSciBuf gets the wrong color format for
+        // the actual wire layout, silently. Recompute the expected received line size
+        // the same way GeometryCaptureConverter did and fail loudly on a mismatch instead.
+        const uint32_t expected_bytes_per_line = hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::received_line_bytes(
+            hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::transmitted_line_bytes(
+                static_cast<hololink::csi::PixelFormat>(p.pixel_format), p.geometry.pixel_width, p.packetizer_enabled),
+            p.packetizer_enabled);
+        if (expected_bytes_per_line != p.geometry.bytes_per_line) {
+            throw std::invalid_argument(fmt::format(
+                "FusaCoeCaptureOp::start: geometry.bytes_per_line ({}) does not match what "
+                "pixel_format/geometry.pixel_width/packetizer_enabled predict ({}) -- "
+                "packetizer_enabled likely differs from the value passed to "
+                "make_geometry_adapter() when geometry was captured",
+                p.geometry.bytes_per_line, expected_bytes_per_line));
+        }
+
+        // The module csi enums carry the same integer values as the legacy ones by
+        // design, so they cast across the boundary without a conversion table.
+        core_.request_format(
+            static_cast<hololink::csi::PixelFormat>(p.pixel_format),
+            static_cast<hololink::csi::BayerFormat>(p.bayer_format),
+            p.packetizer_enabled);
+        core_.configure(
+            p.geometry.start_byte, p.geometry.bytes_per_line,
+            p.geometry.pixel_width, p.geometry.pixel_height,
+            static_cast<hololink::csi::PixelFormat>(p.geometry.pixel_format), p.geometry.trailing_bytes);
+    }
 
     AdapterCoeChannelConfig channel_config(channel_);
     core_.start(
-        interface_.get(),
-        mac_addr_.get(),
-        timeout_.get(),
+        p.interface,
+        p.mac_addr,
+        p.timeout,
         channel_config,
-        device_start_.get(),
-        device_stop_.get());
-
-    // Start the monitor thread that owns the blocking wait_for_acquired_buffer.
-    // It hands each frame to compute() via the AsynchronousCondition, so the
-    // scheduler thread is never blocked on capture. core_.start() has already
-    // fired device_start (the sensor is streaming), so buffers can arrive now.
-    {
-        std::lock_guard<std::mutex> lock(handoff_mutex_);
-        frame_ready_ = false;
-        frame_consumed_ = true;
-    }
-    running_ = true;
-    monitor_thread_ = std::thread([this]() { monitor(); });
-
-    // Instrumentation: correlate this leg (out_tensor_name) with its monitor
-    // thread so the shutdown ordering in the log is unambiguous.
-    HSB_LOG_DEBUG("FusaCoeCaptureOp::start: leg \"{}\" started; monitor thread launched",
-        out_tensor_name_.get());
-}
-
-FusaCoeCaptureOp::~FusaCoeCaptureOp()
-{
-    // Defensive: if the graph tore down without stop() (e.g. an early error),
-    // make sure the monitor thread is joined so ~thread doesn't terminate().
-    running_ = false;
-    {
-        std::lock_guard<std::mutex> lock(handoff_mutex_);
-        frame_consumed_ = true;
-    }
-    handoff_cv_.notify_all();
-    if (monitor_thread_.joinable()) {
-        monitor_thread_.join();
-    }
-}
-
-void FusaCoeCaptureOp::monitor()
-{
-    while (running_.load()) {
-        hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::BufferView view {};
-        // wait_for_acquired_buffer returns false on a plain per-request timeout
-        // (no frame within the window) and throws only on a genuine capture
-        // failure. A timeout is normal at startup and between frames, so retry.
-        // A failure is deliberately left uncaught: it propagates out of this
-        // monitor thread and terminates the process, surfacing the fault loudly
-        // (and landing directly on it under a debugger) instead of being
-        // swallowed into a silently stalled pipeline.
-        if (!core_.wait_for_acquired_buffer(
-                timeout_.get(), out_tensor_name_.get().c_str(), view)) {
-            if (!running_.load()) {
-                break;
-            }
-            continue;
-        }
-
-        // received_s/ns is the host-side reception time: the CLOCK_REALTIME
-        // instant the CPU woke up with the frame-ready notification — i.e. the
-        // moment wait_for_acquired_buffer returned. Captured here (not in
-        // compute) so it stays close to that wakeup, matching the RoCE/Linux
-        // receivers' received_* semantics.
-        struct timespec received = {};
-        clock_gettime(CLOCK_REALTIME, &received);
-
-        {
-            std::lock_guard<std::mutex> lock(handoff_mutex_);
-            pending_buffer_ = view;
-            pending_received_ = received;
-            frame_ready_ = true;
-            frame_consumed_ = false;
-        }
-        if (running_.load() && frame_ready_condition_) {
-            frame_ready_condition_->event_state(
-                holoscan::AsynchronousEventState::EVENT_DONE);
-        }
-
-        // Wait until compute() has emitted this frame before acquiring the
-        // next, preserving the core's single acquire -> register_pending_output
-        // -> release cycle (buffer_in_compute_ is a one-deep slot).
-        std::unique_lock<std::mutex> lock(handoff_mutex_);
-        handoff_cv_.wait(
-            lock, [this]() { return frame_consumed_ || !running_.load(); });
-        if (!running_.load()) {
-            break;
-        }
-    }
+        p.device_start,
+        p.device_stop,
+        [this]() { return frame_ready(); },
+        p.stall_timeout_ms,
+        p.name);
+    frame_limit_run_end_.started(p.frame_limit, p.frame_limit_ends_run);
 }
 
 void FusaCoeCaptureOp::stop()
 {
-    // Instrumentation: mark when the pipeline asks this leg to stop, to test the
-    // theory that a stop() (e.g. on the peer leg during graph teardown) is what
-    // provokes the "CoE capture failed (error = 5)" in the still-running leg.
-    HSB_LOG_DEBUG("FusaCoeCaptureOp::stop: entry, leg \"{}\"", out_tensor_name_.get());
-
-    // Stop the monitor first so no wait_for_acquired_buffer is in flight when
-    // the core tears down its buffers and acquire thread below. (The monitor
-    // may take up to one capture timeout to notice, if it is mid-wait.)
-    running_ = false;
-    if (frame_ready_condition_) {
-        frame_ready_condition_->event_state(
-            holoscan::AsynchronousEventState::EVENT_NEVER);
-    }
-    {
-        std::lock_guard<std::mutex> lock(handoff_mutex_);
-        frame_consumed_ = true;
-    }
-    handoff_cv_.notify_all();
-    if (monitor_thread_.joinable()) {
-        monitor_thread_.join();
-    }
-
-    HSB_LOG_DEBUG("FusaCoeCaptureOp::stop: leg \"{}\" monitor joined", out_tensor_name_.get());
-
+    frame_limit_run_end_.stopped();
     if (!channel_) {
         return;
     }
 
+    // compute() enqueues a cudaMemcpyAsync (and a release host-func) that read from
+    // NvSciBuf-backed device memory on the runtime-assigned compute stream, and
+    // core_.stop() below frees that memory synchronously. stop() has no
+    // ExecutionContext (so no access to context.cuda_stream()), and HSDK5's own CUDA-
+    // stream quiescing runs strictly after every operator's stop() callback has already
+    // returned -- not before or during it. So without a synchronization point of our own
+    // here, a copy still in flight when stop() runs would read freed memory.
+    // cudaDeviceSynchronize() is coarser than synchronizing just this operator's
+    // stream, but stop() is teardown-only (not a hot path) and this avoids depending on
+    // stream handle identity/lifetime assumptions across activations.
+    cudaDeviceSynchronize();
+
+    const auto& p = this->params();
     AdapterCoeChannelConfig channel_config(channel_);
-    HSB_LOG_DEBUG("FusaCoeCaptureOp::stop: leg \"{}\" calling core_.stop()",
-        out_tensor_name_.get());
-    core_.stop(channel_config, device_stop_.get());
+    core_.stop(channel_config, p.device_stop);
     channel_.reset();
     frame_metadata_.reset();
-    HSB_LOG_DEBUG("FusaCoeCaptureOp::stop: leg \"{}\" complete", out_tensor_name_.get());
+
+    // Invalidate the sender after the acquire thread has been joined (inside
+    // core_.stop(), above), so that any in-flight frame_ready() calls complete before
+    // we close.
+    sender_ = holoscan::NotificationSender {};
 }
 
-void FusaCoeCaptureOp::compute(holoscan::InputContext& /*op_input*/,
-    holoscan::OutputContext& op_output,
+holoscan::expected<void, holoscan::Error> FusaCoeCaptureOp::compute(
     holoscan::ExecutionContext& context)
 {
-    // Non-blocking: the monitor thread already did the blocking wait and handed
-    // us an acquired buffer (that's why the AsynchronousCondition fired). Take
-    // it; if there's nothing (a spurious tick), do nothing.
+    const auto& p = this->params();
+    // With frame_limit_ends_run, the call that reaches frame_limit may end the whole run.
+    const hololink::operators::FrameLimitRunEnd::Call frame_limit_call(frame_limit_run_end_, context);
+    if (frame_limit_call.reached()) {
+        HSB_LOG_INFO("Frame limit {} reached{}", p.frame_limit,
+            frame_limit_call.ends_run() ? ": ending the run" : "; the run ends once the other receivers reach theirs");
+    }
+
     hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::BufferView buffer {};
-    struct timespec received = {};
-    {
-        std::unique_lock<std::mutex> lock(handoff_mutex_);
-        if (!frame_ready_) {
-            return;
+    if (!core_.take_acquired_buffer(buffer)) {
+        if (core_.stalled()) {
+            // Core's acquire thread already logged this at ERROR; only compute() can end
+            // the run, so it was woken via frame_ready_callback to do so here. Fail it,
+            // rather than request a stop that reads like Ctrl+C: the run ends kFailed and
+            // its diagnostic records the stall, as HSDK4's callers failed on
+            // capture_stalled().
+            return holoscan::make_unexpected(holoscan::Error {
+                holoscan::ErrorCode::kTimeout,
+                fmt::format("CoE capture stalled on \"{}\" for {}ms without a frame", p.name,
+                    core_.stall_duration_ms()) });
         }
-        buffer = pending_buffer_;
-        received = pending_received_;
-        frame_ready_ = false;
+        // No frame: compute() runs once per frame it can take, so this does not happen
+        // short of a stall.
+        return {};
+    }
+    // Frames Core's acquire thread replaced with a newer one because compute() did not run
+    // before it arrived: lost to a pipeline that is behind the camera, like a full queue.
+    if (const uint64_t replaced = core_.take_replaced_frame_count()) {
+        count_dropped_frames(replaced_frames_, replaced, "replaced by a newer frame");
     }
 
-    // Re-arm before releasing the monitor so a fast next frame can't be lost:
-    // the monitor won't acquire the next buffer until frame_consumed_ is set
-    // below, by which point the condition is back in WAITING.
-    if (frame_ready_condition_) {
-        frame_ready_condition_->event_state(
-            holoscan::AsynchronousEventState::EVENT_WAITING);
+    // Host reception time, as close to acquisition as possible -- mirrors the other
+    // ported receivers (RoceReceiverOp, LinuxReceiverOp).
+    struct timespec received_time { };
+    if (clock_gettime(CLOCK_REALTIME, &received_time) != 0) {
+        HSB_LOG_ERROR("FusaCoeCaptureOp: clock_gettime failed, errno={}", errno);
     }
 
-    if (is_metadata_enabled()) {
-        // received_s/ns is the host-side reception time captured by the monitor
-        // thread right after wait_for_acquired_buffer returned; CLOCK_REALTIME
-        // shares the PTP-disciplined domain of the FPGA timestamps, so a
-        // downstream "received - timestamp" latency is meaningful.
+    // Releases the acquired buffer on any early return below -- it's a single-slot
+    // resource in a small per-leg pool, so an un-released error path permanently
+    // removes one buffer from the leg's pool. Dismissed once the buffer's release
+    // becomes the async host callback's responsibility instead (see below).
+    //
+    // Synchronizes the stream first, but only if cudaMemcpyAsync below actually
+    // enqueued a copy reading this buffer: a commit() failure after that point would
+    // otherwise let the capture hardware start overwriting the buffer while that copy
+    // is still in flight (silent torn frame, no crash). Every early return before the
+    // copy (decode/size-check/pool-exhaustion/writer-failure) has enqueued nothing on
+    // this stream, so skipping the sync there keeps those paths -- especially the
+    // pool-exhaustion backpressure drop, which needs to stay cheap -- as fast as before.
+    bool copy_enqueued = false;
+    OnScopeExit release_fusa_buffer([this, &buffer, &context, &copy_enqueued] {
+        if (copy_enqueued) {
+            cudaStreamSynchronize(context.cuda_stream().get());
+        }
+        auto* release_ptr = static_cast<uint8_t*>(buffer.cuda_device_ptr) + core_.start_byte();
+        core_.register_pending_output(release_ptr);
+        hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::buffer_release_callback(release_ptr);
+    });
+
+    // Decode metadata from the CPU-mapped NvSciBuf region.
+    hololink::CaptureMetadataT frame_metadata_out;
+    frame_metadata_out.received_s = received_time.tv_sec;
+    frame_metadata_out.received_ns = received_time.tv_nsec;
+    {
         hololink::operators::fusa_coe_capture::CoeFrameMetadata frame_metadata {};
         AdapterCoeMetadataDecoder decoder(frame_metadata_);
         if (core_.decode_metadata(buffer, decoder, frame_metadata)) {
-            auto const& meta = metadata();
-            meta->set(timestamp_s_key_, frame_metadata.timestamp_s);
-            meta->set(timestamp_ns_key_, frame_metadata.timestamp_ns);
-            meta->set(metadata_s_key_, frame_metadata.metadata_s);
-            meta->set(metadata_ns_key_, frame_metadata.metadata_ns);
-            meta->set(crc_key_, frame_metadata.crc);
-            meta->set(frame_number_key_, frame_metadata.frame_number);
-            meta->set(received_s_key_, static_cast<int64_t>(received.tv_sec));
-            meta->set(received_ns_key_, static_cast<int64_t>(received.tv_nsec));
+            frame_metadata_out.frame_number = frame_metadata.frame_number;
+            frame_metadata_out.timestamp_s = frame_metadata.timestamp_s;
+            frame_metadata_out.timestamp_ns = frame_metadata.timestamp_ns;
+            frame_metadata_out.metadata_s = frame_metadata.metadata_s;
+            frame_metadata_out.metadata_ns = frame_metadata.metadata_ns;
+            frame_metadata_out.crc = frame_metadata.crc;
         }
     }
 
-    auto entity = holoscan::gxf::Entity::New(&context);
-    auto name = out_tensor_name_.get().c_str();
-    auto tensor = static_cast<nvidia::gxf::Entity&>(entity).add<nvidia::gxf::Tensor>(name);
-    if (!tensor) {
-        throw std::runtime_error("Failed to add GXF Tensor");
+    const size_t frame_data_size = core_.bytes_per_line() * core_.pixel_height();
+    if (frame_data_size > kMaxFrameBytes) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kInvalidArgument,
+            fmt::format("frame_data_size {:#x} exceeds pool ceiling kMaxFrameBytes {:#x}",
+                frame_data_size, kMaxFrameBytes) });
+    }
+    if (frame_data_size > static_cast<size_t>(INT_MAX)) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure,
+            "frame_data_size exceeds INT_MAX" });
     }
 
-    nvidia::gxf::Shape shape {
-        static_cast<int>(core_.bytes_per_line() * core_.pixel_height())
-    };
-    const auto element_type = nvidia::gxf::PrimitiveType::kUnsigned8;
-    const auto element_size = nvidia::gxf::PrimitiveTypeSize(element_type);
+    static constexpr DLDataType kUInt8 { static_cast<uint8_t>(kDLUInt), 8, 1 };
+    const std::array<int64_t, 1> shape { static_cast<int64_t>(frame_data_size) };
 
-    void* data_ptr = static_cast<uint8_t*>(buffer.cuda_device_ptr) + core_.start_byte();
-    if (!tensor.value()->wrapMemory(shape, element_type, element_size,
-            nvidia::gxf::ComputeTrivialStrides(shape, element_size),
-            nvidia::gxf::MemoryStorageType::kDevice,
-            data_ptr, buffer_release_callback)) {
-        throw std::runtime_error("Failed to add wrapped memory");
+    // Borrow a pre-allocated pool slot.
+    auto loan = tensor.allocate_tensor(
+        holoscan::TensorLoanRequest { .shape = shape, .dtype = kUInt8 });
+    if (!loan) {
+        const auto code = loan.error().code;
+        if (code == holoscan::ErrorCode::kResourceExhausted) {
+            // Back-pressure: release the FuSa buffer (scope guard above); Core notifies
+            // again for the next frame.
+            count_dropped_frames(dropped_frames_, 1, "tensor pool exhausted");
+            return {};
+        }
+        HSB_LOG_ERROR("FusaCoeCaptureOp: allocate_tensor failed: {}",
+            holoscan::error_code_name(code));
+        return holoscan::make_unexpected(std::move(loan).error());
     }
 
-    core_.register_pending_output(data_ptr);
-
-    op_output.emit(entity, "output");
-
-    // Frame emitted: let the monitor issue the next wait_for_acquired_buffer.
-    {
-        std::lock_guard<std::mutex> lock(handoff_mutex_);
-        frame_consumed_ = true;
+    // Enter write phase on the compute stream.
+    auto writer = loan->write(context.cuda_stream());
+    if (!writer) {
+        HSB_LOG_ERROR("FusaCoeCaptureOp: loan->write() failed: {}",
+            holoscan::error_code_name(writer.error().code));
+        return holoscan::make_unexpected(std::move(writer).error());
     }
-    handoff_cv_.notify_one();
+
+    // Copy image data from NvSciBuf-backed device memory to the pool slot.
+    const void* src = static_cast<const uint8_t*>(buffer.cuda_device_ptr) + core_.start_byte();
+    if (cudaMemcpyAsync(
+            writer->data(), src, frame_data_size,
+            cudaMemcpyDeviceToDevice,
+            context.cuda_stream().get())
+        != cudaSuccess) {
+        return holoscan::make_unexpected(holoscan::Error {
+            holoscan::ErrorCode::kFailure,
+            "cudaMemcpyAsync failed in FusaCoeCaptureOp::compute" });
+    }
+    copy_enqueued = true;
+
+    // Commit: records CUDA readiness event after the copy so downstream consumers can
+    // enqueue work without explicit synchronisation.
+    auto committed = std::move(*writer).commit();
+    if (!committed) {
+        HSB_LOG_ERROR("FusaCoeCaptureOp: commit() failed: {}",
+            holoscan::error_code_name(committed.error().code));
+        return holoscan::make_unexpected(std::move(committed).error());
+    }
+
+    // Register the FuSa buffer as pending, then schedule its release via a host
+    // callback that fires after the cudaMemcpyAsync completes on the GPU stream. This
+    // allows the NvFusaCapture buffer pool to be recycled as soon as the copy is done,
+    // without blocking the compute thread. From here on, the async callback owns the
+    // release -- dismiss the scope guard above.
+    release_fusa_buffer.dismiss();
+    auto* release_ptr = static_cast<uint8_t*>(buffer.cuda_device_ptr) + core_.start_byte();
+    core_.register_pending_output(release_ptr);
+    if (cudaLaunchHostFunc(
+            context.cuda_stream().get(),
+            [](void* data) { hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::buffer_release_callback(data); },
+            release_ptr)
+        != cudaSuccess) {
+        // Fallback: synchronise and release immediately.
+        cudaStreamSynchronize(context.cuda_stream().get());
+        hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::buffer_release_callback(release_ptr);
+    }
+
+    holoscan::EmitOptions emit_opts;
+    // Stamp the time compute() took the frame.
+    auto now = context.clock().now();
+    emit_opts.capture_time = now ? *now : context.activation_time();
+    emit_opts.frame_id = static_cast<uint64_t>(frame_metadata_out.frame_number);
+
+    // Two correlated emits, both stamped with the same capture_time/frame_id so a
+    // downstream consumer can pair them (e.g. native CsiToBayerOp's OnAligned contract).
+    auto emitted = hololink::operators::emit_tensor_and_metadata(
+        [&] { return tensor.emit(std::move(*loan), emit_opts); }, metadata, frame_metadata_out,
+        emit_opts);
+    if (!emitted) {
+        HSB_LOG_ERROR("FusaCoeCaptureOp: publishing frame {} failed: {}",
+            frame_metadata_out.frame_number, holoscan::runtime_error_message(emitted.error()));
+        return holoscan::make_unexpected(std::move(emitted).error());
+    }
+    if (*emitted == hololink::operators::PairedEmit::kDropped) {
+        // A downstream queue is full: the frame is dropped rather than failing the run.
+        count_dropped_frames(dropped_frames_, 1, "downstream queue full");
+    }
+
+    return {};
 }
 
-uint32_t FusaCoeCaptureOp::receiver_start_byte()
+void FusaCoeCaptureOp::count_dropped_frames(
+    hololink::operators::DropCounter& counter, uint64_t frames, const char* reason)
 {
-    return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::receiver_start_byte();
+    if (const uint64_t dropped = counter.count(frames)) {
+        HSB_LOG_WARN("FusaCoeCaptureOp: dropped {} frame(s) in the last second ({}): the pipeline "
+                     "is behind the camera",
+            dropped, reason);
+    }
 }
 
-uint32_t FusaCoeCaptureOp::received_line_bytes(uint32_t line_bytes)
+bool FusaCoeCaptureOp::frame_ready()
 {
-    return core_.received_line_bytes(line_bytes);
+    auto result = sender_.post();
+    if (result) {
+        return true;
+    }
+    const auto code = result.error().code;
+    switch (code) {
+    case holoscan::ErrorCode::kNotReady:
+        // Sender not armed yet -- ask the caller to retry shortly.
+        return false;
+    case holoscan::ErrorCode::kBackpressured:
+        // The source is full. compute() runs once per accepted notification and Core posts
+        // only one per frame compute() can take, so this one must be accepted later -- ask
+        // the caller to retry shortly.
+        return false;
+    case holoscan::ErrorCode::kClosed:
+    case holoscan::ErrorCode::kStaleEndpoint:
+        // Terminal: the run is ending (sources close when dispatch ends, before stop()). Not
+        // retried, so a frame left in the slot is never taken; stop() returns it to the driver.
+        break;
+    default:
+        HSB_LOG_ERROR("FusaCoeCaptureOp::frame_ready: sender_.post() failed: {}",
+            holoscan::error_code_name(code));
+        break;
+    }
+    return true;
 }
 
-uint32_t FusaCoeCaptureOp::transmitted_line_bytes(
-    hololink::module::csi::PixelFormat pixel_format, uint32_t pixel_width)
+holoscan::LifecycleStatus FusaCoeCaptureOp::on_arm(
+    holoscan::LifecycleContext& context) noexcept
 {
-    return core_.transmitted_line_bytes(
-        static_cast<hololink::csi::PixelFormat>(pixel_format), pixel_width);
-}
-
-void FusaCoeCaptureOp::configure_format(
-    hololink::module::csi::PixelFormat pixel_format,
-    hololink::module::csi::BayerFormat bayer_format,
-    bool packetizer_enabled)
-{
-    // The module csi enums carry the same integer values as the legacy ones by design,
-    // so they cast across the boundary without a conversion table.
-    core_.request_format(
-        static_cast<hololink::csi::PixelFormat>(pixel_format),
-        static_cast<hololink::csi::BayerFormat>(bayer_format),
-        packetizer_enabled);
-}
-
-void FusaCoeCaptureOp::configure(
-    uint32_t start_byte, uint32_t received_bytes_per_line,
-    uint32_t pixel_width, uint32_t pixel_height,
-    hololink::module::csi::PixelFormat pixel_format,
-    uint32_t trailing_bytes)
-{
-    core_.configure(
-        start_byte, received_bytes_per_line, pixel_width, pixel_height,
-        static_cast<hololink::csi::PixelFormat>(pixel_format), trailing_bytes);
-}
-
-void FusaCoeCaptureOp::configure_converter(hololink::module::csi::CsiConverterV1& converter)
-{
-    // core_.pixel_format() returns a hololink::csi::PixelFormat; the module csi
-    // enum carries identical integer values, so cast across the boundary.
-    converter.configure(
-        0, core_.bytes_per_line(), core_.pixel_width(), core_.pixel_height(),
-        static_cast<hololink::module::csi::PixelFormat>(core_.pixel_format()), 0);
-}
-
-void FusaCoeCaptureOp::configure_frame_size(uint32_t frame_size_bytes)
-{
-    core_.configure_frame_size(frame_size_bytes);
-}
-
-nvidia::gxf::Expected<void> FusaCoeCaptureOp::buffer_release_callback(void* pointer)
-{
-    return hololink::operators::fusa_coe_capture::FusaCoeCaptureCore::buffer_release_callback(
-        pointer);
+    auto sender = context.notification_sender(source_);
+    if (!sender) {
+        HSB_LOG_ERROR("FusaCoeCaptureOp::on_arm: failed to acquire NotificationSender: {}",
+            holoscan::error_code_name(sender.error().code));
+        return holoscan::LifecycleStatus::kFatalFailure;
+    }
+    sender_ = std::move(*sender);
+    return holoscan::LifecycleStatus::kOk;
 }
 
 } // namespace hololink::module::operators

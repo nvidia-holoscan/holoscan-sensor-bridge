@@ -29,10 +29,13 @@ target_include_directories(iq_enc
 )
 
 target_link_libraries(iq_enc
+  PUBLIC
+    hololink::gui_renderer
   PRIVATE
     hololink
     holoscan::core
-    holoscan::viz::imgui
+    holoscan::visualization::holoviz
+    CUDA::cudart
 )
 
 # Installation of the iq_enc operator

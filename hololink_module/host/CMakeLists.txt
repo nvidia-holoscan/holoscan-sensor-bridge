@@ -100,7 +100,11 @@ target_precompile_headers(hololink_module_runtime
 
 # Host-side module implementation: Adapter singleton, dlopen + ABI
 # check, host-side Module wiring, plus the host's own Logging sink,
-# Reactor poll loop, and bootp-v2 listener (all in src/). This
+# Reactor poll loop and bootp-v2 listener (all in src/). Transport-specific
+# code lives outside this library: the PCIe receive path is module-owned
+# (module/hsb_pcie publishes PcieReceiverInterfaceV1), and discovery is
+# bootp-only for every transport (the hololink_pcie kernel driver
+# announces PCIe endpoints on the loopback interface). This
 # library deliberately links no legacy hololink::core:
 # the infrastructure it needs (logging, reactor, bootp parsing, route
 # lookup, the ReceiverMemoryDescriptor CUDA helpers) is module-owned, so
@@ -182,58 +186,76 @@ target_precompile_headers(hololink_module
         <hololink/module/service.hpp>
         <hololink/module/status.h>)
 
-# pybind11 extension exposing the core module surface to Python.
-# Disabled when HOLOLINK_BUILD_PYTHON=OFF (the same gate the parent
-# project uses for its own Python bindings). Uses the parent project's
-# hololink_deps/pybind11 helper, which finds an installed pybind11 if
-# present and falls back to FetchContent otherwise.
+# Single nanobind extension replacing all 5 hololink_module pybind11 extensions (this
+# core/host one, host/operators, host/sensors/vb1940, module/taurotech_da326, and the still-
+# deferred module/hsb_lite) -- holoscan::pybind11 is not exported by the installed HSDK5
+# holoscan-sdk, so none of the old pybind11_add_module() blocks could configure any more.
+# Consolidating into one TU also means the CXX_VISIBILITY_PRESET default/--export-dynamic/
+# cross-extension-typeinfo-sharing dance the old core extension needed (to export typeinfo for
+# the sibling pybind11 extensions to cast against) is no longer necessary at all: nanobind's
+# cross-extension type sharing works through a runtime-looked-up PyCapsule, not shared
+# pybind11 internals/exported typeinfo, and there's only one extension now regardless.
+#
+# The source lives at python/hololink_module/_hololink_module.cpp (mirroring native's own
+# python/hololink/_hololink.cpp placement: one Python-facing TU at the package root, named
+# after it) rather than under this directory's own python/ -- it binds operators/vb1940/
+# taurotech_da326 types too, not just this directory's core V1 service surface, so it has no
+# single natural home inside hololink_module/*/python/. The target is still defined here
+# (matching where the old core _hololink_py_module extension always lived) because
+# hololink::module::operators::hsdk5 / hololink::module::sensors::vb1940 /
+# hololink::taurotech_da326::headers -- all linked below -- are themselves only defined by
+# subdirectories CMake processes after this one (host/operators, host/sensors, module/
+# taurotech_da326; see hololink_module/CMakeLists.txt's add_subdirectory() order comment).
+# This is fine: CMake resolves target_link_libraries() against the whole project's target
+# graph after every CMakeLists.txt has run, not in file-processing order.
+#
+# Depends on HOLOLINK_MODULE_BUILD_OPERATORS being ON (the default): bind_operators()/
+# bind_vb1940_cam()/bind_taurotech_da326() are called unconditionally from this TU's
+# NB_MODULE body, so hololink::module::operators::hsdk5 must exist whenever this target is
+# configured. Not specially guarded -- same as native's own python/hololink/CMakeLists.txt,
+# which links holoscan::core / hololink::operators::operator_catalog unconditionally and has
+# never supported a Holoscan-less Python build either.
 if(HOLOLINK_BUILD_PYTHON)
-    include(hololink_deps/pybind11)
+    include(hololink_deps/nanobind)
 
-    pybind11_add_module(_hololink_py_module MODULE
-        python/hololink_module_py.cpp)
-    # Link holoscan::pybind11 so this extension compiles against the
-    # same pybind11 headers / internals capsule that Holoscan's own
-    # extensions (and the sibling _hololink_module_operators) use.
-    # Without it the operators extension can't see hololink_module's
-    # registered types — they end up in a different pybind11 internals
-    # capsule than holoscan::Operator and friends, so cross-module
-    # std::type_index lookup fails with "incompatible constructor
-    # arguments" naming the C++ types as raw "hololink::module::...".
-    target_link_libraries(_hololink_py_module
+    nanobind_add_module(hololink_module_python NB_STATIC STABLE_ABI
+        "${hololink_SOURCE_DIR}/python/hololink_module/_hololink_module.cpp")
+    target_link_libraries(hololink_module_python
         PRIVATE
+            holoscan::core
+            hololink::hsdk5_compat
             hololink::module
-            holoscan::pybind11)
-    target_compile_features(_hololink_py_module PRIVATE cxx_std_17)
-    # Reuse the host-side module's PCH — the binding TU pulls in the
-    # same framework headers it precompiles. Visibility is compatible
-    # (both leave default visibility for the typeinfo-export reason
-    # documented above).
-    target_precompile_headers(_hololink_py_module REUSE_FROM hololink_module)
+            hololink::module::operators::hsdk5
+            hololink::module::sensors::vb1940
+            hololink::taurotech_da326::headers)
+    target_compile_features(hololink_module_python PRIVATE cxx_std_17)
 
-    # Stage __init__.py next to the .so so
-    # PYTHONPATH=$<TARGET_FILE_DIR>/.. imports the package as
-    # `hololink_module`. The C++ example binaries land at
-    # <site-packages>/bin/<name> via examples/CMakeLists.txt's
-    # install(TARGETS …) rule; the demo container's Dockerfile
-    # symlinks that dir onto /usr/local/bin/ so they appear on PATH
-    # without per-binary plumbing here.
-    set_target_properties(_hololink_py_module PROPERTIES
+    if(HOLOLINK_BUILD_ROCE)
+        # infiniband_devices()/ibv_device_for_peer() (gated #ifdef HOLOLINK_BUILD_ROCE in the
+        # binding TU) call libibverbs directly, the same plain-variable convention
+        # src/hololink/operators/roce_receiver/CMakeLists.txt uses (no ibverbs::ibverbs
+        # imported target exists -- find_package(ibverbs) only sets these).
+        target_include_directories(hololink_module_python PRIVATE ${ibverbs_INCLUDE_DIRS})
+        target_link_libraries(hololink_module_python PRIVATE ${ibverbs_LIBRARIES})
+        target_compile_definitions(hololink_module_python PRIVATE HOLOLINK_BUILD_ROCE)
+    endif()
+    if(HOLOLINK_BUILD_FUSA)
+        target_compile_definitions(hololink_module_python PRIVATE HOLOLINK_BUILD_FUSA)
+    endif()
+    if(HOLOLINK_MODULE_BUILD_CRC)
+        target_compile_definitions(hololink_module_python PRIVATE HOLOLINK_MODULE_BUILD_CRC)
+    endif()
+
+    # Stage __init__.py next to the .so, preserving the old core extension's own output
+    # directory exactly (${CMAKE_BINARY_DIR}/python/hololink_module, not nested under
+    # ${CMAKE_INSTALL_LIBDIR} the way native's own hololink package is) -- the operators/
+    # vb1940/taurotech_da326 sub-package __init__.py files are staged the same way by their
+    # own CMakeLists.txt, each still colocated with its own C++ implementation tree.
+    set_target_properties(hololink_module_python PROPERTIES
         LIBRARY_OUTPUT_DIRECTORY
-            "${CMAKE_BINARY_DIR}/python/hololink_module")
+            "${CMAKE_BINARY_DIR}/python/hololink_module"
+        OUTPUT_NAME _hololink_module)
     configure_file(
         "${CMAKE_CURRENT_SOURCE_DIR}/python/__init__.py"
         "${CMAKE_BINARY_DIR}/python/hololink_module/__init__.py" COPYONLY)
-
-    # Export typeinfo from this extension so the sibling extensions
-    # (_hololink_module_operators, _hololink_module_<module>) can
-    # find a matching std::type_index when they cast user-supplied
-    # objects to shared_ptr<RoceDataChannelInterface> etc. pybind11
-    # defaults to -fvisibility=hidden which hides the weak typeinfo
-    # symbols and breaks cross-module type lookup; the legacy
-    # _hololink_core module uses the same override for the same reason
-    # (python/hololink/hololink_core/CMakeLists.txt:33-39).
-    set_property(TARGET _hololink_py_module PROPERTY CXX_VISIBILITY_PRESET default)
-    set_property(TARGET _hololink_py_module PROPERTY VISIBILITY_INLINES_HIDDEN OFF)
-    target_link_options(_hololink_py_module PRIVATE "LINKER:--export-dynamic")
 endif()

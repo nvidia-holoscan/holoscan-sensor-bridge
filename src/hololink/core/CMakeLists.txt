@@ -64,14 +64,17 @@ install(FILES
         deserializer.hpp
         enumerator.hpp
         hololink.hpp
+        ingress_stall.hpp
         jesd.hpp
         logging.hpp
         # Note that logging_internal.hpp is not included in the public release.
         # logging_internal.hpp
         metadata.hpp
         networking.hpp
+        newest_frame_slot.hpp
         nullable_pointer.hpp
         nvtx_trace.hpp
+        on_scope_exit.hpp
         packetizer_program.hpp
         reactor.hpp
         serializer.hpp

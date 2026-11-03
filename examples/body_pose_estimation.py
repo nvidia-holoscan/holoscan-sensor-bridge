@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2024 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,526 +12,793 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-
-# See README.md for detailed information.
+#
+# Single IMX274 sensor via RoceReceiverOp, running a YOLOv8-pose body-pose-estimation model and
+# overlaying keypoints/skeleton on the live video in Holoviz. Mechanical sensor swap of the
+# already-ported examples/body_pose_estimation_imx477.py -- same inference side-chain
+# (InferenceOp/ResizeOp/ConvertToOp), same keypoint-consolidation design (19 old Holoviz tensors
+# -> 2, see that file's own header comment for the full rationale, including the HolovizOp
+# 8-layer cap and the geometry-layer color/opacity loss), same PostprocessorOp math. Only the
+# camera/bring-up differs here: NativeImx274Sensor + hl.resolve_generic_geometry(camera),
+# matching examples/imx274_player.py's own already-proven pattern, in place of IMX477's
+# resolve_generic_geometry_from_dimensions() (IMX477 has no public get_width()/get_height(), so
+# that app's own sibling resolves geometry from raw dimensions instead).
+#
+#   RoceReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp -> ImageShiftToUint8Op
+#     -> (a) HolovizOp "video" image layer
+#     -> (b) ResizeOp -> ConvertToOp -> FormatInferenceInputOp -> InferenceOp -> PostprocessorOp
+#          -> HolovizOp "keypoints"/"segments" geometry layers
+#
+# Usage:
+#   body_pose_estimation.py [OPTIONS]
+#
+# Options:
+#   --camera-mode N          IMX274 mode (default: 0 = 3840x2160@60fps)
+#   --expander-configuration I2C expander configuration (default: 0)
+#   --ibv-name NAME           IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N              Port number of IBV device (default: 1)
+#   --engine PATH             YOLOv8-pose TRT engine path (default: examples/yolov8n-pose.engine.fp32)
+#   --frame-limit N           Number of frames to capture (default: unlimited)
+#   --headless                Run without opening a window (still renders, presents nowhere)
+#   --fullscreen              Run in fullscreen mode
+#   --log-level N             Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
 import logging
 import os
+import signal
+import sys
 
-import cuda.bindings.driver as cuda
 import cupy as cp
-import holoscan
 import holoscan as hs
+import holoscan_vision
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
 import numpy as np
-from holoscan.core import Operator, OperatorSpec
-from holoscan.gxf import Entity
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
+
+# YOLOv8-pose's raw output channel layout: cx, cy, w, h, score, then 17 keypoints x (x, y,
+# visibility) -- only x, y are used below, visibility is ignored (matches the old app exactly).
+_KEYPOINT_SLICES = {
+    "nose": slice(5, 7),
+    "left_eye": slice(8, 10),
+    "right_eye": slice(11, 13),
+    "left_ear": slice(14, 16),
+    "right_ear": slice(17, 19),
+    "left_shoulder": slice(20, 22),
+    "right_shoulder": slice(23, 25),
+    "left_elbow": slice(26, 28),
+    "right_elbow": slice(29, 31),
+    "left_wrist": slice(32, 34),
+    "right_wrist": slice(35, 37),
+    "left_hip": slice(38, 40),
+    "right_hip": slice(41, 43),
+    "left_knee": slice(44, 46),
+    "right_knee": slice(47, 49),
+    "left_ankle": slice(50, 52),
+    "right_ankle": slice(53, 55),
+}
+
+# The 12 keypoint types the old app's own YAML actually renders (opacity 0.5); face-area
+# keypoints (nose/eyes/ears, opacity 0 in the old YAML) are computed for segment endpoints below
+# but never emitted as their own points -- see this file's header comment.
+_VISIBLE_KEYPOINT_NAMES = [
+    "left_shoulder",
+    "right_shoulder",
+    "left_elbow",
+    "right_elbow",
+    "left_wrist",
+    "right_wrist",
+    "left_hip",
+    "right_hip",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle",
+]
+
+# Skeleton segments, ported unchanged from the old app's own list (18 pairs; "neck" is
+# synthesized as the left/right shoulder midpoint, matching the old app exactly).
+_SEGMENT_PAIRS = [
+    ("nose", "left_eye"),
+    ("nose", "right_eye"),
+    ("left_eye", "left_ear"),
+    ("right_eye", "right_ear"),
+    ("left_shoulder", "right_shoulder"),
+    ("left_shoulder", "left_elbow"),
+    ("left_elbow", "left_wrist"),
+    ("right_shoulder", "right_elbow"),
+    ("right_elbow", "right_wrist"),
+    ("left_shoulder", "left_hip"),
+    ("left_hip", "left_knee"),
+    ("left_knee", "left_ankle"),
+    ("right_shoulder", "right_hip"),
+    ("right_hip", "right_knee"),
+    ("right_knee", "right_ankle"),
+    ("left_hip", "right_hip"),
+    ("left_ear", "neck"),
+    ("right_ear", "neck"),
+]
+
+# Normalized-coordinate cross-marker size for keypoints (HolovizOp's cross_list topology wants
+# cx, cy, size per primitive). The old app's point_size=10 was in a pixel-ish unit with no
+# documented HSDK5 equivalent coordinate space; this is a reasonable visible-marker judgment
+# call, not a value derived from the model or the old app.
+_KEYPOINT_MARKER_SIZE = 0.01
+
+_MAX_OVERLAY_PERSONS = (
+    16  # conservative headroom for simultaneous detections in one frame.
+)
 
 
-class FormatInferenceInputOp(Operator):
-    """Operator to format input image for inference"""
+_BAYER_FORMAT_VALUES = {
+    name: index for index, name in enumerate(["bggr", "rggb", "gbrg", "grbg"])
+}
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
 
-    def setup(self, spec: OperatorSpec):
-        spec.input("in")
-        spec.output("out")
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    def compute(self, op_input, op_output, context):
-        # Get input message
-        in_message = op_input.receive("in")
 
-        # Transpose
-        tensor = cp.asarray(in_message.get("preprocessed")).get()
-        # OBS: Numpy conversion and moveaxis is needed to avoid strange
-        # strides issue when doing inference
+def import_tensor(tensor, stream):
+    """Borrow a read-only GPU view; callers finish reads before compute returns."""
+    return cp.from_dlpack(
+        tensor.__dlpack__(stream=stream.ptr, max_version=(1, 0), copy=False)
+    )
+
+
+def emit_host_tensor(port, values, options):
+    values = np.ascontiguousarray(values, dtype=np.float32).ravel()
+    port.emit(hs.Tensor.as_tensor(values), options=options)
+
+
+def wait_for_completion(session):
+    """Wait for receiver completion or runtime failure, and handle Ctrl+C."""
+    try:
+        session.wait()
+    except KeyboardInterrupt:
+        session.request_stop()
+        session.wait()
+    return any(
+        diag.severity == hs.diagnostics.DiagnosticSeverity.ERROR
+        for diag in session.diagnostics
+    )
+
+
+class ImageShiftToUint8Op(hs.Operator):
+    """Right-shifts a 16-bit image down to 8 bits per channel (shift=8 keeps the high byte).
+    Uses an SDK-owned output buffer so native CUDA consumers can track its lifetime."""
+
+    input = hs.Input("input", hs.schema.Image)
+    output = hs.Output("output", hs.schema.Image)
+
+    shift = hs.Param(0)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+        spec.output(self.output).produces_tensor(
+            hs.tensor.OutputSpec(
+                storage="runtime_pool",
+                memory_kind=hs.tensor.MemoryKind.CUDA_DEVICE,
+                dtype=hs.tensor.DLDataType(1, 8, 1),
+                rank=3,
+            ),
+            hs.tensor.byte_span(3840 * 2160 * 3),
+            field="data",
+        )
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        # Run the CuPy work on the SDK's activation stream, not CuPy's legacy default stream
+        # (which TensorRT's concurrent graph capture forbids). The runtime orders this
+        # callback's inputs on it and records its outputs' readiness on it.
+        with context.stream():
+            self._compute(context, cp.cuda.get_current_stream())
+
+    def _compute(self, context, stream):
+        sample = self.input.receive()
+        image = sample.data
+        # Import versioned DLPack without copying, on the activation stream.
+        capsule = image.data.__dlpack__(
+            stream=stream.ptr, max_version=(1, 0), copy=False
+        )
+        cp_frame = cp.from_dlpack(capsule)
+        descriptor = hs.schema.Image(
+            height=image.height,
+            width=image.width,
+            encoding=hs.schema.image.ImageEncoding.RGB8,
+        )
+        request = hs.tensor.LoanRequest(
+            shape=cp_frame.shape, dtype=hs.tensor.DLDataType(1, 8, 1)
+        )
+        # Keep the camera's capture time, which BayerDemosaicOp passes on: HolovizOp draws
+        # the overlays captured no later than this frame with it.
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(sample.metadata)
+        options = provenance.emit_options(hs.sensor_io.CaptureTimePolicy.EARLIEST)
+        with self.output.allocate_tensors(
+            descriptor, {"data": request}, options=options
+        ) as loan:
+            tensor = loan.tensors["data"]
+            memory = cp.cuda.UnownedMemory(tensor.data, cp_frame.size, tensor)
+            destination = cp.ndarray(
+                cp_frame.shape,
+                dtype=cp.uint8,
+                memptr=cp.cuda.MemoryPointer(memory, 0),
+            )
+            cp.right_shift(cp_frame, self.shift, out=destination, casting="unsafe")
+
+
+class FormatInferenceInputOp(hs.Operator):
+    """Transposes HWC->CHW and adds a batch dimension, matching InferenceOp's expected input
+    layout. Keeps the original CPU roundtrip and publishes contiguous data
+    through an SDK-owned CUDA output buffer."""
+
+    input = hs.Input("input", hs.schema.Image)
+    output = hs.Output("output", hs.payload.Tensor)
+
+    width = hs.Param(640)
+    height = hs.Param(640)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+        spec.output(self.output).produces_tensor(
+            hs.tensor.OutputSpec(
+                storage="runtime_pool",
+                memory_kind=hs.tensor.MemoryKind.CUDA_DEVICE,
+                dtype=hs.tensor.DLDataType(2, 32, 1),
+                rank=4,
+            ),
+            hs.tensor.byte_span(1 * 3 * self.height * self.width * 4),
+        )
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        # Run the CuPy work on the SDK's activation stream, not CuPy's legacy default stream
+        # (which TensorRT's concurrent graph capture forbids). The runtime orders this
+        # callback's inputs on it and records its outputs' readiness on it.
+        with context.stream():
+            self._compute(context, cp.cuda.get_current_stream())
+
+    def _compute(self, context, stream):
+        sample = self.input.receive()
+        image = sample.data
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(sample.metadata)
+        options = provenance.emit_options(hs.sensor_io.CaptureTimePolicy.EARLIEST)
+        capsule = image.data.__dlpack__(
+            stream=stream.ptr, max_version=(1, 0), copy=False
+        )
+        frame = cp.from_dlpack(capsule)
+        tensor = frame.get()
         tensor = np.moveaxis(tensor, 2, 0)[None]
-        tensor = cp.asarray(tensor)
+        tensor = np.ascontiguousarray(tensor, dtype=np.float32)
+        with self.output.allocate_tensor(
+            shape=tensor.shape, dtype="float32", options=options
+        ) as loan:
+            memory = cp.cuda.UnownedMemory(loan.tensor.data, tensor.nbytes, loan.tensor)
+            destination = cp.ndarray(
+                tensor.shape, dtype=cp.float32, memptr=cp.cuda.MemoryPointer(memory, 0)
+            )
+            destination.set(tensor)
 
-        # Create output message
-        out_message = Entity(context)
-        out_message.add(hs.as_tensor(tensor), "preprocessed")
-        op_output.emit(out_message, "out")
 
+class PostprocessorOp(hs.Operator):
+    """Extracts keypoints, builds skeleton segments, runs NMS. Box/keypoint/segment math ported
+    unchanged from this repo's own HSDK4-era body_pose_estimation.py PostprocessorOp; output
+    shape changed to HSDK5's typed ports and consolidated geometry-layer tensors -- see this
+    file's header comment for why (HolovizOp's 8-layer cap)."""
 
-class PostprocessorOp(Operator):
-    """Operator to post-process inference output:
-    * Non-max suppression
-    * Make boxes compatible with Holoviz
+    in_inference = hs.Input("in_inference", hs.payload.Tensor)
+    keypoints = hs.Output("keypoints", hs.payload.Tensor)
+    segments = hs.Output("segments", hs.payload.Tensor)
 
-    """
+    iou_threshold = hs.Param(0.5)
+    score_threshold = hs.Param(0.5)
+    image_dim = hs.Param(640)
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Output tensor names
-        self.outputs = [
-            "boxes",
-            "noses",
-            "left_eyes",
-            "right_eyes",
-            "left_ears",
-            "right_ears",
-            "left_shoulders",
-            "right_shoulders",
-            "left_elbows",
-            "right_elbows",
-            "left_wrists",
-            "right_wrists",
-            "left_hips",
-            "right_hips",
-            "left_knees",
-            "right_knees",
-            "left_ankles",
-            "right_ankles",
-            "segments",
-        ]
+    def setup(self, spec):
+        spec.input(self.in_inference, queue_depth=4)
+        spec.output(self.keypoints)
+        spec.output(self.segments)
 
-        # Indices for each keypoint as defined by YOLOv8 pose model
-        self.NOSE = slice(5, 7)
-        self.LEFT_EYE = slice(8, 10)
-        self.RIGHT_EYE = slice(11, 13)
-        self.LEFT_EAR = slice(14, 16)
-        self.RIGHT_EAR = slice(17, 19)
-        self.LEFT_SHOULDER = slice(20, 22)
-        self.RIGHT_SHOULDER = slice(23, 25)
-        self.LEFT_ELBOW = slice(26, 28)
-        self.RIGHT_ELBOW = slice(29, 31)
-        self.LEFT_WRIST = slice(32, 34)
-        self.RIGHT_WRIST = slice(35, 37)
-        self.LEFT_HIP = slice(38, 40)
-        self.RIGHT_HIP = slice(41, 43)
-        self.LEFT_KNEE = slice(44, 46)
-        self.RIGHT_KNEE = slice(47, 49)
-        self.LEFT_ANKLE = slice(50, 52)
-        self.RIGHT_ANKLE = slice(53, 55)
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.in_inference))
 
-    def setup(self, spec: OperatorSpec):
-        """
-        input: "in"    - Input tensors coming from output of inference model
-        output: "out"  - The post-processed output after applying thresholding and non-max suppression.
-                         Outputs are the boxes, keypoints, and segments.  See self.outputs for the list of outputs.
-        params:
-            iou_threshold:    Intersection over Union (IoU) threshold for non-max suppression (default: 0.5)
-            score_threshold:  Score threshold for filtering out low scores (default: 0.5)
-            image_dim:        Image dimensions for normalizing the boxes (default: None)
+    def compute(self, context):
+        # Run the CuPy work on the SDK's activation stream, not CuPy's legacy default stream
+        # (which TensorRT's concurrent graph capture forbids). The runtime orders this
+        # callback's inputs on it and records its outputs' readiness on it.
+        with context.stream():
+            self._compute(context, cp.cuda.get_current_stream())
 
-        Returns:
-            None
-        """
-        spec.input("in")
-        spec.output("out")
-        spec.param("iou_threshold", 0.5)
-        spec.param("score_threshold", 0.5)
-        spec.param("image_dim", None)
+    def _compute(self, context, stream):
+        # ONNX models produce a singleton batch dimension that we skip.
+        sample = self.in_inference.receive()
+        # Overlay geometry describes the inference input, not this activation.
+        provenance = hs.sensor_io.ProvenanceAccumulator()
+        provenance.observe(sample.metadata)
+        self._overlay_options = provenance.emit_options(
+            hs.sensor_io.CaptureTimePolicy.EARLIEST
+        )
+        results = import_tensor(sample.data, stream)[0]
 
-    def get_keypoints(self, detection):
-        # Keypoints to be returned including our own "neck" keypoint
-        keypoints = {
-            "nose": detection[self.NOSE],
-            "left_eye": detection[self.LEFT_EYE],
-            "right_eye": detection[self.RIGHT_EYE],
-            "left_ear": detection[self.LEFT_EAR],
-            "right_ear": detection[self.RIGHT_EAR],
-            "neck": (detection[self.LEFT_SHOULDER] + detection[self.RIGHT_SHOULDER])
-            / 2,
-            "left_shoulder": detection[self.LEFT_SHOULDER],
-            "right_shoulder": detection[self.RIGHT_SHOULDER],
-            "left_elbow": detection[self.LEFT_ELBOW],
-            "right_elbow": detection[self.RIGHT_ELBOW],
-            "left_wrist": detection[self.LEFT_WRIST],
-            "right_wrist": detection[self.RIGHT_WRIST],
-            "left_hip": detection[self.LEFT_HIP],
-            "right_hip": detection[self.RIGHT_HIP],
-            "left_knee": detection[self.LEFT_KNEE],
-            "right_knee": detection[self.RIGHT_KNEE],
-            "left_ankle": detection[self.LEFT_ANKLE],
-            "right_ankle": detection[self.RIGHT_ANKLE],
-        }
-
-        return keypoints
-
-    def compute(self, op_input, op_output, context):
-        # Get input message
-        in_message = op_input.receive("in")
-
-        # Convert input to cupy array
-        results = cp.asarray(in_message.get("inference_output"))[0]
-
-        # Filter out low scores
         results = results[:, results[4, :] > self.score_threshold]
         scores = results[4, :]
 
-        # If no detections, return zeros for all outputs
         if results.shape[1] == 0:
-            out_message = Entity(context)
-            zeros = hs.as_tensor(np.zeros([1, 2, 2]).astype(np.float32))
-
-            for output in self.outputs:
-                out_message.add(zeros, output)
-            op_output.emit(out_message, "out")
+            empty = np.zeros((0,), dtype=np.float32)
+            emit_host_tensor(self.keypoints, empty, self._overlay_options)
+            emit_host_tensor(self.segments, empty, self._overlay_options)
             return
 
-        results = results.transpose([1, 0])
-
-        segments = []
-        for i, detection in enumerate(results):
-            # fmt: off
-            kp = self.get_keypoints(detection)
-            # Every two points defines a segment
-            segments.append([kp["nose"], kp["left_eye"],      # nose <-> left eye
-                             kp["nose"], kp["right_eye"],     # nose <-> right eye
-                             kp["left_eye"], kp["left_ear"],  # ...
-                             kp["right_eye"], kp["right_ear"],
-                             kp["left_shoulder"], kp["right_shoulder"],
-                             kp["left_shoulder"], kp["left_elbow"],
-                             kp["left_elbow"], kp["left_wrist"],
-                             kp["right_shoulder"], kp["right_elbow"],
-                             kp["right_elbow"], kp["right_wrist"],
-                             kp["left_shoulder"], kp["left_hip"],
-                             kp["left_hip"], kp["left_knee"],
-                             kp["left_knee"], kp["left_ankle"],
-                             kp["right_shoulder"], kp["right_hip"],
-                             kp["right_hip"], kp["right_knee"],
-                             kp["right_knee"], kp["right_ankle"],
-                             kp["left_hip"], kp["right_hip"],
-                             kp["left_ear"], kp["neck"],
-                             kp["right_ear"], kp["neck"],
-                             ])
-            # fmt: on
+        results = results.transpose([1, 0])  # (n, channels)
 
         cx, cy, w, h = results[:, 0], results[:, 1], results[:, 2], results[:, 3]
         x1, x2 = cx - w / 2, cx + w / 2
         y1, y2 = cy - h / 2, cy + h / 2
+        boxes = cp.stack([x1, y1, x2, y2], axis=-1).transpose(
+            [1, 0]
+        )  # (4, n) -- NMS math only
 
-        data = {
-            "boxes": cp.asarray(np.stack([x1, y1, x2, y2], axis=-1)).transpose([1, 0]),
-            "noses": results[:, self.NOSE],
-            "left_eyes": results[:, self.LEFT_EYE],
-            "right_eyes": results[:, self.RIGHT_EYE],
-            "left_ears": results[:, self.LEFT_EAR],
-            "right_ears": results[:, self.RIGHT_EAR],
-            "left_shoulders": results[:, self.LEFT_SHOULDER],
-            "right_shoulders": results[:, self.RIGHT_SHOULDER],
-            "left_elbows": results[:, self.LEFT_ELBOW],
-            "right_elbows": results[:, self.RIGHT_ELBOW],
-            "left_wrists": results[:, self.LEFT_WRIST],
-            "right_wrists": results[:, self.RIGHT_WRIST],
-            "left_hips": results[:, self.LEFT_HIP],
-            "right_hips": results[:, self.RIGHT_HIP],
-            "left_knees": results[:, self.LEFT_KNEE],
-            "right_knees": results[:, self.RIGHT_KNEE],
-            "left_ankles": results[:, self.LEFT_ANKLE],
-            "right_ankles": results[:, self.RIGHT_ANKLE],
-            "segments": cp.asarray(segments),
-        }
-        scores = cp.asarray(scores)
+        kp = {name: results[:, sl] for name, sl in _KEYPOINT_SLICES.items()}
+        kp["neck"] = (kp["left_shoulder"] + kp["right_shoulder"]) / 2
 
-        out = self.nms(data, scores)
+        visible_keypoints = cp.stack(
+            [kp[name] for name in _VISIBLE_KEYPOINT_NAMES], axis=1
+        )
+        segment_points = cp.stack(
+            [kp[name] for pair in _SEGMENT_PAIRS for name in pair], axis=1
+        )  # (n, 2*len(_SEGMENT_PAIRS), 2)
 
-        # Rearrange boxes to be compatible with Holoviz
-        out["boxes"] = cp.reshape(out["boxes"][None], (1, -1, 2))
+        selected_indices = self._nms(boxes, scores)[:_MAX_OVERLAY_PERSONS]
+        if len(selected_indices) == 0:
+            empty = np.zeros((0,), dtype=np.float32)
+            emit_host_tensor(self.keypoints, empty, self._overlay_options)
+            emit_host_tensor(self.segments, empty, self._overlay_options)
+            return
 
-        # Create output message
-        out_message = Entity(context)
-        for output in self.outputs:
-            out_message.add(hs.as_tensor(out[output] / self.image_dim), output)
-        op_output.emit(out_message, "out")
+        visible_keypoints = visible_keypoints[selected_indices] / self.image_dim
+        segment_points = segment_points[selected_indices] / self.image_dim
 
-    def nms(self, inputs, scores):
-        """Non-max suppression (NMS)
-        Performs non-maximum suppression on input boxes according to their intersection-over-union (IoU).
-        Filter out detections where the IoU is >= self.iou_threshold
+        sizes = cp.full(
+            visible_keypoints.shape[:2] + (1,), _KEYPOINT_MARKER_SIZE, dtype=cp.float32
+        )
+        keypoints_out = cp.concatenate([visible_keypoints, sizes], axis=-1)
 
-        Parameters
-        ----------
-        inputs : dictionary containing boxes, keypoints, and segments
-        scores : array (n,)
+        emit_host_tensor(
+            self.keypoints,
+            cp.asnumpy(keypoints_out).astype(np.float32).ravel(),
+            self._overlay_options,
+        )
+        emit_host_tensor(
+            self.segments,
+            cp.asnumpy(segment_points).astype(np.float32).ravel(),
+            self._overlay_options,
+        )
 
-        Returns
-        ----------
-        outputs : dictionary containing remaining boxes, keypoints, and segments after non-max supprerssion
+    def _nms(self, boxes, scores):
+        """Non-max suppression (NMS). boxes: array (4, n); scores: array (n,).
+        Returns the surviving detections' original indices, highest score first."""
+        if boxes.shape[1] == 0:
+            return cp.asarray([], dtype=cp.int64)
 
-        """
-
-        boxes = inputs["boxes"]
-        segments = inputs["segments"]
-
-        if len(boxes) == 0:
-            return cp.asarray([]), cp.asarray([])
-
-        # Get coordinates
         x0, y0, x1, y1 = boxes[0, :], boxes[1, :], boxes[2, :], boxes[3, :]
-
-        # Area of bounding boxes
         area = (x1 - x0 + 1) * (y1 - y0 + 1)
-
-        # Get indices of sorted scores
         indices = cp.argsort(scores)
 
-        # Output boxes and scores
-        boxes_out, segments_out, scores_out = [], [], []
-
-        selected_indices = []
-
-        # Iterate over bounding boxes
+        selected = []
         while len(indices) > 0:
-            # Get index with highest score from remaining indices
             index = indices[-1]
-            selected_indices.append(index)
-            # Pick bounding box with highest score
-            boxes_out.append(boxes[:, index])
-            segments_out.extend(segments[index])
-            scores_out.append(scores[index])
+            selected.append(index)
 
-            # Get coordinates
             x00 = cp.maximum(x0[index], x0[indices[:-1]])
             x11 = cp.minimum(x1[index], x1[indices[:-1]])
             y00 = cp.maximum(y0[index], y0[indices[:-1]])
             y11 = cp.minimum(y1[index], y1[indices[:-1]])
 
-            # Compute IOU
             width = cp.maximum(0, x11 - x00 + 1)
             height = cp.maximum(0, y11 - y00 + 1)
             overlap = width * height
             union = area[index] + area[indices[:-1]] - overlap
             iou = overlap / union
 
-            # Threshold and prune
             left = cp.where(iou < self.iou_threshold)
             indices = indices[left]
 
-        selected_indices = cp.asarray(selected_indices)
-
-        outputs = {
-            "boxes": cp.asarray(boxes_out),
-            "segments": cp.asarray(segments_out),
-            "noses": inputs["noses"][selected_indices],
-            "left_eyes": inputs["left_eyes"][selected_indices],
-            "right_eyes": inputs["right_eyes"][selected_indices],
-            "left_ears": inputs["left_ears"][selected_indices],
-            "right_ears": inputs["right_ears"][selected_indices],
-            "left_shoulders": inputs["left_shoulders"][selected_indices],
-            "right_shoulders": inputs["right_shoulders"][selected_indices],
-            "left_elbows": inputs["left_elbows"][selected_indices],
-            "right_elbows": inputs["right_elbows"][selected_indices],
-            "left_wrists": inputs["left_wrists"][selected_indices],
-            "right_wrists": inputs["right_wrists"][selected_indices],
-            "left_hips": inputs["left_hips"][selected_indices],
-            "right_hips": inputs["right_hips"][selected_indices],
-            "left_knees": inputs["left_knees"][selected_indices],
-            "right_knees": inputs["right_knees"][selected_indices],
-            "left_ankles": inputs["left_ankles"][selected_indices],
-            "right_ankles": inputs["right_ankles"][selected_indices],
-        }
-
-        return outputs
+        return cp.asarray(selected)
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        camera_mode,
-        frame_limit,
-        engine,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._engine = engine
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
 
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count = holoscan.conditions.CountCondition(
-                self,
-                name="count",
-                count=self._frame_limit,
-            )
-            condition = self._count
-        else:
-            self._ok = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-            condition = self._ok
-        self._camera.set_mode(self._camera_mode)
+    input = hs.Input("input", hs.schema.Image)
 
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def run(
+    hololink_ip,
+    camera_mode,
+    expander_configuration,
+    ibv_name,
+    ibv_port,
+    engine,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    import holoscan_inference  # noqa: F401 -- deferred; TensorRT may not be installed in every
+
+    # environment this app is ported in, so this import only happens once run() is actually
+    # called, not at module load time -- every other app stays importable regardless.
+
+    cuda_device_ordinal = 0
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    hololink_dev = None
+    try:
+        cuda_driver.cuCtxSetCurrent(cu_context)
+
+        print(f"Enumerating HSB board at {hololink_ip}...")
+        metadata = hl.find_channel(hololink_ip)
+        channel = hl.DataChannel(metadata)
+
+        hololink_dev = channel.hololink()
+        hololink_dev.start()
+        hololink_dev.reset()
+
+        camera = hl.NativeImx274Sensor(
+            channel, expander_configuration=expander_configuration
         )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
+        camera.setup_clock()
+        camera.configure(camera_mode)
+        camera.set_digital_gain_reg(0x4)
 
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        frame_context = self._cuda_context
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
+        pixel_format = camera.get_pixel_format()
+        bayer_format = camera.get_bayer_format()
+        frame_width = camera.get_width()
+        frame_height = camera.get_height()
+        geometry = hl.resolve_generic_geometry(camera)
+
+        # Build the graph.
+        graph = hs.Graph("body_pose_estimation")
+
+        rx = graph.op(
+            hl.operators.RoceReceiverOp,
+            "rx",
+            data_channel=channel,
+            frame_context=int(cu_context),
+            device_start=camera.start,
+            device_stop=camera.stop,
+            frame_size=(
+                geometry["start_byte"]
+                + geometry["bytes_per_line"] * geometry["pixel_height"]
+                + geometry["trailing_bytes"]
+            ),
+            ibv_name=ibv_name,
+            ibv_port=ibv_port,
+            frame_limit=frame_limit or 0,
+            frame_limit_ends_run=True,
         )
 
-        bayer_format = self._camera.bayer_format()
-        pixel_format = self._camera.pixel_format()
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            # Optical black value for imx274 is 50
+        csi = graph.op(
+            hl.operators.CsiToBayerOp,
+            "csi_to_bayer",
+            cuda_device_ordinal=cuda_device_ordinal,
+            geometry=geometry,
+            bayer_format=bayer_format,
+        )
+        graph.add_flow(
+            rx.tensor,
+            csi.in_tensor,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+        graph.add_flow(
+            rx.metadata,
+            csi.in_metadata,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        image_processor = graph.op(
+            hl.operators.ImageProcessorOp,
+            "image_processor",
+            pixel_format=int(pixel_format),
+            pixel_width=geometry["pixel_width"],
+            pixel_height=geometry["pixel_height"],
+            bayer_format=_BAYER_FORMAT_VALUES[bayer_format],
             optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
+            cuda_device_ordinal=cuda_device_ordinal,
+        )
+        graph.add_flow(
+            csi.tensor,
+            image_processor.in_tensor,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+        graph.add_flow(
+            csi.metadata,
+            image_processor.in_metadata,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        image_shift = hololink_module.operators.ImageShiftToUint8Operator(
-            self, name="image_shift", shift=8
-        )
-
-        rgb_components_per_pixel = 3
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgb_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
+        demosaic = graph.op(
+            holoscan_vision.operators.BayerDemosaicOp,
+            "bayer_demosaic",
+            bayer_grid_pos=bayer_format,
             generate_alpha=False,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
+        )
+        graph.add_flow(
+            image_processor.tensor,
+            demosaic.input,
+            queue_depth=4,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            framebuffer_srgb=True,
-            **self.kwargs("holoviz"),
+        image_shift = graph.op(ImageShiftToUint8Op, "image_shift", shift=8)
+        # From here on every edge is a depth-1 drop-oldest mailbox: the inference chain works on
+        # the newest frame and skips the others, instead of queueing stale frames ahead of it.
+        graph.add_flow(
+            demosaic.output,
+            image_shift.input,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        #
-        pool = holoscan.resources.UnboundedAllocator(self)
-        preprocessor_args = self.kwargs("preprocessor")
-        preprocessor = holoscan.operators.FormatConverterOp(
-            self,
-            name="preprocessor",
-            pool=pool,
-            **preprocessor_args,
+        # Inference side-chain: resize -> float32 cast+scale -> HWC->CHW+batch -> InferenceOp ->
+        # postprocess.
+        resize = graph.op(
+            holoscan_vision.operators.ResizeOp,
+            "resize",
+            width=640,
+            height=640,
+            max_batch_size=1,
         )
-        format_input = FormatInferenceInputOp(
-            self,
-            name="transpose",
-            pool=pool,
-        )
-        inference = holoscan.operators.InferenceOp(
-            self,
-            name="inference",
-            allocator=pool,
-            model_path_map={
-                "yolo_pose": self._engine,
-            },
-            **self.kwargs("inference"),
-        )
-        postprocessor_args = self.kwargs("postprocessor")
-        postprocessor_args["image_width"] = preprocessor_args["resize_width"]
-        postprocessor_args["image_height"] = preprocessor_args["resize_height"]
-        postprocessor = PostprocessorOp(
-            self,
-            name="postprocessor",
-            allocator=pool,
-            **postprocessor_args,
+        graph.add_flow(
+            image_shift.output,
+            resize.input,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
         )
 
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
+        convert = graph.op(
+            holoscan_vision.operators.ConvertToOp,
+            "convert",
+            output_type="float32",
+            alpha=1.0 / 255.0,
+            beta=0.0,
         )
-        self.add_flow(image_processor_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, image_shift, {("transmitter", "input")})
-        self.add_flow(image_shift, visualizer, {("output", "receivers")})
-        self.add_flow(image_shift, preprocessor, {("output", "")})
-        self.add_flow(preprocessor, format_input)
-        self.add_flow(format_input, inference, {("", "receivers")})
-        self.add_flow(inference, postprocessor, {("transmitter", "in")})
-        self.add_flow(postprocessor, visualizer, {("out", "receivers")})
+        graph.add_flow(
+            resize.output,
+            convert.input,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
 
-        # Not using metadata
-        self.enable_metadata(False)
+        format_input = graph.op(FormatInferenceInputOp, "transpose")
+        graph.add_flow(
+            convert.output,
+            format_input.input,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        inference = graph.op(
+            "holoscan.inference.InferenceOp",
+            "inference",
+            model_path_map={"yolo_pose": engine},
+            input_map={"yolo_pose": ["preprocessed"]},
+            output_map={"yolo_pose": ["inference_output"]},
+            backend="trt",
+            input_on_cuda=True,
+            is_engine_path=True,
+        )
+        graph.add_flow(
+            format_input.output,
+            inference.preprocessed,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        postprocessor = graph.op(
+            PostprocessorOp,
+            "postprocessor",
+            iou_threshold=0.5,
+            score_threshold=0.5,
+            image_dim=640,
+        )
+        graph.add_flow(
+            inference.inference_output,
+            postprocessor.in_inference,
+            queue_depth=1,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        )
+
+        if headless:
+            # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp). The
+            # CUDA sink has no framebuffer_srgb: its sRGB format encodes on write instead.
+            sink = {
+                "kind": "cuda",
+                "width": frame_width,
+                "height": frame_height,
+                "format": "rgba8_srgb",
+            }
+        else:
+            sink = {
+                "kind": "window",
+                "framebuffer_srgb": True,
+                "title": f"Holoviz - {hololink_ip}",
+                "width": frame_width,
+                "height": frame_height,
+                "fullscreen": fullscreen,
+                "close_on_escape": True,
+            }
+        viz = graph.op(
+            "holoscan.visualization.HolovizOp",
+            "holoviz",
+            layers=[
+                {
+                    "port_name": "video",
+                    "kind": "image",
+                    "format": "rgb8_unorm",
+                    "max_width": frame_width,
+                    "max_height": frame_height,
+                },
+                {
+                    "port_name": "keypoints",
+                    "kind": "geometry",
+                    "topologies": ["cross_list"],
+                    "max_primitives": _MAX_OVERLAY_PERSONS
+                    * len(_VISIBLE_KEYPOINT_NAMES),
+                    "default_line_width": 4,
+                },
+                {
+                    "port_name": "segments",
+                    "kind": "geometry",
+                    "topologies": ["line_list"],
+                    "max_primitives": _MAX_OVERLAY_PERSONS * len(_SEGMENT_PAIRS),
+                    "default_line_width": 4,
+                },
+            ],
+            sink=sink,
+            trigger={"kind": "layer", "layer": 0},
+        )
+        graph.add_flow(
+            image_shift.output,
+            viz.video,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        graph.add_flow(
+            postprocessor.keypoints,
+            viz.keypoints,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        graph.add_flow(
+            postprocessor.segments,
+            viz.segments,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+        if headless:
+            discard = graph.op(DiscardImageOp, "discard")
+            graph.add_flow(
+                viz.output,
+                discard.input,
+                queue_policy=hs.QueuePolicy.DROP_OLDEST,
+                queue_depth=1,
+            )
+
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+
+        options = hs.CompileOptions()
+        for operator_path in ("rx", "csi_to_bayer", "image_processor"):
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="tensor",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+        for operator_path in (
+            "bayer_demosaic",
+            "image_shift",
+            "resize",
+            "convert",
+            "transpose",
+        ):
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="output",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+
+        options.deployment.bind_tensor_output_device(
+            operator_path="inference",
+            output_port="inference_output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+
+        if headless:
+            options.deployment.bind_tensor_output_device(
+                operator_path="holoviz",
+                output_port="output",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+
+        plan = hs.compile(graph, options)
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
+
+        print(
+            f"Capturing mode={camera_mode} {frame_width}x{frame_height} -- running (Ctrl+C to stop)..."
+        )
+
+        with hs.run_async(plan) as session:
+            failed = wait_for_completion(session)
+        if failed:
+            print("Run failed; see runtime diagnostics above.", file=sys.stderr)
+            return 1
+
+        print("Done.")
+        return 0
+
+    finally:
+        try:
+            if hololink_dev is not None:
+                hololink_dev.stop()
+        finally:
+            _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
 
 def main():
+    # Like Ctrl+C, SIGTERM (kill, docker stop) raises KeyboardInterrupt, so the session stops
+    # cooperatively and the camera and the board are stopped on the way out.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        "--camera-mode",
-        type=int,
-        default=hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS.value,
-        help="IMX274 mode",
-    )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
+    )
+    parser.add_argument(
+        "--hololink",
+        default="192.168.0.2",
+        help="IP address of Hololink board",
     )
     parser.add_argument(
         "--frame-limit",
         type=int,
         default=None,
         help="Exit after receiving this many frames",
-    )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "body_pose_estimation.yaml"
-    )
-    parser.add_argument(
-        "--configuration", default=default_configuration, help="Configuration file"
-    )
-    parser.add_argument(
-        "--hololink",
-        default="192.168.0.2",
-        help="IP address of Hololink board",
     )
     default_engine = os.path.join(os.path.dirname(__file__), "yolov8n-pose.engine.fp32")
     parser.add_argument(
@@ -545,17 +812,22 @@ def main():
         default=20,
         help="Logging level to display",
     )
-    infiniband_devices = hololink_module.infiniband_devices()
+    parser.add_argument(
+        "--camera-mode",
+        type=int,
+        default=0,
+        help="IMX274 mode (default: 0 = 3840x2160@60fps)",
+    )
     parser.add_argument(
         "--ibv-name",
-        default=infiniband_devices[0],
-        help="IBV device to use",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
     )
     parser.add_argument(
         "--ibv-port",
         type=int,
         default=1,
-        help="Port number of IBV device",
+        help="Port number of IBV device (with --ibv-name)",
     )
     parser.add_argument(
         "--expander-configuration",
@@ -565,56 +837,21 @@ def main():
         help="I2C Expander configuration",
     )
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the data source
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-    # Get a handle to the camera
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(
-        args.camera_mode
-    )
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
+
+    logging.basicConfig(level=args.log_level)
+
+    return run(
+        args.hololink,
+        args.camera_mode,
+        args.expander_configuration,
         args.ibv_name,
         args.ibv_port,
-        camera,
-        camera_mode,
-        args.frame_limit,
         args.engine,
+        args.frame_limit,
+        args.headless,
+        args.fullscreen,
     )
-    application.config(args.configuration)
-    # Run it.
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    try:
-        hololink.reset()
-        camera.setup_clock()
-        camera.configure(camera_mode)
-        camera.set_digital_gain_reg(0x4)
-        application.run()
-    finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

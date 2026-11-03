@@ -36,6 +36,7 @@ class TutorialDeviceInterfaceV1
     : public ConfigurableService<TutorialDeviceInterfaceV1> {
 public:
     static constexpr const char* type_id = "tutorial_device.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     static std::string locator_id(const EnumerationMetadata& metadata)
     {

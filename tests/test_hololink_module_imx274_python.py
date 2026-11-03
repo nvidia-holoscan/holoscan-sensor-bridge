@@ -168,7 +168,7 @@ def test_set_mode_records_geometry_and_pixel_format_for_4k():
 
 def test_set_mode_records_geometry_and_pixel_format_for_12bit():
     cam, _ = _make_cam()
-    cam.set_mode(imx274.Imx274_Mode.IMX274_MODE_3840X2160_60FPS_12BITS)
+    cam.set_mode(imx274.Imx274_Mode.IMX274_MODE_3840X2160_30FPS_12BITS)
     assert cam._width == 3840
     assert cam._height == 2160
     assert cam.pixel_format() == csi.PixelFormat.RAW_12

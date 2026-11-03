@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,27 +13,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# PVA CRC Python operator
-# C++ backend is built here when HOLOLINK_BUILD_PVA=ON (PVA SDK present at build time).
-cmake_minimum_required(VERSION 3.20)
-project(pva_crc)
+# PVA CRC native extension package. The C++ backend (cpp/) is built here when
+# HOLOLINK_BUILD_PVA=ON (PVA SDK present at build time); only this __init__.py copy runs
+# otherwise, matching every other hololink package directory's own COPYONLY pattern.
 
-# Copy Python files to build directory for installation
-set(PVA_CRC_PYTHON_FILES
-    __init__.py
-    pva_crc_op.py
+configure_file(
+    ${CMAKE_CURRENT_SOURCE_DIR}/__init__.py
+    ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/operators/pva_crc/__init__.py
+    COPYONLY
 )
 
-foreach(file ${PVA_CRC_PYTHON_FILES})
-    configure_file(
-        ${CMAKE_CURRENT_SOURCE_DIR}/${file}
-        ${HOLOLINK_PYTHON_MODULE_OUT_DIR}/operators/pva_crc/${file}
-        COPYONLY
-    )
-endforeach()
-
-# Build and place the pva_crc C++ extension only on aarch64 (Tegra). NvSciBuf is Tegra-specific;
-# on x86_64 (e.g. dGPU CI) the extension is skipped so the wheel still builds.
+# HOLOLINK_BUILD_PVA is checked by our caller (python/hololink/operators/CMakeLists.txt), which
+# only add_subdirectory()s this directory at all when it's on -- mirrors
+# src/hololink/operators/CMakeLists.txt's own if(HOLOLINK_BUILD_PVA) gate for the header-only
+# target. Build and place the pva_crc C++ extension only on aarch64 (Tegra) in addition:
+# NvSciBuf is Tegra-specific; on x86_64 the extension is skipped so the rest of the package
+# still builds.
 if(CMAKE_SYSTEM_PROCESSOR STREQUAL "aarch64")
     add_subdirectory(cpp)
     set(PVA_CRC_CPP_DEST "${HOLOLINK_PYTHON_MODULE_OUT_DIR}/operators/pva_crc/cpp")

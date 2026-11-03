@@ -2,12 +2,20 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * VB1940 CoE capture player using the hololink_module API.
+ * VB1940 CoE capture player using the hololink_module API, ported to Holoscan SDK 5.0's
+ * Graph / Operator<Params> shape.
  *
- * Module port of `examples/fusa_coe_vb1940_player.cpp`: FusaCoeCaptureOp
- * resolves CoeDataChannelInterfaceV1 + FrameMetadataInterfaceV1 from
- * enumeration metadata; Vb1940Cam drives the sensor over the module
- * V1 surface. Supports mono (sensor 0 or 1) or stereo (sensor -1).
+ * Module port of examples/fusa_coe_vb1940_player.cpp, following the same HSDK5 chain as
+ * examples/module_fusa_coe_imx274_player.cpp (its HSB-Lite sibling -- see that file for the
+ * N-layer ViewTransform pattern and the packetized-vs-unpacketized branch this mirrors
+ * exactly): FusaCoeCaptureOp resolves CoeDataChannelInterfaceV1 + FrameMetadataInterfaceV1
+ * from enumeration metadata; Vb1940Cam drives the sensor over the module V1 surface. Supports
+ * mono (sensor 0 or 1) or stereo (sensor -1) -- native's fusa_coe_vb1940_player.cpp only
+ * supports --sensor 0|1, so the stereo branch here (like the pre-port shell's own) is this
+ * app's own already-generalized N-channel loop, not a copy of a native stereo precedent.
+ *
+ *   FusaCoeCaptureOp -> [PackedFormatConverterOp | CsiToBayerOp] -> ImageProcessorOp ->
+ *     BayerDemosaicOp -> HolovizOp
  */
 
 #include <getopt.h>
@@ -23,9 +31,18 @@
 #include <utility>
 #include <vector>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include <cuda.h>
+
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
 
 #include "hololink/module/adapter.hpp"
 #include "hololink/module/enumeration_metadata.hpp"
@@ -35,10 +52,17 @@
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/fusa_coe_capture_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/operators/packed_format_converter_op.hpp"
 #include "hololink/module/tools.hpp"
 
 #include "hololink/module/sensors/vb1940/vb1940_cam.hpp"
+
+#include "player_support.hpp"
+
+namespace hx = hololink::examples;
+
+namespace {
 
 hololink::module::MacAddress parse_mac_address(const std::string& mac_str)
 {
@@ -77,165 +101,7 @@ hololink::module::MacAddress parse_mac_address(const std::string& mac_str)
     return mac;
 }
 
-struct Channel {
-    hololink::module::EnumerationMetadata metadata;
-    std::shared_ptr<hololink::module::sensors::vb1940::Vb1940Cam> camera;
-    std::string tensor_name;
-};
-
-class Application : public holoscan::Application {
-public:
-    Application(
-        bool headless,
-        bool fullscreen,
-        std::vector<Channel> channels,
-        hololink::module::sensors::vb1940::Vb1940_Mode camera_mode,
-        uint32_t timeout,
-        int frame_limit,
-        bool no_packetizer)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , channels_(std::move(channels))
-        , camera_mode_(camera_mode)
-        , timeout_(timeout)
-        , frame_limit_(frame_limit)
-        , no_packetizer_(no_packetizer)
-    {
-        enable_metadata(true);
-        metadata_policy(holoscan::MetadataPolicy::kReject);
-    }
-
-    void compose() override
-    {
-        using namespace holoscan;
-
-        const auto& base_metadata = channels_[0].metadata;
-        const std::string interface = base_metadata.get<std::string>("interface");
-        const std::string mac_str = base_metadata.get<std::string>("mac_id");
-        const auto mac_bytes = parse_mac_address(mac_str);
-        HOLOSCAN_LOG_INFO("Using interface={}, mac={}", interface, mac_str);
-
-        const float view_width = 1.0f / channels_.size();
-        std::vector<ops::HolovizOp::InputSpec> specs;
-        for (uint32_t i = 0; i < channels_.size(); ++i) {
-            ops::HolovizOp::InputSpec::View view;
-            view.offset_x_ = view_width * i;
-            view.offset_y_ = 0;
-            view.width_ = view_width;
-            view.height_ = 1;
-            ops::HolovizOp::InputSpec spec(channels_[i].tensor_name, ops::HolovizOp::InputType::COLOR);
-            spec.views_.push_back(view);
-            specs.push_back(spec);
-        }
-        const uint32_t width = 800 * channels_.size();
-        const uint32_t height = 620;
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
-            "holoviz",
-            Arg("tensors", specs),
-            Arg("fullscreen", fullscreen_),
-            Arg("headless", headless_),
-            Arg("width", width),
-            Arg("height", height),
-            Arg("framebuffer_srgb", true));
-
-        for (uint32_t i = 0; i < channels_.size(); ++i) {
-            Channel& ch = channels_[i];
-            ch.camera->configure(camera_mode_);
-
-            const auto pixel_format = ch.camera->pixel_format();
-            const auto bayer_format = ch.camera->bayer_format();
-            const auto camera_width = ch.camera->width();
-            const auto camera_height = ch.camera->height();
-            const std::string& name = ch.tensor_name;
-
-            // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
-            // always captured unpacketized.
-            const bool packetizer_enabled = !no_packetizer_
-                && pixel_format != hololink::module::csi::PixelFormat::RAW_8;
-
-            std::shared_ptr<Condition> condition;
-            if (frame_limit_) {
-                condition = make_condition<CountCondition>(
-                    fmt::format("count_{}", name), frame_limit_);
-            } else {
-                condition = make_condition<BooleanCondition>(
-                    fmt::format("ok_{}", name), true);
-            }
-
-            auto fusa_coe_capture = make_operator<hololink::module::operators::FusaCoeCaptureOp>(
-                fmt::format("fusa_coe_capture_{}", name),
-                condition,
-                Arg("enumeration_metadata", ch.metadata),
-                Arg("interface", interface),
-                Arg("mac_addr", std::vector<uint8_t>(mac_bytes.begin(), mac_bytes.end())),
-                Arg("out_tensor_name", name),
-                Arg("timeout", timeout_),
-                Arg("device_start", std::function<void()>([cam = ch.camera] { cam->start(); })),
-                Arg("device_stop", std::function<void()>([cam = ch.camera] { cam->stop(); })));
-            fusa_coe_capture->configure_format(pixel_format, bayer_format, packetizer_enabled);
-            ch.camera->configure_converter(fusa_coe_capture);
-
-            const size_t size = camera_width * camera_height * 2;
-            constexpr int32_t storage_type_device_memory = 1;
-            constexpr size_t num_blocks = 4;
-            // Which converter is correct depends on the packetizer: enabled, the buffer
-            // holds HSB-packed data; disabled, it is still CSI-2 exactly as the sensor
-            // sent it.
-            auto converter_pool = make_resource<holoscan::BlockMemoryPool>(
-                fmt::format("converter_pool_{}", name),
-                storage_type_device_memory, size, num_blocks);
-
-            std::shared_ptr<holoscan::Operator> converter;
-            if (packetizer_enabled) {
-                auto packed_format_converter = make_operator<hololink::module::operators::PackedFormatConverterOp>(
-                    fmt::format("packed_format_converter_{}", name),
-                    Arg("allocator", converter_pool),
-                    Arg("in_tensor_name", name));
-                fusa_coe_capture->configure_converter(*packed_format_converter.get());
-                converter = packed_format_converter;
-            } else {
-                auto csi_to_bayer = make_operator<hololink::module::operators::CsiToBayerOp>(
-                    fmt::format("csi_to_bayer_{}", name),
-                    Arg("allocator", converter_pool));
-                fusa_coe_capture->configure_converter(*csi_to_bayer.get());
-                converter = csi_to_bayer;
-            }
-
-            auto image_processor = make_operator<hololink::module::operators::ImageProcessorOp>(
-                fmt::format("image_processor_{}", name),
-                Arg("optical_black", 0),
-                Arg("bayer_format", static_cast<int>(bayer_format)),
-                Arg("pixel_format", static_cast<int>(pixel_format)));
-
-            size_t demosaic_size = camera_width * camera_height * 2 * 4;
-            auto demosaic_pool = make_resource<holoscan::BlockMemoryPool>(
-                fmt::format("demosaic_pool_{}", name),
-                storage_type_device_memory, demosaic_size, num_blocks);
-
-            auto bayer_demosaic = make_operator<holoscan::ops::BayerDemosaicOp>(
-                fmt::format("bayer_demosaic_{}", name),
-                Arg("pool", demosaic_pool),
-                Arg("generate_alpha", true),
-                Arg("alpha_value", 65535),
-                Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
-                Arg("out_tensor_name", name));
-
-            add_flow(fusa_coe_capture, converter, { { "output", "input" } });
-            add_flow(converter, image_processor, { { "output", "input" } });
-            add_flow(image_processor, bayer_demosaic, { { "output", "receiver" } });
-            add_flow(bayer_demosaic, visualizer, { { "transmitter", "receivers" } });
-        }
-    }
-
-private:
-    bool headless_;
-    bool fullscreen_;
-    std::vector<Channel> channels_;
-    hololink::module::sensors::vb1940::Vb1940_Mode camera_mode_;
-    uint32_t timeout_;
-    int frame_limit_;
-    bool no_packetizer_;
-};
+} // namespace
 
 static void print_usage(const char* argv0, const std::string& default_hololink_ip)
 {
@@ -271,6 +137,7 @@ int main(int argc, char** argv)
     std::string module_dir;
     std::chrono::seconds discovery_timeout(30);
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
+    bool log_level_given = false;
 
     const struct option long_options[] = {
         { "help", no_argument, nullptr, 'h' },
@@ -320,6 +187,7 @@ int main(int argc, char** argv)
                 } else if (name == "discovery-timeout") {
                     discovery_timeout = std::chrono::seconds(std::stoll(argument));
                 } else if (name == "log-level") {
+                    log_level_given = true;
                     if (argument == "trace" || argument == "TRACE") {
                         log_level = holoscan::LogLevel::TRACE;
                     } else if (argument == "debug" || argument == "DEBUG") {
@@ -361,100 +229,293 @@ int main(int argc, char** argv)
         return EXIT_FAILURE;
     }
 
-    holoscan::set_log_level(log_level);
-
-    std::shared_ptr<hololink::module::HololinkInterfaceV1> hololink;
-    bool hololink_started = false;
-
-    try {
-        auto& adapter = hololink::module::Adapter::get_adapter();
-        if (!module_dir.empty()) {
-            adapter.set_module_directory(std::filesystem::path(module_dir));
+    // With managed signals, Ctrl+C stops the session cooperatively, so the cameras and the board
+    // are stopped on the way out. CUDA and the Adapter start threads, so the signals come first.
+    return hx::run_with_managed_signals([&](holoscan::ManagedShutdownSignals& signals) {
+        if (log_level_given) {
+            // Without --log-level, the module's logger keeps the level HOLOLINK_LOG_LEVEL chose.
+            hololink::module::operators::set_log_level(log_level);
+        } else {
+            holoscan::set_log_level(log_level);
         }
 
-        const hololink::module::EnumerationMetadata base_metadata
-            = adapter.wait_for_channel(hololink_ip, discovery_timeout);
+        const int cu_device_ordinal = 0;
+        std::shared_ptr<hololink::module::HololinkInterfaceV1> hololink;
+        bool hololink_started = false;
 
-        hololink = hololink::module::HololinkInterfaceV1::get_service(base_metadata);
-        if (hololink->start() != HOLOLINK_MODULE_OK) {
-            throw std::runtime_error("HololinkInterface::start failed");
-        }
-        hololink_started = true;
-        if (hololink->reset() != HOLOLINK_MODULE_OK) {
-            throw std::runtime_error("HololinkInterface::reset failed");
-        }
+        try {
+            HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));
+            CUdevice cu_device;
+            HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGet(&cu_device, cu_device_ordinal));
+            CUcontext cu_context;
+            HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+            cuCtxSetCurrent(cu_context);
 
-        if ((sensor == -1) || (sensor == 0) || (sensor == 1)) {
-            constexpr unsigned MIPI_LANE_COUNT = 4;
-            const unsigned line_rate_mbps = (camera_mode == hololink::module::sensors::vb1940::Vb1940_Mode::VB1940_MODE_2560X1984_60FPS)
-                ? 1140u
-                : 570u;
-            auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(base_metadata);
-            // Currently, each SIF corresponds with the physical MIPI
-            const std::vector<unsigned> physical_mipi_interfaces = (sensor == -1)
-                ? std::vector<unsigned> { 0u, 1u }
-                : std::vector<unsigned> { static_cast<unsigned>(sensor) };
-            for (unsigned physical_mipi_interface : physical_mipi_interfaces) {
-                const auto status = dphy->program(
-                    physical_mipi_interface, MIPI_LANE_COUNT, line_rate_mbps);
-                if (status != HOLOLINK_MODULE_OK) {
-                    throw std::runtime_error(fmt::format(
-                        "Could not program MIPI interface {}: status {}",
-                        physical_mipi_interface, status));
+            auto& adapter = hololink::module::Adapter::get_adapter();
+            if (!module_dir.empty()) {
+                adapter.set_module_directory(std::filesystem::path(module_dir));
+            }
+
+            const hololink::module::EnumerationMetadata base_metadata
+                = adapter.wait_for_channel(hololink_ip, discovery_timeout);
+
+            hololink = hololink::module::HololinkInterfaceV1::get_service(base_metadata);
+            if (hololink->start() != HOLOLINK_MODULE_OK) {
+                throw std::runtime_error("HololinkInterface::start failed");
+            }
+            hololink_started = true;
+            if (hololink->reset() != HOLOLINK_MODULE_OK) {
+                throw std::runtime_error("HololinkInterface::reset failed");
+            }
+
+            if ((sensor == -1) || (sensor == 0) || (sensor == 1)) {
+                constexpr unsigned MIPI_LANE_COUNT = 4;
+                const unsigned line_rate_mbps
+                    = (camera_mode == hololink::module::sensors::vb1940::Vb1940_Mode::VB1940_MODE_2560X1984_60FPS)
+                    ? 1140u
+                    : 570u;
+                auto dphy = hololink::module::MipiDphyInterfaceV1::get_service(base_metadata);
+                // Currently, each SIF corresponds with the physical MIPI interface of the same index.
+                const std::vector<unsigned> physical_mipi_interfaces = (sensor == -1)
+                    ? std::vector<unsigned> { 0u, 1u }
+                    : std::vector<unsigned> { static_cast<unsigned>(sensor) };
+                for (unsigned physical_mipi_interface : physical_mipi_interfaces) {
+                    const auto status = dphy->program(
+                        physical_mipi_interface, MIPI_LANE_COUNT, line_rate_mbps);
+                    if (status != HOLOLINK_MODULE_OK) {
+                        throw std::runtime_error(fmt::format(
+                            "Could not program MIPI interface {}: status {}",
+                            physical_mipi_interface, status));
+                    }
                 }
             }
-        }
 
-        std::vector<Channel> channels;
-        if (sensor == -1) {
-            Channel left;
-            left.metadata = base_metadata;
-            adapter.use_sensor(left.metadata, 0);
-            left.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-                left.metadata);
-            left.tensor_name = "0";
-            channels.push_back(std::move(left));
+            struct Channel {
+                int sensor_id = 0;
+                hololink::module::EnumerationMetadata metadata;
+                std::shared_ptr<hololink::module::sensors::vb1940::Vb1940Cam> camera;
+            };
+            auto make_channel = [&adapter, &base_metadata](int sensor_id) {
+                Channel ch;
+                ch.sensor_id = sensor_id;
+                ch.metadata = base_metadata;
+                adapter.use_sensor(ch.metadata, sensor_id);
+                ch.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
+                    ch.metadata);
+                return ch;
+            };
 
-            Channel right;
-            right.metadata = base_metadata;
-            adapter.use_sensor(right.metadata, 1);
-            right.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-                right.metadata);
-            right.tensor_name = "1";
-            channels.push_back(std::move(right));
-        } else if (sensor == 0 || sensor == 1) {
-            Channel ch;
-            ch.metadata = base_metadata;
-            adapter.use_sensor(ch.metadata, sensor);
-            ch.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-                ch.metadata);
-            ch.tensor_name = std::to_string(sensor);
-            channels.push_back(std::move(ch));
-        } else {
-            HOLOSCAN_LOG_ERROR("sensor value must be 0 or 1 (given {})", sensor);
+            std::vector<Channel> channels;
+            if (sensor == -1) {
+                channels.push_back(make_channel(0));
+                channels.push_back(make_channel(1));
+            } else if (sensor == 0 || sensor == 1) {
+                channels.push_back(make_channel(sensor));
+            } else {
+                HOLOSCAN_LOG_ERROR("sensor value must be 0 or 1 (given {})", sensor);
+                hololink->stop();
+                return EXIT_FAILURE;
+            }
+
+            const auto& base_channel_metadata = channels[0].metadata;
+            const std::string interface = base_channel_metadata.get<std::string>("interface");
+            const std::string mac_str = base_channel_metadata.get<std::string>("mac_id");
+            const auto mac_bytes_arr = parse_mac_address(mac_str);
+            const std::vector<uint8_t> mac_bytes(mac_bytes_arr.begin(), mac_bytes_arr.end());
+            HOLOSCAN_LOG_INFO("Using interface={}, mac={}", interface, mac_str);
+
+            for (auto& ch : channels) {
+                ch.camera->configure(camera_mode);
+            }
+
+            // Build the graph.
+            holoscan::Graph graph { "module_fusa_coe_vb1940_player" };
+            holoscan::CompileOptions compile_options;
+
+            // Pass 1: declare one image layer per camera, side by side -- the LayerStack must be
+            // complete before HolovizOp is constructed.
+            holoscan::visualization::LayerStack layers;
+            const float view_width = 1.0f / static_cast<float>(channels.size());
+            for (std::size_t i = 0; i < channels.size(); ++i) {
+                layers.add_image_layer(fmt::format("video_{}", i),
+                    hx::rgba16_layer(channels[i].camera->width(), channels[i].camera->height(),
+                        holoscan::visualization::ViewTransform {
+                            .offset_x = view_width * static_cast<float>(i),
+                            .offset_y = 0.f,
+                            .scale_x = view_width,
+                            .scale_y = 1.f,
+                        }));
+            }
+
+            const uint32_t window_width = 800U * static_cast<uint32_t>(channels.size());
+            const uint32_t window_height = 620U;
+            // Renders once per image of the first camera (layer 0); with both sensors, the other layer
+            // shows its newest image.
+            auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers),
+                hx::DisplayConfig {
+                    .width = window_width,
+                    .height = window_height,
+                    .fullscreen = fullscreen,
+                    .headless = headless,
+                },
+                compile_options, cu_device_ordinal);
+
+            std::vector<std::string_view> tensor_output_operators;
+
+            // Pass 2: build each camera's capture/convert/process/demosaic chain and wire it into viz.
+            for (std::size_t i = 0; i < channels.size(); ++i) {
+                // Named after the sensor, as in HSDK4: --sensor 1 runs capture_1, and its stall
+                // messages say so.
+                const std::string name = std::to_string(channels[i].sensor_id);
+                auto camera = channels[i].camera;
+
+                const auto pixel_format = camera->pixel_format();
+                const auto bayer_format = camera->bayer_format();
+
+                // The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is
+                // always captured unpacketized.
+                const bool packetizer_enabled = !no_packetizer
+                    && pixel_format != hololink::module::csi::PixelFormat::RAW_8;
+
+                // Resolve geometry ONCE using FusaCoeCaptureOp's HSB-alignment-aware adapter, and
+                // reuse that same geometry for CsiToBayerParams/PackedFormatConverterParams below.
+                hololink::module::csi::CsiGeometry geometry;
+                camera->configure_converter(
+                    hololink::module::operators::FusaCoeCaptureOp::make_geometry_adapter(
+                        geometry, packetizer_enabled));
+
+                auto capture = graph.op<hololink::module::operators::FusaCoeCaptureOp>(
+                    fmt::format("capture_{}", name));
+                capture.set_params(hololink::module::operators::FusaCoeCaptureParams {
+                    .metadata = channels[i].metadata,
+                    .device_start = [camera] { camera->start(); },
+                    .device_stop = [camera] { camera->stop(); },
+                    .interface = interface,
+                    .mac_addr = mac_bytes,
+                    .timeout = timeout,
+                    // A camera that sends nothing fails a --frame-limit run instead of keeping it
+                    // going.
+                    .stall_timeout_ms = hx::frame_limit_stall_timeout_ms(frame_limit, timeout),
+                    .pixel_format = pixel_format,
+                    .bayer_format = bayer_format,
+                    .packetizer_enabled = packetizer_enabled,
+                    .geometry = geometry,
+                    // Stops after --frame-limit frames, as HSDK4's CountCondition on each capture
+                    // operator did.
+                    .frame_limit = frame_limit,
+                    .frame_limit_ends_run = true,
+                    // Names this camera in the capture's stall messages.
+                    .name = std::string(capture.name()),
+                });
+
+                auto image_processor = graph.op<hololink::module::operators::ImageProcessorOp>(
+                    fmt::format("image_processor_{}", name));
+                image_processor.set_params(hololink::module::operators::ImageProcessorParams {
+                    .pixel_format = static_cast<int>(pixel_format),
+                    .bayer_format = static_cast<int>(bayer_format),
+                    // Optical black value for VB1940 over the CoE path is 0 -- a pre-existing
+                    // per-app quirk vs. 8 on the plain RoCE VB1940 app; preserve exactly, not a
+                    // bug to fix.
+                    .optical_black = 0,
+                    .cuda_device_ordinal = cu_device_ordinal,
+                    .pixel_width = geometry.pixel_width,
+                    .pixel_height = geometry.pixel_height,
+                });
+
+                const auto bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format);
+                auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>(
+                    fmt::format("bayer_demosaic_{}", name));
+                demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+                    .bayer_grid_pos = bayer_grid_pos,
+                    .generate_alpha = true,
+                    .alpha_value = 65535U,
+                });
+
+                if (packetizer_enabled) {
+                    auto converter = graph.op<hololink::module::operators::PackedFormatConverterOp>(
+                        fmt::format("packed_format_converter_{}", name));
+                    converter.set_params(hololink::module::operators::PackedFormatConverterParams {
+                        .cuda_device_ordinal = cu_device_ordinal,
+                        .bayer_format = bayer_format,
+                        .geometry = geometry,
+                    });
+                    graph.add_flow(capture->tensor, converter->input_tensor, hx::pipeline_edge());
+                    graph.add_flow(capture->metadata, converter->input_metadata, hx::pipeline_edge());
+                    graph.add_flow(converter->output_tensor, image_processor->input_tensor, hx::pipeline_edge());
+                    graph.add_flow(converter->output_metadata, image_processor->input_metadata, hx::pipeline_edge());
+                    tensor_output_operators.push_back(converter.name());
+                } else {
+                    auto converter = graph.op<hololink::module::operators::CsiToBayerOp>(
+                        fmt::format("csi_to_bayer_{}", name));
+                    converter.set_params(hololink::module::operators::CsiToBayerParams {
+                        .cuda_device_ordinal = cu_device_ordinal,
+                        .geometry = geometry,
+                        .bayer_format = bayer_format,
+                        // Fed by FusaCoeCaptureOp, which already strips the CSI header before
+                        // emitting.
+                        .header_included = false,
+                    });
+                    graph.add_flow(capture->tensor, converter->input_tensor, hx::pipeline_edge());
+                    graph.add_flow(capture->metadata, converter->input_metadata, hx::pipeline_edge());
+                    graph.add_flow(converter->output_tensor, image_processor->input_tensor, hx::pipeline_edge());
+                    graph.add_flow(converter->output_metadata, image_processor->input_metadata, hx::pipeline_edge());
+                    tensor_output_operators.push_back(converter.name());
+                }
+
+                graph.add_flow(image_processor->output_tensor, demosaic->input, hx::pipeline_edge());
+                graph.add_flow(demosaic->output, viz->image_layer_input(i), hx::display_edge());
+
+                tensor_output_operators.push_back(capture.name());
+                tensor_output_operators.push_back(image_processor.name());
+            }
+
+            graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+            for (const auto& operator_path : tensor_output_operators) {
+                compile_options.deployment.bind_tensor_output_device(
+                    holoscan::TensorOutputDevicePlacement {
+                        .operator_path = operator_path,
+                        .output_port = "tensor",
+                        .device = holoscan::DeviceId { cu_device_ordinal },
+                    });
+            }
+            for (std::size_t i = 0; i < channels.size(); ++i) {
+                compile_options.deployment.bind_tensor_output_device(
+                    holoscan::TensorOutputDevicePlacement {
+                        .operator_path = fmt::format("bayer_demosaic_{}", channels[i].sensor_id),
+                        .output_port = "output",
+                        .device = holoscan::DeviceId { cu_device_ordinal },
+                    });
+            }
+
+            const auto plan = holoscan::compile(graph, std::move(compile_options));
+            if (!plan.ok()) {
+                hx::print_compile_failure(plan);
+                hololink->stop();
+                HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRelease(cu_device));
+                return EXIT_FAILURE;
+            }
+
+            auto session = holoscan::run_async(plan, signals);
+            session.wait();
+            const bool failed = hx::report_session(session, plan);
+
             hololink->stop();
+            hololink_started = false;
+            HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRelease(cu_device));
+            return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+        } catch (const std::exception& e) {
+            if (hololink && hololink_started) {
+                try {
+                    hololink->stop();
+                } catch (const std::exception& stop_error) {
+                    HOLOSCAN_LOG_ERROR(
+                        "HololinkInterface::stop failed after application error: {}",
+                        stop_error.what());
+                }
+            }
+            HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
             return EXIT_FAILURE;
         }
-
-        auto app = std::make_unique<Application>(
-            headless, fullscreen, std::move(channels), camera_mode, timeout,
-            static_cast<int>(frame_limit), no_packetizer);
-
-        app->run();
-        hololink->stop();
-        hololink_started = false;
-        return EXIT_SUCCESS;
-    } catch (const std::exception& e) {
-        if (hololink && hololink_started) {
-            try {
-                hololink->stop();
-            } catch (const std::exception& stop_error) {
-                HOLOSCAN_LOG_ERROR(
-                    "HololinkInterface::stop failed after application error: {}",
-                    stop_error.what());
-            }
-        }
-        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
-        return EXIT_FAILURE;
-    }
+    });
 }

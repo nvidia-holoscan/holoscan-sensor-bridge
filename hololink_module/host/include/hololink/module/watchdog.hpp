@@ -16,31 +16,40 @@
 
 namespace hololink::module {
 
-/* A deadline timer on ReactorV1. arm() (or tap()) starts or refreshes the
- * deadline; if it elapses without a tap, on_timeout fires once on the
- * reactor thread (re-arm from there to keep watching). Tap on every event
- * you expect — e.g. a received frame — so a gap longer than timeout_s is
- * treated as a loss. timeout_s <= 0 disables it.
+/**
+ * @brief Detects when an expected event stops happening.
  *
- * Thread-safe: arm / tap / cancel may be called from any thread while the
- * timeout dispatches on the reactor thread.
- *  - A generation counter drops a timeout that fired just as a concurrent
- *    tap/cancel superseded it (the alarm slipped past cancel_alarm into
- *    the reactor's dispatch batch), so an event landing exactly at the
- *    deadline doesn't cause a spurious timeout.
- *  - The alarm callback holds the shared state, not the Watchdog, and
- *    checks an `alive` flag, so a timeout in flight when the Watchdog is
- *    destroyed is a no-op rather than a use-after-free.
- *  - Deadlock-free: ReactorV1::cancel_alarm only erases the pending entry
- *    (never waits on a running callback) and callbacks dispatch outside
- *    the reactor lock, so holding the Watchdog's mutex across arm/cancel
- *    can't cycle with the timeout path.
+ * A Watchdog is a deadline timer that runs on the ReactorV1. While it is
+ * armed, each call to tap() restarts the countdown. If the countdown
+ * reaches zero before the next tap, the Watchdog calls its
+ * `on_timeout` function once, on the reactor thread, and then waits
+ * until it is armed again. Call tap() each time the event being watched
+ * occurs (for example, a frame arrives) so that a gap longer than the
+ * timeout is reported as a loss.
  *
- * on_timeout itself must outlive any possible firing; a caller that
- * captures `this` should cancel() (or destroy the Watchdog) before it is
- * torn down. */
+ * Every method may be called from any thread. `on_timeout` runs on the
+ * reactor thread, with no Watchdog lock held, so it may itself call
+ * arm(), tap() or cancel(); a typical `on_timeout` re-arms in order to
+ * keep watching.
+ *
+ * A Watchdog cannot be copied.
+ */
 class Watchdog {
 public:
+    /**
+     * @brief Create a Watchdog. It is idle until arm() or tap() is
+     * called.
+     *
+     * @param reactor The reactor that supplies the timer and runs
+     *      `on_timeout`. If null, the Watchdog never times out.
+     * @param timeout_s Seconds without a tap before `on_timeout` is
+     *      called. If zero or negative, the Watchdog is disabled and
+     *      never times out.
+     * @param on_timeout Function to call when the timeout elapses. It
+     *      must remain valid for as long as a timeout can still occur,
+     *      so if it refers to an object that is to be destroyed, call
+     *      cancel() (or destroy the Watchdog) first.
+     */
     Watchdog(std::shared_ptr<ReactorV1> reactor, double timeout_s,
         std::function<void()> on_timeout)
         : state_(std::make_shared<State>())
@@ -50,12 +59,27 @@ public:
         state_->on_timeout = std::move(on_timeout);
     }
 
+    /**
+     * @brief Cancel any pending timeout and destroy the Watchdog.
+     *
+     * No timeout starts after this returns. A call to `on_timeout` that
+     * is already running on the reactor thread is not waited for.
+     */
     ~Watchdog() { stop(/*mark_dead=*/true); }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     Watchdog(const Watchdog&) = delete;
     Watchdog& operator=(const Watchdog&) = delete;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    // Start or refresh the deadline.
+    /**
+     * @brief Start watching, or restart the countdown from the full
+     * timeout.
+     *
+     * Replaces any countdown already in progress. Does nothing if the
+     * Watchdog has no reactor or is disabled by a timeout of zero or
+     * less.
+     */
     void arm()
     {
         State& st = *state_;
@@ -74,13 +98,42 @@ public:
             static_cast<float>(st.timeout_s), callback);
     }
 
-    // A watched event happened: refresh the deadline.
+    /**
+     * @brief Report that the watched event happened.
+     *
+     * Restarts the countdown, exactly as arm() does. It also starts
+     * watching if the Watchdog was idle, including after a timeout or
+     * cancel().
+     *
+     * If a timeout was about to be delivered at the same moment,
+     * this prevents it, so an event arriving right at the deadline does
+     * not cause a spurious timeout.
+     */
     void tap() { arm(); }
 
-    // Stop watching; no further timeout fires.
+    /**
+     * @brief Stop watching.
+     *
+     * A timeout that has not yet begun is prevented; it is not delivered
+     * even if it was about to fire. The Watchdog can be started again
+     * with arm() or tap(). A call to `on_timeout` that is already running
+     * on the reactor thread is not waited for.
+     */
     void cancel() { stop(/*mark_dead=*/false); }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 private:
+    /* Concurrency notes:
+     *  - A generation counter drops a timeout that fired just as a
+     *    concurrent tap/cancel superseded it (the alarm slipped past
+     *    cancel_alarm into the reactor's dispatch batch).
+     *  - The alarm callback holds the shared state, not the Watchdog, and
+     *    checks an `alive` flag, so a timeout in flight when the Watchdog
+     *    is destroyed is a no-op rather than a use-after-free.
+     *  - Deadlock-free: ReactorV1::cancel_alarm only erases the pending
+     *    entry (never waits on a running callback) and callbacks dispatch
+     *    outside the reactor lock, so holding the Watchdog's mutex across
+     *    arm/cancel can't cycle with the timeout path. */
     struct State {
         std::mutex mutex;
         std::shared_ptr<ReactorV1> reactor;
@@ -128,6 +181,7 @@ private:
     }
 
     std::shared_ptr<State> state_;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

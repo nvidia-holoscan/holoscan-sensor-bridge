@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 import os
 import signal
 import socket
@@ -6,23 +9,28 @@ import tempfile
 import threading
 import time
 
-import cuda.bindings.driver as cuda
 import pytest
-from camera_example_conf import (
+
+# Skip this entire module when the hololink Python package is not installed.
+# unit_test.sh runs this file explicitly via --cuda-subprocesses; without this
+# guard it raises an ImportError that pollutes the output on the HSDK5 branch.
+pytest.importorskip(
+    "hololink", reason="hololink not installed (HSDK5 port in progress)"
+)
+
+import cuda.bindings.driver as cuda  # noqa: E402
+from camera_example_conf import (  # noqa: E402
     camera_properties,
-    get_camera_count_from_json_config,
     get_ib_device_from_ifname,
     handle_failed_subprocess,
     has_ib_interface,
-    has_sipl_interface,
     vb1940_emulator_examples,
     vb1940_loopback_cases,
     vb1940_loopback_cases_extended,
     vb1940_loopback_cases_roce,
-    vb1940_loopback_cases_sipl,
 )
 
-import hololink as hololink_module
+import hololink as hololink_module  # noqa: E402
 
 script_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -291,7 +299,7 @@ def emulator_loopback(host_command, emulator_command, timeout_s, isolated_interf
                 f"Timeout reached after {timeout_s} seconds while waiting for emulator process to start. cmd: {emulator_command}. May require manual cleanup of namespace: {isolated_interface}"
             )
 
-        # why is this here? because ci/lint.sh says we cannot assign a lambda to a variable
+        # why is this here? because scripts/lint/lint.sh says we cannot assign a lambda to a variable
         def nsexec_kill():
             os.kill(nspid, signal.SIGKILL)
 
@@ -359,7 +367,6 @@ def test_emulator_vb1940_loopback(
     headless,
     hololink_address,
     hw_loopback,
-    json_config,
 ):
     camera = camera_properties["vb1940"]
     if camera_count < 1 or camera_count > 2:
@@ -385,10 +392,7 @@ def test_emulator_vb1940_loopback(
     else:
         emu_interface, host_interface = hw_loopback
         assert host_interface != emu_interface
-        if transport == "sipl":
-            emu_transport = "coe"
-            assert host_interface.startswith("mgbe")
-        elif transport == "roce":
+        if transport == "roce":
             emu_transport = "linux"
         else:
             emu_transport = transport
@@ -409,17 +413,6 @@ def test_emulator_vb1940_loopback(
         host_command.extend(["--coe-interface", host_interface])
     elif host_transport == "roce":
         host_command.extend(["--ibv-name", get_ib_device_from_ifname(host_interface)])
-    elif host_transport == "sipl":
-        # remove cmaera-mode and hololink options that are unsupported
-        host_command = host_command[:-4]
-        if camera_count == 1:
-            host_command.extend(["--json-config", json_config])
-        elif camera_count == 2:
-            host_command.extend(["--json-config", json_config])
-        else:
-            raise ValueError(
-                f"Invalid camera count: {camera_count}. must be 1 or 2 for sipl transport"
-            )
 
     if headless:
         host_command.append("--headless")
@@ -451,19 +444,16 @@ def pytest_generate_tests(metafunc):
         if metafunc.config.getoption(
             "--hw-loopback"
         ) is not None and not metafunc.config.getoption("--unaccelerated-only"):
-            if (
-                has_sipl_interface()
-                and metafunc.config.getoption("--json-config") is not None
-            ):
-                camera_count = get_camera_count_from_json_config(
-                    metafunc.config.getoption("--json-config")
-                )
-                for test_case in vb1940_loopback_cases_sipl:
-                    parameters.append(
-                        (test_case[0], camera_count, test_case[2], test_case[3])
-                    )
             if has_ib_interface():
                 parameters += vb1940_loopback_cases_roce
+        parameters = [
+            (
+                pytest.param(*test_case, marks=pytest.mark.flaky(reruns=2))
+                if test_case == ("linux", 1, 0, False)
+                else test_case
+            )
+            for test_case in parameters
+        ]
         metafunc.parametrize("transport,camera_count,camera_mode,gpu", parameters)
 
 

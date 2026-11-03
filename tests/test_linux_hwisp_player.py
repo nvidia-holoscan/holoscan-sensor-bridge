@@ -19,17 +19,27 @@ import sys
 from unittest import mock
 
 import pytest
+import utils
+from hololink_module.sensors.imx274.imx274_mode import Imx274_Mode
 
-import hololink as hololink_module
+import hololink
 from examples import linux_hwisp_player
+
+# HSDK5's hololink.operators is one namespace, not a package of modules.
+if not hasattr(hololink.operators, "ArgusIspOp"):
+    pytest.skip("ArgusIspOp isn't built", allow_module_level=True)
 
 
 @pytest.mark.skip_unless_igpu
 @pytest.mark.skip_unless_imx274
 @pytest.mark.parametrize(
-    "camera_mode",  # noqa: E501
+    "camera_mode",
     [
-        hololink_module.sensors.imx274.imx274_mode.Imx274_Mode.IMX274_MODE_1920X1080_60FPS,
+        # The example's own default: Argus on L4T R39 and later has only sensor
+        # mode 0 (3840x2160); earlier releases use mode 1 (1920x1080). v2.7's
+        # fixed mode 1 fails on R39 ("Sensor mode 1 was requested but only 1
+        # is available").
+        Imx274_Mode(linux_hwisp_player._get_platform_default_camera_mode()),
     ],
 )
 def test_linux_hwisp_player(
@@ -47,9 +57,12 @@ def test_linux_hwisp_player(
     if headless:
         arguments.extend(["--headless"])
 
-    with mock.patch("sys.argv", arguments):
-        linux_hwisp_player.main()
+    with utils.RunMonitor() as monitor, mock.patch("sys.argv", arguments):
+        result = linux_hwisp_player.main()
 
-        # check for errors
-        captured = capsys.readouterr()
-        assert captured.err == ""
+    assert result == 0
+    monitor.assert_ok()
+
+    # check for errors
+    captured = capsys.readouterr()
+    assert captured.err == ""

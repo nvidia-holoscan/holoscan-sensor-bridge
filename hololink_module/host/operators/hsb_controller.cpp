@@ -5,6 +5,7 @@
 
 #include "hololink/module/operators/hsb_controller.hpp"
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <utility>
@@ -36,7 +37,13 @@ HsbController::~HsbController()
 void HsbController::start(std::function<void()> wake)
 {
     wake_ = std::move(wake);
-    config_.frame_ready = wake_;
+    // A frame wakes both a get_next_frame() waiting for one and the operator's compute().
+    config_.frame_ready = [this]() {
+        wake_frame_waiter();
+        if (wake_) {
+            wake_();
+        }
+    };
     {
         std::lock_guard<std::mutex> lock(receiver_mutex_);
         network_receiver_ = network_receiver_factory_
@@ -58,12 +65,15 @@ void HsbController::stop()
     if (sensor_factory_) {
         sensor_factory_->stop();
     }
-    std::lock_guard<std::mutex> lock(receiver_mutex_);
-    connected_ = false;
-    if (network_receiver_) {
-        network_receiver_->destruct();
-        network_receiver_.reset();
+    {
+        std::lock_guard<std::mutex> lock(receiver_mutex_);
+        connected_ = false;
+        if (network_receiver_) {
+            network_receiver_->destruct();
+            network_receiver_.reset();
+        }
     }
+    wake_frame_waiter();
 }
 
 void HsbController::found(const hololink::module::EnumerationMetadata& metadata)
@@ -98,6 +108,8 @@ void HsbController::lost()
             network_receiver_->destruct();
         }
     }
+    // A get_next_frame() waiting for a frame returns now, so compute() can show the fallback.
+    wake_frame_waiter();
     if (data_channel) {
         data_channel->device_lost();
     }
@@ -106,30 +118,67 @@ void HsbController::lost()
     }
 }
 
+void HsbController::wake_frame_waiter()
+{
+    {
+        std::lock_guard<std::mutex> lock(frame_wait_mutex_);
+        ++frame_wakes_;
+    }
+    frame_waiter_.notify_all();
+}
+
 bool HsbController::get_next_frame(unsigned timeout_ms,
-    holoscan::MetadataDictionary& metadata, CUstream cuda_stream,
+    hololink::Metadata& metadata, CUstream cuda_stream,
     CUdeviceptr& out_frame, size_t& out_size,
     std::shared_ptr<void>& out_owner)
 {
-    std::lock_guard<std::mutex> lock(receiver_mutex_);
-    if (!connected_.load() || !network_receiver_
-        || !network_receiver_->get_next_frame(timeout_ms, cuda_stream)) {
-        return false;
+    // Wait for a frame on frame_waiter_, not in the receiver's get_next_frame() with
+    // receiver_mutex_ held: lost() takes that mutex on the reactor thread, which would then
+    // stall behind this wait on every disconnect. The receiver is used only under the mutex,
+    // and only to take a frame it already holds, so lost() and stop() can tear it down while
+    // this waits. frame_wakes_ is read before frames_ready(), so a frame that lands in between
+    // still ends the wait.
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeout_ms);
+    while (connected_.load()) {
+        uint64_t wakes = 0;
+        {
+            std::lock_guard<std::mutex> lock(frame_wait_mutex_);
+            wakes = frame_wakes_;
+        }
+        {
+            std::lock_guard<std::mutex> lock(receiver_mutex_);
+            if (!connected_.load() || !network_receiver_) {
+                return false;
+            }
+            if (network_receiver_->frames_ready()) {
+                // A frame is queued, so this doesn't wait.
+                if (!network_receiver_->get_next_frame(0, cuda_stream)) {
+                    return false;
+                }
+                if (sensor_factory_) {
+                    sensor_factory_->tap();
+                }
+                network_receiver_->stamp_metadata(metadata);
+                out_frame = network_receiver_->frame_memory();
+                out_owner = network_receiver_->frame_buffer_owner();
+                out_size = config_.frame_size;
+                return true;
+            }
+        }
+        std::unique_lock<std::mutex> lock(frame_wait_mutex_);
+        if (!frame_waiter_.wait_until(lock, deadline, [&] { return frame_wakes_ != wakes; })) {
+            return false;
+        }
     }
-    if (sensor_factory_) {
-        sensor_factory_->tap();
-    }
-    network_receiver_->stamp_metadata(metadata);
-    out_frame = network_receiver_->frame_memory();
-    out_owner = network_receiver_->frame_buffer_owner();
-    out_size = config_.frame_size;
-    return true;
+    return false;
 }
 
 bool HsbController::frames_ready()
 {
     std::lock_guard<std::mutex> lock(receiver_mutex_);
-    return network_receiver_ && network_receiver_->frames_ready();
+    // A receive path that failed reports a frame ready but yields none: report none, and leave
+    // the connection to the watchdog, which no frame taps any more, to report lost.
+    return network_receiver_ && network_receiver_->frames_ready() && !network_receiver_->receive_path_failed();
 }
 
 void HsbController::fallback_frame(CUdeviceptr& out_ptr, size_t& out_size)

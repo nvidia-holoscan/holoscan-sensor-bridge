@@ -6,22 +6,22 @@
 #ifndef HOLOLINK_MODULE_OPERATORS_LINUX_RECEIVER_OP_HPP
 #define HOLOLINK_MODULE_OPERATORS_LINUX_RECEIVER_OP_HPP
 
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <memory>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <vector>
 
 #include <cuda.h>
-#include <holoscan/holoscan.hpp>
 
-#include "hololink/module/enumeration_metadata.hpp"
+#include "hololink/module/operators/base_receiver_op.hpp"
+
 #include "hololink/module/frame_metadata.hpp"
 #include "hololink/module/linux_data_channel.hpp"
 #include "hololink/module/linux_receiver.hpp"
+#include <holoscan/core/parameter_schema.hpp>
 
 // Forward declaration so consumers of this header don't need the full
 // ReceiverMemoryDescriptor definition (which pulls in <cuda.h> +
@@ -33,6 +33,39 @@ class ReceiverMemoryDescriptor;
 
 namespace hololink::module::operators {
 
+/**
+ * @brief Flat parameter aggregate for LinuxReceiverOp.
+ *
+ * Set all fields before passing to .set_params(...) (or use designated initializers).
+ * receiver_affinity mirrors the module shell's prior HOLOLINK_AFFINITY-env-var default:
+ * an empty vector means "use the environment variable, or a fixed default" (resolved in
+ * start_receiver()), matching today's behavior exactly.
+ */
+struct LinuxReceiverParams {
+    CUcontext frame_context { nullptr };
+    size_t frame_size { 0 };
+    size_t page_size { 0 };
+    uint32_t pages { 2 };
+    uint32_t queue_size { 1 };
+    std::vector<int> receiver_affinity {}; ///< Empty -> HOLOLINK_AFFINITY env var, or a fixed default.
+    /// Complete after this many frames (compute() calls), as HSDK4's CountCondition on the
+    /// receiver did; 0 or less: no limit.
+    int64_t frame_limit { 0 };
+    /// Once this operator and every other one that sets frame_limit_ends_run have reached their
+    /// frame_limit, end the whole run (ExecutionContext::request_completion()), dropping the frames
+    /// still in the pipeline; see hololink::operators::FrameLimitRunGroup for when a run needs it.
+    bool frame_limit_ends_run { false };
+};
+
+// A partial schema: HSDK5 only needs the field BaseReceiverOp::setup() sizes the tensor pool's
+// slots from (holoscan::parameter_byte_span()); the other fields stay opaque to it and are still
+// bound by the operator catalog. The schema makes frame_size a recompile-required parameter.
+HOLOSCAN_PARAM_SCHEMA(
+    LinuxReceiverParams,
+    holoscan::param_schema("com.nvidia.hololink.module.operators.LinuxReceiverParams", 1).partial(),
+    holoscan::field<&LinuxReceiverParams::frame_size>("frame_size")
+        .description("Size of one received frame, in bytes; the tensor pool's slot size."));
+
 /* Software (Linux) receiver operator built against the module's V1
  * surface (LinuxDataChannelInterfaceV1 + LinuxReceiverInterfaceV1). The
  * user-space receiver thread, host frame buffer, and RoCEv2 UDP packet
@@ -40,93 +73,47 @@ namespace hololink::module::operators {
  * hololink::operators::LinuxReceiver). Unlike RoceReceiverOp it links no
  * ibverbs and runs on hosts with no infiniband device.
  *
- * The application supplies only `enumeration_metadata`; start() resolves
- * the supplement module via Adapter::get_module(metadata) and fetches
- * the per-board LinuxDataChannelInterface + LinuxReceiverInterface
- * (keyed by "serial=<n>;data_channel=<n>") from the locator. The data
- * channel is not passed in as an Arg.
+ * The application supplies only the enumeration metadata (constructor
+ * argument); start_receiver() resolves the supplement module via
+ * Adapter::get_module(metadata_) and fetches the per-board
+ * LinuxDataChannelInterface + LinuxReceiverInterface (keyed by
+ * "serial=<n>;data_channel=<n>") from the locator.
  *
  * Unlike the hardware RoCE operator, the software receiver decodes the
- * per-frame metadata as it reassembles the stream, so compute() stamps
- * those fields straight off the receiver's frame-info struct — there is
- * no device-side EOF-block copy and no FrameMetadataInterfaceV1::decode
- * step. (FrameMetadataInterfaceV1 is still resolved, but only for its
- * block_size(), which sizes the per-frame stride in the buffer.)
+ * per-frame metadata as it reassembles the stream, so get_next_frame()
+ * stamps those fields straight off the receiver's frame-info struct —
+ * there is no device-side EOF-block copy and no
+ * FrameMetadataInterfaceV1::decode step. (FrameMetadataInterfaceV1 is
+ * still resolved, but only for its block_size(), which sizes the
+ * per-frame stride in the buffer.)
  *
- * Lifecycle:
- *   start()   — resolve module + channel + receiver from the metadata,
- *               allocate the frame buffer, create + bind a datagram
- *               socket via channel->configure_socket(fd), start() the
- *               receiver with the operator's runtime parameters, then
- *               channel->attach_receiver(receiver) which reads
+ * Lifecycle (see BaseReceiverOp for the shared start()/stop()/compute()
+ * shape):
+ *   start_receiver() — resolve module + channel + receiver from the
+ *               metadata, allocate the frame buffer, create + bind a
+ *               datagram socket via channel->configure_socket(fd),
+ *               start() the receiver with this operator's parameters,
+ *               then channel->attach_receiver(receiver) which reads
  *               qp_number / rkey / local_port off the receiver. Spawn
  *               the worker thread (running blocking_monitor(), with the
  *               configured CPU affinity).
- *   compute() — receiver->get_next_frame on a Holoscan-allocated stream,
- *               stamp the decoded metadata into the operator's metadata
- *               map, and emit a gxf::Entity wrapping the frame buffer as
- *               a uint8 tensor over "output".
- *   stop()    — channel->detach_receiver, receiver->close, join the
- *               worker thread, close the socket. */
-class LinuxReceiverOp : public holoscan::Operator {
+ *   get_next_frame() — receiver->get_next_frame on the operator's
+ *               compute stream, returning the frame's device pointer
+ *               plus its already-decoded fields.
+ *   stop_receiver() — channel->detach_receiver, receiver->close, join
+ *               the worker thread, close the socket. */
+class LinuxReceiverOp : public BaseReceiverOp<LinuxReceiverOp, LinuxReceiverParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(LinuxReceiverOp);
+    using BaseReceiverOp<LinuxReceiverOp, LinuxReceiverParams>::BaseReceiverOp;
 
-    ~LinuxReceiverOp() override;
-
-    void setup(holoscan::OperatorSpec& spec) override;
-    void start() override;
-    void stop() override;
-    void compute(holoscan::InputContext&,
-        holoscan::OutputContext& op_output,
-        holoscan::ExecutionContext&) override;
+    void start_receiver() override;
+    void stop_receiver() override;
+    std::tuple<CUdeviceptr, std::shared_ptr<hololink::Metadata>> get_next_frame(
+        double timeout_ms, CUstream cuda_stream) override;
+    bool frames_ready() override;
 
 private:
-    // Application-supplied parameters. The data channel is resolved
-    // internally from this metadata.
-    holoscan::Parameter<hololink::module::EnumerationMetadata> metadata_;
-
-    holoscan::Parameter<CUcontext> frame_context_;
-    holoscan::Parameter<size_t> frame_size_;
-    holoscan::Parameter<size_t> page_size_;
-    holoscan::Parameter<uint32_t> pages_;
-    holoscan::Parameter<uint32_t> queue_size_;
-    // CPU affinity for the receiver worker thread. Defaults from the
-    // HOLOLINK_AFFINITY environment variable (or a fixed default) in
-    // start().
-    holoscan::Parameter<std::vector<int>> receiver_affinity_;
-
-    // Sensor-side bring-up hooks (same contract as RoceReceiverOp).
-    holoscan::Parameter<std::function<void()>> device_start_;
-    holoscan::Parameter<std::function<void()>> device_stop_;
-
-    // Optional name for the emitted frame tensor (same contract as
-    // RoceReceiverOp). Defaults to "" (unnamed).
-    holoscan::Parameter<std::string> out_tensor_name_;
-
-    // Optional per-operator metadata-key renaming (same contract as
-    // RoceReceiverOp). Defaults to identity; renamed names are cached in
-    // start() so compute() does no per-frame string work.
-    holoscan::Parameter<std::function<std::string(const std::string&)>>
-        rename_metadata_;
-    std::string frame_packets_received_key_;
-    std::string frame_bytes_received_key_;
-    std::string frame_number_key_;
-    std::string received_frame_number_key_;
-    std::string received_s_key_;
-    std::string received_ns_key_;
-    std::string timestamp_s_key_;
-    std::string timestamp_ns_key_;
-    std::string metadata_s_key_;
-    std::string metadata_ns_key_;
-    std::string packets_dropped_key_;
-    std::string crc_key_;
-    std::string psn_key_;
-    std::string imm_data_key_;
-    std::string page_number_key_;
-    std::string bytes_written_key_;
-
-    // V1 service handles resolved in start() and held until stop().
+    // V1 service handles resolved in start_receiver() and held until stop_receiver().
     std::shared_ptr<hololink::module::LinuxDataChannelInterfaceV1> channel_;
     std::shared_ptr<hololink::module::LinuxReceiverInterfaceV1> receiver_;
     // Resolved for block_size() only — the software receiver decodes
@@ -135,16 +122,9 @@ private:
     std::shared_ptr<hololink::module::ReceiverMemoryDescriptor> frame_buffer_;
     std::shared_ptr<std::thread> monitor_thread_;
 
-    // Frame-ready scheduling (same contract as RoceReceiverOp): compute()
-    // runs only when the monitor thread signals a ready frame, so it never
-    // blocks — required when several receivers feed one downstream join.
-    std::shared_ptr<holoscan::AsynchronousCondition> frame_ready_condition_;
-    std::atomic<bool> running_ { false };
-    void frame_ready();
-
     // The datagram socket the receiver runs on. Owned by the operator
-    // (created in start(), closed in stop()) so it outlives the
-    // receiver thread.
+    // (created in start_receiver(), closed in stop_receiver()) so it
+    // outlives the receiver thread.
     int data_socket_ = -1;
     bool configured_ = false;
 };

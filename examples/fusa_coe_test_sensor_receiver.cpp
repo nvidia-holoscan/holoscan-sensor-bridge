@@ -26,6 +26,8 @@
  */
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <iomanip>
 #include <iostream>
@@ -33,9 +35,24 @@
 #include <sstream>
 #include <vector>
 
-#include <holoscan/holoscan.hpp>
+#include <cuda_runtime_api.h>
 
-#include <hololink/common/cuda_helper.hpp>
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/domain/tensor.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/core/sample.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+
 #include <hololink/common/holoargs.hpp>
 #include <hololink/common/tools.hpp>
 #include <hololink/core/data_channel.hpp>
@@ -43,18 +60,25 @@
 #include <hololink/core/hololink.hpp>
 #include <hololink/core/logging.hpp>
 #include <hololink/core/networking.hpp>
+#include <hololink/core/on_scope_exit.hpp>
 #include <hololink/core/serializer.hpp>
+#include <hololink/operators/capture_metadata_utils.hpp>
 #include <hololink/operators/fusa_coe_capture/fusa_coe_capture.hpp>
+
+#define HOLOLINK_PLAYER_SUPPORT_NO_DISPLAY
+#include "player_support.hpp"
+
+namespace hx = hololink::examples;
+
+using hololink::core::OnScopeExit;
 
 // These constants must match the definitions in hololink::emulation::sensors::TestSensor
 static constexpr uint8_t TEST_I2C_ADDRESS = 0x5A;
-static constexpr uint16_t DEVICE_ID_REG = 0x0000u;
 static constexpr uint16_t FRAME_SIZE_REG = 0x0010u;
 static constexpr uint16_t PATTERN_MODE_REG = 0x0014u;
 static constexpr uint16_t CONSTANT_BYTE_REG = 0x0015u;
 static constexpr uint16_t FRAME_RATE_REG = 0x0020u;
 static constexpr uint16_t STREAMING_REG = 0x0030u;
-static constexpr uint16_t STATUS_REG = 0x0031u;
 
 enum class TestPatternMode : uint8_t {
     CONSTANT = 0,
@@ -94,7 +118,7 @@ hololink::core::MacAddress parse_mac_address(const std::string& mac_str)
 
 class TestSensorController {
 public:
-    TestSensorController(std::shared_ptr<hololink::Hololink::I2c> i2c)
+    explicit TestSensorController(std::shared_ptr<hololink::Hololink::I2c> i2c)
         : i2c_(std::move(i2c))
     {
     }
@@ -128,94 +152,111 @@ public:
         write_register_u32_le(FRAME_RATE_REG, frame_rate_hz);
     }
 
-    void start_streaming()
-    {
-        write_register_u8(STREAMING_REG, 1);
-    }
-
-    void stop_streaming()
-    {
-        write_register_u8(STREAMING_REG, 0);
-    }
+    void start_streaming() { write_register_u8(STREAMING_REG, 1); }
+    void stop_streaming() { write_register_u8(STREAMING_REG, 0); }
 
 private:
     std::shared_ptr<hololink::Hololink::I2c> i2c_;
 };
 
-class FrameDataPrinterOp : public holoscan::Operator {
+// ---------------------------------------------------------------------------
+// Print progress: FrameDataPrinterOp completes the run itself once it has printed
+// --frame-limit frames; run() reads how many it printed when --timeout-s expires first.
+// ---------------------------------------------------------------------------
+struct PrintStatus {
+    std::atomic<std::uint32_t> frames_printed { 0 };
+};
+
+// ---------------------------------------------------------------------------
+// FrameDataPrinterOp
+// ---------------------------------------------------------------------------
+
+struct FrameDataPrinterParams {
+    // Complete the run once this many frames are printed; 0 or less: no limit.
+    int max_frames { 0 };
+    std::uint32_t print_max_bytes { 64 };
+    std::shared_ptr<PrintStatus> status;
+};
+
+class FrameDataPrinterOp final : public holoscan::Operator<FrameDataPrinterParams> {
 public:
-    HOLOSCAN_OPERATOR_FORWARD_ARGS(FrameDataPrinterOp)
+    holoscan::Input<holoscan::Tensor> input_tensor { "tensor" };
+    holoscan::Input<hololink::CaptureMetadataT> input_metadata { "metadata" };
 
     void setup(holoscan::OperatorSpec& spec) override
     {
-        spec.input<holoscan::gxf::Entity>("input");
-        spec.param(frame_size_bytes_, "frame_size_bytes", "FrameSizeBytes",
-            "Number of payload bytes to print per frame", 256u);
-        spec.param(print_max_bytes_, "print_max_bytes", "PrintMaxBytes",
-            "Maximum number of bytes to print per frame (0 = all)", 64u);
+        spec.input(input_tensor, "tensor").queue_depth(4U);
+        spec.input(input_metadata, "metadata").queue_depth(4U);
     }
 
-    void start() override
+    [[nodiscard]] holoscan::Contract contract() const override
     {
-        CudaCheck(cuInit(0));
-        CudaCheck(cuDeviceGet(&cuda_device_, 0));
-        CudaCheck(cuDevicePrimaryCtxRetain(&cuda_context_, cuda_device_));
+        // Upstream stamps both ports with an identical capture_time, so OnAligned pairs them on
+        // an exact match (see kMetadataPairingWindow).
+        holoscan::Contract c;
+        c.trigger(holoscan::OnAligned {
+                      .ports = holoscan::ports(input_tensor, input_metadata),
+                      .window = hololink::operators::kMetadataPairingWindow,
+                  })
+            .input(input_tensor, holoscan::Exact {})
+            .input(input_metadata, holoscan::Exact {});
+        return c;
     }
 
-    void stop() override
-    {
-        if (cuda_context_) {
-            CudaCheck(cuDevicePrimaryCtxRelease(cuda_device_));
-            cuda_context_ = nullptr;
-        }
-    }
-
-    void compute(holoscan::InputContext& op_input, holoscan::OutputContext& op_output,
+    [[nodiscard]] holoscan::expected<void, holoscan::Error> compute(
         holoscan::ExecutionContext& context) override
     {
-        (void)op_output;
-        (void)context;
+        const auto& p = params();
 
-        hololink::common::CudaContextScopedPush scoped_cuda_context(cuda_context_);
+        auto tensor_sample = input_tensor.receive();
+        if (!tensor_sample)
+            return holoscan::make_unexpected(std::move(tensor_sample).error());
+        auto metadata_sample = input_metadata.receive();
+        if (!metadata_sample)
+            return holoscan::make_unexpected(std::move(metadata_sample).error());
 
-        auto maybe_entity = op_input.receive<holoscan::gxf::Entity>("input");
-        if (!maybe_entity) {
-            HOLOSCAN_LOG_WARN("Failed to receive entity");
-            return;
+        // Drain without printing once we have enough frames.
+        if (p.max_frames > 0 && frames_printed_ >= static_cast<std::uint32_t>(p.max_frames)) {
+            return {};
         }
 
-        auto& entity = static_cast<nvidia::gxf::Entity&>(maybe_entity.value());
-        const auto maybe_tensor = entity.get<nvidia::gxf::Tensor>();
-        if (!maybe_tensor) {
-            throw std::runtime_error("Tensor not found in message");
-        }
-
-        const auto tensor = maybe_tensor.value();
-        if (tensor->storage_type() != nvidia::gxf::MemoryStorageType::kDevice) {
-            throw std::runtime_error("Expected device memory tensor from FusaCoeCaptureOp");
-        }
-
-        const uint32_t frame_size = tensor->size();
-        const uint32_t print_count = print_max_bytes_.get() == 0
+        const hololink::CaptureMetadataT& frame = metadata_sample->data;
+        const holoscan::Tensor& tensor = tensor_sample->data;
+        const std::size_t frame_size = tensor.nbytes();
+        const std::size_t print_count = p.print_max_bytes == 0
             ? frame_size
-            : std::min(frame_size, print_max_bytes_.get());
+            : std::min<std::size_t>(frame_size, p.print_max_bytes);
 
-        std::vector<uint8_t> host_data(print_count);
-        CudaCheck(cuMemcpyDtoH(host_data.data(),
-            reinterpret_cast<CUdeviceptr>(tensor->pointer()),
-            print_count));
+        std::vector<std::uint8_t> host_data(print_count);
+        if (tensor.device().device_type == kDLCUDA) {
+            cudaError_t err = cudaMemcpyAsync(
+                host_data.data(), tensor.data(), print_count,
+                cudaMemcpyDeviceToHost,
+                context.cuda_stream().get());
+            if (err != cudaSuccess) {
+                return holoscan::make_unexpected(holoscan::Error {
+                    holoscan::ErrorCode::kFailure,
+                    "FrameDataPrinterOp: cudaMemcpyAsync failed" });
+            }
+            err = cudaStreamSynchronize(context.cuda_stream().get());
+            if (err != cudaSuccess) {
+                return holoscan::make_unexpected(holoscan::Error {
+                    holoscan::ErrorCode::kFailure,
+                    "FrameDataPrinterOp: cudaStreamSynchronize failed" });
+            }
+        } else {
+            std::memcpy(host_data.data(), tensor.data(), print_count);
+        }
 
-        frame_count_++;
-        int64_t frame_number = metadata()->get<int64_t>("frame_number");
+        ++frames_printed_;
 
-        std::cout << "Frame " << frame_count_;
-        if (frame_number >= 0) {
-            std::cout << " (metadata frame_number=" << frame_number << ")";
+        std::cout << "Frame " << frames_printed_;
+        if (frame.frame_number >= 0) {
+            std::cout << " (metadata frame_number=" << frame.frame_number << ")";
         }
         std::cout << " bytes[" << print_count << "/" << frame_size << "]:";
-
         std::cout << std::hex << std::setfill('0');
-        for (uint32_t i = 0; i < print_count; ++i) {
+        for (std::size_t i = 0; i < print_count; ++i) {
             if (i % 16 == 0) {
                 std::cout << '\n'
                           << "    " << std::setw(4) << i << ": ";
@@ -223,81 +264,138 @@ public:
             std::cout << std::setw(2) << static_cast<unsigned>(host_data[i]) << ' ';
         }
         std::cout << std::dec << std::setfill(' ') << std::endl;
-    }
 
-private:
-    holoscan::Parameter<uint32_t> frame_size_bytes_;
-    holoscan::Parameter<uint32_t> print_max_bytes_;
-    CUdevice cuda_device_ = 0;
-    CUcontext cuda_context_ = nullptr;
-    uint64_t frame_count_ = 0;
-};
-
-class Application : public holoscan::Application {
-public:
-    Application(
-        const std::string& interface,
-        const hololink::core::MacAddress& mac,
-        hololink::DataChannel& hololink_channel,
-        std::shared_ptr<TestSensorController> test_sensor,
-        uint32_t frame_size_bytes,
-        uint32_t print_max_bytes,
-        uint32_t timeout_ms,
-        int frame_limit)
-        : interface_(interface)
-        , mac_(mac)
-        , hololink_channel_(hololink_channel)
-        , test_sensor_(std::move(test_sensor))
-        , frame_size_bytes_(frame_size_bytes)
-        , print_max_bytes_(print_max_bytes)
-        , timeout_ms_(timeout_ms)
-        , frame_limit_(frame_limit)
-    {
-        enable_metadata(true);
-    }
-
-    void compose() override
-    {
-        using namespace holoscan;
-
-        std::shared_ptr<Condition> condition;
-        if (frame_limit_ > 0) {
-            condition = make_condition<CountCondition>("count", frame_limit_);
-        } else {
-            condition = make_condition<BooleanCondition>("ok", true);
+        if (p.status) {
+            p.status->frames_printed.store(frames_printed_);
+        }
+        if (p.max_frames > 0 && frames_printed_ == static_cast<std::uint32_t>(p.max_frames)) {
+            context.request_completion();
         }
 
-        auto fusa_coe_capture = make_operator<hololink::operators::FusaCoeCaptureOp>(
-            "fusa_coe_capture",
-            Arg("interface", interface_),
-            Arg("mac_addr", std::vector<uint8_t>(mac_.begin(), mac_.end())),
-            Arg("hololink_channel", &hololink_channel_),
-            Arg("out_tensor_name", std::string("frame")),
-            Arg("timeout", timeout_ms_),
-            Arg("device_start", std::function<void()>([this] { test_sensor_->start_streaming(); })),
-            Arg("device_stop", std::function<void()>([this] { test_sensor_->stop_streaming(); })),
-            condition);
-        fusa_coe_capture->configure_frame_size(frame_size_bytes_);
-
-        auto frame_printer = make_operator<FrameDataPrinterOp>(
-            "frame_printer",
-            Arg("frame_size_bytes", frame_size_bytes_),
-            Arg("print_max_bytes", print_max_bytes_),
-            condition);
-
-        add_flow(fusa_coe_capture, frame_printer, { { "output", "input" } });
+        return {};
     }
 
 private:
-    std::string interface_;
-    hololink::core::MacAddress mac_;
-    hololink::DataChannel& hololink_channel_;
-    std::shared_ptr<TestSensorController> test_sensor_;
-    uint32_t frame_size_bytes_;
-    uint32_t print_max_bytes_;
-    uint32_t timeout_ms_;
-    int frame_limit_;
+    std::uint32_t frames_printed_ { 0 };
 };
+
+int run(
+    const std::string& hololink_ip,
+    uint32_t sensor,
+    uint32_t frame_size,
+    uint32_t frame_rate,
+    uint8_t pattern_mode,
+    uint8_t constant_byte,
+    uint32_t print_max_bytes,
+    uint32_t timeout_ms,
+    int frame_limit,
+    double timeout_s,
+    holoscan::ManagedShutdownSignals& signals)
+{
+    auto channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+    hololink::Metadata metadata(channel_metadata);
+    hololink::DataChannel::use_sensor(metadata, sensor);
+    hololink::DataChannel hololink_channel(metadata);
+
+    auto interface = metadata.get<std::string>("interface").value_or("");
+    auto mac_str = metadata.get<std::string>("mac_id").value_or("");
+    auto mac_bytes_arr = parse_mac_address(mac_str);
+    std::vector<uint8_t> mac_bytes(mac_bytes_arr.begin(), mac_bytes_arr.end());
+    HOLOSCAN_LOG_INFO("Using interface={}, mac={}", interface, mac_str);
+
+    std::shared_ptr<hololink::Hololink> hololink_dev = hololink_channel.hololink();
+    hololink_dev->start();
+    // Hololink instances are cached in a process-global registry (see
+    // Hololink::from_enumeration_metadata()), so a thrown exception unwinding this
+    // local shared_ptr does not drop the object's refcount to zero -- the
+    // destructor's own stop() safety net does not fire. Guard it explicitly.
+    OnScopeExit stop_hololink([&hololink_dev] { hololink_dev->stop(); });
+    hololink_dev->reset();
+
+    auto i2c = hololink_dev->get_i2c(hololink::CAM_I2C_BUS + sensor);
+    auto test_sensor = std::make_shared<TestSensorController>(i2c);
+    test_sensor->configure(frame_size, frame_rate, pattern_mode, constant_byte);
+
+    HOLOSCAN_LOG_INFO(
+        "Configured TestSensor: frame_size={}, frame_rate={} Hz, pattern_mode={}, constant_byte=0x{:02x}",
+        frame_size, frame_rate, static_cast<unsigned>(pattern_mode), constant_byte);
+    HOLOSCAN_LOG_INFO("Ensure serve_coe_test_data is running on the emulator host");
+
+    holoscan::Graph graph { "fusa_coe_test_sensor_receiver" };
+
+    // The TestSensor emits an opaque byte blob, not a real CSI image -- frame_size_bytes
+    // routes FusaCoeCaptureOp::start() to core_.configure_frame_size(), the purpose-built
+    // no-CFA/no-packetizer capture path (NvSciColor_R8), same as the HSDK4-era
+    // configure_frame_size() call this replaces.
+    auto capture = graph.op<hololink::operators::FusaCoeCaptureOp>("capture");
+    capture.set_params(hololink::operators::FusaCoeCaptureParams {
+        .hololink_channel = &hololink_channel,
+        .device_start = [test_sensor] { test_sensor->start_streaming(); },
+        .device_stop = [test_sensor] { test_sensor->stop_streaming(); },
+        .interface = interface,
+        .mac_addr = mac_bytes,
+        .timeout = timeout_ms,
+        // A sensor that sends nothing fails a --frame-limit run instead of keeping it going.
+        .stall_timeout_ms = hx::frame_limit_stall_timeout_ms(frame_limit, timeout_ms),
+        .frame_size_bytes = frame_size,
+        // Names this camera in the capture's stall messages.
+        .name = std::string(capture.name()),
+    });
+
+    auto status = std::make_shared<PrintStatus>();
+    auto printer = graph.op<FrameDataPrinterOp>("printer");
+    printer.set_params(FrameDataPrinterParams {
+        .max_frames = frame_limit,
+        .print_max_bytes = print_max_bytes,
+        .status = status,
+    });
+
+    graph.add_flow(capture->tensor, printer->input_tensor, hx::pipeline_edge());
+    graph.add_flow(capture->metadata, printer->input_metadata, hx::pipeline_edge());
+
+    graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+    holoscan::CompileOptions compile_options;
+    compile_options.deployment.bind_tensor_output_device(
+        holoscan::TensorOutputDevicePlacement {
+            .operator_path = "capture",
+            .output_port = "tensor",
+            .device = holoscan::DeviceId { 0 },
+        });
+
+    const auto plan = holoscan::compile(graph, compile_options);
+    if (!plan.ok()) {
+        hx::print_compile_failure(plan);
+        return -1;
+    }
+
+    auto session = holoscan::run_async(plan, signals);
+
+    // The printer completes the run after --frame-limit frames (0: run until Ctrl+C);
+    // --timeout-s, when given, bounds the wait for them.
+    bool ended = true;
+    if (frame_limit > 0 && timeout_s > 0.0) {
+        ended = session.wait_for(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::duration<double>(timeout_s)));
+        if (!ended) {
+            session.request_stop();
+        }
+    }
+    session.wait();
+    const bool failed = hx::report_session(session, plan);
+    if (failed) {
+        return -1;
+    }
+
+    const auto printed = status->frames_printed.load();
+    if (!ended && printed < static_cast<std::uint32_t>(frame_limit)) {
+        std::cerr << "Timed out after " << timeout_s << "s -- only "
+                  << printed << "/" << frame_limit
+                  << " frames printed.\n";
+        return 1;
+    }
+    return 0;
+}
 
 } // namespace
 
@@ -320,67 +418,42 @@ int main(int argc, char** argv)
         ("frame-limit", value<int>()->default_value(10), "Exit after receiving this many frames (0=infinite, default=10)")
         ("print-max-bytes", value<uint32_t>()->default_value(64), "Max bytes to print per frame (0=all)")
         ("timeout", value<uint32_t>()->default_value(1500), "Capture timeout in milliseconds")
+        ("timeout-s", value<double>()->default_value(0.0), "Seconds to wait for --frame-limit frames before giving up (0=no limit)")
         ;
     // clang-format on
 
-    try {
-        auto variables_map = Parser().parse_command_line(argc, argv, options_description);
-        const auto hololink_ip = variables_map["hololink"].as<std::string>();
-        const auto sensor = variables_map["sensor"].as<uint32_t>();
-        const auto frame_size = variables_map["frame-size"].as<uint32_t>();
-        const auto frame_rate = variables_map["frame-rate"].as<uint32_t>();
-        const auto pattern_mode = static_cast<uint8_t>(variables_map["pattern-mode"].as<uint32_t>());
-        const auto constant_byte = static_cast<uint8_t>(variables_map["constant-byte"].as<uint32_t>());
-        const auto frame_limit = variables_map["frame-limit"].as<int>();
-        const auto print_max_bytes = variables_map["print-max-bytes"].as<uint32_t>();
-        const auto timeout_ms = variables_map["timeout"].as<uint32_t>();
+    auto variables_map = Parser().parse_command_line(argc, argv, options_description);
 
-        if (frame_size == 0) {
-            throw std::invalid_argument("frame-size must be greater than 0");
+    // With managed signals, Ctrl+C stops the session cooperatively, so the TestSensor and the
+    // board are stopped on the way out.
+    return hx::run_with_managed_signals([&](holoscan::ManagedShutdownSignals& signals) {
+        try {
+            const auto frame_size = variables_map["frame-size"].as<uint32_t>();
+            const auto pattern_mode = static_cast<uint8_t>(variables_map["pattern-mode"].as<uint32_t>());
+
+            if (frame_size == 0) {
+                throw std::invalid_argument("frame-size must be greater than 0");
+            }
+            if (pattern_mode != static_cast<uint8_t>(TestPatternMode::CONSTANT)
+                && pattern_mode != static_cast<uint8_t>(TestPatternMode::INCREMENTING)) {
+                throw std::invalid_argument("pattern-mode must be 0 (constant) or 1 (incrementing)");
+            }
+
+            return run(
+                variables_map["hololink"].as<std::string>(),
+                variables_map["sensor"].as<uint32_t>(),
+                frame_size,
+                variables_map["frame-rate"].as<uint32_t>(),
+                pattern_mode,
+                static_cast<uint8_t>(variables_map["constant-byte"].as<uint32_t>()),
+                variables_map["print-max-bytes"].as<uint32_t>(),
+                variables_map["timeout"].as<uint32_t>(),
+                variables_map["frame-limit"].as<int>(),
+                variables_map["timeout-s"].as<double>(),
+                signals);
+        } catch (const std::exception& e) {
+            HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
+            return -1;
         }
-        if (pattern_mode != static_cast<uint8_t>(TestPatternMode::CONSTANT)
-            && pattern_mode != static_cast<uint8_t>(TestPatternMode::INCREMENTING)) {
-            throw std::invalid_argument("pattern-mode must be 0 (constant) or 1 (incrementing)");
-        }
-
-        auto channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
-        hololink::Metadata metadata(channel_metadata);
-        hololink::DataChannel::use_sensor(metadata, sensor);
-        hololink::DataChannel hololink_channel(metadata);
-
-        auto interface = metadata.get<std::string>("interface").value_or("");
-        auto mac_str = metadata.get<std::string>("mac_id").value_or("");
-        auto mac_bytes = parse_mac_address(mac_str);
-        HOLOSCAN_LOG_INFO("Using interface={}, mac={}", interface, mac_str);
-
-        std::shared_ptr<hololink::Hololink> hololink = hololink_channel.hololink();
-        hololink->start();
-        hololink->reset();
-
-        auto i2c = hololink->get_i2c(hololink::CAM_I2C_BUS + sensor);
-        auto test_sensor = std::make_shared<TestSensorController>(i2c);
-        test_sensor->configure(frame_size, frame_rate, pattern_mode, constant_byte);
-
-        HOLOSCAN_LOG_INFO(
-            "Configured TestSensor: frame_size={}, frame_rate={} Hz, pattern_mode={}, constant_byte=0x{:02x}",
-            frame_size, frame_rate, static_cast<unsigned>(pattern_mode), constant_byte);
-        HOLOSCAN_LOG_INFO("Ensure serve_coe_test_data is running on the emulator host");
-
-        auto app = std::make_unique<Application>(
-            interface,
-            mac_bytes,
-            hololink_channel,
-            test_sensor,
-            frame_size,
-            print_max_bytes,
-            timeout_ms,
-            frame_limit);
-        app->run();
-
-        hololink->stop();
-        return 0;
-    } catch (const std::exception& e) {
-        HOLOSCAN_LOG_ERROR("Application failed: {}", e.what());
-        return -1;
-    }
+    });
 }

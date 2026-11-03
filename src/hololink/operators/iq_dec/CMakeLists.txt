@@ -29,10 +29,13 @@ target_include_directories(iq_dec
 )
 
 target_link_libraries(iq_dec
+  PUBLIC
+    hololink::gui_renderer
   PRIVATE
     hololink
     holoscan::core
-    holoscan::viz::imgui
+    holoscan::visualization::holoviz
+    CUDA::cudart
 )
 
 # Installation of the iq_dec operator

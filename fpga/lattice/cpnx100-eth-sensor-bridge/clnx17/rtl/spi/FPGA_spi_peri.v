@@ -22,7 +22,7 @@ module FPGA_spi_peri #(
 (
     // System
     input       clk                 ,
-    input       rst_n               ,
+    input       rst                 ,
 
     input [1:0] spi_mode            ,// {CPHA,CPOL}
 
@@ -62,7 +62,7 @@ data_sync #(
     .DATA_WIDTH ( 4         )  
     ) spi_sync (
     .clk        ( clk       ),
-    .rst_n      ( rst_n     ),
+    .rst        ( rst       ),
     .sync_in    ( SDIO      ),
     .sync_out   ( SDIO_sync )
 );
@@ -86,8 +86,8 @@ assign SDIO[3:1] = (state == WRITE) ? {2'bz, wr_data[4'd7-sent_cnt_r]} : 3'bz;  
 assign SDIO[0]   = 1'bz;
 
 
-always_ff @ (posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always_ff @ (posedge clk) begin
+    if (rst) begin
         SCK_prev <= 1'b0;
         state  <= IDLE;
         sent_cnt_r <= 8'h00;

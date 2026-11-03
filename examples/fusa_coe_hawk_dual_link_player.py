@@ -13,174 +13,526 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Two Hawk modules (one per GMSL link) live viewer over FuSa CoE, one HolovizOp window per link.
+# Python port of this repo's own previous (HSDK4-era) Python version of this app, via the HSDK5
+# Python bindings -- the sensor bring-up sequence below matches that original exactly. The
+# receiver construction mirrors this repo's own examples/fusa_coe_hawk_dual_link_player.cpp (the
+# FuSa CoE C++ sibling); everything downstream of the receiver instead mirrors examples/
+# linux_hawk_dual_link_player.py (this app's software-transport sibling, ported in the same
+# effort) -- same ImageProcessorOp(module)/BayerDemosaicOp/HolovizOp wiring and FrameLimitOp
+# pattern, just with the receiver (and, for FuSa CoE, the CSI->Bayer converter stage) swapped.
+# Like that file (and unlike fusa_coe_hawk_dual_link_player.cpp, which still carries a local
+# BayerImageExtractorOp 16-bit->8-bit narrowing shim), this skips that stage -- same
+# simplification already applied to this repo's other ported Python examples (e.g.
+# vb1940_player.py): BayerDemosaicOp accepts ImageProcessorOp's 16-bit schema::ImageT output
+# directly.
+#
+#   FusaCoeCaptureOp(module) -> [PackedFormatConverterOp(module) | CsiToBayerOp(module)] ->
+#       ImageProcessorOp(module) -> BayerDemosaicOp -> HolovizOp   (x2, one per SIF/GMSL link)
+#
+# hololink_module's Hawk/Ar0234/Max9295d/Max96716a/TauroTechDa326InterfaceV1 sensor driver is
+# unchanged; only the receiver (hololink::module::operators::FusaCoeCaptureOp, ported to
+# HSDK5's Operator<Params> shape) and the downstream converters (hololink::module::operators::
+# PackedFormatConverterOp/CsiToBayerOp/ImageProcessorOp, all auto-registered in Phase 1 of the
+# same effort) changed. Unlike the generic (8-byte) geometry linux_hawk_dual_link_player.py
+# uses, FusaCoeCaptureOp needs its own 64-byte HSB-line-aligned geometry -- resolved by
+# hololink_module.resolve_fusa_coe_geometry_from_dimensions() instead of hololink.
+# resolve_generic_geometry_from_dimensions(), and no CUDA context is needed anywhere in this
+# pipeline (FusaCoeCaptureParams(module) has no frame_context field, unlike the receiver
+# operators' BaseReceiverOp -- confirmed by reading fusa_coe_capture_op.hpp directly). Which
+# downstream converter follows FusaCoeCaptureOp depends on whether the HSB packetizer is
+# enabled -- it only has programs for RAW_10/RAW_12, so an 8-bit mode is always captured
+# unpacketized, same as the HSDK4-era original. FusaCoeCaptureOp's own pixel_format/bayer_format
+# construction parameters take string names (pixel_format.name.lower() / bayer_format.name.
+# lower(), e.g. "raw_10"/"grbg") -- confirmed by reading hololink_module/host/operators/
+# module_operator_catalog.cpp's fusa_coe_capture_row() directly -- unlike ImageProcessorOp's,
+# which stay plain .value ints (that operator's own schema has no string mapping registered).
+#
+# --frame-limit has no HSDK5 CountCondition equivalent, so it's implemented with a small native
+# Python operator, FrameLimitOp, tapping each receiver's tensor output and counting activations
+# independently per link (matching the HSDK4-era original's own per-receiver CountCondition).
+#
+# Usage:
+#   fusa_coe_hawk_dual_link_player.py [OPTIONS]
+#
+# Options:
+#   --camera-mode N       AR0234 mode (default: 0 = 1920x1200@60fps)
+#   --headless            Run without opening a window (still renders, presents nowhere)
+#   --frame-limit N       Number of frames to capture per link (default: unlimited)
+#   --hololink IP         IP address of Hololink board (default: 192.168.0.2)
+#   --log-level N         Python logging level (default: 20 = INFO)
+#   --width N             Per-sensor window width in pixels (default: 960)
+#   --height N            Per-sensor window height in pixels (default: 540)
+#   --title TITLE         Window title prefix (default: "AR0234 dual-link (FuSa CoE)")
+#   --sensor {left,right} Which AR0234 (left or right) to stream from each Hawk module
+#   --exposure N          Sensor exposure register value (default: 0x02DC)
+#   --pattern N           Test-pattern register value (default: sensor's own default)
+#   --timeout N           Per-frame capture timeout in milliseconds (default: 1500)
+#   --interface IFACE     Ethernet interface (default: resolved from the channel's own
+#                          enumeration metadata)
+#   --skip-reset          Skip the initial board reset
+#   --no-packetizer       Capture unpacketized CSI-2 data instead of HSB-packed data
+
 import argparse
-import ctypes
+import logging
+import signal
+import sys
+import threading
 
 import hololink_module.operators
-import hololink_module.sensors.ar0234.ar0234_mode as _ar0234_mode_module
-import hololink_module.sensors.csi as _csi_module
-import hololink_module.sensors.deserializers.max96716a as _max96716a_module
-import hololink_module.sensors.hawk as _hawk_module
-import hololink_module.taurotech_da326 as _da326_module
-import holoscan
+import hololink_module.sensors.ar0234.ar0234_mode as ar0234_mode
+import hololink_module.sensors.csi as csi_module
+import hololink_module.sensors.deserializers.max96716a as max96716a_module
+import hololink_module.sensors.hawk as hawk_module
+import hololink_module.taurotech_da326 as taurotech_da326_module
+import holoscan as hs
+import holoscan_vision as hv
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
 
-import hololink as hololink_legacy
+import hololink as hl  # Native downstream operators.
 import hololink_module
 
 
-def _parse_mac(mac_str):
-    return [int(x, 16) for x in mac_str.split(":")]
+class _FrameLimit:
+    """Shared state for --frame-limit: one counter per SIF/link, matching the HSDK4-era
+    original's own per-receiver CountCondition (each link independently gated on its own
+    frame count, not a combined total)."""
+
+    lock = threading.Lock()
+    counts = []
+    limit = 0
+
+    @classmethod
+    def reset(cls, limit, link_count):
+        with cls.lock:
+            cls.counts = [0] * link_count
+            cls.limit = limit
+
+    @classmethod
+    def record(cls, idx):
+        """Counts a frame; True once every counter has reached the limit."""
+        with cls.lock:
+            cls.counts[idx] += 1
+            return cls.limit > 0 and all(count >= cls.limit for count in cls.counts)
 
 
-class App(holoscan.core.Application):
-    def __init__(
-        self,
-        sif_metadatas,
-        hawks,
-        cameras,
-        camera_mode,
-        timeout,
-        headless,
-        width,
-        height,
-        frame_limit,
-        window_titles,
-        no_packetizer,
-    ):
-        super().__init__()
-        self._sif_metadatas = sif_metadatas
-        self._hawks = hawks
-        self._cameras = cameras
-        self._camera_mode = camera_mode
-        self._timeout = timeout
-        self._headless = headless
-        self._width = width
-        self._height = height
-        self._frame_limit = frame_limit
-        self._window_titles = window_titles
-        self._no_packetizer = no_packetizer
+class FrameLimitOp(hs.Operator):
+    """Count captured frames toward --frame-limit for one link; see _FrameLimit."""
 
-        self.enable_metadata(True)
-        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
+    input = hs.Input("input", hs.payload.Tensor)
 
-    def compose(self):
-        for i in range(len(self._cameras)):
-            if self._frame_limit:
-                condition = holoscan.conditions.CountCondition(
-                    self, name=f"count_{i}", count=self._frame_limit
+    link_index = hs.Param(0)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+        if _FrameLimit.record(self.link_index):
+            context.request_stop()
+
+
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
+
+    input = hs.Input("input", hs.schema.Image)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def _compose_pipeline(
+    graph,
+    idx,
+    sif_metadata,
+    hawk,
+    cuda_device_ordinal,
+    interface,
+    mac_addr,
+    timeout,
+    no_packetizer,
+    window_title,
+    width,
+    height,
+    headless,
+    frame_limit,
+):
+    suffix = str(idx)
+
+    # hawk.pixel_format()/bayer_format() return hololink_module.sensors.csi's plain
+    # enum.Enum members (confirmed by testing, not assumed): unlike native's own nanobind-bound,
+    # nb::is_arithmetic()-enabled PixelFormat/BayerFormat, int() doesn't work on these directly
+    # -- use .value.
+    pixel_format = hawk.pixel_format()
+    bayer_format = hawk.bayer_format()
+    pixel_format_name = pixel_format.name.lower()
+    bayer_name = bayer_format.name.lower()
+
+    # The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode is always
+    # captured unpacketized.
+    packetizer_enabled = (
+        not no_packetizer and pixel_format != csi_module.PixelFormat.RAW_8
+    )
+
+    geometry = hololink_module.resolve_fusa_coe_geometry_from_dimensions(
+        pixel_format.value, hawk._width, hawk._height, packetizer_enabled
+    )
+
+    capture = graph.op(
+        hololink_module.operators.FusaCoeCaptureOp,
+        f"fusa_coe_capture_{suffix}",
+        metadata=sif_metadata,
+        device_start=hawk.start,
+        device_stop=hawk.stop,
+        geometry=geometry,
+        pixel_format=pixel_format_name,
+        bayer_format=bayer_name,
+        packetizer_enabled=packetizer_enabled,
+        interface=interface,
+        mac_addr=mac_addr,
+        timeout=timeout,
+    )
+
+    if frame_limit:
+        frame_limit_op = graph.op(FrameLimitOp, f"frame_limit_{suffix}", link_index=idx)
+        graph.add_flow(capture.tensor, frame_limit_op.input, queue_depth=4)
+
+    # Which converter is correct depends on the packetizer: enabled, the buffer holds
+    # HSB-packed data (PackedFormatConverterOp); disabled, it is still CSI-2 as the sensor sent
+    # it, with the header already stripped by FusaCoeCaptureOp (CsiToBayerOp, with
+    # header_included=False).
+    if packetizer_enabled:
+        converter = graph.op(
+            hl.operators.PackedFormatConverterOp,
+            f"packed_format_converter_{suffix}",
+            cuda_device_ordinal=cuda_device_ordinal,
+            bayer_format=bayer_name,
+            geometry=geometry,
+        )
+        converter_path = f"packed_format_converter_{suffix}"
+    else:
+        converter = graph.op(
+            hl.operators.CsiToBayerOp,
+            f"csi_to_bayer_{suffix}",
+            cuda_device_ordinal=cuda_device_ordinal,
+            geometry=geometry,
+            bayer_format=bayer_name,
+            header_included=False,
+        )
+        converter_path = f"csi_to_bayer_{suffix}"
+    graph.add_flow(capture.tensor, converter.in_tensor, queue_depth=4)
+    graph.add_flow(capture.metadata, converter.in_metadata, queue_depth=4)
+
+    image_processor = graph.op(
+        hl.operators.ImageProcessorOp,
+        f"image_processor_{suffix}",
+        pixel_format=pixel_format.value,
+        pixel_width=geometry["pixel_width"],
+        pixel_height=geometry["pixel_height"],
+        bayer_format=bayer_format.value,
+        optical_black=50,
+        cuda_device_ordinal=cuda_device_ordinal,
+    )
+    graph.add_flow(converter.tensor, image_processor.in_tensor, queue_depth=4)
+    graph.add_flow(converter.metadata, image_processor.in_metadata, queue_depth=4)
+
+    demosaic = graph.op(
+        hv.operators.BayerDemosaicOp,
+        f"bayer_demosaic_{suffix}",
+        bayer_grid_pos=bayer_name,
+        generate_alpha=True,
+        alpha_value=65535,
+    )
+    graph.add_flow(image_processor.tensor, demosaic.input, queue_depth=4)
+
+    if headless:
+        # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp). The
+        # CUDA sink has no framebuffer_srgb: its sRGB format encodes on write instead.
+        sink = {
+            "kind": "cuda",
+            "width": width,
+            "height": height,
+            "format": "rgba8_srgb",
+        }
+    else:
+        sink = {
+            "kind": "window",
+            "framebuffer_srgb": True,
+            "title": f"Holoviz - {window_title}",
+            "width": width,
+            "height": height,
+            "fullscreen": False,
+            "close_on_escape": True,
+        }
+    viz = graph.op(
+        "holoscan.visualization.HolovizOp",
+        f"holoviz_{suffix}",
+        layers=[
+            {
+                "port_name": "video",
+                "kind": "image",
+                "format": "rgba16_unorm",
+                # Layer limits describe the sensor image, independently of the window size.
+                "max_width": hawk._width,
+                "max_height": hawk._height,
+            }
+        ],
+        sink=sink,
+        trigger={
+            "kind": "clock",
+            "period_ns": round(1e9 / 60.0),
+        },
+    )
+    graph.add_flow(
+        demosaic.output,
+        viz.video,
+        queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        queue_depth=1,
+    )
+    if headless:
+        discard = graph.op(DiscardImageOp, f"discard_{suffix}")
+        graph.add_flow(
+            viz.output,
+            discard.input,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+
+    tensor_output_paths = [
+        f"fusa_coe_capture_{suffix}",
+        converter_path,
+        f"image_processor_{suffix}",
+    ]
+    image_output_paths = [f"bayer_demosaic_{suffix}"]
+    if headless:
+        image_output_paths.append(f"holoviz_{suffix}")
+    return tensor_output_paths, image_output_paths
+
+
+def run(
+    hololink_ip,
+    camera_mode_int,
+    headless,
+    frame_limit,
+    width,
+    height,
+    title,
+    sensor_arg,
+    exposure,
+    pattern,
+    pattern_set,
+    timeout,
+    interface_arg,
+    skip_reset,
+    no_packetizer,
+):
+    cuda_device_ordinal = 0
+
+    # One SIF per Hawk -- same sensor index from each Hawk.
+    sif_list = [0, 1]
+
+    print(f"Enumerating HSB board at {hololink_ip}...")
+    adapter = hololink_module.Adapter.get_adapter()
+    metadata = adapter.wait_for_channel(hololink_ip, 30.0)
+
+    sif_metadatas = []
+    for sif in sif_list:
+        sif_meta = hololink_module.EnumerationMetadata(metadata)
+        adapter.use_sensor(sif_meta, sif)
+        sif_metadatas.append(sif_meta)
+
+    holo_iface = hololink_module.HololinkInterfaceV1.get_service(metadata)
+    holo_iface.start()
+    board = taurotech_da326_module.TauroTechDa326InterfaceV1.get_service(metadata)
+
+    legacy_holo = board.hololink()
+    deserializer = max96716a_module.Max96716a(legacy_holo)
+    hawk_a = hawk_module.Hawk(legacy_holo)
+    hawk_b = hawk_module.Hawk(legacy_holo)
+    hawk_modules = [hawk_a, hawk_b]
+    camera_mode = ar0234_mode.Ar0234_Mode(camera_mode_int)
+    for hawk in hawk_modules:
+        hawk.set_mode(camera_mode)
+
+    try:
+        if not skip_reset:
+            holo_iface.reset()
+
+        # Board Init
+        board.release_reset()
+        board.power_cycle()
+        board.check_power()
+        board.setup_clock()
+
+        # Deser sanity check
+        dev_id = deserializer.get_register(deserializer.DEV_ID_REG)
+        expected_dev_id = deserializer.DEV_ID
+        if dev_id != expected_dev_id:
+            raise RuntimeError(
+                f"Deserializer mismatch: expected {expected_dev_id}, got {dev_id}"
+            )
+
+        # Both of the serializers are at 0x40. Remap link B serializer to 0x41.
+        deserializer.enable_link_exclusive(deserializer.GmslLink.LINK_B)
+        hawk_b.set_serializer_i2c_address(hawk_b.get_serializer_i2c_address() + 1)
+        deserializer.enable_both_links()
+
+        # Serializer sanity check
+        for hawk in hawk_modules:
+            dev_id = hawk.serializer.get_register(hawk.serializer.DEV_ID_REG)
+            expected_dev_id = hawk.serializer.DEV_ID
+            if dev_id != expected_dev_id:
+                raise RuntimeError(
+                    f"Serializer mismatch: expected {expected_dev_id}, got {dev_id}"
                 )
-            else:
-                condition = holoscan.conditions.BooleanCondition(
-                    self, name=f"ok_{i}", enable_tick=True
-                )
 
-            self._cameras[i].set_mode(self._camera_mode)
-            pixel_format = self._cameras[i].pixel_format()
-            bayer_format = self._cameras[i].bayer_format()
-            name = f"{i}"
-            hawk_i = self._hawks[i]
+        # Both of the sensors are at 0x10 and 0x18. Remap hawk_b sensors to 0x11 and 0x1A.
+        hawk_b.remap_sensor_addresses(0x11, 0x1A)
 
-            # The packetizer only has programs for RAW_10 and RAW_12, so an 8-bit mode
-            # is always captured unpacketized.
-            packetizer_enabled = (
-                not self._no_packetizer
-                and pixel_format != _csi_module.PixelFormat.RAW_8
+        # Sensor sanity check
+        for hawk in hawk_modules:
+            for sensor in hawk.sensors:
+                dev_id = sensor.get_register(sensor.DEV_ID_REG)
+                if dev_id != sensor.DEV_ID:
+                    raise RuntimeError(
+                        f"Sensor mismatch at i2c=0x{sensor.get_i2c_address():02X}: "
+                        f"expected 0x{sensor.DEV_ID:04X}, got 0x{dev_id:04X}"
+                    )
+
+        # Deserializer settings
+        deserializer.configure_video_pipe()
+        if sensor_arg == "left":
+            left = deserializer.stream_id_to_pipe_mapping(
+                deserializer.GmslLink.LINK_A, 0, deserializer.VideoPipe.PIPE_Y
+            )
+            right = deserializer.stream_id_to_pipe_mapping(
+                deserializer.GmslLink.LINK_B, 0, deserializer.VideoPipe.PIPE_Z
+            )
+        elif sensor_arg == "right":
+            left = deserializer.stream_id_to_pipe_mapping(
+                deserializer.GmslLink.LINK_A, 2, deserializer.VideoPipe.PIPE_Y
+            )
+            right = deserializer.stream_id_to_pipe_mapping(
+                deserializer.GmslLink.LINK_B, 2, deserializer.VideoPipe.PIPE_Z
+            )
+        else:
+            raise RuntimeError(f"Non-existent config {sensor_arg}")
+        deserializer.set_register(deserializer.VIDEO_PIPE_SEL, left | right)
+
+        # Sensor programming
+        for hawk in hawk_modules:
+            hawk.configure(camera_mode)
+            if pattern_set:
+                hawk.test_pattern(pattern)
+            hawk.set_exposure_reg(exposure)
+
+        # Same physical NIC interface/MAC for every sensor on this board.
+        interface = (
+            interface_arg if interface_arg else sif_metadatas[0].get("interface", "")
+        )
+        mac_str = sif_metadatas[0].get("mac_id", "00:00:00:00:00:00")
+        mac_addr = [int(x, 16) for x in mac_str.split(":")]
+        logging.info("Using interface=%s mac=%s", interface, mac_str)
+
+        hawk_label = ("A", "B")
+        window_titles = [
+            f"{title} - {sensor_arg} {hawk_label[i]}" for i in range(len(hawk_modules))
+        ]
+
+        if frame_limit:
+            _FrameLimit.reset(frame_limit, len(sif_list))
+
+        # Build the graph.
+        graph = hs.Graph("fusa_coe_hawk_dual_link_player")
+
+        tensor_output_paths = []
+        image_output_paths = []
+        for idx, (sif_metadata, hawk, link_title) in enumerate(
+            zip(sif_metadatas, hawk_modules, window_titles)
+        ):
+            t, i = _compose_pipeline(
+                graph,
+                idx,
+                sif_metadata,
+                hawk,
+                cuda_device_ordinal,
+                interface,
+                mac_addr,
+                timeout,
+                no_packetizer,
+                link_title,
+                width,
+                height,
+                headless,
+                frame_limit,
+            )
+            tensor_output_paths += t
+            image_output_paths += i
+
+        clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+        graph.set_default_clock(clock_key)
+
+        options = hs.CompileOptions()
+        for operator_path in tensor_output_paths:
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="tensor",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
+            )
+        for operator_path in image_output_paths:
+            options.deployment.bind_tensor_output_device(
+                operator_path=operator_path,
+                output_port="output",
+                device=hs.execution.DeviceId(cuda_device_ordinal),
             )
 
-            fusa_coe_capture = hololink_module.operators.FusaCoeCaptureOp(
-                self,
-                condition,
-                name=f"fusa_coe_capture_{name}",
-                enumeration_metadata=self._sif_metadatas[i],
-                interface=self._sif_metadatas[i].get("interface", ""),
-                mac_addr=_parse_mac(
-                    self._sif_metadatas[i].get("mac_id", "00:00:00:00:00:00")
-                ),
-                timeout=self._timeout,
-                device=hawk_i,
-                out_tensor_name=name,
-            )
-            fusa_coe_capture.configure_format(
-                pixel_format.value, bayer_format.value, packetizer_enabled
-            )
-            self._cameras[i].configure_converter(fusa_coe_capture)
+        plan = hs.compile(graph, options)
+        if not plan.ok:
+            print("Graph compilation failed:", file=sys.stderr)
+            for diag in plan.diagnostics:
+                print(f"  {diag}", file=sys.stderr)
+            return 1
 
-            # Which converter is correct depends on the packetizer: enabled, the buffer
-            # holds HSB-packed data; disabled, it is still CSI-2 as the sensor sent it.
-            converter_pool = holoscan.resources.BlockMemoryPool(
-                self,
-                name=f"converter_pool_{name}",
-                storage_type=1,
-                block_size=self._cameras[i]._width
-                * ctypes.sizeof(ctypes.c_uint16)
-                * self._cameras[i]._height,
-                num_blocks=4,
-            )
-            if packetizer_enabled:
-                converter = hololink_module.operators.PackedFormatConverterOp(
-                    self,
-                    name=f"packed_format_converter_{name}",
-                    allocator=converter_pool,
-                    in_tensor_name=name,
-                )
-            else:
-                converter = hololink_module.operators.CsiToBayerOp(
-                    self,
-                    name=f"csi_to_bayer_{name}",
-                    allocator=converter_pool,
-                )
-            fusa_coe_capture.configure_converter(converter)
+        print(f"Capturing, mode={camera_mode.value} -- running (Ctrl+C to stop)...")
 
-            image_processor = hololink_legacy.operators.ImageProcessorOp(
-                self,
-                name=f"image_processor_{name}",
-                optical_black=50,
-                bayer_format=bayer_format.value,
-                pixel_format=pixel_format.value,
-            )
+        with hs.run_async(plan) as session:
+            try:
+                session.wait()
+            except KeyboardInterrupt:
+                # Ctrl+C or SIGTERM: leaving the block stops the session cooperatively, which
+                # stops the camera.
+                pass
+        if session.diagnostics:
+            print(session.summary(), file=sys.stderr)
+        failed = session.termination == hs.RunTermination.FAILED
+    finally:
+        holo_iface.stop()
 
-            rgba_components_per_pixel = 4
-            bayer_demosaic_pool = holoscan.resources.BlockMemoryPool(
-                self,
-                name=f"bayer_demosaic_pool_{name}",
-                storage_type=1,
-                block_size=self._cameras[i]._width
-                * rgba_components_per_pixel
-                * ctypes.sizeof(ctypes.c_uint16)
-                * self._cameras[i]._height,
-                num_blocks=4,
-            )
-            bayer_demosaic = holoscan.operators.BayerDemosaicOp(
-                self,
-                name=f"bayer_demosaic_{name}",
-                pool=bayer_demosaic_pool,
-                generate_alpha=True,
-                alpha_value=65535,
-                bayer_grid_pos=bayer_format.value,
-                interpolation_mode=0,
-            )
-
-            visualizer = holoscan.operators.HolovizOp(
-                self,
-                name=f"holoviz_{name}",
-                framebuffer_srgb=True,
-                headless=self._headless,
-                height=self._height,
-                width=self._width,
-                window_title=self._window_titles[i],
-            )
-
-            self.add_flow(fusa_coe_capture, converter, {("output", "input")})
-            self.add_flow(converter, image_processor, {("output", "input")})
-            self.add_flow(image_processor, bayer_demosaic, {("output", "receiver")})
-            self.add_flow(bayer_demosaic, visualizer, {("transmitter", "receivers")})
+    if failed:
+        return 1
+    print("Done.")
+    return 0
 
 
 def main():
-    SENSOR_ARG_TO_SIF = {"left": 0, "right": 1}
+    # Like Ctrl+C, SIGTERM (kill, docker stop) raises KeyboardInterrupt, so the session stops
+    # cooperatively and the camera and the board are stopped on the way out.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
+    sensor_options = {"left", "right"}
 
     parser = argparse.ArgumentParser()
-    modes = _ar0234_mode_module.Ar0234_Mode
+    modes = ar0234_mode.Ar0234_Mode
     mode_choices = [mode.value for mode in modes]
     mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
     parser.add_argument(
@@ -199,14 +551,19 @@ def main():
     parser.add_argument("--title", default="AR0234 dual-link (FuSa CoE)")
     parser.add_argument(
         "--sensor",
-        choices=tuple(SENSOR_ARG_TO_SIF.keys()),
+        choices=tuple(sensor_options),
         default="left",
         help="Which AR0234 (left or right) to stream from each Hawk module; one window per Hawk.",
     )
     parser.add_argument("--exposure", type=lambda x: int(x, 0), default=0x02DC)
     parser.add_argument("--pattern", type=lambda x: int(x, 0))
     parser.add_argument("--timeout", type=int, default=1500)
-    parser.add_argument("--interface", default=None)
+    parser.add_argument(
+        "--interface",
+        default=None,
+        help="Ethernet interface (default: resolved from the channel's own enumeration "
+        "metadata).",
+    )
     parser.add_argument("--skip-reset", action="store_true")
     parser.add_argument(
         "--no-packetizer",
@@ -214,118 +571,26 @@ def main():
         help="Capture unpacketized CSI-2 data instead of HSB-packed data",
     )
     args = parser.parse_args()
+    logging.basicConfig(level=args.log_level)
 
-    hololink_legacy.logging_level(args.log_level)
-
-    # One SIF per Hawk — same sensor index from each Hawk.
-    sif_list = (0, 1)
-    _adapter = hololink_module.Adapter.get_adapter()
-    adapter_metadata = _adapter.wait_for_channel(args.hololink, 30)
-
-    sif_metadatas = []
-    for sif in sif_list:
-        sif_meta = hololink_module.EnumerationMetadata(adapter_metadata)
-        _adapter.use_sensor(sif_meta, sif)
-        sif_metadatas.append(sif_meta)
-
-    holo_iface = hololink_module.HololinkInterfaceV1.get_service(adapter_metadata)
-    holo_iface.start()
-    board = _da326_module.TauroTechDa326InterfaceV1.get_service(adapter_metadata)
-    legacy_holo = board.hololink()
-    deserializer = _max96716a_module.Max96716a(legacy_holo)
-    hawk_a = _hawk_module.Hawk(legacy_holo)
-    hawk_b = _hawk_module.Hawk(legacy_holo)
-    hawk_modules = (hawk_a, hawk_b)
-    camera_mode = _ar0234_mode_module.Ar0234_Mode(args.camera_mode)
-
-    sensor_index = SENSOR_ARG_TO_SIF[args.sensor]
-    cameras = [hawk.sensors[sensor_index] for hawk in hawk_modules]
-    hawk_label = ("A", "B")
-    window_titles = [
-        f"{args.title} - {args.sensor} {hawk_label[i]}"
-        for i in range(len(hawk_modules))
-    ]
-
-    application = App(
-        sif_metadatas,
-        hawk_modules,
-        cameras,
-        camera_mode,
-        args.timeout,
+    return run(
+        args.hololink,
+        args.camera_mode,
         args.headless,
+        args.frame_limit,
         args.width,
         args.height,
-        args.frame_limit,
-        window_titles,
+        args.title,
+        args.sensor,
+        args.exposure,
+        args.pattern,
+        args.pattern is not None,
+        args.timeout,
+        args.interface,
+        args.skip_reset,
         args.no_packetizer,
     )
 
-    try:
-        if not args.skip_reset:
-            holo_iface.reset()
-
-        board.release_reset()
-        board.power_cycle()
-        board.check_power()
-        board.setup_clock()
-
-        dev_id = deserializer.get_register(deserializer.DEV_ID_REG)
-        if dev_id != deserializer.DEV_ID:
-            raise Exception(
-                f"Deserializer mismatch: expected {deserializer.DEV_ID}, got {dev_id}"
-            )
-
-        # Both serializers default to 0x40. Remap link B serializer to 0x41.
-        deserializer.enable_link_exclusive(deserializer.GmslLink.LINK_B)
-        hawk_b.set_serializer_i2c_address(hawk_b.get_serializer_i2c_address() + 1)
-        deserializer.enable_both_links()
-
-        for hawk in hawk_modules:
-            dev_id = hawk.serializer.get_register(hawk.serializer.DEV_ID_REG)
-            if dev_id != hawk.serializer.DEV_ID:
-                raise Exception(
-                    f"Serializer mismatch: expected {hawk.serializer.DEV_ID}, got {dev_id}"
-                )
-
-        # Remap hawk_b sensors from 0x10/0x18 to 0x11/0x1A.
-        hawk_b.remap_sensor_addresses(0x11, 0x1A)
-
-        for hawk in hawk_modules:
-            for sensor in hawk.sensors:
-                dev_id = sensor.get_register(sensor.DEV_ID_REG)
-                if dev_id != sensor.DEV_ID:
-                    raise Exception(
-                        f"Sensor mismatch at i2c=0x{sensor.get_i2c_address():02X}: "
-                        f"expected 0x{sensor.DEV_ID:04X}, got 0x{dev_id:04X}"
-                    )
-
-        deserializer.configure_video_pipe()
-        if args.sensor == "left":
-            left_map = deserializer.stream_id_to_pipe_mapping(
-                deserializer.GmslLink.LINK_A, 0, deserializer.VideoPipe.PIPE_Y
-            )
-            right_map = deserializer.stream_id_to_pipe_mapping(
-                deserializer.GmslLink.LINK_B, 0, deserializer.VideoPipe.PIPE_Z
-            )
-        else:
-            left_map = deserializer.stream_id_to_pipe_mapping(
-                deserializer.GmslLink.LINK_A, 2, deserializer.VideoPipe.PIPE_Y
-            )
-            right_map = deserializer.stream_id_to_pipe_mapping(
-                deserializer.GmslLink.LINK_B, 2, deserializer.VideoPipe.PIPE_Z
-            )
-        deserializer.set_register(deserializer.VIDEO_PIPE_SEL, left_map | right_map)
-
-        for hawk in hawk_modules:
-            hawk.configure(camera_mode)
-            if args.pattern is not None:
-                hawk.test_pattern(args.pattern)
-            hawk.set_exposure_reg(args.exposure)
-
-        application.run()
-    finally:
-        holo_iface.stop()
-
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

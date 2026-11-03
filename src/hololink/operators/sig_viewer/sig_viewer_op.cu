@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,41 +15,11 @@
  * limitations under the License.
  */
 
-#include <stdexcept>
-
-#include <cufft.h>
-#include <thrust/device_ptr.h>
-#include <thrust/extrema.h>
+#include "sig_viewer_spectrum.hpp"
 
 #include <hololink/common/cuda_error.hpp>
 
-#include "sig_viewer_op.hpp"
-
-static const size_t thread_block_size = 1024;
-
-// A class representing a cufftPlan1d
-struct Plan {
-    // size is the plan's size
-    Plan(int size) :
-        size_(size) {
-        // 1D FFT, Complex-to-Complex
-        CUFFT_CHECK(cufftPlan1d(&handle_, size_, CUFFT_C2C, 1));
-    }
-    ~Plan() try {
-        CUFFT_CHECK(cufftDestroy(handle_));
-    } catch(const std::exception&) {
-        return;
-    }
-    Plan(Plan&) = delete;
-    Plan& operator=(Plan&) = delete;
-
-    void SetStream(cudaStream_t stream) {
-        CUFFT_CHECK(cufftSetStream(handle_, stream));
-    }
-
-    int size_;
-    cufftHandle handle_;
-};
+static const int thread_block_size = 1024;
 
 __global__ void cuda_compute_complex_power_kernel(float* magnitude, const cufftComplex* complex, int count) {
     int idx = threadIdx.x + blockIdx.x * blockDim.x;
@@ -67,72 +37,43 @@ __global__ void cuda_compute_complex_amplitude_kernel(float* magnitude, const cu
 
 namespace hololink::operators {
 
-struct SignalViewerOp::SpectrumView::Spectrum::Impl {
-    Impl(int64_t count) :
-        count_(count),
-        complex_(count_),
-        plan_(count_),
-        magnitude_(count_, 0)
-    {
-    }
-
-    int64_t count_;
-    thrust::device_vector<cufftComplex> complex_;
-    Plan plan_;
-    thrust::device_vector<float> magnitude_;
-
-    void calculate(const float* device_samples_iq, OutputType output_type, cudaStream_t stream) {
-        thrust::copy(
-            reinterpret_cast<const cufftComplex*>(device_samples_iq),
-            reinterpret_cast<const cufftComplex*>(device_samples_iq) + count_,
-            complex_.begin());
-    
-        plan_.SetStream(stream);
-    
-        // Perform FFT (this will overwrite complex signal with frequency domain data)
-        cufftExecC2C(plan_.handle_, complex_.data().get(), complex_.data().get(), CUFFT_FORWARD);
-
-        switch (output_type) {
-        case OutputType::Amplitude:
-            cuda_compute_complex_amplitude_kernel<<<static_cast<size_t>(std::ceil(1.0 * count_ / thread_block_size)),
-                            thread_block_size, 0, stream>>>(magnitude_.data().get(), complex_.data().get(), count_);
-            break;
-        case OutputType::Power:
-            cuda_compute_complex_power_kernel<<<static_cast<size_t>(std::ceil(1.0 * count_ / thread_block_size)),
-                            thread_block_size, 0, stream>>>(magnitude_.data().get(), complex_.data().get(), count_);
-            break;
-        }
-    }
-
-    const thrust::device_vector<float>& get_data() const {
-        return magnitude_;
-    }
-};
-
-SignalViewerOp::SpectrumView::Spectrum::Spectrum(int64_t size) :
-    pimpl_(new Impl(size))
+SignalSpectrum::SignalSpectrum(int count) :
+    count_(count)
 {
+    // 1D FFT, Complex-to-Complex
+    CUFFT_CHECK(cufftPlan1d(&plan_, count_, CUFFT_C2C, 1));
+    try {
+        CUDA_CHECK(cudaMalloc(&complex_, count_ * sizeof(cufftComplex)));
+        CUDA_CHECK(cudaMalloc(&magnitude_, count_ * sizeof(float)));
+    } catch (...) {
+        cudaFree(complex_);
+        cufftDestroy(plan_);
+        throw;
+    }
 }
 
-SignalViewerOp::SpectrumView::Spectrum::~Spectrum() = default;
-
-int64_t SignalViewerOp::SpectrumView::Spectrum::get_count() const {
-    return pimpl_->count_;
+SignalSpectrum::~SignalSpectrum() {
+    cudaFree(magnitude_);
+    cudaFree(complex_);
+    cufftDestroy(plan_);
 }
 
-void SignalViewerOp::SpectrumView::Spectrum::calculate(const float* device_samples_iq, OutputType output_type, cudaStream_t stream) {
-    pimpl_->calculate(device_samples_iq, output_type, stream);
-}
+void SignalSpectrum::calculate(const float* device_samples_iq, SpectrumOutput output, cudaStream_t stream) {
+    CUDA_CHECK(cudaMemcpyAsync(complex_, device_samples_iq, count_ * sizeof(cufftComplex), cudaMemcpyDeviceToDevice,
+        stream));
+    CUFFT_CHECK(cufftSetStream(plan_, stream));
+    // In place: the signal is overwritten with its frequency domain data.
+    CUFFT_CHECK(cufftExecC2C(plan_, complex_, complex_, CUFFT_FORWARD));
 
-const thrust::device_vector<float>& SignalViewerOp::SpectrumView::Spectrum::get_data() const {
-    return pimpl_->get_data();
+    const int blocks = (count_ + thread_block_size - 1) / thread_block_size;
+    switch (output) {
+    case SpectrumOutput::kAmplitude:
+        cuda_compute_complex_amplitude_kernel<<<blocks, thread_block_size, 0, stream>>>(magnitude_, complex_, count_);
+        break;
+    case SpectrumOutput::kPower:
+        cuda_compute_complex_power_kernel<<<blocks, thread_block_size, 0, stream>>>(magnitude_, complex_, count_);
+        break;
+    }
 }
-
-std::pair<float, float> SignalViewerOp::cuda_minmax(const float* data, size_t size, cudaStream_t stream) {
-    thrust::device_ptr<const float> device_ptr = thrust::device_pointer_cast(data);
-    auto result = thrust::minmax_element(thrust::cuda::par.on(stream), device_ptr, device_ptr + size);
-    return std::pair<float, float>(*result.first, *result.second);
-}
- 
 
 }  // namespace hololink::operators

@@ -1,3 +1,6 @@
+// SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+// SPDX-License-Identifier: Apache-2.0
+
 #ifndef STM32_ROCEV2_TRANSMITTER_HPP
 #define STM32_ROCEV2_TRANSMITTER_HPP
 

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,262 +13,411 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# See README.md for detailed information.
+# Stereo VB1940 sensors (always both) sharing one board/IP, each received over IEEE 1722/AVTP
+# Class-Oriented-Encapsulation (COE) packets via LinuxCoeReceiverOp -- a raw AF_PACKET socket
+# bound to one shared network interface, demuxed by per-leg coe_channel (0/1), not UDP/RoCE like
+# examples/linux_single_network_stereo_vb1940_player.py. Python port of this repo's own previous
+# (HSDK4-era) Python version of this app, via the HSDK5 Python bindings -- there is no .cpp
+# sibling. Combines that already-ported sibling's single-network-stereo wiring (per-leg
+# data_channel/camera callbacks, one-board hl.use_sensor(0|1) demux, tiled Holoviz layers,
+# FrameLimitOp) with
+# examples/linux_coe_imx274_player.py's own LinuxCoeReceiverOp usage (see that file's header
+# comment for the full rationale behind the operator itself, new in this branch).
+#
+#   LinuxCoeReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp -> HolovizOp
+#
+# The old app's --trigger/--frequency flags are parsed but were never actually wired to
+# anything (no Synchronizer/ptp_pps_output call anywhere in its own source, unlike the sibling
+# UDP-transport stereo app, which does wire them) -- preserved here exactly as dead, not
+# "completed" to match that sibling's different, real feature scope.
+#
+# Fixed one real bug found while porting: the old app accepted --fullscreen and stored it, but
+# never actually passed it to HolovizOp (always rendered windowed) -- now wired into sink.
+#
+# To receive COE packets, create a VLAN interface tagged for VETH 0xCCC (3276) on top of your
+# real network interface, then point --coe-interface at it -- see
+# examples/linux_coe_imx274_player.py's header comment for the exact `ip link add` recipe.
+#
+# --frame-limit has no HSDK5 CountCondition equivalent, so it's implemented with a small native
+# Python operator, FrameLimitOp, tapping each leg's receiver tensor output and counting
+# activations; the one that brings the last leg to the limit stops the run from the graph, so a
+# run that ends first, for example by failing, doesn't leave the app waiting.
+#
+# Usage:
+#   linux_coe_stereo_vb1940_player.py [OPTIONS]
+#
+# Options:
+#   --hololink IP          IP address of Hololink board (default: 192.168.0.2)
+#   --camera-mode N         VB1940 mode (default: 0 = 2560x1984@30fps)
+#   --coe-interface NAME    Network interface receiving VETH 3276 (0xCCC) COE packets (required)
+#   --trigger               Accepted for CLI compatibility; unused (matches the old app)
+#   --frequency N           Accepted for CLI compatibility; unused (matches the old app)
+#   --exp N                 Exposure duration in lines, 4-65535 (default: 256)
+#   --gain N                Analog gain, 0-12 (default: 0)
+#   --window-height N      Displayed window height (default: 2160 // 2)
+#   --window-width N       Displayed window width (default: int(3840 / 1.5))
+#   --title TITLE           Window title (default: "Holoviz - <hololink IP>")
+#   --frame-limit N        Number of frames to capture per sensor (default: unlimited)
+#   --headless              Run without opening a window (still renders, presents nowhere)
+#   --fullscreen            Run in fullscreen mode
+#   --log-level N           Python logging level (default: 20 = INFO)
 
 import argparse
-import ctypes
 import logging
-import os
+import signal
+import sys
+import threading
 import time
 
-import cuda.bindings.driver as cuda
-import holoscan
+import holoscan as hs
+import holoscan_vision as hv
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
+
+_BAYER_FORMAT_NAMES = ["bggr", "rggb", "gbrg", "grbg"]
+_BAYER_FORMAT_VALUES = {name: index for index, name in enumerate(_BAYER_FORMAT_NAMES)}
 
 
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel_left,
-        camera_left,
-        hololink_channel_right,
-        camera_right,
-        camera_mode,
-        frame_limit,
-        window_height,
-        window_width,
-        window_title,
-        fullscreen,
-        coe_interface,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel_left = hololink_channel_left
-        self._camera_left = camera_left
-        self._hololink_channel_right = hololink_channel_right
-        self._camera_right = camera_right
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._coe_interface = coe_interface
-        self._window_height = window_height
-        self._window_width = window_width
-        self._window_title = window_title
-        # These are HSDK controls-- because we have stereo
-        # camera paths going into the same visualizer, don't
-        # raise an error when each path present metadata
-        # with the same names.  Because we don't use that metadata,
-        # it's easiest to just ignore new items with the same
-        # names as existing items.
-        self.is_metadata_enabled = True
-        self.metadata_policy = holoscan.core.MetadataPolicy.REJECT
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    def compose(self):
-        logging.info("compose")
-        if self._frame_limit:
-            self._count_left = holoscan.conditions.CountCondition(
-                self,
-                name="count_left",
-                count=self._frame_limit,
-            )
-            condition_left = self._count_left
-            self._count_right = holoscan.conditions.CountCondition(
-                self,
-                name="count_right",
-                count=self._frame_limit,
-            )
-            condition_right = self._count_right
-        else:
-            self._ok_left = holoscan.conditions.BooleanCondition(
-                self, name="ok_left", enable_tick=True
-            )
-            condition_left = self._ok_left
-            self._ok_right = holoscan.conditions.BooleanCondition(
-                self, name="ok_right", enable_tick=True
-            )
-            condition_right = self._ok_right
-        self._camera_left.set_mode(self._camera_mode)
-        self._camera_right.set_mode(self._camera_mode)
 
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera_left.width()
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left.height(),
-            num_blocks=6,
-        )
-        csi_to_bayer_operator_left = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer_left",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-            out_tensor_name="left",
-        )
-        self._camera_left.configure_converter(csi_to_bayer_operator_left)
-        csi_to_bayer_operator_right = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer_right",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-            out_tensor_name="right",
-        )
-        self._camera_right.configure_converter(csi_to_bayer_operator_right)
+class _FrameLimit:
+    """Shared state for --frame-limit: every leg must reach the limit before FrameLimitOp stops
+    the run."""
 
-        frame_size = csi_to_bayer_operator_left.get_csi_length()
-        assert frame_size == csi_to_bayer_operator_right.get_csi_length()
+    lock = threading.Lock()
+    counts = {}
+    limit = 0
 
-        frame_context = self._cuda_context
-        pixel_width = self._camera_left.width()
-        receiver_operator_left = hololink_module.operators.LinuxCoeReceiverOp(
-            self,
-            condition_left,
-            name="receiver_left",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=self._hololink_channel_left,
-            device=self._camera_left,
-            coe_interface=self._coe_interface,
-            pixel_width=pixel_width,
-            coe_channel=0,
+    @classmethod
+    def reset(cls, leg_count, limit):
+        with cls.lock:
+            cls.counts = {i: 0 for i in range(leg_count)}
+            cls.limit = limit
+
+    @classmethod
+    def record(cls, leg):
+        """Counts a frame; True once every counter has reached the limit."""
+        with cls.lock:
+            cls.counts[leg] += 1
+            return cls._done_locked()
+
+    @classmethod
+    def _done_locked(cls):
+        return cls.limit > 0 and all(
+            count >= cls.limit for count in cls.counts.values()
         )
 
-        #
-        receiver_operator_right = hololink_module.operators.LinuxCoeReceiverOp(
-            self,
-            condition_right,
-            name="receiver_right",
-            frame_size=frame_size,
-            frame_context=frame_context,
-            hololink_channel=self._hololink_channel_right,
-            device=self._camera_right,
-            coe_interface=self._coe_interface,
-            pixel_width=pixel_width,
-            coe_channel=1,
+
+class FrameLimitOp(hs.Operator):
+    """Count one leg's captured frames toward --frame-limit; see _FrameLimit."""
+
+    input = hs.Input("input", hs.payload.Tensor)
+    leg = hs.Param(0)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=4)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+        if _FrameLimit.record(self.leg):
+            context.request_stop()
+
+
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
+
+    input = hs.Input("input", hs.schema.Image)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def run(
+    hololink_ip,
+    camera_mode,
+    coe_interface,
+    exposure,
+    gain,
+    window_height,
+    window_width,
+    title,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    cuda_device_ordinal = 0
+    tensor_names = ["left", "right"]
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    cuda_driver.cuCtxSetCurrent(cu_context)
+
+    print(f"Enumerating HSB board at {hololink_ip}...")
+    channels = []
+    for sensor_id in (0, 1):
+        metadata = hl.find_channel(hololink_ip)
+        hl.use_sensor(metadata, sensor_id)
+        channels.append(hl.DataChannel(metadata))
+
+    hololink_dev = channels[0].hololink()
+    if hololink_dev is not channels[1].hololink():
+        raise RuntimeError("Data channels are on different HSB devices.")
+    hololink_dev.start()
+
+    cameras = [hl.NativeVb1940Sensor(channel) for channel in channels]
+
+    # Manual sensor-reset sequence -- matches this app's own HSDK4-era source and
+    # linux_single_network_stereo_vb1940_player.py's identical bring-up: both sensors share one
+    # external clock, so their reset pins are released together (0x3 = both bits set).
+    hololink_dev.write_uint32(0x8, 0x0)  # Keep both sensors' RESET at low
+    cameras[0].setup_clock()  # this also sets the other camera's clock
+    hololink_dev.write_uint32(0x8, 0x3)  # Release RESET for both sensors
+    time.sleep(100 / 1000)
+
+    for camera in cameras:
+        camera.get_register_32(0x0000)  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
+        camera.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
+        camera.configure(camera_mode)
+        camera.set_analog_gain_reg(gain)
+        camera.set_exposure_reg(exposure)
+
+    try:
+        cal_eeprom = cameras[0].get_rgb_calibration_data_string()
+        logging.info(f"Camera calibration data retrieved successfully: \n{cal_eeprom}")
+    except Exception as e:
+        logging.warning(f"Failed to read camera calibration data: {e}")
+
+    geometries = [hl.resolve_generic_geometry(camera) for camera in cameras]
+    frame_sizes = [
+        geometry["start_byte"]
+        + geometry["bytes_per_line"] * geometry["pixel_height"]
+        + geometry["trailing_bytes"]
+        for geometry in geometries
+    ]
+    if frame_sizes[0] != frame_sizes[1]:
+        raise RuntimeError("Both cameras must have the same frame size")
+
+    if frame_limit:
+        _FrameLimit.reset(len(cameras), frame_limit)
+
+    # Build the graph.
+    graph = hs.Graph("linux_coe_stereo_vb1940_player")
+
+    # Pass 1: declare one image layer per camera, tiled side by side -- the layer list must be
+    # complete before HolovizOp is constructed.
+    layers = []
+    for i, camera in enumerate(cameras):
+        layers.append(
+            {
+                "port_name": f"video_{tensor_names[i]}",
+                "kind": "image",
+                "format": "rgba16_unorm",
+                "max_width": camera.get_width(),
+                "max_height": camera.get_height(),
+                "view": {
+                    "offset_x": 0.5 * i,
+                    "offset_y": 0.0,
+                    "scale_x": 0.5,
+                    "scale_y": 1.0,
+                },
+            }
         )
 
-        bayer_format = self._camera_left.bayer_format()
-        assert bayer_format == self._camera_right.bayer_format()
-        pixel_format = self._camera_left.pixel_format()
-        assert pixel_format == self._camera_right.pixel_format()
-        image_processor_left = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor_left",
-            # Optical black value for vb1940 raw10 format is 8
+    if headless:
+        # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp). The
+        # CUDA sink has no framebuffer_srgb: its sRGB format encodes on write instead.
+        sink = {
+            "kind": "cuda",
+            "width": window_width,
+            "height": window_height,
+            "format": "rgba8_srgb",
+        }
+    else:
+        sink = {
+            "kind": "window",
+            "framebuffer_srgb": True,
+            "title": title or f"Holoviz - {hololink_ip}",
+            "width": window_width,
+            "height": window_height,
+            "fullscreen": fullscreen,
+            "close_on_escape": True,
+        }
+    viz = graph.op(
+        "holoscan.visualization.HolovizOp",
+        "holoviz",
+        layers=layers,
+        sink=sink,
+        trigger={
+            "kind": "clock",
+            "period_ns": round(1e9 / 60.0),
+        },
+    )
+    if headless:
+        discard = graph.op(DiscardImageOp, "discard")
+        graph.add_flow(
+            viz.output,
+            discard.input,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
+        )
+
+    tensor_output_operators = []
+
+    for i, camera in enumerate(cameras):
+        name = tensor_names[i]
+        geometry = geometries[i]
+        bayer_format = camera.get_bayer_format()
+        pixel_format = camera.get_pixel_format()
+
+        rx = graph.op(
+            hl.operators.LinuxCoeReceiverOp,
+            f"rx_{name}",
+            data_channel=channels[i],
+            frame_context=int(cu_context),
+            device_start=camera.start,
+            device_stop=camera.stop,
+            frame_size=frame_sizes[i],
+            coe_interface=coe_interface,
+            pixel_width=camera.get_width(),
+            coe_channel=i,
+        )
+
+        if frame_limit:
+            frame_limit_op = graph.op(FrameLimitOp, f"frame_limit_{name}", leg=i)
+            graph.add_flow(rx.tensor, frame_limit_op.input, queue_depth=4)
+
+        csi = graph.op(
+            hl.operators.CsiToBayerOp,
+            f"csi_to_bayer_{name}",
+            cuda_device_ordinal=cuda_device_ordinal,
+            geometry=geometry,
+            bayer_format=bayer_format,
+        )
+        graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+        graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+
+        image_processor = graph.op(
+            hl.operators.ImageProcessorOp,
+            f"image_processor_{name}",
+            pixel_format=pixel_format,
+            pixel_width=geometry["pixel_width"],
+            pixel_height=geometry["pixel_height"],
+            bayer_format=_BAYER_FORMAT_VALUES[bayer_format],
+            # Optical black value for vb1940 is 8 for RAW10 (matches this app's own
+            # HSDK4-era default).
             optical_black=8,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
+            cuda_device_ordinal=cuda_device_ordinal,
         )
-        image_processor_right = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor_right",
-            # Optical black value for vb1940 raw10 format is 8
-            optical_black=8,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
+        graph.add_flow(csi.tensor, image_processor.in_tensor, queue_depth=4)
+        graph.add_flow(csi.metadata, image_processor.in_metadata, queue_depth=4)
 
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera_left.width()
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera_left.height(),
-            num_blocks=6,
-        )
-        demosaic_left = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic_left",
-            pool=bayer_pool,
+        demosaic = graph.op(
+            hv.operators.BayerDemosaicOp,
+            f"bayer_demosaic_{name}",
+            bayer_grid_pos=bayer_format,
             generate_alpha=True,
             alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-            in_tensor_name="left",
-            out_tensor_name="left",
         )
-        demosaic_right = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic_right",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-            in_tensor_name="right",
-            out_tensor_name="right",
+        graph.add_flow(image_processor.tensor, demosaic.input, queue_depth=4)
+        graph.add_flow(
+            demosaic.output,
+            getattr(viz, f"video_{name}"),
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
         )
 
-        left_spec = holoscan.operators.HolovizOp.InputSpec(
-            "left", holoscan.operators.HolovizOp.InputType.COLOR
-        )
-        left_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-        left_spec_view.offset_x = 0
-        left_spec_view.offset_y = 0
-        left_spec_view.width = 0.5
-        left_spec_view.height = 1
-        left_spec.views = [left_spec_view]
+        tensor_output_operators.append(rx.name)
+        tensor_output_operators.append(csi.name)
+        tensor_output_operators.append(image_processor.name)
 
-        right_spec = holoscan.operators.HolovizOp.InputSpec(
-            "right", holoscan.operators.HolovizOp.InputType.COLOR
-        )
-        right_spec_view = holoscan.operators.HolovizOp.InputSpec.View()
-        right_spec_view.offset_x = 0.5
-        right_spec_view.offset_y = 0
-        right_spec_view.width = 0.5
-        right_spec_view.height = 1
-        right_spec.views = [right_spec_view]
+    clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+    graph.set_default_clock(clock_key)
 
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            framebuffer_srgb=True,
-            tensors=[left_spec, right_spec],
-            height=self._window_height,
-            width=self._window_width,
-            window_title=self._window_title,
+    options = hs.CompileOptions()
+    for operator_path in tensor_output_operators:
+        options.deployment.bind_tensor_output_device(
+            operator_path=operator_path,
+            output_port="tensor",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
+        )
+    for name in tensor_names:
+        options.deployment.bind_tensor_output_device(
+            operator_path=f"bayer_demosaic_{name}",
+            output_port="output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
         )
 
-        #
-        self.add_flow(
-            receiver_operator_left, csi_to_bayer_operator_left, {("output", "input")}
+    if headless:
+        options.deployment.bind_tensor_output_device(
+            operator_path="holoviz",
+            output_port="output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
         )
-        self.add_flow(
-            receiver_operator_right, csi_to_bayer_operator_right, {("output", "input")}
-        )
-        self.add_flow(
-            csi_to_bayer_operator_left, image_processor_left, {("output", "input")}
-        )
-        self.add_flow(
-            csi_to_bayer_operator_right, image_processor_right, {("output", "input")}
-        )
-        self.add_flow(image_processor_left, demosaic_left, {("output", "receiver")})
-        self.add_flow(image_processor_right, demosaic_right, {("output", "receiver")})
-        self.add_flow(demosaic_left, visualizer, {("transmitter", "receivers")})
-        self.add_flow(demosaic_right, visualizer, {("transmitter", "receivers")})
+
+    plan = hs.compile(graph, options)
+    if not plan.ok:
+        print("Graph compilation failed:", file=sys.stderr)
+        for diag in plan.diagnostics:
+            print(f"  {diag}", file=sys.stderr)
+        hololink_dev.stop()
+        _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+        return 1
+
+    print(f"Capturing 2 sensors, mode={camera_mode} -- running (Ctrl+C to stop)...")
+
+    with hs.run_async(plan) as session:
+        try:
+            session.wait()
+        except KeyboardInterrupt:
+            # Ctrl+C or SIGTERM: leaving the block stops the session cooperatively, which
+            # stops the camera.
+            pass
+    if session.diagnostics:
+        print(session.summary(), file=sys.stderr)
+    failed = session.termination == hs.RunTermination.FAILED
+
+    hololink_dev.stop()
+    _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+
+    if failed:
+        return 1
+    print("Done.")
+    return 0
 
 
 def main():
+    # Like Ctrl+C, SIGTERM (kill, docker stop) raises KeyboardInterrupt, so the session stops
+    # cooperatively and the camera and the board are stopped on the way out.
+    signal.signal(signal.SIGTERM, signal.default_int_handler)
+
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--camera-mode",
         type=int,
-        default=hololink_module.sensors.vb1940.Vb1940_Mode.VB1940_MODE_2560X1984_30FPS.value,
-        help="VB1940 mode",
+        default=0,
+        help="VB1940 mode (default: 0 = 2560x1984@30fps)",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
@@ -279,14 +428,6 @@ def main():
         type=int,
         default=None,
         help="Exit after receiving this many frames",
-    )
-    default_configuration = os.path.join(
-        os.path.dirname(__file__), "example_configuration.yaml"
-    )
-    parser.add_argument(
-        "--configuration",
-        default=default_configuration,
-        help="Configuration file",
     )
     parser.add_argument(
         "--hololink",
@@ -318,6 +459,7 @@ def main():
     )
     parser.add_argument(
         "--title",
+        default=None,
         help="Set the window title",
     )
     parser.add_argument(
@@ -344,90 +486,23 @@ def main():
         help="VSYNC frequency in Hz (10, 30, 60, 90, 120). Default is 30Hz",
     )
     args = parser.parse_args()
-    hololink_module.logging_level(args.log_level)
-    logging.info("Initializing.")
-    # Get a handle to the GPU
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    # Get a handle to the Hololink device
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"{channel_metadata=}")
-    # Now make separate connection metadata for left and right; and set them to
-    # use sensor 0 and 1 respectively.  This will borrow the data plane
-    # configuration we found on that interface.
-    channel_metadata_left = hololink_module.Metadata(channel_metadata)
-    hololink_module.DataChannel.use_sensor(channel_metadata_left, 0)
-    channel_metadata_right = hololink_module.Metadata(channel_metadata)
-    hololink_module.DataChannel.use_sensor(channel_metadata_right, 1)
-    #
-    hololink_channel_left = hololink_module.DataChannel(channel_metadata_left)
-    hololink_channel_right = hololink_module.DataChannel(channel_metadata_right)
-    hololink = hololink_channel_left.hololink()
-    assert hololink is hololink_channel_right.hololink()
-    # Get a handle to the camera
-    camera_left = hololink_module.sensors.vb1940.Vb1940Cam(hololink_channel_left)
-    camera_right = hololink_module.sensors.vb1940.Vb1940Cam(hololink_channel_right)
-    camera_mode = hololink_module.sensors.vb1940.Vb1940_Mode(args.camera_mode)
-    # What title should we use?
-    window_title = f"Holoviz - {args.hololink}"
-    if args.title is not None:
-        window_title = args.title
-    # Set up the application
-    application = HoloscanApplication(
-        args.headless,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel_left,
-        camera_left,
-        hololink_channel_right,
-        camera_right,
-        camera_mode,
-        args.frame_limit,
+
+    logging.basicConfig(level=args.log_level)
+
+    return run(
+        args.hololink,
+        args.camera_mode,
+        args.coe_interface,
+        args.exp,
+        args.gain,
         args.window_height,
         args.window_width,
-        window_title,
+        args.title,
+        args.frame_limit,
+        args.headless,
         args.fullscreen,
-        args.coe_interface,
     )
-    application.config(args.configuration)
-    # Run it.
-    hololink.start()
-    try:
-        hololink.write_uint32(0x8, 0x0)
-        camera_left.setup_clock()  # this also sets camera_right's clock
-        hololink.write_uint32(0x8, 0x3)
-        time.sleep(100 / 1000)
-        camera_left.get_register_32(
-            0x0000
-        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-        camera_left.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-        camera_left.configure(camera_mode)
-        camera_left.set_analog_gain_reg(args.gain)  # Gain value has to be int
-        camera_left.set_exposure_reg(args.exp)  # Exposure value has to be int
-        camera_right.get_register_32(
-            0x0000
-        )  # DEVICE_MODEL_ID:"S940"(ASCII code:0x53393430)
-        camera_right.get_register_32(0x0734)  # EXT_CLOCK(25MHz = 0x017d7840)
-        camera_right.configure(camera_mode)
-        camera_right.set_analog_gain_reg(args.gain)  # Gain value has to be int
-        camera_right.set_exposure_reg(args.exp)  # Exposure value has to be int
-
-        # READ CAMERA EEPROM
-        cal_eeprom = camera_left.get_calibration_data(0)
-        print(cal_eeprom)
-
-        application.run()
-    finally:
-        hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

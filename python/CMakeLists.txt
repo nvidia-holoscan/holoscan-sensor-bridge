@@ -28,5 +28,7 @@ add_custom_target(hololink_python_all ALL
     COMMENT "adding hololink_python_all target"
 )
 
+include(copy_hololink_python_files)
+
 add_subdirectory(hololink)
 add_subdirectory(tools)

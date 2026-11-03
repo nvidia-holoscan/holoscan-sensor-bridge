@@ -15,8 +15,10 @@
 
 find_package(ibverbs REQUIRED)
 
+# Compile the shared ibv.cpp here. Linking hololink::transport::roce would
+# export that archive through HololinkTargets; it belongs to HololinkRoceTransportTargets.
 add_library(roce_transmitter STATIC
-  ibv.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../transport/roce/ibv.cpp
   roce_transmitter_op.cpp
 )
 
@@ -36,6 +38,7 @@ target_link_libraries(roce_transmitter
     hololink::core
     holoscan::core
     CUDA::cuda_driver
+    CUDA::cudart
     ${ibverbs_LIBRARIES}
 )
 

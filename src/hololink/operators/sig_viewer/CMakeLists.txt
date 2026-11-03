@@ -29,18 +29,16 @@ target_include_directories(sig_viewer
 )
 
 find_package(CUDAToolkit REQUIRED)
-find_package(CCCL REQUIRED)
 target_link_libraries(sig_viewer
   PUBLIC
-    CCCL::CCCL     # For Thrust project headers
-    CUDA::cudart
-    hololink
-    hololink::core
+    hololink::gui_renderer
     holoscan::core
   PRIVATE
+    hololink
+    hololink::core
+    holoscan::visualization::holoviz
+    CUDA::cudart
     CUDA::cufft
-    CUDA::cuda_driver
-    holoscan::viz::imgui
 )
 
 # Installation of the sig_viewer operator

@@ -46,7 +46,7 @@ public:
      * inserted and an empty value is returned.
      *
      * @tparam T value type
-     * @param name key name
+     * @param name Key name.
      * @return std::optional<const T> An optional value, if the key is not present this has no
      * value.
      */
@@ -70,7 +70,7 @@ public:
     /**
      * @brief Update the container with values from another container.
      *
-     * @param other container to update this container with
+     * @param other Container to update this container with.
      */
     void update(const Metadata& other)
     {

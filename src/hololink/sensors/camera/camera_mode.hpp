@@ -68,16 +68,16 @@ protected:
 } // namespace hololink::sensors
 
 /**
- * @brief Formatter for CameraMode
+ * @brief Formatter for CameraFrameFormat.
  */
 template <>
 struct fmt::formatter<hololink::sensors::CameraFrameFormat> : fmt::formatter<fmt::string_view> {
     /**
-     * @brief Format function for CameraFrameFormat
+     * @brief Format function for CameraFrameFormat.
      *
      * @param element
      * @param ctx
-     * @return auto
+     * @return auto.
      */
     auto format(const hololink::sensors::CameraFrameFormat& element,
         fmt::format_context& ctx) const -> decltype(ctx.out());

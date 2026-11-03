@@ -110,9 +110,10 @@ static inline uint64_t ntohll(uint64_t value)
 // from Infiniband specification
 struct bthdr {
     uint8_t opcode; // opcode {= 0x2A for write, 0x2B for write immediate}
-    // Note we should be paying attention to the pad count flag in bits 5:4
-    // if we want to have non-4-byte boundary payloads.
-    uint8_t flags; // flags {= 0}.
+    // bits 5:4 = PadCnt, the number of zero bytes (0..3) the transmitter appended so
+    // the payload ends on a quadlet; set by condition_packet_crc() for a frame whose
+    // last data packet is not a multiple of 4 bytes.
+    uint8_t flags; // flags {= 0; PadCnt set per packet}.
     uint16_t p_key; // partition {= 0xFFFF}
     uint32_t destqp; // destination qp (lower 24 bits only) {= 0xFF << 24 | qp}
     uint32_t psn; // psn only lower 24 bits are used. ack bit on 31.
@@ -230,7 +231,7 @@ typedef struct IPAddress {
      * - 0x02 (IPADDRESS_HAS_NETMASK): netmask is valid
      * - 0x04 (IPADDRESS_HAS_BROADCAST): broadcast address is valid
      * - 0x40 (IPADDRESS_IS_PTP): indicates point-to-point (1) or broadcast (0) interface
-     * - 0x80 (IPADDRESS_HAS_MAC): MAC address is valid
+     * - 0x80 (IPADDRESS_HAS_MAC): MAC address is valid.
      */
 } IPAddress;
 
@@ -239,7 +240,7 @@ typedef struct IPAddress {
  *
  * @brief Construct an IPAddress object from a string representation of the IP address.
  * @param ip_address The string representation of the IP address. Currently must be in format accepted by inet_addr().
- * @return An IPAddress instance
+ * @return An IPAddress instance.
  */
 IPAddress IPAddress_from_string(const std::string& ip_address);
 
@@ -249,15 +250,15 @@ IPAddress IPAddress_from_string(const std::string& ip_address);
  * `def __str__(self: hemu.IPAddress) -> str`
  *
  * @brief Convert an IPAddress object to its string representation.
- * @param ip_address The IPAddress object to convert
- * @return String representation of the IP address
+ * @param ip_address The IPAddress object to convert.
+ * @return String representation of the IP address.
  */
 std::string IPAddress_to_string(const IPAddress& ip_address);
 
 /**
  * @brief Get the broadcast address for a given IPAddress.
- * @param ip_address The IPAddress object containing the network configuration
- * @return The broadcast address as a 32-bit unsigned integer
+ * @param ip_address The IPAddress object containing the network configuration.
+ * @return The broadcast address as a 32-bit unsigned integer.
  */
 uint32_t get_broadcast_address(const IPAddress& ip_address);
 

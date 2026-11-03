@@ -15,156 +15,71 @@
  * limitations under the License.
  */
 
+// Single IMX274 sub-frame live viewer over the Linux socket receiver:
+//   LinuxReceiverOp -> CsiToBayerOp (sub-frame) -> ImageProcessorOp -> SubFrameCombinerOp ->
+//     BayerDemosaicOp -> HolovizOp
+//
+// The sensor frame travels and is processed as horizontal bands of --sub-frame-rows rows: the
+// receiver delivers one band at a time, and CsiToBayerOp and ImageProcessorOp each run on a band
+// as soon as it lands. SubFrameCombinerOp reassembles the bands into a full frame, which is
+// demosaiced once into RGBA16 and displayed. Combining before demosaicing (the HSDK4 version of
+// this player demosaiced each band) avoids seams at the band boundaries. To display each band as
+// it arrives instead, see linux_sub_frame_imx274_hsdk5_player --sub-frame-display.
+
 #include <getopt.h>
 
+#include <algorithm>
+#include <chrono>
+#include <cstdint>
 #include <iostream>
+#include <memory>
+#include <stdexcept>
 #include <string>
+#include <string_view>
+#include <thread>
+#include <utility>
+#include <vector>
 
+#include <cuda.h>
+
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/diagnostic.hpp>
+#include <holoscan/core/errors.hpp>
+#include <holoscan/core/execution_context.hpp>
+#include <holoscan/core/execution_plan.hpp>
+#include <holoscan/core/expected.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/operator.hpp>
+#include <holoscan/core/operator_spec.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/core/temporal_contract.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/sensor_io/sensor_schema_package.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
+#include <holoscan/visualization/sink_desc.hpp>
+
+#include <capture_metadata_traits.hpp>
 #include <hololink/common/cuda_helper.hpp>
 #include <hololink/common/tools.hpp>
 #include <hololink/core/data_channel.hpp>
 #include <hololink/core/enumerator.hpp>
 #include <hololink/core/hololink.hpp>
-#include <hololink/core/logging.hpp>
 #include <hololink/operators/csi_to_bayer/csi_to_bayer.hpp>
 #include <hololink/operators/image_processor/image_processor.hpp>
 #include <hololink/operators/linux_receiver/linux_receiver_op.hpp>
 #include <hololink/operators/sub_frame_combiner/sub_frame_combiner.hpp>
+#include <hololink/sensors/camera/imx274/native_imx274_sensor.hpp>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include "player_support.hpp"
 
-#include <pybind11/embed.h>
-namespace py = pybind11;
-using namespace pybind11::literals; // to bring in the `_a` literal
+namespace hx = hololink::examples;
 
-namespace {
-
-class HoloscanApplication : public holoscan::Application {
-public:
-    explicit HoloscanApplication(bool headless, bool fullscreen, CUcontext cuda_context,
-        int cuda_device_ordinal, hololink::DataChannel& hololink_channel,
-        py::object camera, py::object camera_mode,
-        int64_t frame_limit, uint32_t sub_frame_rows)
-        : headless_(headless)
-        , fullscreen_(fullscreen)
-        , cuda_context_(cuda_context)
-        , cuda_device_ordinal_(cuda_device_ordinal)
-        , hololink_channel_(hololink_channel)
-        , camera_(camera)
-        , camera_mode_(camera_mode)
-        , frame_limit_(frame_limit)
-        , sub_frame_rows_(sub_frame_rows)
-    {
-    }
-    HoloscanApplication() = delete;
-
-    void compose() override
-    {
-        // acquire the Python GIL to be able to call the Python functions of the camera device
-        py::gil_scoped_acquire guard;
-
-        auto memory_pool = make_resource<holoscan::RMMAllocator>("memory_pool",
-            holoscan::Arg("device_memory_max_size", "1GB"));
-
-        std::shared_ptr<holoscan::Condition> condition;
-        if (frame_limit_) {
-            condition = make_condition<holoscan::CountCondition>("count", frame_limit_);
-        } else {
-            condition = make_condition<holoscan::BooleanCondition>("ok", true);
-        }
-        camera_.attr("set_mode")(camera_mode_);
-
-        const int width = camera_.attr("_width").cast<int>();
-        const int height = camera_.attr("_height").cast<int>();
-
-        uint32_t sub_frame_rows = sub_frame_rows_;
-        if (sub_frame_rows == 0) {
-            sub_frame_rows = height;
-        } else if (sub_frame_rows > height) {
-            throw std::runtime_error(fmt::format("Sub frame rows of {} is greater than camera height of {}", sub_frame_rows, height));
-        }
-
-        auto csi_to_bayer_operator = make_operator<hololink::operators::CsiToBayerOp>("csi_to_bayer",
-            holoscan::Arg("allocator", memory_pool),
-            holoscan::Arg("sub_frame_rows", sub_frame_rows),
-            holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_));
-        // Without this; pybind11 doesn't know how to get the right superclass
-        // for configure_converter.
-        std::shared_ptr<hololink::csi::CsiConverter> csi_converter = csi_to_bayer_operator;
-        camera_.attr("configure_converter")(csi_converter);
-
-        const size_t frame_size = csi_to_bayer_operator->get_sub_frame_size();
-        auto receiver_operator = make_operator<hololink::operators::LinuxReceiverOp>("receiver",
-            condition,
-            holoscan::Arg("frame_size", frame_size),
-            holoscan::Arg("frame_context", cuda_context_),
-            holoscan::Arg("hololink_channel", &hololink_channel_),
-            holoscan::Arg("device_start", std::function<void()>([this] {
-                // acquire the Python GIL lock to be able to call the Python functions of the camera
-                // device
-                py::gil_scoped_acquire guard;
-                camera_.attr("start")();
-            })),
-            holoscan::Arg("device_stop", std::function<void()>([this] {
-                // acquire the Python GIL lock to be able to call the Python functions of the camera
-                // device
-                py::gil_scoped_acquire guard;
-                camera_.attr("stop")();
-            })),
-            // Trim the frame to the size of the received data (when doing sub-frame processing, not
-            // each received packet might have the same size when then camera CSI data has a header)
-            holoscan::Arg("trim", true),
-            // Disable the frame ready condition to reduce latency
-            holoscan::Arg("use_frame_ready_condition", false));
-
-        auto bayer_format = camera_.attr("bayer_format")()
-                                .cast<hololink::csi::BayerFormat>();
-        auto pixel_format = camera_.attr("pixel_format")()
-                                .cast<hololink::csi::PixelFormat>();
-        auto image_processor_operator = make_operator<hololink::operators::ImageProcessorOp>("image_processor",
-            // Optical black value for imx274 is 50
-            holoscan::Arg("optical_black", 50), holoscan::Arg("bayer_format", int(bayer_format)),
-            holoscan::Arg("pixel_format", int(pixel_format)));
-
-        const uint32_t rgba_components_per_pixel = 4;
-        auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>("demosaic",
-            holoscan::Arg("pool", memory_pool), holoscan::Arg("generate_alpha", true),
-            holoscan::Arg("alpha_value", 65535), holoscan::Arg("bayer_grid_pos", int(bayer_format)),
-            holoscan::Arg("interpolation_mode", 0));
-
-        auto sub_frame_combiner = make_operator<hololink::operators::SubFrameCombinerOp>("sub_frame_combiner",
-            holoscan::Arg("allocator", memory_pool),
-            holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_),
-            holoscan::Arg("height", static_cast<uint32_t>(height)));
-
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>("holoviz",
-            holoscan::Arg("fullscreen", fullscreen_), holoscan::Arg("headless", headless_),
-            holoscan::Arg("framebuffer_srgb", true));
-
-        add_flow(receiver_operator, csi_to_bayer_operator, { { "output", "input" } });
-        add_flow(csi_to_bayer_operator, image_processor_operator, { { "output", "input" } });
-        add_flow(image_processor_operator, demosaic, { { "output", "receiver" } });
-        add_flow(demosaic, sub_frame_combiner, { { "transmitter", "input" } });
-        add_flow(sub_frame_combiner, visualizer, { { "output", "receivers" } });
-    }
-
-private:
-    const bool headless_;
-    const bool fullscreen_;
-    const CUcontext cuda_context_;
-    const int cuda_device_ordinal_;
-    hololink::DataChannel& hololink_channel_;
-    const py::object camera_;
-    const py::object camera_mode_;
-    const int64_t frame_limit_;
-    const uint32_t sub_frame_rows_;
-};
-
-} // anonymous namespace
-
-int main(int argc, char** argv)
+static int run_player(int argc, char** argv, holoscan::ManagedShutdownSignals& signals)
 {
     int32_t camera_mode = 0;
     bool headless = false;
@@ -173,7 +88,6 @@ int main(int argc, char** argv)
     // the camera height must be evenly divisible by the sub frame rows, by choosing a default of 216,
     // this is the case for the modes supported by the IMX274 sensor.
     uint32_t sub_frame_rows = 216;
-    std::string configuration;
     std::string hololink_ip = hololink::env_hololink_ip(0, "192.168.0.2");
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
     int32_t expander_configuration = 0;
@@ -212,27 +126,17 @@ int main(int argc, char** argv)
             } else if (cur_option->name == std::string("sub-frame-rows")) {
                 sub_frame_rows = std::stoul(argument);
             } else if (cur_option->name == std::string("configuration")) {
-                configuration = argument;
+                if (!hx::check_configuration(argument)) {
+                    return -1;
+                }
             } else if (cur_option->name == std::string("hololink")) {
                 hololink_ip = argument;
             } else if (cur_option->name == std::string("log-level")) {
-                if ((argument == "trace") || (argument == "TRACE")) {
-                    log_level = holoscan::LogLevel::TRACE;
-                } else if ((argument == "debug") || (argument == "DEBUG")) {
-                    log_level = holoscan::LogLevel::DEBUG;
-                } else if ((argument == "info") || (argument == "INFO")) {
-                    log_level = holoscan::LogLevel::INFO;
-                } else if ((argument == "warn") || (argument == "WARN")) {
-                    log_level = holoscan::LogLevel::WARN;
-                } else if ((argument == "error") || (argument == "ERROR")) {
-                    log_level = holoscan::LogLevel::ERROR;
-                } else if ((argument == "critical") || (argument == "CRITICAL")) {
-                    log_level = holoscan::LogLevel::CRITICAL;
-                } else if ((argument == "off") || (argument == "OFF")) {
-                    log_level = holoscan::LogLevel::OFF;
-                } else {
+                const auto level = hx::parse_log_level(argument);
+                if (!level) {
                     throw std::runtime_error(fmt::format("Unhandled log level \"{}\"", argument));
                 }
+                log_level = *level;
             } else if (cur_option->name == std::string("expander-configuration")) {
                 expander_configuration = std::stoul(argument);
             } else if (cur_option->name == std::string("pattern")) {
@@ -244,12 +148,22 @@ int main(int argc, char** argv)
         } else {
             switch (c) {
             case 'h':
-                std::cout << "Usage: " << argv[0] << " [options]" << std::endl
-                          << "Options:" << std::endl
-                          << "  -h, --help     display this information" << std::endl
-                          << "  --hololink     IP address of Hololink board (default `"
-                          << hololink_ip << "`" << std::endl
-                          << std::endl;
+                std::cout << "Usage: " << argv[0] << " [options]\n"
+                          << "Options:\n"
+                          << "  -h, --help                    display this information\n"
+                          << "  --hololink <ip>               IP address of Hololink board (default "
+                          << hololink_ip << ")\n"
+                          << "  --camera-mode <0|1|2>         IMX274 mode (default 0 = 3840x2160@60)\n"
+                          << "  --sub-frame-rows <n>          Rows per sub-frame (default 216; must divide\n"
+                          << "                                the camera height evenly; 0 = whole frames)\n"
+                          << "  --frame-limit <n>             Stop after N frames (0 = run until the window\n"
+                          << "                                closes)\n"
+                          << "  --fullscreen                  Run in fullscreen mode\n"
+                          << "  --headless                    Render without a window\n"
+                          << "  --expander-configuration <n>  I2C expander configuration (default 0)\n"
+                          << "  --pattern <n>                 Show sensor test pattern N\n"
+                          << "  --log-level <level>           trace|debug|info|warn|error|critical|off\n"
+                          << "  --configuration <file>        Configuration file (ignored)\n";
                 return EXIT_SUCCESS;
 
             default:
@@ -258,99 +172,210 @@ int main(int argc, char** argv)
         }
     }
 
-    // The IMX274 camera is implemented in Python, start the interpreter and keep it alive
-    py::scoped_interpreter guard {};
-
     try {
-        // set the Holoscan log level
         holoscan::set_log_level(log_level);
-
-        // set the Python log level as well (needed for the camera implementation only)
-        py::module_ hololink_module = py::module_::import("hololink");
-        py::module_ logging = py::module_::import("logging");
-        int python_log_level = logging.attr("NOTSET").cast<int>();
-        switch (log_level) {
-        case holoscan::LogLevel::TRACE:
-            python_log_level = logging.attr("DEBUG").cast<int>() - 5;
-            break;
-        case holoscan::LogLevel::DEBUG:
-            python_log_level = logging.attr("DEBUG").cast<int>();
-            break;
-        case holoscan::LogLevel::INFO:
-            python_log_level = logging.attr("INFO").cast<int>();
-            break;
-        case holoscan::LogLevel::WARN:
-            python_log_level = logging.attr("WARN").cast<int>();
-            break;
-        case holoscan::LogLevel::ERROR:
-            python_log_level = logging.attr("ERROR").cast<int>();
-            break;
-        case holoscan::LogLevel::CRITICAL:
-            python_log_level = logging.attr("CRITICAL").cast<int>();
-            break;
-        case holoscan::LogLevel::OFF:
-            python_log_level = logging.attr("CRITICAL").cast<int>() + 1;
-            break;
-        default:
-            throw std::runtime_error("Unhandled log level");
-        }
-        hololink_module.attr("logging_level")(python_log_level);
+        // As in HSDK4, --log-level also sets the camera driver's log level; the native driver
+        // logs through hololink's own logger.
+        hx::set_hsb_log_level(log_level);
 
         std::cout << "Initializing." << std::endl;
 
-        // Get a handle to the GPU
+        const int cuda_device_ordinal = 0;
         CudaCheck(cuInit(0));
-        int cu_device_ordinal = 0;
         CUdevice cu_device;
-        CudaCheck(cuDeviceGet(&cu_device, cu_device_ordinal));
+        CudaCheck(cuDeviceGet(&cu_device, cuda_device_ordinal));
         CUcontext cu_context;
         CudaCheck(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+        cuCtxSetCurrent(cu_context);
 
         // Get a handle to the data source
         hololink::Metadata channel_metadata = hololink::Enumerator::find_channel(hololink_ip);
+        auto hololink_channel = std::make_shared<hololink::DataChannel>(channel_metadata);
 
-        hololink::DataChannel hololink_channel(channel_metadata);
+        auto camera = std::make_shared<hololink::sensors::NativeImx274Sensor>(
+            *hololink_channel, expander_configuration);
+        const auto imx274_mode = static_cast<hololink::sensors::imx274_mode::Mode>(camera_mode);
+        camera->set_mode(imx274_mode);
 
-        // Import the IMX274 sensor module and the IMX274 mode
-        py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
-        py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
-        py::object Imx274_Mode = imx274.attr("imx274_mode").attr("Imx274_Mode");
+        const auto width = static_cast<uint32_t>(camera->get_width());
+        const auto height = static_cast<uint32_t>(camera->get_height());
+        const auto bayer_format = camera->get_bayer_format();
+        const auto pixel_format = camera->get_pixel_format();
+        if (width == 0 || height == 0) {
+            throw std::runtime_error(fmt::format("Unsupported --camera-mode {}", camera_mode));
+        }
 
-        // Get a handle to the camera
-        py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel,
-            "expander_configuration"_a = expander_configuration);
-        py::object imx274_mode_set = Imx274_Mode(camera_mode);
-        // Set up the application
-        auto application = holoscan::make_application<HoloscanApplication>(headless, fullscreen,
-            cu_context, cu_device_ordinal, hololink_channel, camera,
-            imx274_mode_set, frame_limit, sub_frame_rows);
-        application->config(configuration);
+        if (sub_frame_rows == 0) {
+            sub_frame_rows = height;
+        } else if (sub_frame_rows > height) {
+            throw std::runtime_error(fmt::format(
+                "Sub frame rows of {} is greater than camera height of {}", sub_frame_rows, height));
+        } else if (height % sub_frame_rows != 0) {
+            throw std::runtime_error(fmt::format(
+                "Camera height of {} is not evenly divisible by sub frame rows of {}", height, sub_frame_rows));
+        } else if (sub_frame_rows % 2 != 0) {
+            // ImageProcessorOp takes the color filter phase from each band's own first row, so
+            // every band must start on an even image row.
+            throw std::runtime_error(fmt::format("Sub frame rows of {} is odd; it must be even", sub_frame_rows));
+        }
 
-        // Run it.
-        std::shared_ptr<hololink::Hololink> hololink = hololink_channel.hololink();
-        hololink->start();
-        hololink->reset();
-        camera.attr("setup_clock")();
-        camera.attr("configure")(imx274_mode_set);
-        camera.attr("set_digital_gain_reg")(0x4);
+        constexpr uint32_t kMaxPages = 30;
+        // The slices run through the capture lane in step, so the queues up to the combiner
+        // seldom hold more than one; hx::pipeline_edge() keeps them shallow, since every queue
+        // entry costs a 64 MiB output pool slot in the receiver, CsiToBayerOp and ImageProcessorOp.
+        const holoscan::ConnectionOptions sub_frame_edge = hx::pipeline_edge();
+
+        holoscan::Graph graph { "linux_sub_frame_imx274_player" };
+
+        hololink::operators::CsiToBayerParams csi_params {
+            .cuda_device_ordinal = cuda_device_ordinal,
+            .sub_frame_rows = sub_frame_rows,
+            .bayer_format = bayer_format,
+        };
+        camera->configure_converter(csi_params.geometry);
+        auto csi = graph.op<hololink::operators::CsiToBayerOp>("csi_to_bayer");
+        csi.set_params(csi_params);
+
+        // The receiver delivers one slice at a time (what CsiToBayerOp computes for its sub-frame
+        // size); a frame takes one more chunk than it has slices when the CSI data carries a
+        // header. Enough receiver buffers for three frames, up to kMaxPages: with fewer, the next
+        // slice overwrites one still in flight.
+        const auto& geometry = csi_params.geometry;
+        const size_t frame_size = static_cast<size_t>(geometry.bytes_per_line) * sub_frame_rows;
+        const size_t csi_length = geometry.start_byte
+            + static_cast<size_t>(geometry.bytes_per_line) * height + geometry.trailing_bytes;
+        const auto chunks_per_frame = static_cast<uint32_t>((csi_length + frame_size - 1) / frame_size);
+        const uint32_t receiver_pages = std::min(chunks_per_frame * 3U, kMaxPages);
+
+        auto receiver = graph.op<hololink::operators::LinuxReceiverOp>(
+            "receiver", hololink_channel, [camera] { camera->start(); },
+            [camera] {
+                camera->stop();
+                // Let the egress buffer drain, as HSDK4's IMX274 driver did.
+                std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            });
+        receiver.set_params(hololink::operators::LinuxReceiverParams {
+            .frame_context = cu_context,
+            .frame_size = frame_size,
+            // Trim each slice to the bytes received: the last slice of a frame is shorter when
+            // the CSI data carries a header.
+            .trim = true,
+            .pages = receiver_pages,
+            // Match queue_size to pages to reduce the chance of dropping a slice.
+            .queue_size = receiver_pages,
+            // Report "Ingress frame timeout" when no data comes, as HSDK4's receiver did here
+            // (use_frame_ready_condition=false). frame_limit stays 0: frames are counted at the end
+            // of the chain.
+            .watch_ingress = true,
+        });
+
+        auto ip = graph.op<hololink::operators::ImageProcessorOp>("image_processor");
+        ip.set_params(hololink::operators::ImageProcessorParams {
+            .pixel_format = int(pixel_format),
+            .bayer_format = int(bayer_format),
+            .optical_black = 50, // Optical black value for imx274 is 50
+            .cuda_device_ordinal = cuda_device_ordinal,
+            .pixel_width = geometry.pixel_width,
+            .pixel_height = geometry.pixel_height,
+        });
+
+        auto combiner = graph.op<hololink::operators::SubFrameCombinerOp>("sub_frame_combiner");
+        combiner.set_params(hololink::operators::SubFrameCombinerParams {
+            .cuda_device_ordinal = cuda_device_ordinal,
+            .height = height,
+        });
+
+        auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>("bayer_demosaic");
+        demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+            .bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format),
+            .generate_alpha = true,
+            .alpha_value = 65535U,
+        });
+
+        holoscan::CompileOptions compile_options;
+        holoscan::visualization::LayerStack layers;
+        layers.add_image_layer("video", hx::rgba16_layer(width, height));
+        // Render one frame per assembled frame.
+        auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers),
+            hx::DisplayConfig { .fullscreen = fullscreen, .headless = headless }, compile_options,
+            cuda_device_ordinal);
+
+        graph.add_flow(receiver->tensor, csi->input_tensor, sub_frame_edge);
+        graph.add_flow(receiver->metadata, csi->input_metadata, sub_frame_edge);
+        graph.add_flow(csi->output_tensor, ip->input_tensor, sub_frame_edge);
+        graph.add_flow(csi->output_metadata, ip->input_metadata, sub_frame_edge);
+        graph.add_flow(ip->output_tensor, combiner->input_tensor, sub_frame_edge);
+        graph.add_flow(ip->output_metadata, combiner->input_metadata, sub_frame_edge);
+        // The display runs on a lane of its own (below), at the display's rate. The combined frame
+        // goes there through a one-frame queue that drops the oldest: the newest frame is shown,
+        // and the capture lane never waits for the display.
+        graph.add_flow(combiner->output_tensor, demosaic->input,
+            holoscan::ConnectionOptions { .queue_policy = holoscan::QueuePolicy::kDropOldest, .queue_depth = 1U });
+        hx::add_frame_limit(graph, "frame_limit", combiner->output_metadata,
+            std::make_shared<hx::FrameLimitGroup>(frame_limit, 1U));
+        graph.add_flow(demosaic->output, viz->image_layer_input(0), hx::display_edge());
+
+        // HolovizOp blocks on the swapchain at the display refresh rate, and band processing can
+        // hold up whatever shares its lane: either stall on the receiver's lane is long enough to
+        // miss slices. The receiver runs on a lane of its own; everything up to the combiner runs at
+        // slice rate on another; the rest runs at frame rate.
+        graph.partition("receiver").add(receiver);
+        graph.partition("capture").add(csi, ip, combiner);
+        graph.auto_partition_remaining();
+
+        graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+        for (const auto& [operator_path, output_port] :
+            { std::pair<std::string_view, std::string_view> { "receiver", "tensor" }, { "csi_to_bayer", "tensor" },
+                { "image_processor", "tensor" }, { "sub_frame_combiner", "tensor" },
+                { "bayer_demosaic", "output" } }) {
+            compile_options.deployment.bind_tensor_output_device(holoscan::TensorOutputDevicePlacement {
+                .operator_path = operator_path,
+                .output_port = output_port,
+                .device = holoscan::DeviceId { cuda_device_ordinal },
+            });
+        }
+
+        const auto plan = holoscan::compile(graph, std::move(compile_options));
+        if (!plan.ok()) {
+            hx::print_compile_failure(plan);
+            CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
+            return -1;
+        }
+
+        auto hololink_dev = hololink_channel->hololink();
+        hololink_dev->start();
+        hololink_dev->reset();
+        camera->setup_clock();
+        camera->configure(imx274_mode);
+        camera->set_digital_gain_reg(0x4);
         if (pattern_set) {
-            camera.attr("test_pattern")(pattern);
+            // Any --pattern, 0 included, selects that test pattern.
+            camera->enable_test_pattern(static_cast<uint8_t>(pattern));
         }
+
         std::cout << "Calling run" << std::endl;
-        {
-            // we need release the Python GIL before starting the application to make sure the
-            // operators can call camera device functions
-            py::gil_scoped_release release_guard;
-            application->run();
-        }
-        hololink->stop();
+        auto session = holoscan::run_async(plan, signals);
+        session.wait();
+        const bool failed = hx::report_session(session, plan);
 
+        hololink_dev->stop();
         CudaCheck(cuDevicePrimaryCtxRelease(cu_device));
-
+        if (failed) {
+            return -1;
+        }
     } catch (std::exception& e) {
         std::cout << e.what() << std::endl;
         return -1;
     }
 
     return 0;
+}
+
+int main(int argc, char** argv)
+{
+    // With managed signals, Ctrl+C stops the session cooperatively, so the camera and the board
+    // are stopped on the way out.
+    return hx::run_with_managed_signals(
+        [&](holoscan::ManagedShutdownSignals& signals) { return run_player(argc, argv, signals); });
 }

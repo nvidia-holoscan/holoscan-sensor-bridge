@@ -18,7 +18,7 @@
 # The capture path is built entirely on the hololink_module V1 surface
 # (Adapter discovery, Imx274Cam, RoceReceiverOp / LinuxReceiverOp,
 # CsiToBayerOp), and validation reuses the shared operators.py helpers
-# (TimeProfiler, WatchdogOp, FrameAlignerOp).
+# (TimeProfiler, WatchdogOp, pair_by_timestamp).
 #
 # Notable differences from the legacy test, all driven by the module API:
 #   * The legacy test drove examples/imx274_player.main() via mock.patch;
@@ -35,18 +35,28 @@
 #     (via the per-data-plane oscillator), so there is no setup_clock()
 #     call; hololink.ptp_synchronize() still runs so the FPGA timestamp
 #     clock shares the host's PTP domain.
-#   * The stereo test aligns the two free-running legs with FrameAlignerOp
-#     (IMX274 has no hardware frame-sync) before measuring their skew.
+#
+# HSDK5 differences:
+#   * HSDK5 frame metadata is a fixed CaptureMetadata struct, and the
+#     receivers have no rename_metadata parameter. The renamed-metadata
+#     test instead reads the timestamps after CsiToBayerOp, so it checks that
+#     the frame metadata goes through a pipeline stage unchanged.
+#   * The stereo test gives each leg its own watchdog and pairs the two legs'
+#     timestamps after the run, where v2.7 paired them in the graph with
+#     FrameAlignerOp. As v2.7's watchdog after the aligner did,
+#     operators.assert_aligned() needs a pair within allowable_dt at least
+#     every 0.5 s.
+#   * The receivers end the run at the frame limit.
 
-import ctypes
 import datetime
 import logging
 import math
 import threading
 
+import applications
 import hololink_module.operators
 import hololink_module.sensors.imx274 as imx274
-import holoscan
+import holoscan_vision as hv
 import operators
 import pytest
 import utils
@@ -67,196 +77,73 @@ def _wait_for_channel(module_dir, peer_ip):
     return adapter.wait_for_channel(peer_ip, DISCOVERY_TIMEOUT_S)
 
 
-class TimestampTestApplication(holoscan.core.Application):
-    """Single-camera capture pipeline that records per-frame timestamps.
-
-    receiver -> csi_to_bayer -> demosaic -> profiler -> visualizer -> watchdog
-
-    The receiver free-runs on a BooleanCondition; TimeProfiler's callback
-    disables that condition (and stops the watchdog) once frame_limit frames
-    have been collected, mirroring the legacy single-camera structure.
-    """
-
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        metadata,
-        camera,
-        camera_mode,
-        use_roce,
-        frame_limit,
-        rename_metadata=lambda name: name,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._metadata = metadata
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._use_roce = use_roce
-        self._frame_limit = frame_limit
-        self._rename_metadata = rename_metadata
-        self._lock = threading.Lock()
-        self._timestamps = []
-        self.is_metadata_enabled = True
-
-    def _make_receiver(self, condition, frame_size):
-        # The module RoceReceiverOp resolves its IB device from the peer in
-        # the enumeration metadata, so (unlike the legacy op) there is no
-        # ibv_name/ibv_port to pass; device_start/device_stop arm and disarm
-        # the sensor at pipeline start/stop.
-        MAX_PAGES = 5
-        if self._use_roce:
-            return hololink_module.operators.RoceReceiverOp(
-                self,
-                condition,
-                name="receiver",
-                enumeration_metadata=self._metadata,
-                frame_context=self._cuda_context,
-                frame_size=frame_size,
-                device_start=self._camera.start,
-                device_stop=self._camera.stop,
-                rename_metadata=self._rename_metadata,
-                pages=MAX_PAGES,
-                queue_size=MAX_PAGES,
-            )
-        return hololink_module.operators.LinuxReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            enumeration_metadata=self._metadata,
-            frame_context=self._cuda_context,
-            frame_size=frame_size,
-            receiver_affinity=[2],
-            device_start=self._camera.start,
-            device_stop=self._camera.stop,
-            rename_metadata=self._rename_metadata,
-            pages=MAX_PAGES,
-            queue_size=MAX_PAGES,
-        )
-
-    def compose(self):
-        logging.info("compose")
-        self._condition = holoscan.conditions.BooleanCondition(
-            self, name="ok", enable_tick=True
-        )
-        self._camera.set_mode(self._camera_mode)
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        self._camera.configure_converter(csi_to_bayer_operator)
-
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.info(f"{frame_size=}")
-
-        receiver_operator = self._make_receiver(self._condition, frame_size)
-
-        rgba_components_per_pixel = 4
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=self._camera._width
-            * rgba_components_per_pixel
-            * ctypes.sizeof(ctypes.c_uint16)
-            * self._camera._height,
-            num_blocks=4,
-        )
-        bayer_format = self._camera.bayer_format()
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-        profiler = operators.TimeProfiler(
-            self,
-            name="profiler",
-            callback=self.time_profile,
-            rename_metadata=self._rename_metadata,
-        )
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            headless=self._headless,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-        initial_timeout = utils.timeout_sequence(
-            [(30, 20), (0.5, self._frame_limit - 40), (30, 1)]
-        )
-        self._watchdog = utils.Watchdog(
-            name="watchdog",
-            initial_timeout=initial_timeout,
-        )
-        watchdog_operator = operators.WatchdogOp(
-            self,
-            name="watchdog_operator",
-            watchdog=self._watchdog,
-        )
-        #
-        self.add_flow(receiver_operator, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(csi_to_bayer_operator, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, profiler, {("transmitter", "input")})
-        self.add_flow(profiler, visualizer, {("output", "receivers")})
-        self.add_flow(visualizer, watchdog_operator, {("camera_pose_output", "input")})
-        #
-        self._watchdog.start()
-
-    def time_profile(
-        self,
-        image_timestamp_s,
-        metadata_timestamp_s,
-        received_timestamp_s,
-        pipeline_timestamp_s,
-        frame_number,
-    ):
-        with self._lock:
-            self._timestamps.append(
-                (
-                    image_timestamp_s,
-                    metadata_timestamp_s,
-                    received_timestamp_s,
-                    pipeline_timestamp_s,
-                    frame_number,
-                )
-            )
-            if len(self._timestamps) >= self._frame_limit:
-                self._watchdog.stop()
-                self._condition.disable_tick()
+def add_receiver(
+    test_graph, name, metadata, camera, camera_mode, cu_context, use_roce, frame_limit
+):
+    """Add a module receiver, CsiToBayerOp and BayerDemosaicOp for camera; return
+    the receiver, the CsiToBayerOp and the demosaiced image to show."""
+    camera.set_mode(camera_mode)
+    converter = hololink_module.CsiToBayerConverter()
+    camera.configure_converter(converter)
+    frame_size = converter.get_csi_length()
+    logging.info(f"{name} {frame_size=}")
+    # The module RoceReceiverOp resolves its IB device from the peer in
+    # the enumeration metadata, so (unlike the legacy op) there is no
+    # ibv_name/ibv_port to pass; device_start/device_stop arm and disarm
+    # the sensor at pipeline start/stop.
+    MAX_PAGES = 5
+    receiver_kwargs = {}
+    if use_roce:
+        receiver = hololink_module.operators.RoceReceiverOp
+    else:
+        receiver = hololink_module.operators.LinuxReceiverOp
+        receiver_kwargs["receiver_affinity"] = [2]
+    rx = test_graph.op(
+        receiver,
+        f"receiver{name}",
+        metadata=metadata,
+        frame_context=int(cu_context),
+        frame_size=frame_size,
+        device_start=camera.start,
+        device_stop=camera.stop,
+        pages=MAX_PAGES,
+        queue_size=MAX_PAGES,
+        frame_limit=frame_limit,
+        frame_limit_ends_run=True,
+        **receiver_kwargs,
+    )
+    csi = test_graph.op(
+        hololink_module.operators.CsiToBayerOp,
+        f"csi_to_bayer{name}",
+        cuda_device_ordinal=test_graph.cuda_device_ordinal,
+        geometry=converter.geometry(),
+        bayer_format=camera.bayer_format().name.lower(),
+    )
+    test_graph.add_flow(rx.tensor, csi.in_tensor, queue_depth=4)
+    test_graph.add_flow(rx.metadata, csi.in_metadata, queue_depth=4)
+    test_graph.bind(f"receiver{name}", "tensor")
+    demosaic = test_graph.op(
+        hv.operators.BayerDemosaicOp,
+        f"demosaic{name}",
+        bayer_grid_pos=camera.bayer_format().name.lower(),
+        generate_alpha=True,
+        alpha_value=65535,
+    )
+    test_graph.add_flow(csi.tensor, demosaic.input, queue_depth=4)
+    test_graph.bind(f"csi_to_bayer{name}", "tensor")
+    test_graph.bind(f"demosaic{name}", "output")
+    return rx, csi, applications.Image(demosaic.output, camera._width, camera._height)
 
 
 def run_test(
-    headless,
     metadata,
     camera,
     camera_mode,
     use_roce,
     pattern,
     frame_limit,
-    rename_metadata=lambda name: name,
+    headless,
+    profile_after_csi_to_bayer=False,
 ):
     """Bring the board up and run a single-camera timestamp capture.
 
@@ -266,38 +153,90 @@ def run_test(
     still runs so the FPGA timestamps share the host's PTP domain.
     """
     logging.info("Initializing.")
+    lock = threading.Lock()
+    timestamps = []
+
+    def time_profile(
+        image_timestamp_s,
+        metadata_timestamp_s,
+        received_timestamp_s,
+        pipeline_timestamp_s,
+        frame_number,
+    ):
+        with lock:
+            timestamps.append(
+                (
+                    image_timestamp_s,
+                    metadata_timestamp_s,
+                    received_timestamp_s,
+                    pipeline_timestamp_s,
+                    frame_number,
+                )
+            )
+
+    initial_timeout = utils.timeout_sequence(
+        [(30, 20), (0.5, frame_limit - 40), (30, 1)]
+    )
     # CudaContext retains the primary context and releases it on exit even if
     # the body raises, so an early error can't leak it.
-    with utils.CudaContext() as cuda_context:
-        application = TimestampTestApplication(
-            headless,
-            cuda_context.context,
-            cuda_context.device_ordinal,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            frame_limit,
-            rename_metadata,
-        )
+    with applications.CudaContext() as cuda_context, utils.Watchdog(
+        "watchdog",
+        initial_timeout=initial_timeout,
+        min_taps=utils.frame_floor(frame_limit),
+    ) as watchdog, utils.RunMonitor() as monitor:
         hololink = hololink_module.HololinkInterfaceV1.get_service(metadata)
         hololink.start()
-        try:
-            hololink.reset()
-            logging.debug("Waiting for PTP sync.")
-            if not hololink.ptp_synchronize():
-                logging.error("Failed to synchronize PTP; ignoring.")
-            else:
-                logging.debug("PTP synchronized.")
-            camera.configure(camera_mode)
-            camera.set_digital_gain_reg(0x4)
-            camera.test_pattern(pattern)
-            logging.info("Calling run")
-            application.run()
-        finally:
-            hololink.stop()
+        # SIGABRT skips the finally block below.  Reset first so an aborted
+        # capture cannot leave HSB streaming into subsequent stress iterations.
+        with utils.AbortHook(hololink.reset):
+            try:
+                hololink.reset()
+                logging.debug("Waiting for PTP sync.")
+                if not hololink.ptp_synchronize():
+                    logging.error("Failed to synchronize PTP; ignoring.")
+                else:
+                    logging.debug("PTP synchronized.")
+                camera.configure(camera_mode)
+                camera.set_digital_gain_reg(0x4)
+                camera.test_pattern(pattern)
+                test_graph = applications.TestGraph(
+                    "imx274_timestamps", cuda_device_ordinal=cuda_context.device_ordinal
+                )
+                rx, csi, image = add_receiver(
+                    test_graph,
+                    "",
+                    metadata,
+                    camera,
+                    camera_mode,
+                    cuda_context.cu_context,
+                    use_roce,
+                    frame_limit,
+                )
+                profiler = test_graph.op(
+                    operators.TimeProfiler,
+                    "profiler",
+                    callback_token=operators.register(time_profile),
+                )
+                source = csi if profile_after_csi_to_bayer else rx
+                operators.metadata_flow(test_graph, source.metadata, profiler.metadata)
+                watchdog_operator = test_graph.op(
+                    operators.WatchdogOp,
+                    "watchdog_operator",
+                    watchdog_token=operators.register(watchdog),
+                )
+                operators.metadata_flow(
+                    test_graph, csi.metadata, watchdog_operator.metadata
+                )
+                applications.show_images(
+                    test_graph, "holoviz", [image], headless, "IMX274 timestamps"
+                )
+                logging.info("Calling run")
+                test_graph.run()
+            finally:
+                hololink.stop()
 
-    return application._timestamps
+    monitor.assert_ok()
+    return timestamps
 
 
 def _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce):
@@ -397,6 +336,7 @@ def _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roc
 # time_limit, the acceptable amount of time between when the frame was sent and
 #   when we got around to looking at it, is much smaller in the RDMA
 #   configuration.
+@utils.requires_module_roce
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
@@ -432,16 +372,15 @@ def test_imx274_timestamps(
     camera = imx274.Imx274Cam(metadata)
     use_roce = True
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-        )
+    timestamps = run_test(
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+        headless,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
@@ -481,20 +420,20 @@ def test_imx274_linux_timestamps(
     camera = imx274.Imx274Cam(metadata)
     use_roce = False
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-        )
+    timestamps = run_test(
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+        headless,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
 
+@utils.requires_module_roce
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
@@ -519,31 +458,28 @@ def test_imx274_timestamps_with_renamed_metadata(
     frame_limit,
     module_dir,
 ):
-    """Test that the rename_metadata functionality works correctly.
+    """Test that the frame metadata still validates after a pipeline stage.
 
-    The receiver stamps every frame-metadata key with a "roce_" prefix and
-    TimeProfiler reads the prefixed keys, so the timestamps still validate.
+    In v2.7 the receiver stamped every frame-metadata key with a "roce_" prefix
+    and TimeProfiler read the prefixed keys. HSDK5 metadata is a fixed struct
+    that the receivers can't rename, so TimeProfiler reads the metadata that
+    CsiToBayerOp passes on instead of the receiver's.
     """
     pattern = 10
-
-    def rename_metadata(name):
-        return f"roce_{name}"
-
     metadata = _wait_for_channel(module_dir, hololink_address)
     camera = imx274.Imx274Cam(metadata)
     use_roce = True
 
-    with utils.PriorityScheduler():
-        timestamps = run_test(
-            headless,
-            metadata,
-            camera,
-            camera_mode,
-            use_roce,
-            pattern,
-            frame_limit,
-            rename_metadata=rename_metadata,
-        )
+    timestamps = run_test(
+        metadata,
+        camera,
+        camera_mode,
+        use_roce,
+        pattern,
+        frame_limit,
+        headless,
+        profile_after_csi_to_bayer=True,
+    )
 
     _check_timestamps(timestamps, frame_time, time_limit, max_recv_time, use_roce)
 
@@ -554,248 +490,12 @@ def round_up(f, decimal_places):
     return math.ceil(f * factor) / factor
 
 
-# IMX274 cannot hardware-sync, so the frame aligner's acceptance window is one
-# full frame period (1/60 s at 60 FPS).
+# IMX274 cannot hardware-sync, so the acceptance window for a left/right pair
+# is one full frame period (1/60 s at 60 FPS).
 ONE_FRAME_AT_60FPS = round_up(1.0 / 60, 3)
 
 
-class StereoMonitorOp(holoscan.core.Operator):
-    """Sink for the two aligned legs that logs their frame-start skew.
-
-    The frame aligner fans a paired group out to output_left / output_right,
-    which feed this operator's two input ports; because the aligner emits both
-    together, compute() runs once per aligned pair. It reads each leg's
-    left_/right_ timestamp (the module receiver's timestamp_s/ns — the
-    frame-start time) and logs the inter-leg dt. It also owns the frame budget:
-    once frame_limit aligned pairs have arrived it disables the receivers'
-    tick conditions so the application drains and exits.
-    """
-
-    def __init__(
-        self,
-        *args,
-        frame_limit=None,
-        stop_conditions=None,
-        watchdog=None,
-        callback=lambda dt: None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._frame_limit = frame_limit
-        self._stop_conditions = stop_conditions or []
-        self._watchdog = watchdog
-        self._callback = callback
-        self._taps = 0
-
-    def setup(self, spec):
-        spec.input("left")
-        spec.input("right")
-
-    def _timestamp_s(self, metadata, prefix):
-        return (
-            metadata.get(f"{prefix}timestamp_s", 0)
-            + metadata.get(f"{prefix}timestamp_ns", 0) * SEC_PER_NS
-        )
-
-    def compute(self, op_input, op_output, context):
-        _ = op_input.receive("left")
-        _ = op_input.receive("right")
-        metadata = self.metadata
-        left_frame_start = self._timestamp_s(metadata, "left_")
-        right_frame_start = self._timestamp_s(metadata, "right_")
-        dt = right_frame_start - left_frame_start
-        logging.info(f"{left_frame_start=} {right_frame_start=} {dt=}")
-        self._callback(dt)
-        if self._watchdog is not None:
-            self._watchdog.tap()
-        self._taps += 1
-        if self._frame_limit is not None and self._taps >= self._frame_limit:
-            for condition in self._stop_conditions:
-                condition.disable_tick()
-
-
-class StereoTimestampApplication(holoscan.core.Application):
-    """Two free-running IMX274 legs, aligned, whose skew is logged.
-
-    receiver_{left,right} -> frame_aligner -> csi_to_bayer_{left,right}
-        -> stereo_monitor
-
-    The receivers free-run on BooleanConditions; the frame aligner drops
-    unpaired / misaligned frames (dt > allowable_dt), and the monitor sink
-    owns the frame budget — counting on the receivers would starve the sink.
-    """
-
-    def __init__(
-        self,
-        headless,
-        cuda_context,
-        cuda_device_ordinal,
-        metadata_left,
-        camera_left,
-        metadata_right,
-        camera_right,
-        camera_mode,
-        allowable_dt,
-        watchdog,
-        frame_limit,
-    ):
-        logging.info("__init__")
-        super().__init__()
-        self._headless = headless
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._metadata_left = metadata_left
-        self._camera_left = camera_left
-        self._metadata_right = metadata_right
-        self._camera_right = camera_right
-        self._camera_mode = camera_mode
-        self._allowable_dt = allowable_dt
-        self._watchdog = watchdog
-        self._frame_limit = frame_limit
-        # The two legs stamp per-leg-prefixed metadata (left_/right_), so the
-        # keys never collide; merge everything the two aligned messages carry.
-        self.is_metadata_enabled = True
-        self.metadata_policy = holoscan.core.MetadataPolicy.UPDATE
-
-    def _make_receiver(
-        self,
-        condition,
-        name,
-        metadata,
-        camera,
-        frame_size,
-        affinity,
-        rename_metadata,
-        out_tensor_name,
-    ):
-        MAX_PAGES = 5
-        return hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name=name,
-            enumeration_metadata=metadata,
-            frame_context=self._cuda_context,
-            frame_size=frame_size,
-            device_start=camera.start,
-            device_stop=camera.stop,
-            rename_metadata=rename_metadata,
-            out_tensor_name=out_tensor_name,
-            pages=MAX_PAGES,
-            queue_size=MAX_PAGES,
-        )
-
-    def _csi_to_bayer(self, name, camera):
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name=f"{name}_pool",
-            # storage_type of 1 is device memory
-            storage_type=1,
-            block_size=camera._width * ctypes.sizeof(ctypes.c_uint16) * camera._height,
-            num_blocks=4,
-        )
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name=name,
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
-        )
-        camera.configure_converter(csi_to_bayer_operator)
-        return csi_to_bayer_operator
-
-    def compose(self):
-        logging.info("compose")
-        # The receivers free-run; the monitor sink owns the frame budget and
-        # disables these tick conditions once it has seen frame_limit aligned
-        # pairs. Counting on the receivers would starve the sink, because the
-        # frame aligner drops unpaired / misaligned frames upstream of it.
-        self._condition_left = holoscan.conditions.BooleanCondition(
-            self, name="enable_left", enable_tick=True
-        )
-        self._condition_right = holoscan.conditions.BooleanCondition(
-            self, name="enable_right", enable_tick=True
-        )
-        self._camera_left.set_mode(self._camera_mode)
-        self._camera_right.set_mode(self._camera_mode)
-
-        csi_to_bayer_left = self._csi_to_bayer("csi_to_bayer_left", self._camera_left)
-        csi_to_bayer_right = self._csi_to_bayer(
-            "csi_to_bayer_right", self._camera_right
-        )
-
-        frame_size_left = csi_to_bayer_left.get_csi_length()
-        frame_size_right = csi_to_bayer_right.get_csi_length()
-        logging.info(f"{frame_size_left=} {frame_size_right=}")
-
-        receiver_operator_left = self._make_receiver(
-            self._condition_left,
-            "receiver_left",
-            self._metadata_left,
-            self._camera_left,
-            frame_size_left,
-            [2],
-            lambda name: f"left_{name}",
-            "left",
-        )
-        receiver_operator_right = self._make_receiver(
-            self._condition_right,
-            "receiver_right",
-            self._metadata_right,
-            self._camera_right,
-            frame_size_right,
-            [3],
-            lambda name: f"right_{name}",
-            "right",
-        )
-
-        # Frame aligner. The two IMX274 sensors free-run (no hardware
-        # frame-sync), so their frames drift relative to each other —
-        # especially at startup. The aligner pairs them frame-for-frame,
-        # dropping a group whenever the two legs' timestamps differ by more
-        # than allowable_dt (one full frame period). It tells the legs apart
-        # by tensor name (the receivers name their tensors "left"/"right" via
-        # out_tensor_name) and reads the per-leg timestamp metadata the
-        # receivers stamp (left_/right_timestamp_s, left_/right_timestamp_ns).
-        self._frame_aligner = operators.FrameAlignerOp(
-            self,
-            name="frame_aligner",
-            allowable_dt=self._allowable_dt,
-            input_tensors=["left", "right"],
-            rename_metadata=[
-                lambda name: f"left_{name}",
-                lambda name: f"right_{name}",
-            ],
-            outputs=["output_left", "output_right"],
-        )
-
-        monitor = StereoMonitorOp(
-            self,
-            name="stereo_monitor",
-            watchdog=self._watchdog,
-            frame_limit=self._frame_limit,
-            stop_conditions=[self._condition_left, self._condition_right],
-        )
-
-        # Both receivers feed the aligner's single input; it fans out paired
-        # frames to each leg's csi_to_bayer, which land on the monitor's two
-        # input ports (one aligned pair per monitor tick).
-        self.add_flow(
-            receiver_operator_left, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(
-            receiver_operator_right, self._frame_aligner, {("output", "input")}
-        )
-        self.add_flow(
-            self._frame_aligner, csi_to_bayer_left, {("output_left", "input")}
-        )
-        self.add_flow(
-            self._frame_aligner, csi_to_bayer_right, {("output_right", "input")}
-        )
-        self.add_flow(csi_to_bayer_left, monitor, {("output", "left")})
-        self.add_flow(csi_to_bayer_right, monitor, {("output", "right")})
-
-
 def run_stereo_test(
-    headless,
     metadata_left,
     camera_left,
     metadata_right,
@@ -803,40 +503,34 @@ def run_stereo_test(
     camera_mode,
     allowable_dt,
     frame_limit,
+    headless,
 ):
     logging.info("Initializing.")
     ready_frame = 15  # ignore this many initial frames while the pipeline warms up
     initial_timeout = utils.timeout_sequence(
-        [(30, ready_frame), (0.5, frame_limit - ready_frame - 2), (30, 1)]
+        # The last 10 frames have the long timeout: a leg can end a few frames
+        # short of frame_limit (frames dropped on the way), and teardown follows.
+        [(30, ready_frame), (0.5, frame_limit - ready_frame - 10), (30, 1)]
     )
+    frame_starts = {"_left": [], "_right": []}
     # CudaContext retains the primary context and releases it on exit even if
     # the body raises (e.g. the watchdog re-raising a timeout in __exit__), so
     # an early error can't leak it.
-    with utils.CudaContext() as cuda_context:
-        with utils.Watchdog(
-            "watchdog",
-            initial_timeout=initial_timeout,
-        ) as watchdog:
-            application = StereoTimestampApplication(
-                headless,
-                cuda_context.context,
-                cuda_context.device_ordinal,
-                metadata_left,
-                camera_left,
-                metadata_right,
-                camera_right,
-                camera_mode,
-                allowable_dt,
-                watchdog,
-                frame_limit=frame_limit,
-            )
-            # Both sensors on a stereo board share the same control-plane
-            # HololinkInterface, so bring the unit up just once.
-            hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
-            assert hololink is hololink_module.HololinkInterfaceV1.get_service(
-                metadata_right
-            )
-            hololink.start()
+    with applications.CudaContext() as cuda_context, utils.leg_watchdogs(
+        ("left", "right"),
+        initial_timeout=initial_timeout,
+        min_taps=utils.frame_floor(frame_limit),
+    ) as watchdogs, utils.RunMonitor() as monitor:
+        # Both sensors on a stereo board share the same control-plane
+        # HololinkInterface, so bring the unit up just once.
+        hololink = hololink_module.HololinkInterfaceV1.get_service(metadata_left)
+        assert hololink is hololink_module.HololinkInterfaceV1.get_service(
+            metadata_right
+        )
+        hololink.start()
+        # See run_test: the watchdog's hard-abort path must quiesce HSB
+        # before normal Python cleanup becomes impossible.
+        with utils.AbortHook(hololink.reset):
             try:
                 hololink.reset()
                 logging.debug("Waiting for PTP sync.")
@@ -854,11 +548,73 @@ def run_stereo_test(
                 camera_right.configure(camera_mode)
                 camera_right.test_pattern(right_pattern)
                 camera_right.set_digital_gain_reg(0x4)
-                application.run()
+                test_graph = applications.TestGraph(
+                    "imx274_stereo_timestamps",
+                    cuda_device_ordinal=cuda_context.device_ordinal,
+                )
+                images = []
+                for name, metadata, camera in (
+                    ("_left", metadata_left, camera_left),
+                    ("_right", metadata_right, camera_right),
+                ):
+                    rx, csi, image = add_receiver(
+                        test_graph,
+                        name,
+                        metadata,
+                        camera,
+                        camera_mode,
+                        cuda_context.cu_context,
+                        True,  # use_roce
+                        frame_limit,
+                    )
+                    images.append(image)
+
+                    def time_profile(
+                        image_timestamp_s, *args, starts=frame_starts[name]
+                    ):
+                        starts.append((image_timestamp_s, args[-1]))
+
+                    profiler = test_graph.op(
+                        operators.TimeProfiler,
+                        f"profiler{name}",
+                        callback_token=operators.register(time_profile),
+                    )
+                    operators.metadata_flow(test_graph, csi.metadata, profiler.metadata)
+                    watchdog_operator = test_graph.op(
+                        operators.WatchdogOp,
+                        f"watchdog{name}",
+                        watchdog_token=operators.register(watchdogs[name[1:]]),
+                    )
+                    operators.metadata_flow(
+                        test_graph, csi.metadata, watchdog_operator.metadata
+                    )
+                applications.show_images(
+                    test_graph,
+                    "holoviz",
+                    images,
+                    headless,
+                    "IMX274 stereo timestamps",
+                )
+                test_graph.run()
             finally:
                 hololink.stop()
 
+    monitor.assert_ok()
+    # The two IMX274 sensors free-run (no hardware frame-sync), so their
+    # frames drift relative to each other; pair them frame-for-frame where
+    # the frame-start times differ by at most allowable_dt.
+    pairs = operators.assert_aligned(
+        frame_starts["_left"],
+        frame_starts["_right"],
+        allowable_dt,
+        min_pairs=utils.frame_floor(frame_limit),
+        skip_first=ready_frame,
+    )
+    for (left_start, _), (right_start, _) in pairs:
+        logging.debug(f"{left_start=} {right_start=} dt={right_start - left_start}")
 
+
+@utils.requires_module_roce
 @pytest.mark.skip_unless_ptp
 @pytest.mark.skip_unless_imx274
 @pytest.mark.accelerated_networking
@@ -894,14 +650,13 @@ def test_imx274_stereo_roce_naive(
     camera_left = imx274.Imx274Cam(channel_metadata_left)
     camera_right = imx274.Imx274Cam(channel_metadata_right)
 
-    with utils.PriorityScheduler():
-        run_stereo_test(
-            headless,
-            channel_metadata_left,
-            camera_left,
-            channel_metadata_right,
-            camera_right,
-            camera_mode,
-            allowable_dt,
-            frame_limit,
-        )
+    run_stereo_test(
+        channel_metadata_left,
+        camera_left,
+        channel_metadata_right,
+        camera_right,
+        camera_mode,
+        allowable_dt,
+        frame_limit,
+        headless,
+    )

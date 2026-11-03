@@ -2,8 +2,8 @@
   "$schema": "urn:holoscan:module:v2",
   "module": {
     "name": "holoscan-sensor-bridge",
-    "version": "2.7.0",
-    "description": "FPGA-based sensor data bridge for low-latency capture into Holoscan pipelines. Provides Holoscan operators for camera, audio, and signal-processing data planes (RoCE, UDP, Linux socket, CoE), with a software emulator that allows the operators to be exercised without hardware.",
+    "version": "3.0.0",
+    "description": "FPGA-based sensor data bridge for low-latency capture into Holoscan pipelines. Provides Holoscan operators for camera data planes (RoCE, UDP, Linux socket, CoE), with a software emulator that allows the operators to be exercised without hardware.",
     "authors": [
       {
         "name": "Holoscan Team",
@@ -11,10 +11,9 @@
       }
     ],
     "license": "Apache-2.0",
-    "language": ["C++", "Python"],
+    "language": ["C++"],
     "namespace": {
-      "cpp": "hololink",
-      "python": "hololink"
+      "cpp": "hololink"
     },
     "homepage": "https://docs.nvidia.com/holoscan/sensor-bridge/getting-started/introduction",
     "platforms": ["x86_64", "aarch64"],
@@ -26,11 +25,7 @@
       "roce",
       "coe",
       "udp",
-      "audio",
-      "signal-processing",
       "imx274",
-      "imx477",
-      "imx715",
       "vb1940",
       "emulator"
     ],
@@ -38,37 +33,25 @@
       "Lattice CertusPro-NX Sensor-to-Ethernet Bridge",
       "Microchip Holoscan Sensor Bridge",
       "Sony IMX274",
-      "Sony IMX477",
-      "Sony IMX715",
       "Leopard VB1940"
     ],
     "holoscan_sdk": {
-      "minimum_required_version": "4.4",
-      "tested_versions": ["4.4.0"]
+      "minimum_required_version": "5.0",
+      "tested_versions": ["5.0.0"]
     },
     "operator_names": [
       "ArgusIspOp",
-      "AudioPacketizerOp",
       "CheckCrcOp",
-      "CheckPvaCrcOp",
       "ComputeCrcOp",
-      "ComputePvaCrcOp",
       "CsiToBayerOp",
       "FusaCoeCaptureOp",
       "GpuRoceTransceiverOp",
       "HsbControllerOp",
-      "IQDecoderOp",
-      "IQEncoderOp",
       "ImageProcessorOp",
-      "LinuxCoeReceiverOp",
-      "LinuxDataPlaneOp",
       "LinuxReceiverOp",
       "PackedFormatConverterOp",
       "RoceReceiverOp",
       "RoceTransmitterOp",
-      "SIPLCameraOutputOp",
-      "SignalGeneratorOp",
-      "SignalViewerOp",
       "SubFrameCombinerOp",
       "SubFrameVisualizerOp",
       "UdpTransmitterOp"
@@ -78,8 +61,7 @@
       "readme": "README.md"
     },
     "testing": {
-      "cpp": "ctest",
-      "python": "pytest"
+      "cpp": "ctest"
     }
   }
 }

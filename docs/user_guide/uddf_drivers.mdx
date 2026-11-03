@@ -1,8 +1,8 @@
 When accessing Holoscan Sensor Bridge via
 [SIPL](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/CameraDevelopment/SIPLFramework/Introduction-to-SIPL.html),
-such as when using `SIPLCaptureService` / `SIPLCameraOutputOp` and/or running the
-`sipl_player` example application on a supported AGX Thor platform, the sensor drivers
-that are used are provided by external driver libraries written against the
+such as when using the `SIPLCaptureOp` operator of the separate Holoscan Camera module
+(`holoscan_camera`) on a supported AGX Thor platform, the sensor drivers that are used
+are provided by external driver libraries written against the
 [Unified Device Driver Framework (UDDF)](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/CameraDevelopment/SIPLFramework/SIPL-for-L4T/UDDF/overview.html);
 these drivers are not provided by the HSB repo.
 
@@ -11,20 +11,20 @@ source code for these drivers are also included with the SIPL Camera SDK package
 example, for the `vb1940` reference driver included with JetPack 7.2:
 
 - The prebuilt driver library is installed to
-  `/usr/lib/nvsipl_uddf/libnvuddf_eagle_library.so`
-- The source code for this library is available in
-  `/usr/src/jetson_sipl_api/sipl/uddf/samples/drivers/eagleAIO`
+  `/usr/lib/nvsipl_drv/libnvuddf_eagle_library.so`
+- The source code for this library is under `/usr/src/jetson_sipl_api/sipl`: the library
+  wrapper in `uddf/libraries/moduleEagle`, the VB1940 and HSB transport drivers in
+  `uddf/drivers/vb1940` and `uddf/drivers/hsb`, and the copy of the Hololink core in
+  `hololink/src/hololink/core`
 
 Note that if the SIPL Camera SDK (and the above source code) is not installed, download
 and extract the `Camera SIPL` package from the
 [JetPack Downloads](https://developer.nvidia.com/embedded/jetpack/downloads) page.
 
-The `sipl_player` example application includes JSON config files (in
-`examples/sipl_config/`) that configure the application to use the installed UDDF driver
-libraries, and these will work out of the box with a new JetPack installation. See
-[Leopard imaging VB1940 Eagle player example](examples.mdx#leopard-imaging-vb1940-eagle-player-example)
-for an example of how to run this SIPL application using these configs and corresponding
-drivers.
+Holoscan Sensor Bridge does not include SIPL-based capture or SIPL example applications.
+Holoscan Camera provides SIPL JSON configuration files for the VB1940 that use these
+installed UDDF driver libraries; see the Holoscan Camera documentation for how to run
+its SIPL applications with them.
 
 ## Updating UDDF Drivers
 
@@ -41,16 +41,16 @@ $ sudo make install
 
 As noted above, these UDDF drivers interact with HSB using a statically linked copy of
 the Hololink core source code (see
-`/usr/src/jetson_sipl_api/sipl/uddf/samples/drivers/eagleAIO/hololink/core`). If the
-Hololink code of a UDDF driver needs to be updated, this can be done by overwriting the
-UDDF driver's version of Hololink core with the latest in the HSB repo (e.g. from
-`src/hololink/core`) and then rebuilding/installing using the commands above.
+`/usr/src/jetson_sipl_api/sipl/hololink/src/hololink/core`). If the Hololink code of a
+UDDF driver needs to be updated, this can be done by overwriting the UDDF driver's
+version of Hololink core with the latest in the HSB repo (e.g. from `src/hololink/core`)
+and then rebuilding/installing using the commands above.
 
 Note that Hololink compatibility is only guaranteed with the Hololink tag corresponding
-to the JetPack release that is being used (i.e. `JetPack_7.2`); that is the version of
-the code as it was originally copied to the UDDF driver code. Newer versions of Hololink
-may not be compatible as-is and may require other updates to be made to the UDDF driver
-code.
+to the JetPack release that is being used (for JetPack 7.2.1, tag `2.6.0-EA2`); that is
+the version of the code as it was originally copied to the UDDF driver code. Newer
+versions of Hololink may not be compatible as-is and may require other updates to be
+made to the UDDF driver code.
 
 ## Adding new UDDF Drivers
 

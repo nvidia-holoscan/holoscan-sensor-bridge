@@ -18,7 +18,7 @@ module comparator  #(
 )
 (
   input                 iClk,
-  input                 iRstn,
+  input                 iRst,
   input                 en,
   input  [WIDTH-1:0]    iD1,
   input  [WIDTH-1:0]    iD2,
@@ -58,7 +58,7 @@ assign oEqual   = rEqual   ;
 assign oGreater = rGreater ;
 
 always_ff @(posedge iClk) begin
-  if (~iRstn) begin
+  if (iRst) begin
     cur_state <= S_IDLE;
   end
   else begin
@@ -93,8 +93,8 @@ end
 
 generate
   for (k=0; k<N_BYTES; k=k+1) begin
-    always @(posedge iClk or negedge iRstn) begin
-      if (~iRstn) begin
+    always_ff @(posedge iClk) begin
+      if (iRst) begin
         rvFlagLe[k]   <= 1'b0;
         rvFlagEq[k]   <= 1'b0;
         rvFlagGe[k]   <= 1'b0;
@@ -128,8 +128,8 @@ generate
   end
 endgenerate
 
-always@(posedge iClk or negedge iRstn) begin
-  if (~iRstn) begin
+always_ff @(posedge iClk) begin
+  if (iRst) begin
     found   <= 1'b0;
     rvPos   <= '0;
     rvCnt   <= const_n_minus_1;
@@ -160,8 +160,8 @@ always@(posedge iClk or negedge iRstn) begin
   end
 end
 
-always@(posedge iClk or negedge iRstn) begin
-  if (~iRstn) begin
+always_ff @(posedge iClk) begin
+  if (iRst) begin
     rValid     <= 1'b0;
     rLess      <= 1'b0;
     rEqual     <= 1'b0;
@@ -197,7 +197,7 @@ always@(posedge iClk or negedge iRstn) begin
 end
 
 `ifdef ASSERT_ON
-  asrt_onehot_le_eq_ge : assert property (@ (posedge iClk) disable iff (!iRstn) oValid |-> $onehot({oGreater, oEqual, oLess}));
+  asrt_onehot_le_eq_ge : assert property (@ (posedge iClk) disable iff (iRst) oValid |-> $onehot({oGreater, oEqual, oLess}));
 `endif
 
 endmodule

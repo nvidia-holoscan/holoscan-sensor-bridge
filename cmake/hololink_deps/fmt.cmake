@@ -1,3 +1,6 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
 # fmt dependency setup (header-only).
 #
 # Ensures the fmt::fmt-header-only target is available by finding a pre-installed

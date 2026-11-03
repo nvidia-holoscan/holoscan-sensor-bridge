@@ -326,31 +326,47 @@ static const struct jesd204_dev_data jesd204_hsb_init = {
  * SPI controller functions.
 *******************************************************************************/
 
+#ifdef DEBUG
+// Appends printf-formatted text to buf at offset *n, advancing *n by the number
+// of characters written; output past the end of buf is dropped rather than
+// overflowing it.  buf is always NUL terminated.
+static __printf(4, 5) void saturating_sprintf(char *buf, size_t size, size_t *n,
+                                              const char *fmt, ...) {
+    va_list args;
+    int len;
+
+    if (*n + 1 >= size) {
+        return;
+    }
+
+    va_start(args, fmt);
+    len = vsnprintf(&buf[*n], size - *n, fmt, args);
+    va_end(args);
+
+    // vsnprintf returns what it would have written had there been room.
+    *n = min(*n + (size_t)len, size - 1);
+}
+#endif
+
 static void dbg_data(struct device *dev,
                      const uint8_t* tx, size_t tx_len,
                      const uint8_t* rx, size_t rx_len) {
 #ifdef DEBUG
-    int i;
-    char str[256];
+    size_t i, n = 0;
+    char str[256] = {0};
 
-    sprintf(&str[strlen(str)], "[");
+    saturating_sprintf(str, sizeof(str), &n, "[");
     for (i = 0; i < tx_len; i++) {
-        if (i != 0) {
-            sprintf(&str[strlen(str)], ", ");
-        }
-        sprintf(&str[strlen(str)], "%02x", tx[i]);
+        saturating_sprintf(str, sizeof(str), &n, "%s%02x", i ? ", " : "", tx[i]);
     }
-    sprintf(&str[strlen(str)], "]");
+    saturating_sprintf(str, sizeof(str), &n, "]");
 
-    if (rx && (tx[0] & 0x80)) {
-        sprintf(&str[strlen(str)], " --> [");
+    if (rx && tx_len && (tx[0] & 0x80)) {
+        saturating_sprintf(str, sizeof(str), &n, " --> [");
         for (i = 0; i < rx_len; i++) {
-            if (i != 0) {
-                sprintf(&str[strlen(str)], ", ");
-            }
-            sprintf(&str[strlen(str)], "%02x", rx[i]);
+            saturating_sprintf(str, sizeof(str), &n, "%s%02x", i ? ", " : "", rx[i]);
         }
-        sprintf(&str[strlen(str)], "]");
+        saturating_sprintf(str, sizeof(str), &n, "]");
     }
     dev_dbg(dev, "spi xfer %s\n", str);
 #endif

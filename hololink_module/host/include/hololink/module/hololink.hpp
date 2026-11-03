@@ -31,31 +31,38 @@ class DataChannelInterfaceV1;
 class PtpPpsOutputInterfaceV1;
 class VsyncInterfaceV1;
 
-/* Per-board control plane. Reached via HololinkInterfaceV1::get_service
- * with the per-board instance_id "serial=<serial_number>". The
- * metadata-form get_service inherited from ConfigurableService
- * resolves the supplement module, gets-or-constructs the per-board
- * impl, and calls configure(metadata) on it before returning.
+/**
+ * @brief Access features on an HSB device.
  *
- * Per-board EnumerationMetadata cache. The metadata stashed on the
- * impl is the snapshot per-board services (I2c, Oscillator,
- * per-board supplements) read off via enumeration_metadata(). They
- * hold a shared_ptr<HololinkInterfaceV1> and consult that accessor
- * rather than caching their own copy. The per-channel counterpart
- * lives on DataChannelInterfaceV1.
+ * This is the application's handle to the device itself: it opens and closes
+ * the control plane, drives the device into a known state, reads and writes
+ * device registers, and hands out the other services that work on this
+ * device -- data channels, I2C buses, sequencers and VSYNC sources.
  *
- * Default DataChannel. configure(metadata) constructs a single
- * DataChannelInterfaceV1 bound to this Hololink and returns it via
- * default_data_channel(). The two are configured from the same
- * metadata blob in the same call, so their per-board fields cannot
- * drift. Board-level code that needs a channel handle reads this
- * accessor; per-data-plane channels beyond the default are reached
- * through DataChannelInterfaceV1::get_service(metadata). */
+ * Fetch it with the EnumerationMetadata describing the device, then bring
+ * the device up before configuring a sensor on it:
+ *
+ * @code
+ *  auto& adapter = hololink::module::Adapter::get_adapter();
+ *  auto metadata = adapter.wait_for_channel(hololink_ip, discovery_timeout);
+ *  auto hololink = hololink::module::HololinkInterfaceV1::get_service(metadata);
+ *  // No device I/O works until the control plane is open.
+ *  hololink->start();
+ *  // The framework leaves device state alone unless the application asks;
+ *  // reset() drives the board into a known state.
+ *  hololink->reset();
+ *  // ... configure sensors, run the pipeline ...
+ *  // Close connections to the device.
+ *  hololink->stop();
+ * @endcode
+ */
 class HololinkInterfaceV1
     : public ConfigurableService<HololinkInterfaceV1>,
       public std::enable_shared_from_this<HololinkInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "hololink.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* Per-board instance_id derivation used by the metadata-form
      * get_service. Throws if the metadata is missing 'serial_number'. */
@@ -65,88 +72,201 @@ public:
     }
 
     virtual ~HololinkInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* The per-board enumeration metadata the impl was configured
-     * with — the snapshot of fields the channel(s) on this board
-     * agreed on at construction time. Per-board V1 services that
-     * need metadata (I2c, Oscillator, per-board supplements) read
-     * through this accessor rather than holding their own copy. */
+    /**
+     * @brief The enumeration metadata this device was configured with.
+     *
+     * Services sharing this device read the configuration metadata from this
+     * snapshot rather than keeping a copy of their own, so they are all built
+     * from the same values.
+     */
     virtual const EnumerationMetadata& enumeration_metadata() const = 0;
 
-    /* The DataChannel constructed alongside this Hololink during
-     * configure(metadata). Shares the same metadata blob the
-     * Hololink was configured with, so its per-board fields agree
-     * with this Hololink's by construction. Null until configure
-     * has run, and null if the configure-time metadata lacked the
-     * data_plane field required to identify a channel. */
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /* Used for testing only. */
     virtual std::shared_ptr<DataChannelInterfaceV1> default_data_channel() const = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    // --- Device lifecycle ---
+    /**
+     * @brief Open the control plane to the device.
+     *
+     * Register access, I2C traffic and anything else that reaches the device
+     * works only while the control plane is open, so an application calls
+     * this before configuring the device. Calling it again while it is open
+     * does nothing.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t start() = 0;
-    virtual hololink_module_status_t stop() = 0;
-    virtual hololink_module_status_t reset() = 0;
-    virtual hololink_module_status_t configure_hsb() = 0;
 
-    /* Invalidate this device's cached services so that, once the device
-     * is rediscovered, re-resolving them yields fresh instances in sync
-     * with the recovered device. Services the caller still holds stay
-     * valid until dropped; the caller must re-fetch to resync. Called by
-     * the reconnection path when the device is lost. */
+    /**
+     * @brief Close the control plane to the device.
+     *
+     * Applications call this when they are done with the device; it does
+     * nothing if the control plane is already closed.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
+    virtual hololink_module_status_t stop() = 0;
+
+    /**
+     * @brief Drive the device into a known state.
+     *
+     * Resets the device, waits for it to come back and announce itself, then
+     * applies the configuration the control plane needs. Every callback
+     * registered through on_reset() fires. Applications reset a device before
+     * configuring the sensors on it: the framework changes no device state on
+     * its own.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
+    virtual hololink_module_status_t reset() = 0;
+
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /* Configure the device's HSB IP with various settings,
+     * including enables for PTP client and IP address and UDP
+     * port number for asynchronous messages.  Applications don't
+     * call this; it's executed automatically on calls to start()
+     * or reset().
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
+    virtual hololink_module_status_t configure_hsb() = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
+
+    /**
+     * @brief Invalidate the services cached for this device, following loss
+     *      of contact with it.
+     *
+     * Services built for a device accumulate device state, which goes stale
+     * when the device is lost. Once an application discovers the loss it
+     * calls this, and the framework drops its references to those service
+     * objects. When the device comes back and is enumerated again, calls to
+     * `get_service` build new instances, in sync with the recovered device.
+     * The application drops its own references to the older objects; calls on
+     * those stale instances fail in ways that depend on the service.
+     *
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t device_lost() = 0;
 
-    /* Block until the board's clock is disciplined to the PTP grandmaster
-     * (using a default timeout), returning true on success. Applications
-     * that validate PTP-synchronized frame timestamps call this after
-     * start()/reset() so the FPGA's timestamp clock shares the host's PTP
-     * domain. Returns false if synchronization didn't complete in time. */
+    /**
+     * @brief Wait for the device's clock to synchronize with the PTP
+     *      grandmaster.
+     *
+     * Blocks until the device's clock is disciplined, so that the timestamps
+     * it reports with each frame share the host's PTP domain. Applications
+     * that rely on those timestamps call this after start() or reset().
+     *
+     * @return True once the clock is synchronized; false if it did not
+     * synchronize within a default timeout.
+     */
     virtual bool ptp_synchronize() = 0;
 
-    /* RAII handle for a callback registered via on_reset(). Destroying it
-     * unregisters the callback. Because the per-board HololinkInterfaceV1
-     * is a process-lifetime singleton, callers (e.g. a camera) must hold
-     * the handle for as long as the callback should fire and drop it when
-     * they go out of scope — otherwise registrations would accumulate on
-     * the singleton for the life of the process. */
+    /**
+     * @brief Handle to a callback registered with on_reset().
+     *
+     * The callback fires while the handle is held, and is unregistered when
+     * the handle is destroyed. Hold it for as long as the callback should
+     * fire.
+     */
     class ResetRegistration {
     public:
         virtual ~ResetRegistration() = default;
     };
 
-    /* Register a callback fired each time the board completes a reset
-     * (after the FPGA has rebooted and HSB is reconfigured). Multiple
-     * callbacks may be registered; each fires once per reset(). Used by
-     * sensor drivers to drop cached hardware state so the next start()
-     * re-commits it. The returned handle unregisters the callback when
-     * destroyed; keep it alive for as long as the callback should fire. */
+    /**
+     * @brief Register a callback fired each time this device completes a
+     *      reset.
+     *
+     * The callback runs once per reset(), after the device has rebooted and
+     * its HSB configuration has been re-applied. Sensor drivers register here
+     * to drop the hardware state they cached, so the next configuration pass
+     * writes it to the device again. Any number of callbacks may be
+     * registered.
+     *
+     * @param callback Invoked once per reset of this device.
+     * @return Handle keeping the callback registered; destroying it
+     * unregisters the callback.
+     */
     virtual std::shared_ptr<ResetRegistration> on_reset(
         std::function<void()> callback)
         = 0;
 
-    // --- Control plane ---
+    /**
+     * @brief Write to locations within the HSB IP local bus.
+     *
+     * @param addresses Device addresses to write.
+     * @param values The value written to each address.
+     * @return HOLOLINK_MODULE_OK, or HOLOLINK_MODULE_INVALID_PARAMETER when
+     * the two lists differ in length.
+     */
     virtual hololink_module_status_t write_uint32(
         const std::vector<uint32_t>& addresses,
         const std::vector<uint32_t>& values)
         = 0;
+
+    /**
+     * @brief Read locations within the HSB IP local bus.
+     *
+     * @param addresses Device addresses to read.
+     * @param[out] out_values Receives one value per address, in the order the
+     * addresses were given.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t read_uint32(
         const std::vector<uint32_t>& addresses,
         std::vector<uint32_t>& out_values)
         = 0;
+
+    /**
+     * @brief Clear bits in an HSB IP local bus location.
+     *
+     * Reads the register, ANDs the value with `mask`, and writes it back.
+     *
+     * @param address Device address to update.
+     * @param mask Value ANDed with the register's contents.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t and_uint32(uint32_t address, uint32_t mask) = 0;
+
+    /**
+     * @brief Set bits in an HSB IP local bus location.
+     *
+     * Reads the register, ORs the value with `mask`, and writes it back.
+     *
+     * @param address Device address to update.
+     * @param mask Value ORed with the register's contents.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t or_uint32(uint32_t address, uint32_t mask) = 0;
 
-    /* Returns an unlocked I2cLockV1 the caller acquires through
-     * std::lock_guard / std::unique_lock / std::scoped_lock. */
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /**
+     * @brief Fetch the lock guarding this device's I2C controller.
+     *
+     * Provide access to the lock used to serialize access to I2C
+     * transactions on this device; use with std::lock_guard or
+     * std::unique_lock or std::scoped_lock.
+     *
+     * @param[out] out_lock Receives the lock handle.
+     * @return HOLOLINK_MODULE_OK or an error status.
+     */
     virtual hololink_module_status_t i2c_lock(
         std::unique_ptr<I2cLockV1>& out_lock)
         = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    // --- Child-object factories ---
-    // Templated so callers can pin a future version (e.g.
-    // T = RoceDataChannelInterfaceV2). The default is the explicit
-    // current version and never moves on its own — upgrading is a
-    // deliberate edit at the call site. The factory builds the
-    // per-board instance_id via the protected *_instance_id hooks.
-
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
+    /* Used by RoceReceiver to configure registers in the HSB ROCE
+     * encapsulation engine.
+     * @tparam T The interface version to fetch.
+     * @param md Metadata selecting and configuring the data channel.
+     * @param allow_null Return nullptr rather than throwing when
+     * this device publishes no such channel.
+     * @return The channel, ready to use.
+     */
     template <typename T = RoceDataChannelInterfaceV1>
     std::shared_ptr<T> get_roce_data_channel(
         const EnumerationMetadata& md, bool allow_null = false)
@@ -156,7 +276,22 @@ public:
         // so callers receive a fully-materialized handle.
         return T::get_service(md, allow_null);
     }
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
+    /**
+     * @brief Fetch a I2C driver object.
+     *
+     * The bus reaches every peripheral on it; each transaction names the
+     * peripheral it addresses.
+     *
+     * @tparam T The interface version to fetch.
+     * @param bus Which bus number within the device.
+     * @param address Names the instance to fetch; a separate handle comes
+     * back per value.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such bus.
+     * @return The I2C interface for that bus.
+     */
     template <typename T = I2cInterfaceV1>
     std::shared_ptr<T> get_i2c(uint32_t bus, uint32_t address,
         bool allow_null = false)
@@ -165,38 +300,103 @@ public:
         return T::get_service(module(), id.c_str(), allow_null);
     }
 
-    // --- Sequencer factories (fixed instance ids) ---
+    /**
+     * @brief Sequencer for use with immediately triggered
+     *      sequences.
+     *
+     * Sequencers are implemented within the HSB IP to trigger
+     * sets of HSB IP local bus transactions (e.g. to execute an
+     * I2C transaction) on a specific flag (e.g. a GPIO or frame-done
+     * event).  Use this sequencer when you want a sequence to run
+     * immediately.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> software_sequencer(bool allow_null = false)
     {
         return T::get_service(module(), "kind=software", allow_null);
     }
+
+    /**
+     * @brief Sequencer to trigger a sequence when GPIO0 is active.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> gpio0_sequencer(bool allow_null = false)
     {
         return T::get_service(module(), "kind=gpio0", allow_null);
     }
+
+    /**
+     * @brief Sequencer to trigger a sequence when GPIO1 is active.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> gpio1_sequencer(bool allow_null = false)
     {
         return T::get_service(module(), "kind=gpio1", allow_null);
     }
+
+    /**
+     * @brief Sequencer to trigger a sequence when SIF0 (sensor interface
+     *      0) receives the first data from a sensor following a frame end
+     *      condition.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> sif0_frame_start_sequencer(bool allow_null = false)
     {
         return T::get_service(module(), "kind=sif0_frame_start", allow_null);
     }
+
+    /**
+     * @brief Sequencer to trigger a sequence when SIF1 (sensor interface
+     *      1) receives the first data from a sensor following a frame end
+     *      condition.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such sequencer.
+     * @return The sequencer.
+     */
     template <typename T = SequencerInterfaceV1>
     std::shared_ptr<T> sif1_frame_start_sequencer(bool allow_null = false)
     {
         return T::get_service(module(), "kind=sif1_frame_start", allow_null);
     }
 
-    /* Per-board PTP-PPS-driven VSYNC source. Returns the producer-side
-     * surface (with enable/disable), so callers can configure the
-     * pulse frequency. Camera drivers that consume the source as a
-     * Vsync take a shared_ptr<VsyncInterfaceV1>; this factory's return
-     * value upcasts implicitly. */
+    /**
+     * @brief Fetch a PTP-based PPS output controller, for use with
+     *      sensors that can be triggered externally (e.g. cameras with
+     *      VSYNC inputs).
+     *
+     * One PTP PPS output serves the whole device, driven by the PPS the
+     * device's PTP-disciplined clock produces.  Use the object returned
+     * here to configure the PPS rate; this same object is usually passed
+     * in to a device driver to ask it to use that as the sample trigger
+     * input.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no VSYNC source.
+     * @return the PPS controller based on PTP
+     */
     template <typename T = PtpPpsOutputInterfaceV1>
     std::shared_ptr<T> ptp_pps_output(bool allow_null = false)
     {
@@ -204,10 +404,16 @@ public:
         return T::get_service(module(), id.c_str(), allow_null);
     }
 
-    /* No-op VsyncInterfaceV1 from the module. Returned by
-     * applications that want a concrete Vsync handle to pass to a
-     * consumer (e.g. Vb1940Cam) without wiring up a real trigger
-     * source. */
+    /**
+     * @brief When a sensor takes a PPS sync input, use this instance
+     *      to configure the device for free-running (unsynchronized)
+     *      operation.
+     *
+     * @tparam T The interface version to fetch.
+     * @param allow_null Return an empty pointer, rather than throwing, when
+     * this device publishes no such source.
+     * @return The VSYNC source.
+     */
     template <typename T = VsyncInterfaceV1>
     std::shared_ptr<T> null_vsync(bool allow_null = false)
     {
@@ -215,6 +421,7 @@ public:
         return T::get_service(module(), id.c_str(), allow_null);
     }
 
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
 protected:
     /* Per-factory instance-id hooks. Each derived class overrides
      * these to translate factory arguments into instance-id strings
@@ -241,6 +448,7 @@ protected:
      * the real PtpPpsOutput so both can coexist under the
      * "vsync.v1" type_id without collision. */
     virtual std::string null_vsync_instance_id() = 0;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 };
 
 } // namespace hololink::module

@@ -16,11 +16,27 @@
 
 namespace hololink::module {
 
-/* Returns the i-th entry of the comma-separated HOLOLINK_IPS environment
- * variable, or `fallback` when the variable is unset, empty, or has too few
- * entries. Lets ctest pass per-test board IPs through (matching the
- * HOLOLINK_IPS=... shape the pytest --channel-ips option also accepts via
- * PYTEST_ADDOPTS) without each example threading its own --hololink flag. */
+/**
+ * @brief Get the IP address of a device from the `HOLOLINK_IPS`
+ * environment variable.
+ *
+ * `HOLOLINK_IPS` holds a comma-separated list of device addresses, for
+ * example `192.168.0.2,192.168.0.3`. This returns the entry at position
+ * `index`, counting from zero. It lets a test harness (for example
+ * `ctest`, or pytest through its `--channel-ips` option) choose the
+ * devices a program uses, without each program needing its own
+ * command-line option; programs normally pass the result as the default
+ * for such an option.
+ *
+ * The entry is returned exactly as written: whitespace is not removed
+ * and the text is not checked to be a valid address.
+ *
+ * @param index Zero-based position in the list.
+ * @param fallback Value to return when no address is available for
+ *      `index`: the variable is unset or empty, the list has `index` or
+ *      fewer entries, or the entry at `index` is empty (as in `a,,b`).
+ * @returns The selected address, or `fallback`.
+ */
 inline std::string env_hololink_ip(std::size_t index, const std::string& fallback)
 {
     const char* env = std::getenv("HOLOLINK_IPS");

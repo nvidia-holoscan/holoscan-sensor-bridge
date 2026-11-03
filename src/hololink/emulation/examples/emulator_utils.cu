@@ -34,15 +34,45 @@ using namespace hololink::emulation;
 
 #include "emulator_kernels.cu"
 
+// The bytes HSB's packetizer emits for one CSI-2 line of csi_line_bytes, padded to the
+// 64-byte line boundary. The packetizer knows nothing of pixel formats: it runs the program
+// the host loads (hololink::PacketizerProgram), a loop that consumes input_bytes_per_loop
+// and emits output_bytes_per_loop, and a line always completes its last loop (with zero
+// input), so the line is a whole number of loops -- not the pixel arithmetic (3 RAW_10
+// pixels per 4 bytes) that the two agree on only when the CSI-2 line is a multiple of the
+// loop. This restates PacketizerProgram::padded_output_size(): the emulation library does
+// not depend on hololink::core, so the host's schedules are mirrored here.
+static uint32_t packetizer_program_line_bytes(uint32_t csi_line_bytes, uint32_t input_bytes_per_loop, uint32_t output_bytes_per_loop)
+{
+    uint32_t line_bytes = (csi_line_bytes + input_bytes_per_loop - 1) / input_bytes_per_loop * output_bytes_per_loop;
+    return (line_bytes + 63) & ~63u;
+}
+
+// the bytes HSB puts on the wire for one packetized line of pixel_width pixels of pixel_bits each
+uint32_t packetized_line_bytes(uint8_t pixel_bits, uint16_t pixel_width)
+{
+    switch (pixel_bits) {
+    case 10:
+        // Csi10ToPacked10 (control word 0x11f1fff7): 15 input beats (120 bytes, 96 pixels of
+        // the 4-pixels-per-5-bytes CSI-2 line) per 16 output beats (128 bytes).
+        return packetizer_program_line_bytes(pixel_width * 5 / 4, 15 * 8, 16 * 8);
+    case 12:
+        // Csi12ToPacked12 (control word 0x11210007): 3 input beats per 3 output beats
+        // (24 bytes, 16 pixels of the 2-pixels-per-3-bytes CSI-2 line).
+        return packetizer_program_line_bytes(pixel_width * 3 / 2, 3 * 8, 3 * 8);
+    default:
+        throw std::invalid_argument("the HSB packetizer has programs for 10- and 12-bit pixels only");
+    }
+}
+
 // returns 0 on success, -1 on failure, required bytes in dest if dest == nullptr
 // n_bytes is the number of bytes in the source data. 
 // currently assumes src contains 8-bit pixels. adjust type and factor as needed.
 // convert 8-bit bayer pattern to 10-bit bayer pattern with T_X2Rc10Rb10Ra10 encoding (3 pixels per 4 bytes)
 uint32_t bayer8p_to_T_X2Rc10Rb10Ra10(uint8_t * dest, uint8_t * src, uint16_t pixel_height, uint16_t pixel_width) {
-    // every 3 pixels gets packed into 4 bytes
-    uint16_t line_bytes = (pixel_width + 2) / 3 * 4;
-    // line_bytes gets padded to 64 byte boundary
-    line_bytes = ((line_bytes + 63) >> 6) << 6;
+    // every 3 pixels gets packed into 4 bytes, but the line is sized by the packetizer
+    // program's loops (see packetized_line_bytes), so it may end in padding pixels
+    uint16_t line_bytes = static_cast<uint16_t>(packetized_line_bytes(10, pixel_width));
     if (!dest) {
         return pixel_height * line_bytes;
     }
@@ -83,10 +113,9 @@ uint32_t bayer8p_to_10p(uint8_t * dest, uint8_t * src, uint16_t pixel_height, ui
 // currently assumes src contains 8-bit pixels. adjust type and factor as needed.
 // convert 8-bit bayer pattern to 12-bit bayer pattern with T_R12_PK_ISP encoding (2 pixels per 3 bytes)
 uint32_t bayer8p_to_T_R12_PK_ISP(uint8_t * dest, uint8_t * src, uint16_t pixel_height, uint16_t pixel_width) {
-    // every 2 pixels gets packed into 3 bytes
-    uint16_t line_bytes = (pixel_width + 1) / 2 * 3;
-    // line_bytes gets padded to 64 byte boundary
-    line_bytes = ((line_bytes + 63) >> 6) << 6;
+    // every 2 pixels gets packed into 3 bytes, but the line is sized by the packetizer
+    // program's loops (see packetized_line_bytes), so it may end in padding pixels
+    uint16_t line_bytes = static_cast<uint16_t>(packetized_line_bytes(12, pixel_width));
     if (!dest) {
         return pixel_height * line_bytes;
     }
@@ -444,10 +473,14 @@ void generate_imx274_frame(DLTensor &frame_data, sensors::IMX274Emulator& imx274
     if (packetize) { // if packetizing, the frame generator will return the modified image size
         image_size = frame_generator(nullptr, nullptr, pixel_height, pixel_width);
         line_bytes = image_size / pixel_height;
+        // The embedded-data line (175 bytes for RAW_10, 210 for RAW_12) bypasses the
+        // packetizer and is only padded to 64 bytes, then the optical-black lines (8 for
+        // RAW_10, 16 for RAW_12) are full packetized lines: what the host's
+        // NativeImx274Sensor::configure_converter() computes with the packetizer enabled.
         if (imx274.get_pixel_bits() == 12) {
-            start_byte = 256 + line_bytes * 16;
+            start_byte = ((210 + 63) & ~63u) + line_bytes * 16;
         } else {
-            start_byte = 256 + line_bytes * 8;
+            start_byte = ((175 + 63) & ~63u) + line_bytes * 8;
         }
         image_size = start_byte + image_size;
     }

@@ -7,6 +7,8 @@
 
 #include <algorithm>
 #include <chrono>
+#include <fstream>
+#include <string>
 #include <unordered_set>
 #include <utility>
 
@@ -15,29 +17,78 @@
 #include <hololink/core/hololink.hpp>
 #include <hololink/core/logging.hpp>
 #include <hololink/core/networking.hpp>
+#include <hololink/core/on_scope_exit.hpp>
+#include <hololink/core/packetizer_program.hpp>
 
 using namespace NvFusaCaptureExternal;
 
 namespace hololink::operators::fusa_coe_capture {
 
+using hololink::core::OnScopeExit;
+
 namespace {
 
-    // Runs a cleanup action on scope exit, including during stack unwinding, so an
-    // exception from a step deliberately left outside it still triggers teardown.
+    // A control-plane teardown op (channel.unconfigure() / device_stop()) issues
+    // a sendto() on the board's control socket, which can throw -- e.g. EBADF when
+    // that (shared, stereo) control socket was closed out from under us during
+    // shutdown (NvFusa's closeHandler closes an fd the control socket may have
+    // reused). stop() is invoked from GXF's noexcept codelet-stop path, so letting
+    // such a throw escape calls std::terminate(). Run these ops through here so a
+    // teardown-time control-plane failure is logged and swallowed instead.
     template <typename F>
-    class OnScopeExit {
-    public:
-        explicit OnScopeExit(F fn)
-            : fn_(std::move(fn))
-        {
+    void guard_teardown(const char* what, F&& fn)
+    {
+        try {
+            fn();
+        } catch (const std::exception& e) {
+            HSB_LOG_ERROR("{} during teardown failed (ignored): {}", what, e.what());
+        } catch (...) {
+            HSB_LOG_ERROR("{} during teardown failed (ignored, unknown exception)", what);
         }
-        ~OnScopeExit() { fn_(); }
-        OnScopeExit(const OnScopeExit&) = delete;
-        OnScopeExit& operator=(const OnScopeExit&) = delete;
+    }
 
-    private:
-        F fn_;
-    };
+    // WORKAROUND for an nvethernet defect, not a fix. nvether_coe_config() calls
+    // macsec_open() during CoE bring-up, but the CoE release path never calls
+    // macsec_close(), so <iface>.macsec_ns stays armed after this operator stops,
+    // firing once per ~4 received packets. Left on CPU0 (the Tegra default: L4T
+    // runs no irqbalance) it starves the NET_RX softirq and overflows the MAC RX
+    // FIFO, corrupting the frames of whatever Linux-socket application runs next
+    // on that interface until a reboot. Move it off CPU0. Match by name: the IRQ
+    // number is not stable across boots.
+    void relocate_orphaned_macsec_irqs(const char* cpu_list)
+    {
+        std::ifstream interrupts("/proc/interrupts");
+        if (!interrupts) {
+            HSB_LOG_WARN("Cannot read /proc/interrupts to find a macsec_ns IRQ left armed "
+                         "after CoE teardown; reboot before running Linux-socket "
+                         "applications on this interface");
+            return;
+        }
+        std::string line;
+        while (std::getline(interrupts, line)) {
+            if (line.find(".macsec_ns") == std::string::npos) {
+                continue;
+            }
+            const auto colon = line.find(':');
+            if (colon == std::string::npos) {
+                continue;
+            }
+            std::string irq = line.substr(0, colon);
+            irq.erase(0, irq.find_first_not_of(" \t"));
+
+            const std::string path = "/proc/irq/" + irq + "/smp_affinity_list";
+            std::ofstream affinity(path);
+            if (!affinity || !(affinity << cpu_list << std::flush)) {
+                HSB_LOG_WARN("macsec_ns IRQ {} stays armed after CoE teardown and {} is not "
+                             "writable (needs CAP_SYS_ADMIN); reboot before running "
+                             "Linux-socket applications on this interface",
+                    irq, path);
+                continue;
+            }
+            HSB_LOG_WARN("macsec_ns IRQ {} stays armed after CoE teardown; moved it to CPU {}",
+                irq, cpu_list);
+        }
+    }
 
 } // namespace
 
@@ -105,8 +156,19 @@ NvSciBufAttrValColorFmt bayer_color_format(
         // the only bit depths get_packetizer_program() has a program for.
         switch (pixel_format) {
         case PixelFormat::RAW_12:
+#if !defined(NVSIPL_API_MAJOR_VERSION)
+#error "NVSIPL_API_MAJOR_VERSION must be defined (see cmake/sipl_api.cmake)"
+#elif NVSIPL_API_MAJOR_VERSION == 1
+            // SIPL API v1 (JetPack 7.1 / L4T R38): nvscibuf.h has no packed 12-bit
+            // NvSciColor_Bayer12<CFA> family, so the packed data is allocated in the
+            // 16-bit container it used before the 12-bit formats existed.
+            return by_cfa(NvSciColor_Bayer16RGGB, NvSciColor_Bayer16BGGR,
+                NvSciColor_Bayer16GRBG, NvSciColor_Bayer16GBRG);
+#else
+            // SIPL API v2 (JetPack 7.2 / L4T R39): proper packed 12-bit container.
             return by_cfa(NvSciColor_Bayer12RGGB, NvSciColor_Bayer12BGGR,
                 NvSciColor_Bayer12GRBG, NvSciColor_Bayer12GBRG);
+#endif
         case PixelFormat::RAW_10:
             return by_cfa(NvSciColor_X2Rc10Rb10Ra10_Bayer10RGGB,
                 NvSciColor_X2Rc10Rb10Ra10_Bayer10BGGR,
@@ -136,6 +198,72 @@ NvSciBufAttrValColorFmt bayer_color_format(
         "Unsupported capture format {}: bit depth is not one of RAW_8/RAW_10/RAW_12",
         triple()));
 }
+
+namespace {
+
+    // How NvSciBuf lays out a pitch-linear line of a color format bayer_color_format() can
+    // return: pixels per container and bytes per container. The pitch it derives from
+    // NvSciBufImageAttrKey_PlaneWidth is a whole number of containers, then aligned to the
+    // HW engines' constraint (nvscibuf.h, NvSciBufImageAttrKey_PlanePitch).
+    struct PixelContainer {
+        uint32_t pixels;
+        uint32_t bytes;
+    };
+
+    PixelContainer pixel_container(NvSciBufAttrValColorFmt color_format)
+    {
+        switch (color_format) {
+        // 10-bit packed, 3 pixels per 32-bit container (2 padding bits).
+        case NvSciColor_X2Rc10Rb10Ra10_Bayer10RGGB:
+        case NvSciColor_X2Rc10Rb10Ra10_Bayer10BGGR:
+        case NvSciColor_X2Rc10Rb10Ra10_Bayer10GRBG:
+        case NvSciColor_X2Rc10Rb10Ra10_Bayer10GBRG:
+            return { 3, 4 };
+#if NVSIPL_API_MAJOR_VERSION == 1
+        case NvSciColor_Bayer16RGGB:
+        case NvSciColor_Bayer16BGGR:
+        case NvSciColor_Bayer16GRBG:
+        case NvSciColor_Bayer16GBRG:
+#else
+        case NvSciColor_Bayer12RGGB:
+        case NvSciColor_Bayer12BGGR:
+        case NvSciColor_Bayer12GRBG:
+        case NvSciColor_Bayer12GBRG:
+#endif
+            // 12-bit packed, 2 pixels per 3 bytes. The SIPL API v1 (L4T R38) nvscibuf.h
+            // has no NvSciColor_Bayer12<CFA>, so bayer_color_format() names the
+            // packetized RAW_12 buffer NvSciColor_Bayer16<CFA> there, and that name
+            // stands for the packed layout wherever this core deals with it: the line
+            // holds 2 pixels per 3 bytes whatever the format is called. (NvSciBuf lays
+            // Bayer16 out at 2 bytes per pixel, so the pitch it derives from a width
+            // counted this way is wider than the stride, never narrower; the 16-bit
+            // container is not supported as a capture format.)
+            return { 2, 3 };
+        // One pixel per 16-bit container.
+        case NvSciColor_X4Bayer12RGGB:
+        case NvSciColor_X4Bayer12BGGR:
+        case NvSciColor_X4Bayer12GRBG:
+        case NvSciColor_X4Bayer12GBRG:
+        case NvSciColor_X6Bayer10RGGB:
+        case NvSciColor_X6Bayer10BGGR:
+        case NvSciColor_X6Bayer10GRBG:
+        case NvSciColor_X6Bayer10GBRG:
+            return { 1, 2 };
+        // One pixel per byte.
+        case NvSciColor_Bayer8RGGB:
+        case NvSciColor_Bayer8BGGR:
+        case NvSciColor_Bayer8GRBG:
+        case NvSciColor_Bayer8GBRG:
+        case NvSciColor_R8:
+            return { 1, 1 };
+        default:
+            throw std::runtime_error(fmt::format(
+                "No pixel container known for NvSciBufAttrValColorFmt {}",
+                static_cast<int>(color_format)));
+        }
+    }
+
+} // namespace
 
 std::map<void*, FusaCoeCaptureCore::BufferInfo*> FusaCoeCaptureCore::pending_buffers_;
 std::mutex FusaCoeCaptureCore::pending_buffers_mutex_;
@@ -172,63 +300,59 @@ uint32_t FusaCoeCaptureCore::receiver_start_byte()
     return 0;
 }
 
-uint32_t FusaCoeCaptureCore::received_line_bytes(uint32_t line_bytes) const
+uint32_t FusaCoeCaptureCore::received_line_bytes(uint32_t line_bytes, bool packetizer_enabled)
 {
-    if (!format_requested_) {
-        throw std::runtime_error(
-            "request_format() must be called before received_line_bytes(): the line padding "
-            "depends on whether the packetizer is enabled");
-    }
-    // Measured on HSB: with the packetizer repacking, lines land on 64-byte boundaries; with
-    // it disabled the CSI-2 stream is passed through and lines are padded to 8, matching
-    // CsiToBayerOp. Using 64 unconditionally over-states both the line stride and the
-    // embedded-data offset whenever the true value is not already 64-aligned.
-    return hololink::core::round_up(line_bytes, packetizer_enabled_ ? 64 : 8);
+    // With the packetizer enabled, HSB pads every line to 64 bytes once its program has
+    // run (packetizer_top.sv PACK_PAD; the embedded-data lines the program bypasses are
+    // padded too, which is why this takes the transmitted size rather than the pixel
+    // width). With it disabled the CSI-2 stream is passed through and lines are padded
+    // to 8, matching CsiToBayerOp. Using 64 unconditionally over-states both the line
+    // stride and the embedded-data offset whenever the true value is not already
+    // 64-aligned.
+    return hololink::core::round_up(
+        line_bytes, packetizer_enabled ? hololink::PacketizerProgram::LINE_PAD_BYTES : 8);
 }
 
 uint32_t FusaCoeCaptureCore::transmitted_line_bytes(
-    hololink::csi::PixelFormat pixel_format, uint32_t pixel_width) const
+    hololink::csi::PixelFormat pixel_format, uint32_t pixel_width, bool packetizer_enabled)
 {
-    if (!format_requested_) {
-        throw std::runtime_error(
-            "request_format() must be called before transmitted_line_bytes(): the line "
-            "geometry depends on whether the packetizer is enabled");
-    }
-    if (pixel_format != requested_pixel_format_) {
-        throw std::runtime_error(fmt::format(
-            "Pixel format mismatch: requested bit depth {} but asked for line bytes of {}",
-            static_cast<int>(requested_pixel_format_), static_cast<int>(pixel_format)));
-    }
-
-    if (packetizer_enabled_) {
-        // HSB repacks into the NvSciBuf right-justified packed layouts.
-        switch (pixel_format) {
-        case hololink::csi::PixelFormat::RAW_10:
-            // 3 pixels per 4 bytes (2 padding bits)
-            return ((pixel_width + 2) / 3) * 4;
-        case hololink::csi::PixelFormat::RAW_12:
-            // 2 pixels per 3 bytes
-            return ((pixel_width + 1) / 2) * 3;
-        default:
-            throw std::runtime_error(fmt::format(
-                "Packetizer is only supported for RAW_10 and RAW_12 (got bit depth {})",
-                static_cast<int>(pixel_format)));
-        }
-    }
-
-    // Packetizer disabled: the stream stays CSI-2 MIPI packed.
+    // What the sensor puts on CSI-2: MIPI packed.
+    uint32_t csi_line_bytes = 0;
     switch (pixel_format) {
     case hololink::csi::PixelFormat::RAW_8:
-        return pixel_width;
+        csi_line_bytes = pixel_width;
+        break;
     case hololink::csi::PixelFormat::RAW_10:
         // 4 pixels per 5 bytes
-        return pixel_width * 5 / 4;
+        csi_line_bytes = pixel_width * 5 / 4;
+        break;
     case hololink::csi::PixelFormat::RAW_12:
         // 2 pixels per 3 bytes
-        return pixel_width * 3 / 2;
+        csi_line_bytes = pixel_width * 3 / 2;
+        break;
     default:
         throw std::runtime_error("Invalid bit depth");
     }
+    if (!packetizer_enabled) {
+        return csi_line_bytes;
+    }
+
+    // What HSB's packetizer makes of that line. The packetizer knows nothing of pixel
+    // formats: it runs the program the channel loads for this one (the same program
+    // DataChannel::configure() enables), and that program's schedule -- input beats
+    // consumed and output beats emitted per loop, with a line always completing a whole
+    // loop -- is what sizes the output. So the size is the program's to compute; deriving
+    // it here from the pixel count instead (3 RAW_10 pixels per 4 bytes) under-states a
+    // line whose CSI-2 size is not a multiple of the program's 120-byte loop, e.g. 1280
+    // RAW_10 pixels: 1600 CSI-2 bytes are 14 loops, 1792 bytes, not 1708 rounded to 1728.
+    const auto program = hololink::csi::get_packetizer_program(pixel_format);
+    if (!program->packetizes()) {
+        throw std::runtime_error(fmt::format(
+            "The packetizer has no program for bit depth {}; it can only be enabled for "
+            "RAW_10 and RAW_12",
+            static_cast<int>(pixel_format)));
+    }
+    return program->get_output_size(csi_line_bytes);
 }
 
 void FusaCoeCaptureCore::request_format(
@@ -306,18 +430,38 @@ void FusaCoeCaptureCore::start(
     uint32_t capture_timeout_ms,
     CoeChannelConfig& channel,
     std::function<void()> device_start,
-    std::function<void()> device_stop)
+    std::function<void()> device_stop,
+    std::function<bool()> frame_ready_callback,
+    uint32_t stall_timeout_ms,
+    std::string label)
 {
     if (!configured_) {
         throw std::runtime_error("FusaCoeCaptureCore is not configured.");
     }
+    if (capture_timeout_ms == 0) {
+        // 0 is not just an unset sentinel -- NvFusaCaptureExternal's own
+        // getCaptureStatus() contract explicitly disallows a 0 timeout, so this
+        // also doubles as the "timeout must be set" check FusaCoeCaptureParams's
+        // aggregate-struct defaults can't otherwise enforce.
+        throw std::runtime_error("FusaCoeCaptureCore::start: capture_timeout_ms must be > 0");
+    }
+    frame_ready_callback_ = std::move(frame_ready_callback);
+    label_ = std::move(label);
 
     capture_timeout_ms_ = capture_timeout_ms;
+    stall_timeout_ms_ = stall_timeout_ms;
+    ingress_stall_.reset();
+    stalled_.store(false);
+    stall_duration_ms_.store(0);
     capture_failed_.store(false);
     received_frame_count_ = 0;
     {
         std::lock_guard<std::mutex> error_lock(capture_error_mutex_);
         capture_error_message_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(buffer_mutex_);
+        frame_taken_ = false;
     }
 
     bool device_started = false;
@@ -395,10 +539,12 @@ void FusaCoeCaptureCore::stop(
 
     // device_stop() is control-plane teardown (a sendto to the board) and can
     // throw -- e.g. EBADF when the control socket was already torn down during a
-    // stereo/failed shutdown. Release owned resources on scope exit so that throw
-    // still tears everything down (and then propagates). Order matters: reset the
-    // CoE handle first -- it unregisters every buffer, needing both the handle and
-    // the buffers alive -- then free the buffers, then close the SciBuf module.
+    // stereo/failed shutdown -- so it is run through guard_teardown() (which logs
+    // and swallows) rather than allowed to escape into GXF's noexcept stop().
+    // Release owned resources on scope exit so a throw still tears everything down.
+    // Order matters: reset the CoE handle first -- it unregisters every buffer,
+    // needing both the handle and the buffers alive -- then free the buffers, then
+    // close the SciBuf module.
     OnScopeExit release([&] {
         coe_handler_.reset();
         {
@@ -414,10 +560,13 @@ void FusaCoeCaptureCore::stop(
             cuDevicePrimaryCtxRelease(cuda_device_);
             cuda_context_ = nullptr;
         }
-        channel.unconfigure();
+        guard_teardown("channel.unconfigure()", [&] { channel.unconfigure(); });
+        // The capture-device close above drives the kernel's CoE release path,
+        // so the orphaned macsec_ns IRQ exists from this point on.
+        relocate_orphaned_macsec_irqs("6");
     });
 
-    device_stop();
+    guard_teardown("device_stop()", [&] { device_stop(); });
 }
 
 void FusaCoeCaptureCore::acquire_buffer_thread_func()
@@ -434,11 +583,53 @@ void FusaCoeCaptureCore::acquire_buffer_thread_func()
         auto buffer = in_flight_captures_.front();
         auto capture_status = coe_handler_->getCaptureStatus(
             buffer->sci_buf_, capture_timeout_ms_);
+        if (capture_status == NvFusaCaptureStatus::TIMEOUT) {
+            // A timeout is ordinary: NvFusaCapture's guidance is to pick one
+            // short enough to discard a late capture rather than stall. Treating
+            // it as fatal (it used to set capture_failed_) terminated the process
+            // from the caller's monitor thread on any sensor hiccup. The driver
+            // drops a timed-out request -- re-polling the buffer answers
+            // BAD_PARAMETER -- so recycle it and let the round-robin re-issue it.
+
+            // Ingress-stall reporting, as HSDK4's module FusaCoeCaptureOp::monitor()
+            // did. An occasional empty poll is routine; a run of them means the
+            // sensor has gone quiet, which downstream sees only as a pipeline that
+            // stopped producing. Always warn once, early (IngressStall's own fixed
+            // threshold); optionally fail the run once total silence exceeds
+            // stall_timeout_ms_ (0 = disabled).
+            if (ingress_stall_.on_timeout(capture_timeout_ms_)) {
+                HSB_LOG_WARN("CoE capture stalled on \"{}\": no frame for {} consecutive {}ms "
+                             "capture requests after {} received frames",
+                    label_, ingress_stall_.consecutive_timeouts(), capture_timeout_ms_,
+                    received_frame_count_);
+            }
+            if (stall_timeout_ms_ != 0
+                && ingress_stall_.consecutive_timeout_ms() >= stall_timeout_ms_) {
+                const uint64_t stalled_for_ms = ingress_stall_.consecutive_timeout_ms();
+                HSB_LOG_ERROR("CoE capture stalled on \"{}\": failing after {}ms without a "
+                              "frame ({} capture requests, {} received frames)",
+                    label_, stalled_for_ms, ingress_stall_.consecutive_timeouts(),
+                    received_frame_count_);
+                stall_duration_ms_.store(stalled_for_ms);
+                stalled_.store(true);
+                // Only compute() can end the run; wake it (as the capture-failure
+                // path below does), so that it finds no frame and fails it.
+                notify_compute();
+                return;
+            }
+
+            in_flight_captures_.pop();
+
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+            available_buffers_.push_back(buffer);
+            while (issue_capture()) { }
+            continue;
+        }
         if (capture_status != NvFusaCaptureStatus::OK) {
-            HSB_LOG_DEBUG(
-                "acquire_buffer_thread_func: getCaptureStatus returned {} after "
-                "{} received frames",
-                static_cast<int>(capture_status), received_frame_count_);
+            HSB_LOG_ERROR(
+                "acquire_buffer_thread_func: getCaptureStatus returned {} on \"{}\" after "
+                "{} received frames -- capture has failed",
+                static_cast<int>(capture_status), label_, received_frame_count_);
             {
                 std::lock_guard<std::mutex> error_lock(capture_error_mutex_);
                 capture_error_message_ = fmt::format(
@@ -446,79 +637,111 @@ void FusaCoeCaptureCore::acquire_buffer_thread_func()
                     static_cast<int>(capture_status));
             }
             capture_failed_.store(true);
-            stop_thread_.store(true);
-            buffer_available_.notify_all();
-            buffer_acquired_.notify_all();
+            // take_acquired_buffer() only converts capture_failed_ into a thrown
+            // error the next time it runs, and compute() is notification-driven (see
+            // FusaCoeCaptureOp::contract()), so nothing calls it again unless we wake
+            // it ourselves here. Post one notification so compute() runs once more,
+            // reaches take_acquired_buffer(), and surfaces the failure instead of
+            // the graph hanging silently forever.
+            notify_compute();
             return;
         }
         in_flight_captures_.pop();
         ++received_frame_count_;
-
-        std::lock_guard<std::mutex> lock(buffer_mutex_);
-
-        if (acquired_buffer_) {
-            available_buffers_.push_back(acquired_buffer_);
+        if (const uint64_t stalled_requests = ingress_stall_.on_frame()) {
+            HSB_LOG_WARN("CoE capture on \"{}\" resumed after {} timed-out requests",
+                label_, stalled_requests);
         }
-        acquired_buffer_ = buffer;
-        buffer_acquired_.notify_all();
 
-        while (issue_capture()) { }
+        bool notify = false;
+        {
+            std::lock_guard<std::mutex> lock(buffer_mutex_);
+
+            // Keep only the newest frame: one that compute() has not taken yet is replaced
+            // (and counted, see take_replaced_frame_count()), and the notification already
+            // pending for it has compute() take this one instead.
+            const auto stored = acquired_buffer_.store(buffer);
+            if (stored.replaced) {
+                available_buffers_.push_back(stored.replaced);
+            }
+            notify = stored.notify;
+
+            while (issue_capture()) { }
+        }
+
+        // Only a frame stored in an empty slot needs a notification: compute() then runs
+        // exactly once per frame it can take, never for nothing -- a run without a frame
+        // would still count toward frame_limit.
+        if (notify) {
+            notify_compute();
+        }
     }
 
     std::lock_guard<std::mutex> lock(buffer_mutex_);
-    if (acquired_buffer_) {
-        available_buffers_.push_back(acquired_buffer_);
-        acquired_buffer_ = nullptr;
+    if (BufferInfo* pending = acquired_buffer_.reset()) {
+        available_buffers_.push_back(pending);
     }
 }
 
-bool FusaCoeCaptureCore::wait_for_acquired_buffer(
-    uint32_t timeout_ms, const char* out_tensor_name, BufferView& out)
+void FusaCoeCaptureCore::notify_compute()
+{
+    if (!frame_ready_callback_) {
+        return;
+    }
+    // Safe unsynchronized: start()/stop()'s thread-spawn/join provide the happens-before
+    // edge for frame_ready_callback_.
+    //
+    // This thread starts in FusaCoeCaptureOp::start(), and the run takes no notification
+    // until every operator has started, nor while its capacity is full: then
+    // frame_ready_callback_() returns false. Nothing else would have compute() run for this
+    // frame (or stall, or failure), so retry here, off the thread running start(), until the
+    // run takes it.
+    while (!frame_ready_callback_() && !stop_thread_.load()) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+}
+
+bool FusaCoeCaptureCore::take_acquired_buffer(BufferView& out)
 {
     // Throws on a genuine capture failure (any state that is neither OK nor a
-    // plain timeout). A plain timeout returns false; only an acquired frame
-    // returns true (with `out` populated).
-    auto throw_if_capture_failed = [this]() {
-        if (capture_failed_.load()) {
-            std::string error_message;
-            {
-                std::lock_guard<std::mutex> error_lock(capture_error_mutex_);
-                error_message = capture_error_message_;
-            }
-            throw std::runtime_error(error_message.empty()
-                    ? "CoE capture failed"
-                    : error_message);
-        }
-    };
-
+    // plain timeout).
     std::unique_lock<std::mutex> lock(buffer_mutex_);
-    throw_if_capture_failed();
-    BufferInfo* buffer = acquired_buffer_;
-    while (buffer == nullptr) {
-        throw_if_capture_failed();
-        HSB_LOG_TRACE("Waiting for buffer for output \"{}\" (timeout = {}ms)...",
-            out_tensor_name, timeout_ms);
-        auto wait_status = buffer_acquired_.wait_for(
-            lock, std::chrono::milliseconds(timeout_ms));
-        // Re-check under the lock: a frame may have landed right at the timeout
-        // boundary, and the wait can also wake spuriously.
-        buffer = acquired_buffer_;
-        if (buffer == nullptr && wait_status == std::cv_status::timeout) {
-            // No frame within the window; not an error, the caller may retry.
-            throw_if_capture_failed();
-            HSB_LOG_TRACE("Timed out waiting for buffer for output \"{}\"",
-                out_tensor_name);
-            return false;
+    if (capture_failed_.load()) {
+        std::string error_message;
+        {
+            std::lock_guard<std::mutex> error_lock(capture_error_mutex_);
+            error_message = capture_error_message_;
+        }
+        throw std::runtime_error(error_message.empty()
+                ? "CoE capture failed"
+                : error_message);
+    }
+    BufferInfo* buffer = acquired_buffer_.take();
+    if (buffer == nullptr) {
+        return false;
+    }
+    if (!frame_taken_) {
+        // The frames this one replaced arrived while the run was starting, before it took
+        // notifications: not frames lost to a pipeline that is behind the camera.
+        frame_taken_ = true;
+        if (const uint64_t replaced = acquired_buffer_.take_replaced()) {
+            HSB_LOG_INFO("CoE capture on \"{}\": first frame taken; it replaced {} frame(s) "
+                         "received while the run was starting",
+                label_, replaced);
         }
     }
-    acquired_buffer_ = nullptr;
     buffer_in_compute_ = buffer;
-    HSB_LOG_TRACE("Got buffer for output \"{}\" ({})",
-        out_tensor_name, static_cast<void*>(buffer));
+    HSB_LOG_TRACE("Got buffer for \"{}\" ({})", label_, static_cast<void*>(buffer));
     lock.unlock();
 
     out = BufferView { buffer->cpu_ptr_, buffer->cuda_device_ptr_ };
     return true;
+}
+
+uint64_t FusaCoeCaptureCore::take_replaced_frame_count()
+{
+    std::lock_guard<std::mutex> lock(buffer_mutex_);
+    return frame_taken_ ? acquired_buffer_.take_replaced() : 0;
 }
 
 void FusaCoeCaptureCore::register_pending_output(void* tensor_device_ptr)
@@ -545,19 +768,37 @@ bool FusaCoeCaptureCore::decode_metadata(
 
 bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
 {
-    uint32_t width = pixel_width_;
+    // The (bit depth, CFA, packetizer) triple determines the color format outright; the blob
+    // path carries no pixel structure at all.
+    const NvSciBufAttrValColorFmt color_format = image_mode_
+        ? bayer_color_format(pixel_format_, bayer_format_, packetizer_enabled_)
+        : NvSciColor_R8;
+
+    // The CoE engine writes the frame as one byte stream, bytes_per_line_ per row, and
+    // bytes_per_line_ is what HSB sends for a line (received_line_bytes()), not what
+    // pixel_width_ pixels of the color format occupy: a packetized line is a whole number of
+    // the packetizer program's loops, so 1280 RAW_10 pixels arrive as 1792 bytes where
+    // NvSciBuf derives 1708 from the pixel width, and whether the pitch alignment it then
+    // applies happens to cover the difference is up to the HW engines on the attribute list.
+    // NvSciBuf sizes the pitch from PlaneWidth alone -- the padding keys are passed through
+    // to consumers and change neither the pitch nor the size (measured on Thor) -- so ask
+    // for the width that spans the received line, and report the excess as right padding so
+    // a consumer of the attribute list knows the active width. For the unpacketized 16-bit
+    // container formats the pixel width already spans the (MIPI packed) line and there is
+    // no padding.
+    const PixelContainer container = pixel_container(color_format);
+    const uint32_t line_width = std::max(pixel_width_,
+        static_cast<uint32_t>(
+            hololink::core::round_up(bytes_per_line_, container.bytes) / container.bytes)
+            * container.pixels);
+    uint32_t width = line_width;
+    uint64_t right_padding = line_width - pixel_width_;
     uint32_t height = pixel_height_;
     height += hololink::core::round_up(start_byte_, bytes_per_line_) / bytes_per_line_;
     height += hololink::core::round_up(trailing_bytes_, bytes_per_line_) / bytes_per_line_;
     height += hololink::core::round_up(hololink::METADATA_SIZE, bytes_per_line_) / bytes_per_line_;
 
     const uint32_t mgbe_coe_alignment = 4 * 1024;
-
-    // The (bit depth, CFA, packetizer) triple determines the color format outright; the blob
-    // path carries no pixel structure at all.
-    const NvSciBufAttrValColorFmt color_format = image_mode_
-        ? bayer_color_format(pixel_format_, bayer_format_, packetizer_enabled_)
-        : NvSciColor_R8;
 
     uint32_t plane_count = 1;
     NvSciBufAttrValColorStd color_std = NvSciColorStd_REC709_ER;
@@ -585,6 +826,7 @@ bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
         { NvSciBufImageAttrKey_PlaneCount, &plane_count, sizeof(plane_count) },
         { NvSciBufImageAttrKey_PlaneWidth, &width, sizeof(width) },
         { NvSciBufImageAttrKey_PlaneHeight, &height, sizeof(height) },
+        { NvSciBufImageAttrKey_RightPadding, &right_padding, sizeof(right_padding) },
         { NvSciBufImageAttrKey_PlaneColorFormat, &color_format, sizeof(color_format) },
         { NvSciBufImageAttrKey_PlaneColorStd, &color_std, sizeof(color_std) },
         { NvSciBufImageAttrKey_PlaneBaseAddrAlign, &mgbe_coe_alignment, sizeof(mgbe_coe_alignment) },
@@ -652,13 +894,16 @@ bool FusaCoeCaptureCore::alloc_sci_buf(NvSciBufObj& buf_obj, size_t& size)
     size = *(static_cast<const uint64_t*>(alloc_attrs[0].value));
 
     // The CoE engine writes rows at bytes_per_line_ stride into this buffer, but the
-    // allocation size comes from the pitch NvSciBuf derives from the color format. If that
-    // pitch is narrower than the stride we would run off the end of the buffer, so refuse to
-    // proceed rather than corrupt memory.
+    // allocation size comes from the pitch NvSciBuf derives from the width and color format.
+    // The width above was chosen so that pitch covers the stride; should NvSciBuf lay a
+    // format out differently than pixel_container() says, the pitch would be narrower than
+    // the stride and we would run off the end of the buffer, so refuse to proceed rather
+    // than corrupt memory.
     const uint32_t plane_pitch = *(static_cast<const uint32_t*>(alloc_attrs[1].value));
-    HSB_LOG_INFO("NvSciBuf: color_format={}, width={}, height={}, plane_pitch={}, "
-                 "bytes_per_line={}, size={}",
-        static_cast<int>(color_format), width, height, plane_pitch, bytes_per_line_, size);
+    HSB_LOG_INFO("NvSciBuf: color_format={}, width={} (pixel_width={}, right_padding={}), "
+                 "height={}, plane_pitch={}, bytes_per_line={}, size={}",
+        static_cast<int>(color_format), width, pixel_width_, right_padding, height,
+        plane_pitch, bytes_per_line_, size);
     if (plane_pitch < bytes_per_line_) {
         HSB_LOG_ERROR("NvSciBuf plane pitch {} is narrower than the CoE line stride {} for "
                       "color format {}; refusing to allocate an undersized buffer",
@@ -749,7 +994,7 @@ void FusaCoeCaptureCore::free_buffers()
         std::lock_guard<std::mutex> lock(buffer_mutex_);
         available_buffers_.clear();
         in_flight_captures_ = std::queue<BufferInfo*>();
-        acquired_buffer_ = nullptr;
+        acquired_buffer_.reset();
         buffer_in_compute_ = nullptr;
     }
     buffer_storage_.clear();
@@ -790,8 +1035,8 @@ std::unordered_set<FusaCoeCaptureCore::BufferInfo*> FusaCoeCaptureCore::collect_
         buffers.insert(in_flight.front());
         in_flight.pop();
     }
-    if (acquired_buffer_) {
-        buffers.insert(acquired_buffer_);
+    if (BufferInfo* pending = acquired_buffer_.peek()) {
+        buffers.insert(pending);
     }
     if (buffer_in_compute_) {
         buffers.insert(buffer_in_compute_);
@@ -808,7 +1053,6 @@ void FusaCoeCaptureCore::rollback_failed_start(
     if (acquire_thread_.joinable()) {
         stop_thread_.store(true);
         buffer_available_.notify_all();
-        buffer_acquired_.notify_all();
         acquire_thread_.join();
     }
 
@@ -826,11 +1070,14 @@ void FusaCoeCaptureCore::rollback_failed_start(
             cuDevicePrimaryCtxRelease(cuda_device_);
             cuda_context_ = nullptr;
         }
-        channel.unconfigure();
+        guard_teardown("channel.unconfigure()", [&] { channel.unconfigure(); });
+        // The capture-device close above drives the kernel's CoE release path,
+        // so the orphaned macsec_ns IRQ exists from this point on.
+        relocate_orphaned_macsec_irqs("6");
     });
 
     if (device_started && device_stop) {
-        device_stop();
+        guard_teardown("device_stop()", [&] { device_stop(); });
     }
 }
 
@@ -883,7 +1130,7 @@ bool FusaCoeCaptureCore::issue_capture()
     return true;
 }
 
-nvidia::gxf::Expected<void> FusaCoeCaptureCore::buffer_release_callback(void* pointer)
+void FusaCoeCaptureCore::buffer_release_callback(void* pointer)
 {
     // Hold pending_buffers_mutex_ across the whole handoff. Teardown clears
     // pending_buffers_ under this same lock before free_buffers() destroys
@@ -895,7 +1142,7 @@ nvidia::gxf::Expected<void> FusaCoeCaptureCore::buffer_release_callback(void* po
     auto buffer = pending_buffers_[pointer];
     if (!buffer) {
         HSB_LOG_ERROR("Buffer not found in pending list ({})", pointer);
-        return nvidia::gxf::ExpectedOrCode(GXF_FAILURE);
+        return;
     }
     pending_buffers_.erase(pointer);
 
@@ -904,8 +1151,6 @@ nvidia::gxf::Expected<void> FusaCoeCaptureCore::buffer_release_callback(void* po
         buffer->parent_->available_buffers_.push_back(buffer);
     }
     buffer->parent_->buffer_available_.notify_one();
-
-    return nvidia::gxf::Expected<void>();
 }
 
 } // namespace hololink::operators::fusa_coe_capture

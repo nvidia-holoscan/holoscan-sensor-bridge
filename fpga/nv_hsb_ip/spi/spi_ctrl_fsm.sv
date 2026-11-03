@@ -31,7 +31,7 @@ module spi_ctrl_fsm
   //Spi Ports
   output                          CS_N,
   output                          SCK,
-  output                          SDIO_en,
+  output [3:0]                    SDIO_en,
   input  [3:0]                    SDIO_in,
   output [3:0]                    SDIO_out
 );
@@ -223,7 +223,7 @@ spi #(
   .NUM_TARGETS     ( 1                )
 ) spi (
   .clk             ( i_aclk           ),
-  .rst_n           ( !i_arst          ),
+  .rst             ( i_arst           ),
   .prescaler       ( prescaler        ),
   .spi_mode        ( spi_mode         ),
   .targ_sel        ( '0               ),

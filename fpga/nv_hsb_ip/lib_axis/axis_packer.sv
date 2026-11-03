@@ -47,22 +47,47 @@ logic   [W_KEEP-1    :0] tkeep_r;
 logic                    tlast_r;
 logic                    tlast_prev;
 
-logic [($clog2(W_KEEP))-1:0] idx;
+logic   [W_KEEP-1    :0] ins_sel;
+logic   [(DWIDTH*2)-1:0] tdata_ins;
+logic   [(W_KEEP*2)-1:0] tkeep_ins;
 
 always_comb begin
   tdata = tdata_r;
   tkeep = tkeep_r;
   tlast = tlast_r;
   if (i_axis_tvalid && o_axis_tready) begin
-    tdata = (tdata_r | (wdata << (idx*8)));
-    tkeep = (tkeep_r | (i_axis_tkeep << (idx)));
-    tlast[0] = (i_axis_tlast && tkeep[W_KEEP+:W_KEEP] == '0);
-    tlast[1] = (i_axis_tlast && tkeep[W_KEEP+:W_KEEP] != '0);
+    tdata = (tdata_r | tdata_ins);
+    tkeep = (tkeep_r | tkeep_ins);
+    tlast[0] = (i_axis_tlast && !tkeep[W_KEEP]);
+    tlast[1] = (i_axis_tlast &&  tkeep[W_KEEP]);
   end
 end
 
 
-assign idx = $countones(tkeep_r);
+// Because tkeep_r is packed contiguously from bit 0, the byte position to insert
+// at is just its single 1->0 boundary, so it decodes one-hot in one gate per bit.
+// tkeep_r is never full -- a full low half asserts o_axis_tvalid, which reloads
+// tkeep_r from the upper half -- so position W_KEEP needs no slot.
+always_comb begin
+  ins_sel[0] = !tkeep_r[0];
+  for (int k = 1; k < W_KEEP; k++) begin
+    ins_sel[k] = tkeep_r[k-1] && !tkeep_r[k];
+  end
+end
+
+// Insert at the selected position. Each term shifts by a constant, so the shifts
+// are wiring and the only logic is the one-hot OR -- no binary shift amount, and
+// so no popcount feeding a barrel shifter.
+always_comb begin
+  tdata_ins = '0;
+  tkeep_ins = '0;
+  for (int k = 0; k < W_KEEP; k++) begin
+    if (ins_sel[k]) begin
+      tdata_ins = tdata_ins | ({{DWIDTH{1'b0}}, wdata}         << (k*8));
+      tkeep_ins = tkeep_ins | ({{W_KEEP{1'b0}}, i_axis_tkeep}  <<  k   );
+    end
+  end
+end
 
 genvar j;
 generate
@@ -87,7 +112,9 @@ always_ff @(posedge clk) begin
   end
 end
 
-assign o_axis_tvalid = (o_axis_tkeep == '1) || (o_axis_tlast);
+// Contiguous tkeep (see above) means the low half is full exactly when its top
+// bit is set, so this replaces a W_KEEP-wide AND with a single bit test.
+assign o_axis_tvalid = (o_axis_tkeep[W_KEEP-1]) || (o_axis_tlast);
 assign o_axis_tdata  = tdata[0+:DWIDTH];
 assign o_axis_tlast  = tlast[0];
 assign o_axis_tuser  = i_axis_tuser;

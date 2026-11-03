@@ -23,29 +23,33 @@ conversion and image signal processing.
 As an introduction to the architecture in the sensor bridge host software, we'll step
 through the major aspects of examples/imx274_player.py. In this example, an IMX274
 stereo camera unit provides a live video feed for 4k or 1080p video running at 60FPS.
+The C++ tabs show the same steps in `examples/imx274_player.cpp`.
 
 ### Applications interact with APIs on sensor objects
 
 Applications typically instantiate and use sensor objects which provide device specific
-APIs. For example, a camera object can provide an API for setting its exposure:
+APIs. For example, a camera object can provide an API for setting its digital gain:
 
 <Tabs>
 
 <Tab title="Python" language="python">
 
 ```python
-  camera.set_exposure(1000)
+  camera.set_digital_gain_reg(0x4)
 ```
 
 </Tab>
 <Tab title="C++" language="cpp">
 
 ```cpp
-  camera->set_exposure(1000);
+  camera->set_digital_gain_reg(4);
 ```
 
 </Tab>
 </Tabs>
+
+In C++, `NativeImx274Sensor` also has `set_exposure_reg` and `set_analog_gain_reg`. The
+Python binding of `NativeImx274Sensor` has only `set_digital_gain_reg`.
 
 To instantiate a camera object, application code will typically
 
@@ -90,7 +94,7 @@ device is returned into the `channel_metadata` variable.
 <Tab title="C++" language="cpp">
 
 ```cpp
-  hololink::DataChannel hololink_channel(channel_metadata);
+  auto hololink_channel = std::make_shared<hololink::DataChannel>(channel_metadata);
 ```
 
 </Tab>
@@ -103,35 +107,31 @@ device is returned into the `channel_metadata` variable.
 <Tab title="Python" language="python">
 
 ```python
-  camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(hololink_channel, ...)
+  camera = hololink_module.NativeImx274Sensor(hololink_channel, expander_configuration=0)
 ```
 
 </Tab>
 <Tab title="C++" language="cpp">
 
-Note that in this case the IMX274 sensor is implemented using Python, the code below
-shows how to create the Python object in C++.
-
 ```cpp
-  py::module_ imx274 = py::module_::import("hololink.sensors.imx274");
-  py::object Imx274Cam = imx274.attr("dual_imx274").attr("Imx274Cam");
-  py::object camera = Imx274Cam("hololink_channel"_a = hololink_channel, ...);
+  auto camera = std::make_shared<hololink::sensors::NativeImx274Sensor>(
+      *hololink_channel, expander_configuration);
 ```
 
 </Tab>
 </Tabs>
 
 Constructing the camera instance does not actually interact with the sensor bridge
-device-- we just store device communication information for later use. The camera
-instance is necessary for our HoloscanApplication's constructor to run; so we're
-motivated to create this object relatively early.
+device-- we just store device communication information for later use. The pipeline is
+built from the camera's configuration, so we create this object before building it.
 
 - A single sensor bridge device usually has multiple `DataChannel` instances; many APIs
   affect all data channel instances associated with a specific sensor bridge device. In
   order to reset the sensor bridge device--the only way to guarantee that the device is
   in a known state--we'll get a handle to the underlying `Hololink` instance. All
   `DataChannel` instances on this board will return the same `Hololink` instance here.
-  The call to `hololink.reset` will reset all attached data channel instances.
+  `hololink.start` opens the connection to the device, and the call to `hololink.reset`
+  will reset all attached data channel instances.
 
 <Tabs>
 
@@ -139,6 +139,7 @@ motivated to create this object relatively early.
 
 ```python
   hololink = hololink_channel.hololink()
+  hololink.start()
   hololink.reset()
 ```
 
@@ -146,7 +147,8 @@ motivated to create this object relatively early.
 <Tab title="C++" language="cpp">
 
 ```cpp
-  std::shared_ptr&lt;hololink::Hololink&gt; hololink = hololink_channel.hololink();
+  std::shared_ptr<hololink::Hololink> hololink = hololink_channel->hololink();
+  hololink->start();
   hololink->reset();
 ```
 
@@ -164,7 +166,7 @@ motivated to create this object relatively early.
 
 ```python
   camera.setup_clock()
-  camera_mode = imx274_mode.Imx274_Mode.IMX274_MODE_3840X2160_60FPS
+  camera_mode = 0  # IMX274_MODE_3840X2160_60FPS; Python configure() takes the mode number
   camera.configure(camera_mode)
 ```
 
@@ -172,9 +174,9 @@ motivated to create this object relatively early.
 <Tab title="C++" language="cpp">
 
 ```cpp
-  camera.attr("setup_clock")();
-  py::object camera_mode = Imx274_Mode(0);
-  camera.attr("configure")(camera_mode);
+  camera->setup_clock();
+  const auto camera_mode = hololink::sensors::imx274_mode::IMX274_MODE_3840X2160_60FPS;
+  camera->configure(camera_mode);
 ```
 
 </Tab>
@@ -190,53 +192,61 @@ device's I2C controller objects to write the proper set of device registers.
 <Tab title="Python" language="python">
 
 ```python
-  application.run()
+  # plan is the pipeline's hs.Graph, compiled by hs.compile()
+  with hs.run_async(plan) as session:
+      session.wait()
 ```
 
 </Tab>
 <Tab title="C++" language="cpp">
 
 ```cpp
-  application->run();
+  // plan is the pipeline's holoscan::Graph, compiled by holoscan::compile()
+  auto session = holoscan::run_async(plan, signals);
+  session.wait();
 ```
 
 </Tab>
 </Tabs>
 
-Unless the pipeline is explicitly stopped, this call to `application.run` will never
-return.
+`session.wait()` returns when the run ends: for example when the window closes or when
+the receiver gets the frame limit. In C++, Ctrl+C also ends the run, and the program
+stops the camera and the sensor bridge device. In `imx274_player.py`, Ctrl+C causes
+`session.wait()` to raise `KeyboardInterrupt`, and the program does not call
+`hololink.stop()`. Other Python examples, for example `fusa_coe_vb1940_player.py`, catch
+`KeyboardInterrupt`, call `session.request_stop()` and then wait for the run to end.
 
-- `application.run` starts with a call to each operator's `start` method.
+- The run starts with a call to each operator's `start` method.
 
-  The `start` method of both `RoceReceiverOp` and `LinuxReceiverOperator` will call
-  `camera.start` (where camera is the device object passed into the constructor's
-  `device` parameter). The camera, on a call to `start`, will be configured to start
-  sending video data.
+  The `start` method of both `RoceReceiverOp` and `LinuxReceiverOp` calls the
+  `device_start` callback passed to it, which in the example players is the camera's
+  `start`. The camera, on a call to `start`, will be configured to start sending video
+  data.
 
-- `application.run` then goes into a loop, executing the pipeline, calling each
-  operator's `compute` method. The network receiver operator `compute` method blocks
-  until a whole data frame is received into the memory block it was initialized with.
+- The run then executes the pipeline, calling each operator's `compute` method. The
+  receiver's own thread waits for each frame and notifies the operator when a whole
+  frame has arrived; only then does Holoscan SDK 5 call the receiver operator's
+  `compute` method, which passes the frame on.
 
 Our camera object works with device registers by reads and writes on an I2C bus present
-in the sensor bridge device. Suppose our camera is connected to the sensor bridge I2C
-controller when bus enable==0. (We'll store that address in the constant
-`hololink_module.CAM_I2C_BUS`.) The camera object can fetch a handle to an
-`Hololink.I2c` object, with APIs for generating I2C transactions, by calling
+in the sensor bridge device. Suppose that our camera is connected to the camera I2C bus
+of the sensor bridge. The constant `hololink_module.CAM_I2C_BUS` (value 1) holds that
+bus number. The camera object can fetch a handle to a `hololink.I2c` object (C++
+`hololink::Hololink::I2c`), with APIs for generating I2C transactions, by calling
 `hololink.get_i2c`. If the camera itself responds to an I2C bus address of 0x34 (which
 we'll call `CAM_I2C_ADDRESS`), then it can support a `camera.set_register` method this
 way:
 
 ```python
-class Imx274Cam:
+class MyCamera:
     def __init__(
         self,
         hololink_channel,
         i2c_bus=hololink_module.CAM_I2C_BUS,
-        ...
     ):
         self._hololink = hololink_channel.hololink()
         self._i2c = self._hololink.get_i2c(i2c_bus)
-    ...
+
     def set_register(self, register, value):
         ...
         self._i2c.i2c_transaction(
@@ -244,7 +254,8 @@ class Imx274Cam:
             write_data,
             read_byte_count,
         )
-    def set_exposure(self, value):
+
+    def set_exposure_reg(self, value):
         self.set_register(..., value)
 ```
 
@@ -267,8 +278,8 @@ Holoscan sensor bridge enumeration messages are based on the BOOTP protocol, and
 BOOTP, they provide a mechanism to reconfigure the IP address of that HSB device. If the
 host wishes to reconfigure the IP address of the device, it sends a reply message with a
 new IP address to be assigned to that data plane controller. The sensor bridge demo
-container includes a command line tool called `hololink` that can be used to assign new
-IP addresses to sensor bridge devices:
+container includes a command line tool called `hololink-set-ip` that can be used to
+assign new IP addresses to sensor bridge devices:
 
 ```none
 $ hololink-set-ip b0:4f:13:e0:20:4c 192.168.100.250
@@ -312,8 +323,10 @@ value. These requests, on receipt by ConnectX, are written directly into GPU or 
 memory--these writes are completely offloaded from the CPU. After the total number of
 received bytes reaches the data-frame size, a special metadata packet is sent using an
 RDMA write-immediate request. This write-immediate request schedules an interrupt for
-the CPU, which is used to flag that the received data is ready for further processing--
-this interrupt is what `RoceReceiverOp.compute` waits for on a call to `get_next_frame`.
+the CPU, which is used to flag that the received data is ready for further processing. A
+background thread of the receiver waits for this interrupt. Then the thread notifies
+`RoceReceiverOp`, and Holoscan SDK 5 calls the `compute` method of the operator. The
+`compute` method gets the completed frame and does not wait.
 
 ### Holoscan SDK metadata and HSB
 

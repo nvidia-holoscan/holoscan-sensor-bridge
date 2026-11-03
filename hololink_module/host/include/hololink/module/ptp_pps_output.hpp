@@ -16,21 +16,35 @@
 
 namespace hololink::module {
 
-/* PTP-PPS-driven VSYNC source. A PTP-locked pulse-per-second train
- * drives the trigger line connected to the cameras' frame-start
- * input. One instance per board, keyed by "serial=<serial_number>".
+/**
+ * @brief Configure an output pin to pulse at a rate driven
+ *      by PLL from the PTP PPS signal.
  *
- * Inherits VsyncInterfaceV1 so a consumer holding only a Vsync
- * (camera driver, future per-board controller) doesn't need to know
- * which source is wired up. Inherits ConfigurableService so callers
- * holding only an EnumerationMetadata reach it via the standard
- * metadata-form get_service. The publisher registers the impl under
- * both `vsync.v1` and `ptp_pps_output.v1` type_ids by walking the
- * ServiceAlias chain — a single publish call covers both. */
+ * A common use of this output is to drive a camera sensor's
+ * VSYNC input: when multiple HSB units are driven from the PTP
+ * of a single host, these output signals have been shown to
+ * have less than 1us difference across those HSB devices.
+ *
+ * Typical use:
+ *  -# Call enable() with the frame rate to configure the frequency;
+ *      this does not yet enable the actual output signal.
+ *  -# Configure each sensor for external-trigger operation.
+ *  -# Once all sensors are waiting for their triggers, call start().
+ *      This starts driving the actual PPS output.
+ *  -# Call stop() to halt the pulses, and disable() when the output
+ *     is no longer needed.
+ *
+ * The start(), stop() and is_enabled() operations are inherited from
+ * VsyncInterfaceV1. Code that needs only those can obtain the same
+ * object as a VsyncInterfaceV1, without knowing which kind of source is
+ * driving the trigger.
+ */
 class PtpPpsOutputInterfaceV1 : public VsyncInterfaceV1,
                                 public ConfigurableService<PtpPpsOutputInterfaceV1> {
 public:
+    /// @cond INCLUDE_INTERNAL_DOCUMENTATION
     static constexpr const char* type_id = "ptp_pps_output.v1";
+    static constexpr const char* release_version = "2.7.0";
 
     /* ServiceAlias chain: PtpPpsOutputInterfaceV1 publishes under
      * VsyncInterfaceV1::type_id as well, so consumers fetching the
@@ -54,17 +68,36 @@ public:
     }
 
     virtual ~PtpPpsOutputInterfaceV1() = default;
+    /** @endcond */ // INCLUDE_INTERNAL_DOCUMENTATION
 
-    /* Program the FPGA VSYNC block for the requested pulse rate, in
-     * Hz. Impls reject unsupported frequencies with
-     * HOLOLINK_MODULE_INVALID_PARAMETER.
+    /**
+     * @brief Configure the trigger output to produce pulses at the given
+     *      rate.
      *
-     * Idempotent: a second call with the same frequency returns
-     * HOLOLINK_MODULE_OK; a different frequency on an already-enabled
-     * output returns HOLOLINK_MODULE_INVALID_PARAMETER. */
+     * After a successful call is_enabled() returns `true`. This only
+     * configures the output; pulses are not produced until start() is
+     * called.
+     *
+     * Calling this again with the frequency already configured succeeds
+     * and changes nothing. Asking for a different frequency while the
+     * output is enabled is rejected.
+     *
+     * @param frequency_hz Pulse rate, in Hz.
+     * @return HOLOLINK_MODULE_OK on success.
+     *      HOLOLINK_MODULE_INVALID_PARAMETER if the hardware does not
+     *      support `frequency_hz`, or the output is already enabled at a
+     *      different frequency.
+     */
     virtual hololink_module_status_t enable(unsigned frequency_hz) = 0;
 
-    /* Tear down the VSYNC configuration. Idempotent. */
+    /**
+     * @brief Remove the trigger output configuration.
+     *
+     * Afterwards is_enabled() returns `false`. Does nothing if the output
+     * is not enabled.
+     *
+     * @return HOLOLINK_MODULE_OK on success, or an error status.
+     */
     virtual hololink_module_status_t disable() = 0;
 };
 

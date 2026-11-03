@@ -179,9 +179,9 @@ task ecb_write(input [31:0] addr, input [31:0] data);
     // Build complete Ethernet frame with correct addresses and ports
     build_ethernet_frame(ecb_payload, 14, 
                         DEFAULT_FPGA_MAC,      // dst_mac (FPGA)
-                        DEFAULT_HOST_MAC,      // src_mac (Host)
-                        DEFAULT_FPGA_IP,       // dst_ip (FPGA) 
-                        DEFAULT_HOST_IP,       // src_ip (Host)
+                        TB_HOST_MAC,           // src_mac (Host)
+                        TB_FPGA_IP,            // dst_ip (FPGA)
+                        TB_HOST_IP,            // src_ip (Host)
                         ETH_UDP_CMD_PORT,      // dst_port (ECB command port)
                         ETH_UDP_CMD_PORT,      // src_port
                         eth_frame, eth_frame_size);
@@ -271,9 +271,9 @@ task ecb_read(input [31:0] addr, output [31:0] data);
     // Build complete Ethernet frame and send it  
     build_ethernet_frame(ecb_cmd_data, 10,
                         DEFAULT_FPGA_MAC,      // dst_mac (FPGA)
-                        DEFAULT_HOST_MAC,      // src_mac (Host)
-                        DEFAULT_FPGA_IP,       // dst_ip (FPGA)
-                        DEFAULT_HOST_IP,       // src_ip (Host) 
+                        TB_HOST_MAC,           // src_mac (Host)
+                        TB_FPGA_IP,            // dst_ip (FPGA)
+                        TB_HOST_IP,            // src_ip (Host)
                         ETH_UDP_CMD_PORT,      // dst_port (ECB command port)
                         ETH_UDP_CMD_PORT,      // src_port
                         eth_frame, eth_frame_size);

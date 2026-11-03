@@ -54,9 +54,16 @@ public:
     void stop() override;
 
     void configure_converter(std::shared_ptr<hololink::csi::CsiConverter> converter) override;
+    using CameraSensor::configure_converter;
     // Additional methods
     void setup_clock();
     uint32_t get_version() const;
+    // Shows the sensor's test pattern \p pattern (any value, 0 included) instead of the image.
+    void enable_test_pattern(uint8_t pattern);
+    // Shows the image again.
+    void disable_test_pattern();
+    // enable_test_pattern(pattern), except that 0 disables the test pattern; enable pattern 0
+    // with enable_test_pattern(0).
     void test_pattern(uint8_t pattern = 0);
 
     // Exposure, analog gain, and digital gain
@@ -64,11 +71,13 @@ public:
     void set_analog_gain_reg(int32_t value = 0x0C);
     void set_digital_gain_reg(int32_t value = 0x0000);
 
-protected:
-    void initialize_supported_modes();
+    // Raw access to a sensor register, e.g. for debugging (python/tools/imx274.py).
     uint8_t get_register(uint16_t reg);
     void set_register(uint16_t reg, uint8_t value,
         const std::shared_ptr<Timeout>& timeout = nullptr);
+
+protected:
+    void initialize_supported_modes();
     void configure_camera(CameraMode mode);
     template <typename ContainerT>
     void apply_register_settings(const ContainerT& settings);

@@ -15,45 +15,99 @@
 
 # See README.md for detailed information.
 
+# HSDK5 test operators. They differ from the HSDK4 ones in three ways:
+# - Each one is a sink on a side branch of the pipeline, not a pass-through, so it
+#   never holds up or changes the frames that the pipeline processes (connect the
+#   ones that take only metadata with metadata_flow()). v2.7's FrameAlignerOp is
+#   pair_by_timestamp(), which pairs the recorded frames after the run.
+# - hs.Param values are deep-copied and type-checked, so a callback or a Watchdog
+#   can't be a parameter. register() keeps the object and returns an int token,
+#   which the operator takes as its parameter.
+# - HSDK5 creates a new instance of each Python operator for each run, so nothing
+#   that the test reads after the run may be kept on the instance.
+
 import dataclasses
 import datetime
+import itertools
 import logging
-import math
+import threading
 
+import capture_metadata
 import cupy as cp
-import holoscan
+import holoscan as hs
 import utils
 
 import hololink as hololink_module
 
 COLOR_PROFILER_START_FRAME = 5
 
+# The share of a run's frames whose CRCs a test must check: v2.7 checked each
+# frame's in the pipeline, and the HSDK5 checks miss only the frames that they
+# can't keep up with.
+CRC_COVERAGE = 0.9
 
-class ColorProfiler(holoscan.core.Operator):
-    def __init__(self, *args, callback=None, out_tensor_name=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._out_tensor_name = out_tensor_name
+MS_PER_SEC = 1000.0
+US_PER_SEC = 1000.0 * MS_PER_SEC
+NS_PER_SEC = 1000.0 * US_PER_SEC
+SEC_PER_NS = 1.0 / NS_PER_SEC
+
+_registry = {}
+_registry_tokens = itertools.count(1)
+_registry_lock = threading.Lock()
+
+
+def register(obj):
+    """Keep obj for an operator, which takes the returned token as a parameter."""
+    with _registry_lock:
+        token = next(_registry_tokens)
+        _registry[token] = obj
+    return token
+
+
+def lookup(token):
+    with _registry_lock:
+        return _registry[token]
+
+
+def luma_histogram(cp_frame):
+    """The 16-bucket histogram of the Y of YCrCb that v2.7's ColorProfiler made,
+    from an RGB(A) image with shape (y, x, 3 or 4). An 8-bit image (ArgusIspOp's
+    RGB8) is scaled to the 16-bit range first."""
+    if cp_frame.dtype == cp.uint8:
+        cp_frame = cp_frame.astype(cp.uint16) * 257
+    r = cp_frame[:, :, 0]
+    g = cp_frame[:, :, 1]
+    b = cp_frame[:, :, 2]
+    y = r * 0.299 + g * 0.587 + b * 0.114
+    buckets, _ = cp.histogram(y, bins=16, range=(0, 65536))
+    return buckets
+
+
+class ColorProfiler(hs.Operator):
+    """Calls callback(buckets) with luma_histogram() of each image (for example
+    BayerDemosaicOp's output)."""
+
+    input = hs.Input("input", hs.schema.Image)
+
+    callback_token = hs.Param(0)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.input, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.asarray(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({self._out_tensor_name: cp_frame}, "output")
-        # Compute the Y of YCrCb
-        r = cp_frame[:, :, 0]
-        g = cp_frame[:, :, 1]
-        b = cp_frame[:, :, 2]
-        y = r * 0.299 + g * 0.587 + b * 0.114
-        #
-        buckets, _ = cp.histogram(y, bins=16, range=(0, 65536))
-        self._callback(buckets)
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        sample = self.input.receive()
+        if sample.is_missing:
+            return
+        with cp.cuda.Stream(non_blocking=True) as stream:
+            capsule = sample.data.data.__dlpack__(
+                stream=stream.ptr, max_version=(1, 0), copy=False
+            )
+            buckets = luma_histogram(cp.from_dlpack(capsule)).get(stream=stream)
+            stream.synchronize()
+        lookup(self.callback_token)(buckets)
 
 
 def color_profiler_initial_timeout(frame_limit):
@@ -72,380 +126,274 @@ def color_profiler_initial_timeout(frame_limit):
     return utils.timeout_sequence(timeout_profile)
 
 
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
+class TimeProfiler(hs.Operator):
+    """Calls callback(image_timestamp_s, metadata_timestamp_s, received_timestamp_s,
+    pipeline_timestamp_s, frame_number) for each frame's metadata, as v2.7 did.
 
+    HSDK5 metadata is a fixed CaptureMetadata struct, so v2.7's rename_metadata has
+    no HSDK5 equivalent."""
 
-class TimeProfiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        callback=None,
-        rename_metadata=lambda name: name,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._count = 0
-        self._callback = callback
-        self._packets_dropped = None
-        #
-        self._frame_number_metadata = rename_metadata("frame_number")
-        self._packets_dropped_metadata = rename_metadata("packets_dropped")
-        self._timestamp_ns_metadata = rename_metadata("timestamp_ns")
-        self._timestamp_s_metadata = rename_metadata("timestamp_s")
-        self._received_s_metadata = rename_metadata("received_s")
-        self._received_ns_metadata = rename_metadata("received_ns")
-        self._metadata_s_metadata = rename_metadata("metadata_s")
-        self._metadata_ns_metadata = rename_metadata("metadata_ns")
+    metadata = hs.Input("metadata", capture_metadata.CaptureMetadata)
+
+    callback_token = hs.Param(0)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        self._count += 1
-        in_message = op_input.receive("input")
-        cp_frame = cp.asarray(in_message.get(""))  # cp_frame.shape is (y,x,4)
-        op_output.emit({"": cp_frame}, "output")
-        #
-        metadata = self.metadata
-        frame_number = metadata.get(self._frame_number_metadata, 0)
-        packets_dropped = metadata.get(self._packets_dropped_metadata, 0)
-        if packets_dropped != self._packets_dropped:
-            logging.info(f"{packets_dropped=} ({packets_dropped:#X}) {frame_number=}")
-            self._packets_dropped = packets_dropped
-        image_timestamp_ns = metadata.get(self._timestamp_ns_metadata, 0)
-        image_timestamp_s = metadata.get(self._timestamp_s_metadata, 0)
-        image_timestamp_s += image_timestamp_ns * SEC_PER_NS
-        received_timestamp_s = metadata.get(self._received_s_metadata, 0)
-        received_timestamp_ns = metadata.get(self._received_ns_metadata, 0)
-        received_timestamp_s = received_timestamp_s + received_timestamp_ns * SEC_PER_NS
-        metadata_timestamp_s = metadata.get(self._metadata_s_metadata, 0)
-        metadata_timestamp_ns = metadata.get(self._metadata_ns_metadata, 0)
-        metadata_timestamp_s = metadata_timestamp_s + metadata_timestamp_ns * SEC_PER_NS
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.metadata))
+
+    def compute(self, context):
+        metadata = self.metadata.receive_data()
         pipeline_timestamp_s = datetime.datetime.now(datetime.timezone.utc).timestamp()
-        self._callback(
+        image_timestamp_s = metadata.timestamp_s + metadata.timestamp_ns * SEC_PER_NS
+        metadata_timestamp_s = metadata.metadata_s + metadata.metadata_ns * SEC_PER_NS
+        received_timestamp_s = metadata.received_s + metadata.received_ns * SEC_PER_NS
+        lookup(self.callback_token)(
             image_timestamp_s,
             metadata_timestamp_s,
             received_timestamp_s,
             pipeline_timestamp_s,
-            frame_number,
+            metadata.frame_number,
         )
 
 
-class WatchdogOp(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        watchdog=None,
-        frame_limit=None,
-        stop_conditions=None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._watchdog = watchdog
-        # The frame budget lives at this sink, not on the receivers: a
-        # frame-dropping stage (FrameAlignerOp) sits between the receivers
-        # and here, so counting produced frames would starve this sink by
-        # the drop count. Once frame_limit aligned frames have arrived we
-        # disable the source receivers' tick conditions so the application
-        # drains and exits cleanly.
-        self._frame_limit = frame_limit
-        self._stop_conditions = stop_conditions or []
-        self._taps = 0
+class WatchdogOp(hs.Operator):
+    """Taps a utils.Watchdog for each frame's metadata. When it stops, the run is
+    over, and it finishes every running watchdog (utils.finish_watchdogs()).
+
+    The receivers end the run at their frame_limit, so v2.7's frame_limit and
+    stop_conditions parameters have no HSDK5 equivalent."""
+
+    metadata = hs.Input("metadata", capture_metadata.CaptureMetadata)
+
+    watchdog_token = hs.Param(0)
 
     def setup(self, spec):
-        spec.input("input")
+        spec.input(self.metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        _ = op_input.receive("input")
-        self._watchdog.tap()
-        self._taps += 1
-        if self._frame_limit is not None and self._taps >= self._frame_limit:
-            for condition in self._stop_conditions:
-                condition.disable_tick()
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.metadata))
 
+    def compute(self, context):
+        self.metadata.receive_data()
+        lookup(self.watchdog_token).tap()
 
-class MonitorOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        # If you don't give us a callback, do nothing
-        callback=lambda op, metadata: None,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._callback = callback
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-
-    def compute(self, op_input, op_output, context):
-        # What time is it now?
-        complete = datetime.datetime.now(datetime.timezone.utc)
-
-        _ = op_input.receive("input")
-        #
-        self.save_timestamp(self.metadata, "complete", complete)
-        self._callback(self, self.metadata)
-
-    def save_timestamp(self, metadata, name, timestamp):
-        # This method works around the fact that we can't store
-        # datetime objects in metadata.
-        f, s = math.modf(timestamp.timestamp())
-        metadata[f"{name}_s"] = int(s)
-        metadata[f"{name}_ns"] = int(f * NS_PER_SEC)
-
-    def get_timestamp(self, metadata, name):
-        s = metadata[f"{name}_s"]
-        f = metadata[f"{name}_ns"]
-        f *= SEC_PER_NS
-        return s + f
-
-    def get_times(self, metadata, rename_metadata=lambda name: name):
-        #
-        frame_number_metadata = rename_metadata("frame_number")
-        timestamp_metadata = rename_metadata("timestamp")
-        metadata_metadata = rename_metadata("metadata")
-        frame_start_metadata = rename_metadata("frame_start")
-        frame_end_metadata = rename_metadata("frame_end")
-
-        #
-        frame_number = metadata.get(frame_number_metadata, 0)
-
-        # frame_start_s is the time that the first data arrived at the FPGA;
-        # the network receiver calls this "timestamp".
-        frame_start_s = self.get_timestamp(metadata, timestamp_metadata)
-
-        # After the FPGA sends the last sensor data packet for a frame, it follows
-        # that with a 128-byte metadata packet.  This timestamp (which the network
-        # receiver calls "metadata") is the time at which the FPGA sends that
-        # packet; so it's the time immediately after the the last byte of sensor
-        # data in this window.  The difference between frame_start_s and frame_end_s
-        # is how long it took for the sensor to produce enough data for a complete
-        # frame.
-        frame_end_s = self.get_timestamp(metadata, metadata_metadata)
-
-        # complete_s is the time when our compute ran, after visualization finished.
-        complete_s = self.get_timestamp(metadata, "complete")
-
-        return {
-            frame_number_metadata: frame_number,
-            frame_start_metadata: frame_start_s,
-            frame_end_metadata: frame_end_s,
-            "complete": complete_s,
-        }
+    def stop(self):
+        utils.finish_watchdogs()
 
 
-class PassThroughOperator(holoscan.core.Operator):
-    def __init__(self, *args, in_tensor_name="", out_tensor_name="", **kwargs):
-        super().__init__(*args, **kwargs)
-        self._in_tensor_name = in_tensor_name
-        self._out_tensor_name = out_tensor_name
+class RecordMetadataOp(hs.Operator):
+    """Appends metadata_class(*fields) to record for each frame, where the fields are
+    the CaptureMetadata fields that metadata_class names. Register (metadata_class,
+    record) as the record_token."""
+
+    metadata = hs.Input("metadata", capture_metadata.CaptureMetadata)
+
+    record_token = hs.Param(0)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        tensor = in_message.get(self._in_tensor_name)
-        op_output.emit({self._out_tensor_name: tensor}, "output")
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.metadata))
 
-
-class RecordMetadataOp(PassThroughOperator):
-    def __init__(self, *args, metadata_class=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._metadata_class = metadata_class
-        self._field_names = [f.name for f in dataclasses.fields(self._metadata_class)]
-        self._record = []
-
-    def compute(self, op_input, op_output, context):
-        super().compute(op_input, op_output, context)
-        metadata = self.metadata
-        try:
-            values = []
-            for name in self._field_names:
-                value = metadata[name]
-                hololink_module.NvtxTrace.event_u64(
-                    f"{self.name} {name=} {value=:#x}", value
-                )
-                values.append(value)
-            self._record.append(self._metadata_class(*values))
-        except KeyError as e:
-            logging.error(f"Caught {e} ({type(e)=})")
-            logging.error("Metadata contents:")
-            for name, value in metadata.items():
-                logging.error(f"  {name}={value}")
-            raise
-
-    def get_record(self):
-        return self._record
-
-
-class FrameAlignerOp(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        name=None,
-        allowable_dt=None,
-        input_tensors=None,  # this is a list e.g. ["left", "right"]
-        rename_metadata=None,  # this is a list: [lambda name: f"left_{name}", ...]
-        outputs=None,  # this is a list, e.g. ["left", "right"]
-        **kwargs,
-    ):
-        self._outputs = outputs
-        super().__init__(*args, name=name, **kwargs)
-        self._name = name
-        self._allowable_dt = allowable_dt
-        self._input_tensors = input_tensors
-        self._count = len(input_tensors)
-        if len(rename_metadata) != self._count:
-            raise ValueError(
-                f"input_tensors has {self._count} items; rename_metadata ({len(rename_metadata)}) must be the same length."
-            )
-        if len(outputs) != self._count:
-            raise ValueError(
-                f"input_tensors has {self._count} items; outputs ({len(outputs)}) must be the same length."
-            )
-        self._timestamp_s_metadata = [
-            rename("timestamp_s") for rename in rename_metadata
+    def compute(self, context):
+        metadata = self.metadata.receive_data()
+        metadata_class, record = lookup(self.record_token)
+        values = [
+            getattr(metadata, field.name)
+            for field in dataclasses.fields(metadata_class)
         ]
-        self._timestamp_ns_metadata = [
-            rename("timestamp_ns") for rename in rename_metadata
-        ]
-        self._dropped = 0
-        # Diagnostics: per-leg arrival counts, emitted groups, and dt drops.
-        # These pinpoint whether a stall is starvation (one leg stops
-        # arriving), an alignment drop (dt > allowable_dt), or input-queue
-        # POP loss (arrivals lag the receivers' frame numbers).
-        self._arrivals = [0] * self._count
-        self._emitted = 0
-        self._dt_dropped = 0
-        self._data_cache = [None] * self._count
-        self._metadata_cache = [None] * self._count
-        for i in range(self._count):
-            metadata_cache = holoscan.core.MetadataDictionary()
-            metadata_cache.policy = holoscan.core.MetadataPolicy.UPDATE
-            self._metadata_cache[i] = metadata_cache
-        self._timestamp = [0] * self._count
-        self._cached = 0
+        record.append(metadata_class(*values))
+
+
+class OnFrameNOperator(hs.Operator):
+    """Calls callback() once, when the trigger_frame-th frame's metadata arrives."""
+
+    metadata = hs.Input("metadata", capture_metadata.CaptureMetadata)
+
+    trigger_frame = hs.Param(50)
+    callback_token = hs.Param(0)
 
     def setup(self, spec):
-        logging.info("setup")
-        spec.input("input", policy=holoscan.core.IOSpec.QueuePolicy.POP)
-        for output in self._outputs:
-            spec.output(output)
+        spec.input(self.metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        metadata = self.metadata
-        # in_message.get(name) is the only way to find
-        # if 'name' is a supplied tensor.
-        for index, name in enumerate(self._input_tensors):
-            m = in_message.get(name)
-            if m is not None:
-                self.cache_message(index, name, m, metadata)
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.metadata))
 
-        # Do we have all the channels?
-        if self._cached < self._count:
-            return
-
-        # Is the oldest one outside our allowable dt?
-        dt = max(self._timestamp) - min(self._timestamp)
-        if self._allowable_dt is not None:
-            if dt > self._allowable_dt:
-                # Wait for the next frame; eventually
-                # we should get sync'd up
-                self._dt_dropped += 1
-                logging.debug(
-                    f"{self._name}: dropping group dt={dt:.6f} > "
-                    f"allowable_dt={self._allowable_dt:.6f} "
-                    f"arrivals={self._arrivals} emitted={self._emitted} "
-                    f"dt_dropped={self._dt_dropped}"
-                )
-                return
-
-        # So this group of frames should be forwarded.
-        for index, output_name in enumerate(self._outputs):
-            metadata.swap(self._metadata_cache[index])
-            op_output.emit({"": self._data_cache[index]}, output_name)
-            # reset
-            self._data_cache[index] = None
-            self._metadata_cache[index].clear()
-            self._timestamp[index] = 0  # causes a huge dt
-        self._cached = 0
-        self._emitted += 1
-        if self._emitted % 30 == 0:
-            logging.debug(
-                f"{self._name}: emitted={self._emitted} dt={dt:.6f} "
-                f"arrivals={self._arrivals} dt_dropped={self._dt_dropped}"
-            )
-
-    def cache_message(self, index, name, tensor, metadata):
-        # Default a missing timestamp to 0 so a frame without one (e.g. a
-        # controller's fallback image, served while disconnected) doesn't crash
-        # the aligner; live FPGA timestamps are never 0, so real streams are
-        # unaffected.
-        timestamp_s = metadata.get(self._timestamp_s_metadata[index], 0)
-        timestamp_ns = metadata.get(self._timestamp_ns_metadata[index], 0)
-        timestamp_ns *= SEC_PER_NS
-        timestamp_s += timestamp_ns
-        logging.trace(f"got {index=} {name=} {timestamp_s=}")
-        self._arrivals[index] += 1
-        # Track occupancy by the data slot (reset to None on emit), not the
-        # timestamp: a fallback frame's timestamp is 0, which is also the
-        # post-emit reset value, so counting by timestamp would recount the
-        # same leg and over-report _cached — emitting before every leg arrives.
-        if self._data_cache[index] is None:
-            self._cached += 1
-        #
-        metadata_cache = self._metadata_cache[index]
-        metadata_cache.update(metadata)
-        self._data_cache[index] = tensor
-        self._timestamp[index] = timestamp_s
-
-    def enable(self, allowable_dt):
-        self._allowable_dt = allowable_dt
-
-
-class OnFrameNOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        trigger_frame=50,
-        callback=None,
-        in_tensor_name="",
-        out_tensor_name=None,
-        **kwargs,
-    ):
-        self._in_tensor_name = in_tensor_name
-        self._out_tensor_name = out_tensor_name
-        super().__init__(*args, **kwargs)
-        self._trigger_frame = trigger_frame
-        self._callback = callback
+    def start(self):
         self._count = 0
 
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        if self._out_tensor_name is not None:
-            spec.output("output")
-
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        if self._out_tensor_name is not None:
-            tensor = in_message.get(self._in_tensor_name)
-            op_output.emit({self._out_tensor_name: tensor}, "output")
-        self.check()
-
-    def check(self):
+    def compute(self, context):
+        self.metadata.receive_data()
         self._count += 1
-        if self._count != self._trigger_frame:
-            return
-        self._callback()
+        if self._count == self.trigger_frame:
+            lookup(self.callback_token)()
+
+
+@dataclasses.dataclass
+class CheckResult:
+    checked: int
+    bad: list  # (frame_number, reason)
+
+
+class CrcChecker:
+    """Records the GPU CRC check of each frame. add_crc_check() and
+    add_image_crc_check() connect it."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._checks = []  # (frame_number, computed_crc, received_crc)
+
+    def check_crc(self, computed_crc, received_crc, frame_number):
+        # Called by CheckCrcOp through hl.CrcChannel.
+        with self._lock:
+            self._checks.append((frame_number, computed_crc, received_crc))
+
+    def by_frame(self):
+        """{frame_number: (computed_crc, received_crc)} for each checked frame."""
+        with self._lock:
+            return {
+                frame_number: (computed, received)
+                for frame_number, computed, received in self._checks
+            }
+
+    def result(self, skip_first=0, skip_last=0):
+        """The check of the frames in order of frame number, without the first
+        skip_first and the last skip_last frames."""
+        with self._lock:
+            checks = sorted(self._checks)
+        checks = checks[skip_first : len(checks) - skip_last]
+        bad = [
+            (frame_number, f"crc {computed:#x} != {received:#x}")
+            for frame_number, computed, received in checks
+            if computed != received
+        ]
+        return CheckResult(checked=len(checks), bad=bad)
+
+
+def add_crc_check(graph, name, receiver, frame_size, cuda_device_ordinal=0):
+    """Check the FPGA CRC of each frame that receiver emits, on the GPU.
+
+    ComputeCrcOp is a branch from the receiver, and CheckCrcOp takes ComputeCrcOp's
+    metadata, as in examples/imx274_frame_validation.py. ComputeCrcOp's tensor
+    output stays unconnected; don't bind a device for it."""
+    checker = CrcChecker()
+    crc_channel = hololink_module.CrcChannel(check_crc=checker.check_crc)
+    compute = graph.op(
+        hololink_module.operators.ComputeCrcOp,
+        f"{name}_compute_crc",
+        crc_channel=crc_channel,
+        frame_size=frame_size,
+        cuda_device_ordinal=cuda_device_ordinal,
+    )
+    check = graph.op(
+        hololink_module.operators.CheckCrcOp,
+        f"{name}_check_crc",
+        crc_channel=crc_channel,
+    )
+    graph.add_flow(receiver.tensor, compute.in_tensor, queue_depth=4)
+    graph.add_flow(receiver.metadata, compute.in_metadata, queue_depth=4)
+    graph.add_flow(compute.metadata, check.in_metadata, queue_depth=4)
+    return checker
+
+
+def metadata_flow(graph, source, sink, queue_depth=16):
+    """Connect a metadata output to an operator that takes only metadata, such as
+    WatchdogOp, RecordMetadataOp or TimeProfiler, so that it never holds up the
+    pipeline: a full queue drops its oldest sample. On a blocking edge, a sink that
+    fell queue_depth frames behind would make the producer publish frames' tensors
+    without their metadata, and an operator that pairs the two (CsiToBayerOp, say)
+    would stop for good: it retires such a tensor only when newer metadata arrives,
+    and the producer, its tensor queue full, sends no more."""
+    graph.add_flow(
+        source, sink, queue_policy=hs.QueuePolicy.DROP_OLDEST, queue_depth=queue_depth
+    )
+
+
+def add_image_crc_check(
+    graph, name, image, metadata, frame_size, cuda_device_ordinal=0
+):
+    """Compute the CRC of each image, for example BayerDemosaicOp's, on the GPU, as
+    v2.7 did with ComputeCrcOp; the returned CrcChecker's by_frame() gives
+    {frame_number: (image CRC, the frame's metadata.crc)}. v2.7's expected image
+    CRCs still apply: the HSDK5 demosaiced image is bit-exact with v2.7's.
+
+    ComputeCrcImageOp pairs each image with the frame's metadata on their capture
+    time, so take metadata from the operator that made the image's input (the
+    operators pass the capture time on). frame_size is the image's size in bytes.
+    Both are connected with DROP_OLDEST: the check never holds up the pipeline,
+    and the frames it can't keep up with go unchecked. The metadata comes first,
+    so the image needs a queue of one."""
+    checker = CrcChecker()
+    crc_channel = hololink_module.CrcChannel(check_crc=checker.check_crc)
+    compute = graph.op(
+        hololink_module.operators.ComputeCrcImageOp,
+        f"{name}_compute_crc",
+        crc_channel=crc_channel,
+        frame_size=frame_size,
+        cuda_device_ordinal=cuda_device_ordinal,
+    )
+    check = graph.op(
+        hololink_module.operators.CheckCrcOp,
+        f"{name}_check_crc",
+        crc_channel=crc_channel,
+    )
+    drop_oldest = hs.QueuePolicy.DROP_OLDEST
+    graph.add_flow(image, compute.in_tensor, queue_policy=drop_oldest, queue_depth=1)
+    graph.add_flow(
+        metadata, compute.in_metadata, queue_policy=drop_oldest, queue_depth=4
+    )
+    graph.add_flow(compute.metadata, check.in_metadata, queue_depth=4)
+    return checker
+
+
+def pair_by_timestamp(left, right, allowable_dt):
+    """Pair two lists of (timestamp_s, item), each in time order, where the
+    timestamps differ by at most allowable_dt. This replaces v2.7's FrameAlignerOp,
+    which paired the legs in the graph."""
+    pairs = []
+    i = j = 0
+    while i < len(left) and j < len(right):
+        dt = left[i][0] - right[j][0]
+        if abs(dt) <= allowable_dt:
+            pairs.append((left[i], right[j]))
+            i += 1
+            j += 1
+        elif dt < 0:
+            i += 1
+        else:
+            j += 1
+    logging.debug(f"pair_by_timestamp: {len(pairs)} pairs of {len(left)}, {len(right)}")
+    return pairs
+
+
+def assert_aligned(left, right, allowable_dt, min_pairs, skip_first=15, max_gap_s=0.5):
+    """Pair the stereo legs left and right, lists of (timestamp_s, item), with
+    pair_by_timestamp(), and fail unless they stayed aligned: at least min_pairs
+    pairs, and after the first skip_first pairs, none more than max_gap_s after the
+    one before, up to the end of the shorter leg. That is v2.7's check: its
+    watchdog after FrameAlignerOp needed an aligned pair at least every 0.5 s once
+    the pipeline was running. Returns the pairs."""
+    left = sorted(left, key=lambda entry: entry[0])
+    right = sorted(right, key=lambda entry: entry[0])
+    pairs = pair_by_timestamp(left, right, allowable_dt)
+    times = [left_entry[0] for left_entry, _ in pairs[skip_first:]]
+    if times:
+        # Legs that stop pairing for good leave no later pair to measure from.
+        times.append(min(left[-1][0], right[-1][0]))
+    gaps = [(later - earlier, earlier) for earlier, later in zip(times, times[1:])]
+    max_gap, max_gap_at = max(gaps, default=(0.0, None))
+    logging.info(
+        f"{len(pairs)} stereo pairs within {allowable_dt} s, of {len(left)} left "
+        f"and {len(right)} right frames; longest gap {max_gap:.3f} s"
+    )
+    assert len(pairs) >= min_pairs, (
+        f"Only {len(pairs)} stereo pairs within {allowable_dt} s (need {min_pairs}), "
+        f"of {len(left)} left and {len(right)} right frames"
+    )
+    assert (
+        max_gap <= max_gap_s
+    ), f"No stereo pair for {max_gap:.3f} s after the one at {max_gap_at:.6f} s"
+    return pairs

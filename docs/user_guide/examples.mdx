@@ -1,8 +1,8 @@
 Holoscan sensor bridge Python example applications are located under the `examples`
 directory.
 
-Below are instructions for running the applications on the AGX Thor, DGX Spark, IGX and
-the Jetson AGX Orin platforms.
+Below are instructions for running the applications on the AGX Thor, DGX Spark, IGX Thor
+and the Jetson AGX Orin platforms.
 
 ## Choosing platform-appropriate examples
 
@@ -13,16 +13,17 @@ type; examples are prefixed to indicate the receiver operator used.
 ### RoceReceiver (ConnectX Host)
 
 - Examples without any prefix in the filename use the RoCEv2-accelerated network
-  receiver operator and require a ConnectX-enabled platform like IGX Orin, IGX T7000, or
-  DGX Spark. **The sensor module must be connected to the ConnectX-enabled port on these
-  systems, not the RJ45 connector.** AGX Orin, AGX Thor, and IGX T5000 systems cannot
-  run these examples.
-- For accelerated networking examples on IGX T7000, `CUDA_VISIBLE_DEVICES` environment
-  variable will have to be set to the matching graphics GPU configuration, which
-  defaults to iGPU. For example, if dGPU graphics are configured, `imx274_player` must
-  have `CUDA_VISIBLE_DEVICES` set to `0` to select RDMA and graphics to the dGPU.
-- These examples work on both iGPU and dGPU configurations, provided that the container
-  was built with the appropriate iGPU or dGPU setting.
+  receiver operator and require a ConnectX-enabled platform like IGX Thor T7000 or DGX
+  Spark. **The sensor module must be connected to the ConnectX-enabled port on these
+  systems, not the RJ45 connector.** AGX Orin and AGX Thor systems cannot run these
+  examples.
+- HoloViz needs its CUDA device and the display on the same GPU. On IGX Thor T7000 with
+  a dGPU, `docker/demo.sh` sets `CUDA_VISIBLE_DEVICES=0` (the dGPU) when
+  `NV_DISABLE_IGPU_GRAPHICS` in `/etc/environment` is set and is not `0`. In all other
+  cases, `docker/demo.sh` does not set `CUDA_VISIBLE_DEVICES`. The examples use this GPU
+  for RDMA and for graphics. If the display is on the iGPU, set `CUDA_VISIBLE_DEVICES=1`
+  or use `--headless`. Refer to
+  [No suitable adapter found for surface](troubleshooting.mdx#no-suitable-adapter-found-for-surface).
 
 ### LinuxReceiver (Unaccelerated)
 
@@ -32,12 +33,14 @@ type; examples are prefixed to indicate the receiver operator used.
 ### FusaCoeCapture (Thor MGBE only)
 
 - Examples starting with `fusa_coe` use the hardware-accelerated CoE capability found on
-  Thor's MGBE interface, and require an AGX Thor or IGX T5000. **The sensor module must
-  be connected to the host's QSFP MGBE port, not the RJ45 port.**
+  Thor's MGBE interface, and require an AGX Thor. **The sensor module must be connected
+  to the host's QSFP MGBE port, not the RJ45 port.**
 
-- `FusaCoeCaptureOp` requires the capture format to be stated up front, via
-  `configure_format(pixel_format, bayer_format, packetizer_enabled)`. These are three
-  independent controls and together they select exactly one NvSciBuf color format:
+- `FusaCoeCaptureOp` requires the capture format to be stated up front. In C++, set the
+  `pixel_format`, `bayer_format` and `packetizer_enabled` fields of
+  `FusaCoeCaptureParams`; in Python, pass the same three as `FusaCoeCaptureOp`
+  parameters to `graph.op()`. These are three independent controls and together they
+  select exactly one NvSciBuf color format:
 
   | Bit depth | Packetizer enabled                       | Packetizer disabled         |
   | --------- | ---------------------------------------- | --------------------------- |
@@ -48,18 +51,30 @@ type; examples are prefixed to indicate the receiver operator used.
   The packetizer can only be enabled for RAW_10 and RAW_12. For more information about
   these formats, refer to NvSci headers. In short, these packetizer formats are
   "packed", where the pixels are no longer expected at byte boundaries, saving bandwidth
-  in transport.
+  in transport. The `NvSciColor_Bayer12<CFA>` family exists only in the JetPack 7.2 (L4T
+  R39) NvSci headers; built against the JetPack 7.1 (L4T R38) headers, the packetized
+  RAW_12 buffer is named `NvSciColor_Bayer16<CFA>` instead, but it holds the packed
+  12-bit layout.
 
-  Moreover, the underlying transport does not require the packetizer to be enabled,
-  which is demonstrated in example application with the option '--no-packetizer'.
+  The transport also operates when the packetizer is off. For an example, run
+  `fusa_coe_hawk_single_link_player.py` or the C++ `fusa_coe_vb1940_player` with the
+  `--no-packetizer` option. `fusa_coe_vb1940_player.py` always disables the packetizer
+  and has no `--no-packetizer` option.
 
-### SiplCameraOutput (Thor MGBE only)
+  In C++, the capture geometry comes from the camera driver: pass
+  `FusaCoeCaptureOp::make_geometry_adapter(geometry, packetizer_enabled)` to the
+  driver's `configure_converter()`, then set `FusaCoeCaptureParams::geometry` to the
+  `geometry` it filled in. Use the same `packetizer_enabled` value in both places;
+  `start()` fails when the geometry doesn't match the format. `MIGRATION.md` describes
+  the C++ operator in full.
 
-- Examples starting with "sipl\_" use the
+### SIPL (Holoscan Camera)
+
+- Holoscan Sensor Bridge does not include
   [SIPL](https://docs.nvidia.com/jetson/archives/r39.2/DeveloperGuide/SD/CameraDevelopment/SIPLFramework/Introduction-to-SIPL.html)
-  camera processing stack, which requires AGX Thor or IGX T5000. **The sensor module
-  must have a UDDF driver and be connected to the host's QSFP MGBE port, not the RJ45
-  port.**
+  examples. SIPL camera capture, which also gives access to Thor's hardware ISP, is
+  provided for Holoscan SDK 5 applications by the `SIPLCaptureOp` operator of the
+  separate Holoscan Camera module (`holoscan_camera`).
 
 ## IMX274 player example
 
@@ -98,7 +113,7 @@ After examples are built, you can run the `imx274_player`:
   $ $BUILD_DIR/examples/imx274_player
 ```
 
-Note this example requires a ConnectX-based platform, like IGX T7000 or DGX Spark.
+Note this example requires a ConnectX-based platform, like IGX Thor T7000 or DGX Spark.
 
 </Tab>
 </Tabs>
@@ -125,12 +140,6 @@ for unaccelerated hosts,
 $ python3 examples/linux_vb1940_player.py
 ```
 
-lastly, running SIPL accelerated network python example on AGX Thor or IGX T5000:
-
-```sh
-$ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_single.json
-```
-
 ## IMX477 player example
 
 To run the video player IMX477 example on a ConnectX-enabled host, in the demo
@@ -154,8 +163,10 @@ deserializer, which includes a built-in Video Pattern Generator (VPG).
 The `max96716a_player` examples drive the VPG to emit a synthetic stream out of the
 deserializer's MIPI CSI-2 output without any additional hardware.
 
-`````{tab-set}
-````{tab-item} Python
+<Tabs>
+
+<Tab title="Python" language="python">
+
 For ConnectX-enabled hosts:
 
 ```sh
@@ -168,24 +179,25 @@ For unaccelerated configurations:
 python3 examples/linux_max96716a_player.py
 ```
 
-For AGX Thor and T5000 using MGBE with FuSa CoE accelerated receiver:
+For AGX Thor using MGBE with FuSa CoE accelerated receiver:
 
 ```sh
 python3 examples/fusa_coe_max96716a_player.py
 ```
-````
-````{tab-item} C++
+
+</Tab>
+<Tab title="C++" language="cpp">
 
 The C++ examples need to be built first. From the repository root:
 
 ```sh
 mkdir -p build && cd build
-cmake ..
+cmake ..  # On AGX Thor, add -DHOLOLINK_BUILD_FUSA=ON for the fusa_coe_* players
 make -j
 ```
 
-This leaves the resulting executables in `build/examples/`. From the `build/`
-directory, you can then run the `max96716a_player` variants.
+This leaves the resulting executables in `build/examples/`. From the `build/` directory,
+you can then run the `max96716a_player` variants.
 
 For ConnectX accelerated hosts:
 
@@ -199,31 +211,33 @@ For unaccelerated configurations:
 ./examples/linux_max96716a_player
 ```
 
-For AGX Thor or IGX T5000 with FuSa CoE accelerated receiver:
+For AGX Thor with FuSa CoE accelerated receiver:
 
 ```sh
 ./examples/fusa_coe_max96716a_player
 ```
 
-````
-`````
+</Tab>
+</Tabs>
 
 ## Hawk camera + Tauro Tech DA326 player example
 
 This example is similar to the IMX274 and VB1940 player examples above, using a
 TauroTech DA326 sensor bridge board with one or more Hawk camera modules connected.
 
-Please note that the following arguments are required:
+Use these arguments to select the GMSL link and the sensors:
 
-- Single-link applications: `--channel A|B` to select the GMSL link to use, and
-  `--sensor left|right|both` to select which sensor(s) to enable receiving from.
-- Dual-link applications: `--sensor left|right` to select which sensor side to enable
-  receiving from (both GMSL links are used).
+- Single-link applications: `--channel A|B` selects the GMSL link (default `A`).
+  `--sensor left|right|both` selects the sensors to receive from (default `left`).
+- Dual-link applications: `--sensor left|right` selects the sensor side to receive from
+  (default `left`). These applications use both GMSL links.
 
 Run with `--help` for the full list of options.
 
-`````{tab-set}
-````{tab-item} Python
+<Tabs>
+
+<Tab title="Python" language="python">
+
 For ConnectX-accelerated platforms:
 
 ```sh
@@ -236,14 +250,14 @@ For unaccelerated configurations:
 python3 examples/linux_hawk_single_link_player.py
 ```
 
-For AGX Thor or T5000 MGBE with FuSa CoE accelerated receiver:
+For AGX Thor MGBE with FuSa CoE accelerated receiver:
 
 ```sh
 python3 examples/fusa_coe_hawk_single_link_player.py
 ```
 
-For two Hawk modules attached over both DA326 GMSL connectors, dual-link variants
-are also available.
+For two Hawk modules attached over both DA326 GMSL connectors, dual-link variants are
+also available.
 
 For ConnectX-accelerated platforms:
 
@@ -257,24 +271,25 @@ For unaccelerated configurations:
 python3 examples/linux_hawk_dual_link_player.py
 ```
 
-For AGX Thor or IGX T5000 with FuSa CoE accelerated receiver:
+For AGX Thor with FuSa CoE accelerated receiver:
 
 ```sh
 python3 examples/fusa_coe_hawk_dual_link_player.py
 ```
-````
-````{tab-item} C++
+
+</Tab>
+<Tab title="C++" language="cpp">
 
 The C++ examples need to be built first. From the repository root:
 
 ```sh
 mkdir -p build && cd build
-cmake ..
+cmake ..  # On AGX Thor, add -DHOLOLINK_BUILD_FUSA=ON for the fusa_coe_* players
 make -j
 ```
 
-This leaves the resulting executables in `build/examples/`. From the `build/`
-directory, you can then run the Hawk player variants.
+This leaves the resulting executables in `build/examples/`. From the `build/` directory,
+you can then run the Hawk player variants.
 
 For ConnectX-accelerated platforms:
 
@@ -288,14 +303,14 @@ For unaccelerated hosts:
 ./examples/linux_hawk_single_link_player
 ```
 
-For AGX Thor or T5000 with FuSa CoE accelerated receiver:
+For AGX Thor with FuSa CoE accelerated receiver:
 
 ```sh
 ./examples/fusa_coe_hawk_single_link_player
 ```
 
-For two Hawk modules attached over both DA326 GMSL connectors, dual-link variants
-are also available.
+For two Hawk modules attached over both DA326 GMSL connectors, dual-link variants are
+also available.
 
 For ConnectX-accelerated platforms:
 
@@ -309,13 +324,14 @@ For unaccelerated hosts:
 ./examples/linux_hawk_dual_link_player
 ```
 
-For AGX Thor T5000 with FuSa CoE accelerated receiver:
+For AGX Thor with FuSa CoE accelerated receiver:
 
 ```sh
 ./examples/fusa_coe_hawk_dual_link_player
 ```
-````
-`````
+
+</Tab>
+</Tabs>
 
 ## Running the TAO PeopleNet example
 
@@ -324,10 +340,6 @@ The tao-peoplenet example demonstrates running inference on a live video feed.
 provides a model that given an image can detect persons, bags, and faces. In this
 example, when those items are detected, bounding boxes are shown as an overlay over the
 live video.
-
-Note that metadata passing has an
-[open issue](https://github.com/nvidia-holoscan/holoscan-sdk/releases/tag/v4.2.0) when
-used with InferenceOp and is explicitly disabled in the Application in these examples.
 
 **Prerequisite**: Download the PeopleNet ONNX model from the NGC website:
 
@@ -354,16 +366,9 @@ for unaccelerated configurations with IMX477 camera,
 $ python3 examples/linux_tao_peoplenet_imx477.py
 ```
 
-lastly, running SIPL accelerated network python example on AGX Thor with LI VB1940
-camera:
-
-```sh
-$ python3 ./examples/sipl_tao_peoplenet.py --json-config ./examples/sipl_config/vb1940_single.json
-```
-
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
-the IMX274/Li VB1940 device as well as red/green box overlays when a person image is
-captured. Press Ctrl/C to exit. More information about this application can be found
+the camera as well as white box overlays when a person image is captured. Press Ctrl+C
+to exit. More information about this application can be found
 [here](applications.mdx#tao_peoplenet).
 
 ## Running the body pose example
@@ -371,7 +376,7 @@ captured. Press Ctrl/C to exit. More information about this application can be f
 **Prerequisite**: Download the YOLOv8 ONNX model from the YOLOv8 website and generate
 the body pose ONNX model. Within the Holoscan sensor bridge demo container:
 
-**NOTE:** The stock AGX Orin Development Kits running Jetpack 7.2 may not have
+**NOTE:** The stock AGX Orin Development Kits running JetPack 7.2.1 may not have
 sufficient disk space to install dependencies. Prior to installing the python
 dependencies below, ensure you have plenty of disk space by clearing out unused packages
 or the docker builder cache
@@ -420,19 +425,12 @@ within the demo container this way:
 $ python3 examples/linux_body_pose_estimation_imx477.py
 ```
 
-lastly, running SIPL accelerated network python example on AGX Thor with Li VB1940
-camera:
-
-```sh
-$ python3 ./examples/sipl_body_pose_estimation.py --json-config ./examples/sipl_config/vb1940_single.json
-```
-
 This will bring up the Holoscan visualizer on the GUI showing the live video feed from
-the IMX274/Li VB1940 device, along with a green overlay showing keypoints found by the
-body pose net model. For more information about this application, look
+the camera, along with a white overlay showing keypoints found by the body pose net
+model. For more information about this application, look
 [here](applications.mdx#body_pose_estimation).
 
-Press Ctrl/C to exit.
+Press Ctrl+C to exit.
 
 ## Running the Stereo IMX274, Stereo IMX477, Leopard imaging Li VB1940 Eagle, and TauroTech DA326 Hawk examples
 
@@ -466,7 +464,7 @@ $ python3 examples/linux_single_network_stereo_imx274_player.py
 ConnectX-accelerated hosts with IMX477:
 
 ```sh
-$ python3 examples/single_network_stereo_imx477_player.py
+$ python3 examples/single_network_multi_imx477_player.py
 ```
 
 Unaccelerated hosts with IMX477:
@@ -485,12 +483,6 @@ Unaccelerated hosts with Li VB1940 Eagle:
 
 ```sh
 $ python3 examples/linux_single_network_stereo_vb1940_player.py
-```
-
-SIPL python example on AGX Thor or IGX T5000 with Li VB1940 camera:
-
-```sh
-$ python3 ./examples/sipl_player.py --json-config ./examples/sipl_config/vb1940_dual.json
 ```
 
 When using the TauroTech DA326 sensor bridge and a Hawk camera module, both AR0234
@@ -526,12 +518,12 @@ mode.
 Time-Sensitive Networking (TSN) support. It configures 802.1Q VLAN tagging on the sensor
 virtual port and the EVT channel, and programs the FPGA PTP engine before starting the
 pipeline. This example works on all platforms that support the Linux Receiver (AGX Orin,
-AGX Thor, DGX Spark, and IGX).
+AGX Thor, DGX Spark, and IGX Thor).
 
 ### Host network prerequisites
 
-Before running the player, a VLAN subinterface must exist on the host NIC and the sensor
-bridge IP must be assigned to it so that the kernel delivers VLAN-tagged frames to the
+Before running the player, a VLAN subinterface must exist on the host NIC and the host
+IP address must be assigned to it so that the kernel delivers VLAN-tagged frames to the
 UDP socket:
 
 ```sh
@@ -539,7 +531,7 @@ UDP socket:
 sudo ip link add link <iface> name <iface>.<vlan-id> type vlan id <vlan-id>
 sudo ip link set <iface>.<vlan-id> up
 
-# Assign the sensor bridge IP to the subinterface
+# Assign the host IP address to the subinterface
 sudo ip addr add 192.168.0.101/32 dev <iface>.<vlan-id>
 ```
 
@@ -687,9 +679,15 @@ values. Please refer to the application structure section to read more about the
 ## Using the Jetson Hardware ISP example
 
 `examples/linux_hwisp_player.py` shows an example of the Jetson hardware ISP unit
-processing the Bayer frame captured live using IMX274. This example supports Jetson Orin
-AGX and IGX Orin 700 in iGPU configuration. **This example does not support AGX Thor;
-refer to the SIPL examples for Hardware ISP usage**.
+processing the Bayer frame captured live using IMX274. This example supports Jetson AGX
+Orin. **This example does not support AGX Thor; for Hardware ISP usage on AGX Thor,
+refer to SIPL capture in the separate Holoscan Camera module (`holoscan_camera`)**.
+
+The example needs `ArgusIspOp`. `ArgusIspOp` is in the build only when
+`HOLOLINK_BUILD_ARGUS_ISP` is `ON`. A CMake build sets it to `OFF` by default. The
+Python package build (`pip install ./python`, also in the demo container) sets it to
+`ON` on L4T R39 or newer hosts that have the Jetson Multimedia API in
+`/usr/src/jetson_multimedia_api/argus`.
 
 Before starting the docker run, setup the `nvargus-daemon` with the flag
 `enableRawReprocessing=1` and `rawReprocessModulePartName="A6V26"`. This enables us to
@@ -711,9 +709,10 @@ To run the example, within the demo container:
 $ python3 examples/linux_hwisp_player.py
 ```
 
-This will run the application with visualizer display showing the live capture. Note
-that the default camera mode has changed since Jetpack 6 and now defaults to 4k frames.
-This example is compatible with Jetpack 7.2+.
+This will run the application with visualizer display showing the live capture. On
+JetPack 7.2.1 (L4T R39), the default camera mode is 0 (3840x2160 at 60 fps). Use
+`--camera-mode` to select a different mode. This example is compatible with JetPack
+7.2.1.
 
 Note if user wishes to undo running the `nvargus-daemon` with flag
 `enableRawReprocessing=1`, then please execute the following command.
@@ -729,36 +728,66 @@ exit
 
 ## Running the Latency Application for IMX274 example
 
-For IGX systems, `examples/imx274_latency.py` shows an example of how to use timestamp
-to profile hardware and software pipeline. This example demonstrates recording
-timestamps received from the FPGA when data is acquired and timestamps measured in the
-host at various points in frame reception and pipeline execution. At the end of the run,
-the application will provide a duration and latency report with average, minimum, and
-maximum values.
+The IMX274 latency examples show how to use timestamps to profile the hardware and
+software pipeline. They record timestamps received from the FPGA when data is acquired
+and timestamps measured in the host at various points in frame reception and pipeline
+execution. At the end of the run, the application will provide a duration and latency
+report with average, minimum, and maximum values. [Latency](latency.mdx) describes what
+each value measures.
 
-Before running the app, make sure the PTP sync has been enabled on the setup and then
-use the following commands to run the example.
+Before running the app, make sure the PTP sync has been enabled on the setup. Then run
+the example on a ConnectX-accelerated host, such as IGX Thor T7000:
 
-```sh
-$ python3 examples/imx274_latency.py
-```
+<Tabs>
 
-Running the latency example application on unaccelerated hosts:
+<Tab title="Python" language="python">
 
 ```sh
-$ python3 examples/linux_imx274_latency.py
+  $ python3 examples/imx274_latency.py
 ```
+
+or, for unaccelerated hosts,
+
+```sh
+  $ python3 examples/linux_imx274_latency.py
+```
+
+</Tab>
+<Tab title="C++" language="cpp">
+
+Build the C++ examples as shown in the [IMX274 player example](#imx274-player-example),
+then run
+
+```sh
+  $ $BUILD_DIR/examples/roce_imx274_latency
+```
+
+or, for unaccelerated hosts,
+
+```sh
+  $ $BUILD_DIR/examples/linux_imx274_latency
+```
+
+The C++ tools time each frame until its demosaiced image is ready for display, not until
+it has been rendered. [Running the latency tools](latency.mdx#running-the-latency-tools)
+describes their options and report.
+
+</Tab>
+</Tabs>
 
 **This example will not run on AGX Thor**
 
 ## Running the ECam0M30ToF Player Application
 
+**Note:** **This example isn't supported on Holoscan SDK 5 yet**; it will be supported
+in an upcoming update to release 3.0.
+
 The `ecam0m30tof_player.py` application demonstrates how to capture and display depth
 and/or IR data from the ECam0M30ToF time-of-flight camera using RoCE (RDMA over
-Converged Ethernet) for high-performance data transmission, utilizing Holoviz operator's
-`DEPTH_MAP` rendering for enhanced depth visualization. This application can be modified
-to run on Jetson AGX by changing the receiver operator from `RoceReceiverOp` to
-`LinuxReceiverOperator`.
+Converged Ethernet) for high-performance data transmission. HoloViz in Holoscan SDK 5.0
+has no `DEPTH_MAP` rendering, so the Holoscan SDK 5 version of this application shows
+the depth data in grayscale. This application can be modified to run on Jetson AGX by
+changing the receiver operator from `RoceReceiverOp` to `LinuxReceiverOp`.
 
 **Prerequisites**: ECam0M30ToF camera connected to the Hololink device
 
@@ -815,7 +844,7 @@ In this example, the application will check for CRC32 frame errors every 50 fram
 #### RoCE Receiver
 
 For ConnectX-accelerated platforms, `examples/imx274_frame_validation.py` provides
-high-performance frame validation with GPU-accelerated CRC checking using nvCOMP 5.0.
+high-performance frame validation with GPU-accelerated CRC checking using nvCOMP 5.2.
 This example uses the accelerated network receiver operator and requires ConnectX
 SmartNIC controllers.
 
@@ -828,7 +857,7 @@ $ python3 examples/imx274_frame_validation.py
 ```
 
 Unlike the CPU-based CRC validation in the Linux version,
-[GPU-based CRC using nvCOMP 5.0](https://docs.nvidia.com/cuda/nvcomp/crc32.html) is fast
+[GPU-based CRC using nvCOMP 5.2](https://docs.nvidia.com/cuda/nvcomp/crc32.html) is fast
 enough to validate every frame by default. CRC validation is enabled by default with
 `--crc-frame-check 1`. To disable CRC validation entirely, use `--crc-frame-check 0`.
 
@@ -845,8 +874,9 @@ $ python3 examples/stereo_imx274_frame_validation.py
 
 #### Performance
 
-The nvCOMP CRC calculation performance on IGX-dGPU for single-camera configuration with
-4K resolution (measured over 1000 frames):
+The nvCOMP CRC calculation performance measured on IGX Orin with a dGPU in Holoscan
+Sensor Bridge 2.x (reference values) for single-camera configuration with 4K resolution
+(measured over 1000 frames):
 
 ```text
 Minimum: 275 us
@@ -871,9 +901,9 @@ state to avoid misleading errors occurring due to this known condition.
 
 #### FUSA CoE Receiver (nvCOMP)
 
-For AGX Thor and T5000, `examples/vb1940_fusa_nvcomp_crc_validation.py` provides
-high-performance frame validation with GPU-accelerated CRC checking using nvCOMP 5.0.
-This example uses the FUSA CoE capture operator for accelerated network data transfer.
+For AGX Thor, `examples/vb1940_fusa_nvcomp_crc_validation.py` provides high-performance
+frame validation with GPU-accelerated CRC checking using nvCOMP 5.2. This example uses
+the FUSA CoE capture operator for accelerated network data transfer.
 
 Before running the app,
 [enable PTP sync](/holoscan/sensor-bridge/getting-started/host-setup#HostSetupTarget) on
@@ -883,7 +913,7 @@ your setup, then use the following command:
 $ python3 examples/vb1940_fusa_nvcomp_crc_validation.py
 ```
 
-[GPU-based CRC using nvCOMP 5.0](https://docs.nvidia.com/cuda/nvcomp/crc32.html) is fast
+[GPU-based CRC using nvCOMP 5.2](https://docs.nvidia.com/cuda/nvcomp/crc32.html) is fast
 enough to validate every frame by default. The application computes CRC on the full CSI
 frame (including CSI header and trailing bytes) to match the camera's FPGA CRC
 computation.
@@ -911,8 +941,26 @@ NVIDIA PVA (Programmable Vision Accelerator) to validate camera frames. These ex
 compare PVA-computed CRC values against camera FPGA-embedded CRC values to detect data
 corruption.
 
-For requirements and build instructions, see the
-[PVA CRC README](https://github.com/nvidia-holoscan/holoscan-sensor-bridge/blob/main/python/hololink/operators/pva_crc/README.md).
+The PVA CRC examples have these requirements:
+
+- An NVIDIA platform with PVA hardware. Refer to
+  [Supported Platforms](https://docs.nvidia.com/pva/sdk/2.8.1/frequently-asked-questions.html#which-platforms-support-pva).
+- The PVA SDK 2.9 in `/opt/nvidia/pva-sdk-2.9` on the host. Build the demo container on
+  this host. `docker/build.sh` copies the PVA SDK into the container. If the host does
+  not have the PVA SDK, the container does not include the PVA CRC operator.
+- The cuPVA allowlist for the PVA CRC library. Run these commands one time on the host,
+  outside the container:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y pva-sdk-2.9-l4t
+sudo apt-get install -y pva-allow-2
+curl -f -L -o /tmp/cupva_allowlist_pva_crc_2.9 \
+  "https://edge.urm.nvidia.com/artifactory/sw-holoscan-thirdparty-generic-local/pva/crc/v2.9/cupva_allowlist_pva_crc_2.9"
+sudo cp /tmp/cupva_allowlist_pva_crc_2.9 /etc/pva/allow.d/cupva_allowlist_pva_crc_2.9
+sudo nvidia-pva-allow update
+sudo nvidia-pva-allow enable
+```
 
 To run the PVA CRC validation examples, first set the `LD_LIBRARY_PATH` environment
 variable (required before running any application). Within the demo container:
@@ -927,7 +975,7 @@ To run the IMX274 PVA CRC validation example on ConnectX-accelerated systems:
 $ python3 examples/imx274_pva_crc_validation.py --frame-limit 100
 ```
 
-To run the Li VB1940 Eagle PVA CRC validation example on AGX Thor or IGX T5000:
+To run the Li VB1940 Eagle PVA CRC validation example on AGX Thor:
 
 ```sh
 $ python3 examples/vb1940_fusa_pva_crc_validation.py --frame-limit 100
@@ -937,8 +985,9 @@ $ python3 examples/vb1940_fusa_pva_crc_validation.py --frame-limit 100
 
 #### IMX274
 
-The PVA CRC calculation performance on IGX-dGPU for single-camera configuration with 4K
-resolution (measured over 1000 frames):
+The PVA CRC calculation performance measured on IGX Orin with a dGPU in Holoscan Sensor
+Bridge 2.x (reference values) for single-camera configuration with 4K resolution
+(measured over 1000 frames):
 
 ```text
 Minimum: 412 us
@@ -1033,7 +1082,7 @@ other carries whatever is on the bus and appears in the corresponding channel.
 
 ### FuSa CoE (MGBE) receiver
 
-`examples/audio_recorder_fusa.py` streams audio to AGX Thor or IGX T5000.
+`examples/audio_recorder_fusa.py` streams audio to AGX Thor.
 
 ```sh
 # Live playback:
@@ -1066,9 +1115,10 @@ section for detailed information about how sub-frame processing works.
 
 ### IMX274 Sub-Frame Player Example
 
-The sub-frame IMX274 player example demonstrates processing and displaying camera frames
-as sub-frames rather than complete frames. This enables lower latency visualization for
-high-resolution cameras.
+The sub-frame IMX274 player example receives and processes camera frames as sub-frames,
+so processing starts before a whole frame has arrived. The C++ and Python players
+combine the sub-frames into complete frames first. Then they demosaic and display each
+complete frame.
 
 <Tabs>
 
@@ -1082,23 +1132,10 @@ high-resolution cameras.
   $ python3 examples/linux_sub_frame_imx274_player.py --sub-frame-rows 540
 ```
 
-The `--sub-frame-rows` parameter specifies the number of rows per sub-frame.
-
-**NOTE:** `sub_frame_rows` must evenly divide the frame height. For example, a valid
-value would be `--sub-frame-rows 540` (2160 ÷ 540 = 4 sub-frames).
-
 </Tab>
 <Tab title="C++" language="cpp">
 
-The C++ examples need to be built first using these commands:
-
-```sh
-  $ export BUILD_DIR=$(pwd)/build
-  $ cd $BUILD_DIR
-  $ cmake ..
-  $ make -j
-```
-
+Build the C++ examples as shown in the [IMX274 player example](#imx274-player-example).
 After examples are built, you can run the sub-frame IMX274 player:
 
 ```sh
@@ -1111,6 +1148,15 @@ After examples are built, you can run the sub-frame IMX274 player:
 
 </Tab>
 </Tabs>
+
+The `--sub-frame-rows` parameter (default 216) sets the number of rows per sub-frame.
+
+**NOTE:** `sub_frame_rows` must evenly divide the frame height and must be even. The
+Python players and the C++ players refuse an odd value. For example,
+`--sub-frame-rows 540` is valid: 2160 ÷ 540 = 4 sub-frames.
+
+In the C++ players, `--frame-limit N` counts frames, not sub-frames: the player stops
+once `SubFrameCombinerOp` has emitted N frames.
 
 ### VB1940 Sub-Frame Visualizer Example
 
@@ -1128,8 +1174,9 @@ $ $BUILD_DIR/examples/sub_frame_vb1940_player --sub-frame-rows 248
 The `--sub-frame-rows` parameter specifies the number of rows per sub-frame. The VB1940
 default mode is 2560×1984 at 60fps.
 
-**NOTE:** `sub_frame_rows` must evenly divide the frame height. For 1984 rows, valid
-values include 248 (8 sub-frames), 496 (4 sub-frames), and 992 (2 sub-frames).
+**NOTE:** `sub_frame_rows` must evenly divide the frame height and be even. For 1984
+rows, valid values include 248 (8 sub-frames), 496 (4 sub-frames), and 992 (2
+sub-frames).
 
 Additional options:
 
@@ -1139,7 +1186,8 @@ Additional options:
   `VB1940_MODE_2560X1984_60FPS`)
 - **`--use-sensor`**: Select sensor index when two sensors are connected (0 or 1,
   default: 0)
-- **`--frame-limit`**: Exit after receiving this many frames (default: run indefinitely)
+- **`--frame-limit`**: Exit after receiving this many frames, not sub-frames (default:
+  run indefinitely)
 
 See
 [SubFrameVisualizerOp](/holoscan/sensor-bridge/applications/applications#subframevisualizerop)
@@ -1151,8 +1199,8 @@ works.
 Sub-frame examples support two display modes:
 
 - **Sub-Frame Combiner Mode** (IMX274 examples): Sub-frames are accumulated by
-  `SubFrameCombinerOp` into a complete frame buffer before being passed to `HolovizOp`
-  for display. Capture timing is independent of the display refresh rate.
+  `SubFrameCombinerOp` into a complete frame, which is demosaiced and passed to
+  `HolovizOp` for display. Capture timing is independent of the display refresh rate.
 
 - **Sub-Frame Visualizer Mode** (VB1940 example): Sub-frames are composited directly
   onto the display by `SubFrameVisualizerOp` as they arrive. Capture is synchronized to
@@ -1162,14 +1210,18 @@ Sub-frame examples support two display modes:
 ### Sub-Frame Configuration Parameters
 
 - **`sub_frame_rows`**: Number of rows per sub-frame. Set to 0 to disable sub-frame
-  processing (full-frame mode). **Must evenly divide the frame height.**
+  processing (full-frame mode). **Must evenly divide the frame height and be even.**
+- **`drop_incomplete`** (`CsiToBayerParams`, `SubFrameCombinerParams`): By default, a
+  sub-frame or frame part of whose data was lost upstream is still passed on, flagged
+  `holoscan::SampleFlags::kDegraded`. Set it to `true` to withhold such sub-frames and
+  discard such frames instead.
 
 ### Performance Considerations
 
 - **Memory**: Smaller sub-frames reduce memory requirements but increase processing
   overhead. The `SubFrameCombinerOp` waits for all sub-frames to arrive before emitting
-  a complete frame, or emits an incomplete frame if a sub-frame is dropped and the next
-  frame starts.
+  a complete frame; a frame missing a sub-frame is still emitted, flagged
+  `holoscan::SampleFlags::kDegraded`, unless `drop_incomplete` is set.
 
 - **Network**: Sub-frame size should align with network packet sizes to minimize partial
   sub-frames and improve efficiency.

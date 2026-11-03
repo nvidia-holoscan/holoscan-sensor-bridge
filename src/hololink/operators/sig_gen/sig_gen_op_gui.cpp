@@ -1,6 +1,6 @@
 /*
- * SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights
- * reserved. SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+ * SPDX-License-Identifier: Apache-2.0
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,16 +17,16 @@
 
 #include "sig_gen_op_gui.hpp"
 
-#include <cuda.h>
-#include <cuda_runtime_api.h>
+#include <algorithm>
+#include <cmath>
 
-#include <imgui.h>
+#include <holoviz/imgui/ui.hpp>
 
 #include <hololink/common/cuda_error.hpp>
 
 namespace hololink::operators {
 
-constexpr size_t plot_width = 1024;
+constexpr float plot_width = 1024;
 
 SignalGeneratorOp::GUI::SignalComponent::SignalComponent(const std::string& name, const std::string& expression)
     : name_(name)
@@ -84,85 +84,81 @@ void SignalGeneratorOp::GUI::SignalComponent::draw_expression_input_text(std::mu
     ImGui::PopID();
 }
 
-struct SignalGeneratorOp::GUI::OnTensorReadyData {
-    SignalGeneratorOp::GUI* self_;
-    SignalGeneratorOp::Tensor tensor_;
-};
-
-void SignalGeneratorOp::GUI::on_tensor_ready(void* data)
-{
-    auto on_tensor_ready_data = static_cast<OnTensorReadyData*>(data);
-    auto self = on_tensor_ready_data->self_;
-    std::lock_guard<std::mutex> lock(self->mutex_);
-    auto& tensor = on_tensor_ready_data->tensor_;
-    if (tensor != self->pending_tensor_queue_.front()) {
-        HSB_LOG_ERROR("Synchronization error");
-        TensorQueue empty_queue;
-        std::swap(self->pending_tensor_queue_, empty_queue);
-    } else {
-        self->ready_tensor_ = std::move(self->pending_tensor_queue_.front());
-        self->pending_tensor_queue_.pop();
-    }
-    delete on_tensor_ready_data;
-}
-
-SignalGeneratorOp::GUI::GUI(hololink::ImGuiRenderer* renderer, const std::string& name,
+SignalGeneratorOp::GUI::GUI(std::shared_ptr<hololink::ImGuiRenderer> renderer, const std::string& name,
     const std::string& expression_in_phase, const std::string& expression_quadrature,
     unsigned samples_count, const Rational& sampling_interval)
-    : signal_ {
+    : samples_count_(samples_count)
+    , sampling_interval_(sampling_interval)
+    , to_(std::min(default_plotted_samples, static_cast<int>(samples_count)))
+    , signal_ {
         SignalComponent("In-Phase", expression_in_phase),
         SignalComponent("Quadrature", expression_quadrature)
     }
-    , renderer_(renderer)
-    , samples_count_(samples_count)
-    , sampling_interval_(sampling_interval)
-    , renderer_handle_(renderer_->add_draw_function(name, [this] {
-        std::unique_lock<std::mutex> lock(mutex_);
-        Tensor ready_tensor = std::move(ready_tensor_);
-        lock.unlock();
+    , renderer_(std::move(renderer))
+    , renderer_handle_(renderer_->add_draw_function(name, [this] { draw(); }))
+{
+}
 
-        if (ready_tensor || force_update_) {
-            if (ready_tensor)
-                current_tensor_ = ready_tensor;
+SignalGeneratorOp::GUI::~GUI()
+{
+    // Synchronous: no draw() runs after this.
+    renderer_->remove_draw_function(renderer_handle_);
+}
 
-            if (current_tensor_) {
-                auto size = number_of_signal_components * (to_ - from_);
-                samples_.resize(size);
+void SignalGeneratorOp::GUI::stage_samples(const float* device_samples, cudaStream_t stream)
+{
+    int from, to;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        from = from_;
+        to = to_;
+    }
+    const size_t floats = size_t(to - from) * number_of_signal_components;
+    if (!floats)
+        return;
+    staging_.stage(
+        floats,
+        [&](float* host) {
+            CUDA_CHECK(cudaMemcpyAsync(host,
+                device_samples + size_t(from) * number_of_signal_components,
+                floats * sizeof(float),
+                cudaMemcpyDeviceToHost,
+                stream));
+        },
+        stream);
+}
 
-                auto device_src = reinterpret_cast<float*>(current_tensor_->data()) + number_of_signal_components * from_;
-                CUDA_CHECK(cudaMemcpyAsync(&samples_.front(), device_src, size * sizeof(float), cudaMemcpyDeviceToHost, stream_.handle_));
-                auto minmax = cuda_minmax(device_src, size, stream_.handle_);
-                CUDA_CHECK(cudaStreamSynchronize(stream_.handle_));
-                max_value_ = std::max(std::abs(minmax.first), std::abs(minmax.second));
-                force_update_ = false;
-            }
-        }
+void SignalGeneratorOp::GUI::draw()
+{
+    if (staging_.take(samples_) && !samples_.empty()) {
+        auto minmax = std::minmax_element(samples_.begin(), samples_.end());
+        max_value_ = std::max(std::abs(*minmax.first), std::abs(*minmax.second));
+    }
 
-        ImGui::LabelText("Samples Count", "%d", samples_count_);
-        ImGui::Text("Sampling Interval");
-        ImGui::SameLine();
-        lock.lock();
+    ImGui::LabelText("Samples Count", "%u", samples_count_);
+    ImGui::Text("Sampling Interval");
+    ImGui::SameLine();
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
         if (ImGui::InputInt("/", &sampling_interval_.num_, 1, 0))
             sampling_interval_.num_ = std::max(sampling_interval_.num_, 0);
         ImGui::SameLine();
         if (ImGui::InputInt("(Rational Number)", &sampling_interval_.den_, 1, 0, ImGuiInputTextFlags_EnterReturnsTrue))
             sampling_interval_.den_ = std::max(sampling_interval_.den_, 1);
-        lock.unlock();
-        ImGui::Separator();
+    }
+    ImGui::Separator();
 
-        ImGui::BeginGroup();
-        for (auto& signal_component : signal_)
-            signal_component.draw_expression_input_text(mutex_);
-        ImGui::EndGroup();
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-        for (auto& signal_component : signal_)
-            signal_component.draw_show_checkbox();
-        ImGui::EndGroup();
+    ImGui::BeginGroup();
+    for (auto& signal_component : signal_)
+        signal_component.draw_expression_input_text(mutex_);
+    ImGui::EndGroup();
+    ImGui::SameLine();
+    ImGui::BeginGroup();
+    for (auto& signal_component : signal_)
+        signal_component.draw_show_checkbox();
+    ImGui::EndGroup();
 
-        draw_plots();
-    }))
-{
+    draw_plots();
 }
 
 void SignalGeneratorOp::GUI::draw_plots()
@@ -170,24 +166,28 @@ void SignalGeneratorOp::GUI::draw_plots()
     if (samples_.empty())
         return;
 
-    auto from = from_;
-    auto to = to_;
+    // The plotted window takes effect with the next staged batch.
+    int from, to;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        from = from_;
+        to = to_;
+    }
 
-    ImGui::PushID(&samples_.front());
+    ImGui::PushID("plots");
 
-    ImGui::PushID(&from_);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##from", ImGuiDataType_S32, &from, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::SameLine();
     ImGui::BeginGroup();
+    const int count = static_cast<int>(samples_.size() / number_of_signal_components);
     for (size_t plot_index = 0; plot_index < number_of_signal_components; ++plot_index)
         if (signal_[plot_index].show_plot_)
             ImGui::PlotLines("",
-                &samples_.front() + plot_index, // Offset to get the right plot data
-                to_ - from_,
-                from_,
+                samples_.data() + plot_index, // Offset to get the right plot data
+                count,
+                0,
                 signal_[plot_index].name_.c_str(),
                 -max_value_,
                 max_value_,
@@ -196,30 +196,16 @@ void SignalGeneratorOp::GUI::draw_plots()
     ImGui::EndGroup();
     ImGui::SameLine();
 
-    ImGui::PushID(&to_);
     ImGui::SetNextItemWidth(42);
-    ImGui::InputScalar("", ImGuiDataType_U32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
-    ImGui::PopID();
+    ImGui::InputScalar("##to", ImGuiDataType_S32, &to, nullptr, nullptr, "%d", ImGuiInputTextFlags_EnterReturnsTrue);
 
     ImGui::PopID();
 
-    if (from < 0)
-        from = from_;
-    if (to > current_tensor_->size())
-        to = to_;
-    if (from >= to)
-        from = from_;
-    if (to <= from)
-        to = to_;
-    if (to != to_ || from != from)
-        force_update_ = true;
-    from_ = from;
-    to_ = to;
-}
-
-SignalGeneratorOp::GUI::~GUI()
-{
-    renderer_->remove_draw_function(renderer_handle_);
+    if ((from >= 0) && (from < to) && (to <= static_cast<int>(samples_count_))) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        from_ = from;
+        to_ = to;
+    }
 }
 
 bool SignalGeneratorOp::GUI::is_running() const
@@ -245,13 +231,6 @@ unsigned SignalGeneratorOp::GUI::get_samples_count() const
 const Rational& SignalGeneratorOp::GUI::get_sampling_interval() const
 {
     return sampling_interval_;
-}
-
-void SignalGeneratorOp::GUI::push_samples(const Tensor& tensor)
-{
-    std::lock_guard<std::mutex> lock(mutex_);
-    pending_tensor_queue_.emplace(tensor);
-    CUDA_CHECK(cudaLaunchHostFunc(0, &on_tensor_ready, new OnTensorReadyData { this, tensor }));
 }
 
 } // namespace hololink::operators

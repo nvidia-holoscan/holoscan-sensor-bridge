@@ -8,15 +8,18 @@
 
 #include <cstdint>
 #include <memory>
+#include <string>
 #include <utility>
 
 #include "hololink/module/enumeration_metadata.hpp"
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/mipi_dphy.hpp"
+#include "hololink/module/publisher.hpp"
 #include "hololink/module/service.hpp"
 #include "hololink/module/status.h"
 
 #include "common.hpp"
+#include "hsb_ip_publisher.hpp"
 #include "lmmi_access.hpp"
 
 namespace hololink::module::module_core {
@@ -117,6 +120,26 @@ public:
 private:
     std::shared_ptr<HololinkInterfaceV1> hololink_;
 };
+
+/* Publish CpnxMipiDphyV1 on `instance_id`. The construct_board_services override of
+ * every single-FPGA CertusPro-NX board is a call to this; pair it with
+ * stamp_cpnx_mipi_dphy_metadata. A free function rather than a publisher
+ * method because the D-PHY layout is a property of the FPGA design, not of the
+ * HSB IP the base publisher speaks — boards on either design reach the helper
+ * matching theirs. The parent is resolved only once the type_id matches, so an
+ * unrelated lookup doesn't fetch a HololinkV1. */
+inline bool construct_cpnx_mipi_dphy(HsbIpPublisher& publisher,
+    const std::string& instance_id, const std::string& type_id)
+{
+    if (!Publisher::has_type_id<CpnxMipiDphyV1>(type_id)) {
+        return false;
+    }
+    auto hololink_impl = publisher.configured_hololink(instance_id, "MipiDphy");
+    auto impl = std::make_shared<CpnxMipiDphyV1>(hololink_impl);
+    ServicePublisher<CpnxMipiDphyV1>(publisher.shared_from_this())
+        .publish(instance_id, impl);
+    return true;
+}
 
 } // namespace hololink::module::module_core
 

@@ -84,7 +84,7 @@ public:
                 + std::to_string(TOTAL_SENSORS - 1) + ")");
         }
         // One physical data plane (0) shared by every sensor, one SIF each.
-        hsb_lite_sensor_metadata(metadata, sensor_number,
+        hsb_ip_sensor_metadata(metadata, sensor_number,
             /*data_plane=*/0, /*sifs_per_sensor=*/1);
     }
 };
@@ -101,21 +101,26 @@ protected:
     void publish_channel_configuration() override
     {
         auto impl = std::make_shared<TutorialDeviceChannelConfigurationV1>();
-        ServicePublisher<HsbLiteChannelConfigurationV1>(shared_from_this())
+        ServicePublisher<HsbIpChannelConfigurationV1>(shared_from_this())
             .publish("", impl);
     }
 
-    bool construct_overrides(
+    /* The Tutorial device's own service. It adds a type_id rather than
+     * replacing a canonical one, so it belongs here and not in
+     * construct_overrides. Chain to the base afterwards: HsbLitePublisher
+     * publishes its own services from this same hook, and they would be
+     * lost otherwise. */
+    bool construct_board_services(
         const std::string& instance_id,
         const std::string& type_id) override
     {
-        if (!Publisher::has_type_id<TutorialDeviceV1>(type_id)) {
-            return false;
+        if (Publisher::has_type_id<TutorialDeviceV1>(type_id)) {
+            auto impl = std::make_shared<TutorialDeviceV1>();
+            ServicePublisher<TutorialDeviceV1>(shared_from_this())
+                .publish(instance_id, impl);
+            return true;
         }
-        auto impl = std::make_shared<TutorialDeviceV1>();
-        ServicePublisher<TutorialDeviceV1>(shared_from_this())
-            .publish(instance_id, impl);
-        return true;
+        return HsbLitePublisher::construct_board_services(instance_id, type_id);
     }
 };
 

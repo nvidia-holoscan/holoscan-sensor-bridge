@@ -147,20 +147,20 @@ Figure 5 Sensor Window Calculation
 ### Sensor Interface to Virtual Port Mapping
 
 The Holoscan Sensor Bridge IP supports mapping multiple sensor interfaces to virtual
-ports for data access. This mapping is controlled by the FPGA parameter `SIF_RX_NUM_VP`
-which defines the number of virtual ports per sensor interface. When not explicitly
-configured, `SIF_RX_NUM_VP` defaults to 1 for all sensors. The virtual port mapping is
-only valid when using high bandwidth camera data settings. When high bandwidth camera
-data settings are not used, the virtual port setting is undefined and set to 0. Software
-interacts with sensor data through these virtual port indices.
+ports for data access. This mapping is controlled by the FPGA parameter
+`SIF_RX_VP_COUNT` which defines the number of virtual ports per sensor interface. When
+not explicitly configured, `SIF_RX_VP_COUNT` defaults to 1 for all sensors. The virtual
+port mapping is only valid when using high bandwidth camera data settings. When high
+bandwidth camera data settings are not used, the virtual port setting is undefined and
+set to 0. Software interacts with sensor data through these virtual port indices.
 
 The virtual ports are concatenated together in a sequential manner, where each sensor
 interface's virtual ports are allocated in order. For example:
 
-- With 2 sensors and `SIF_RX_NUM_VP={1,1}`:
+- With 2 sensors and `SIF_RX_VP_COUNT={1,1}`:
   - Sensor 0's data is accessible on virtual port 0
   - Sensor 1's data is accessible on virtual port 1
-- With 2 sensors and `SIF_RX_NUM_VP={2,2}`:
+- With 2 sensors and `SIF_RX_VP_COUNT={2,2}`:
   - Sensor 0's data is accessible on virtual ports 0 and 1
   - Sensor 1's data is accessible on virtual ports 2 and 3
 

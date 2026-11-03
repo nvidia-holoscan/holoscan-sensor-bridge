@@ -2,22 +2,29 @@
  * SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
  * SPDX-License-Identifier: Apache-2.0
  *
- * Stereo VB1940-AIO player using the hololink_module API.
+ * Stereo VB1940-AIO player using the hololink_module API, ported to Holoscan SDK 5.0's
+ * Graph / Operator<Params> shape.
  *
- * Topology: one Leopard VB1940-AIO board hosts two cameras on a single
- * HSB (sensor 0 = left, sensor 1 = right). Both data planes share the
- * board's HololinkInterface (lifecycle: start / reset / stop runs once
- * per board, not once per channel); each channel gets its own
- * Vb1940Cam pinned to a distinct I2C bus (Leopard wires camera 0 to
- * bus 1, camera 1 to bus 2). The Holoscan pipeline runs two parallel
+ * Topology: one Leopard VB1940-AIO board hosts two cameras on a single HSB (sensor 0 = left,
+ * sensor 1 = right). Both data planes share the board's HololinkInterface (lifecycle: start /
+ * reset / stop runs once per board, not once per channel); each channel gets its own
+ * Vb1940Cam pinned to a distinct I2C bus (Leopard wires camera 0 to bus 1, camera 1 to bus
+ * 2). The Holoscan pipeline runs two parallel
  * RoceReceiverOp -> CsiToBayerOp -> ImageProcessorOp -> BayerDemosaicOp
- * legs into a single HolovizOp that shows the pair side-by-side.
+ * legs into a single HolovizOp that shows the pair side-by-side (one window, two tiled
+ * ViewTransform layers -- see examples/module_fusa_coe_imx274_player.cpp for the same
+ * N-layer pattern).
  *
- * Defaults match `examples/single_network_stereo_vb1940_player.cpp`:
- * `VB1940_MODE_2560X1984_30FPS` (mode 0), one bootp-discovered IP for
- * the HSB, 2-up window split. Mirrors the structure of
- * `examples/module_vb1940_player.cpp` and
- * `examples/module_quad_imx274_player.cpp`.
+ * Defaults match examples/single_network_stereo_vb1940_player.cpp:
+ * VB1940_MODE_2560X1984_30FPS (mode 0), one bootp-discovered IP for the HSB, 2-up window
+ * split. Mirrors the structure of examples/module_vb1940_player.cpp and
+ * examples/module_quad_imx274_player.cpp.
+ *
+ * Synchronized-shutter mode (PTP-PPS-driven VSYNC) is enabled by default -- the canonical
+ * stereo configuration. VsyncStartOp (examples/vsync_start_op.hpp) fires vsync->start() once
+ * every other operator's start() (and therefore every camera's bring-up) has completed, so the
+ * first VSYNC pulse lands on both cameras simultaneously, and then completes, as the HSDK4
+ * original did with a CountCondition(1).
  */
 
 #include <getopt.h>
@@ -34,9 +41,16 @@
 
 #include <cuda.h>
 
-#include <holoscan/holoscan.hpp>
-#include <holoscan/operators/bayer_demosaic/bayer_demosaic.hpp>
-#include <holoscan/operators/holoviz/holoviz.hpp>
+#include <holoscan/core/compile.hpp>
+#include <holoscan/core/connection_options.hpp>
+#include <holoscan/core/graph.hpp>
+#include <holoscan/core/managed_shutdown_signals.hpp>
+#include <holoscan/core/run.hpp>
+#include <holoscan/core/run_session.hpp>
+#include <holoscan/logger/logger.hpp>
+#include <holoscan/time/realtime_clock.hpp>
+#include <holoscan/vision/bayer_demosaic_op.hpp>
+#include <holoscan/visualization/holoviz_op.hpp>
 
 #include "hololink/module/cuda_unique.hpp"
 #include "hololink/module/tools.hpp"
@@ -46,187 +60,27 @@
 #include "hololink/module/hololink.hpp"
 #include "hololink/module/operators/csi_to_bayer_op.hpp"
 #include "hololink/module/operators/image_processor_op.hpp"
+#include "hololink/module/operators/log_level.hpp"
 #include "hololink/module/operators/roce_receiver_op.hpp"
 #include "hololink/module/ptp_pps_output.hpp"
 #include "hololink/module/vsync.hpp"
 
 #include "hololink/module/sensors/vb1940/vb1940_cam.hpp"
 
+#include "player_support.hpp"
 #include "vsync_start_op.hpp"
 
-// Everything the application needs to drive one stereo channel
-// end-to-end: the per-sensor enumeration metadata (one per call to
-// Adapter::use_sensor), the I2C bus the camera lives on, and the
-// Vb1940Cam handle. Both channels in a stereo pair hold the same
-// HololinkInterface (the locator returns one instance per board); the
-// application brings the shared board up once and configures each
-// camera independently.
+namespace hx = hololink::examples;
+
+// Everything the application needs to drive one stereo channel end-to-end: the per-sensor
+// enumeration metadata (one per call to Adapter::use_sensor) and the Vb1940Cam handle. Both
+// channels in a stereo pair hold the same HololinkInterface (the locator returns one instance
+// per board); the application brings the shared board up once and configures each camera
+// independently.
 struct Channel {
     hololink::module::EnumerationMetadata metadata;
     std::shared_ptr<hololink::module::sensors::vb1940::Vb1940Cam> camera;
     std::string tensor_name;
-};
-
-class HoloscanStereoApplication : public holoscan::Application {
-public:
-    HoloscanStereoApplication(bool headless, CUcontext cuda_context, int cuda_device_ordinal,
-        std::vector<Channel> channels, int64_t frame_limit,
-        uint32_t window_height, uint32_t window_width,
-        std::string window_title,
-        std::shared_ptr<hololink::module::VsyncInterfaceV1> vsync)
-        : headless_(headless)
-        , cuda_context_(cuda_context)
-        , cuda_device_ordinal_(cuda_device_ordinal)
-        , channels_(std::move(channels))
-        , frame_limit_(frame_limit)
-        , window_height_(window_height)
-        , window_width_(window_width)
-        , window_title_(std::move(window_title))
-        , vsync_(std::move(vsync))
-    {
-        if (channels_.size() != 2) {
-            throw std::runtime_error(
-                "module_stereo_vb1940_player requires exactly 2 channels");
-        }
-        // Both channels feed the same HolovizOp; reject duplicate
-        // metadata keys rather than failing on the collision.
-        enable_metadata(true);
-        metadata_policy(holoscan::MetadataPolicy::kReject);
-    }
-    HoloscanStereoApplication() = delete;
-
-    void compose() override
-    {
-        const size_t channel_count = channels_.size();
-
-        // One condition per channel.
-        std::vector<std::shared_ptr<holoscan::Condition>> conditions;
-        for (size_t i = 0; i < channel_count; ++i) {
-            if (frame_limit_) {
-                conditions.push_back(make_condition<holoscan::CountCondition>(
-                    "count_" + channels_[i].tensor_name, frame_limit_));
-            } else {
-                conditions.push_back(make_condition<holoscan::BooleanCondition>(
-                    "ok_" + channels_[i].tensor_name, true));
-            }
-        }
-
-        // Both stereo cameras share width / height / formats (same mode).
-        const uint32_t camera_width = channels_[0].camera->width();
-        const uint32_t camera_height = channels_[0].camera->height();
-        const auto bayer_format = channels_[0].camera->bayer_format();
-        const auto pixel_format = channels_[0].camera->pixel_format();
-
-        auto csi_to_bayer_pool = make_resource<holoscan::BlockMemoryPool>(
-            "csi_to_bayer_pool",
-            /*storage_type=*/1,
-            /*block_size=*/camera_width * sizeof(uint16_t) * camera_height,
-            /*num_blocks=*/4 * channel_count);
-
-        constexpr uint32_t rgba_components_per_pixel = 4;
-        auto bayer_pool = make_resource<holoscan::BlockMemoryPool>(
-            "bayer_pool",
-            /*storage_type=*/1,
-            /*block_size=*/camera_width * rgba_components_per_pixel * sizeof(uint16_t) * camera_height,
-            /*num_blocks=*/4 * channel_count);
-
-        std::vector<std::shared_ptr<hololink::module::operators::RoceReceiverOp>> receivers;
-        std::vector<std::shared_ptr<hololink::module::operators::CsiToBayerOp>> csi_ops;
-        std::vector<std::shared_ptr<hololink::module::operators::ImageProcessorOp>> image_processors;
-        std::vector<std::shared_ptr<holoscan::ops::BayerDemosaicOp>> demosaics;
-        std::vector<holoscan::ops::HolovizOp::InputSpec> tensor_specs;
-
-        for (size_t i = 0; i < channel_count; ++i) {
-            Channel& ch = channels_[i];
-
-            auto csi_op = make_operator<hololink::module::operators::CsiToBayerOp>(
-                "csi_to_bayer_" + ch.tensor_name,
-                holoscan::Arg("allocator", csi_to_bayer_pool),
-                holoscan::Arg("cuda_device_ordinal", cuda_device_ordinal_),
-                holoscan::Arg("out_tensor_name", ch.tensor_name));
-            ch.camera->configure_converter(csi_op);
-            csi_ops.push_back(csi_op);
-
-            const size_t frame_size = csi_op->get_csi_length();
-
-            auto cam = ch.camera;
-            auto receiver = make_operator<hololink::module::operators::RoceReceiverOp>(
-                "receiver_" + ch.tensor_name,
-                conditions[i],
-                holoscan::Arg("enumeration_metadata", ch.metadata),
-                holoscan::Arg("frame_context", cuda_context_),
-                holoscan::Arg("frame_size", frame_size),
-                holoscan::Arg("device_start", std::function<void()>([cam] { cam->start(); })),
-                holoscan::Arg("device_stop", std::function<void()>([cam] { cam->stop(); })));
-            receivers.push_back(receiver);
-
-            auto image_proc = make_operator<hololink::module::operators::ImageProcessorOp>(
-                "image_processor_" + ch.tensor_name,
-                // Optical black value for VB1940 is 8 (RAW10).
-                holoscan::Arg("optical_black", 8),
-                holoscan::Arg("bayer_format", static_cast<int>(bayer_format)),
-                holoscan::Arg("pixel_format", static_cast<int>(pixel_format)));
-            image_processors.push_back(image_proc);
-
-            auto demosaic = make_operator<holoscan::ops::BayerDemosaicOp>(
-                "demosaic_" + ch.tensor_name,
-                holoscan::Arg("pool", bayer_pool),
-                holoscan::Arg("generate_alpha", true),
-                holoscan::Arg("alpha_value", 65535),
-                holoscan::Arg("bayer_grid_pos", static_cast<int>(bayer_format)),
-                holoscan::Arg("interpolation_mode", 0),
-                holoscan::Arg("in_tensor_name", ch.tensor_name),
-                holoscan::Arg("out_tensor_name", ch.tensor_name));
-            demosaics.push_back(demosaic);
-
-            // Side-by-side: left occupies x=[0, 0.5], right x=[0.5, 1].
-            holoscan::ops::HolovizOp::InputSpec spec(
-                ch.tensor_name, holoscan::ops::HolovizOp::InputType::COLOR);
-            holoscan::ops::HolovizOp::InputSpec::View view;
-            view.offset_x_ = 0.5f * static_cast<float>(i);
-            view.offset_y_ = 0.0f;
-            view.width_ = 0.5f;
-            view.height_ = 1.0f;
-            spec.views_ = { view };
-            tensor_specs.push_back(spec);
-        }
-
-        auto visualizer = make_operator<holoscan::ops::HolovizOp>(
-            "holoviz",
-            holoscan::Arg("headless", headless_),
-            holoscan::Arg("framebuffer_srgb", true),
-            holoscan::Arg("tensors", tensor_specs),
-            holoscan::Arg("height", window_height_),
-            holoscan::Arg("width", window_width_),
-            holoscan::Arg("window_title", window_title_));
-
-        for (size_t i = 0; i < channel_count; ++i) {
-            add_flow(receivers[i], csi_ops[i], { { "output", "input" } });
-            add_flow(csi_ops[i], image_processors[i], { { "output", "input" } });
-            add_flow(image_processors[i], demosaics[i], { { "output", "receiver" } });
-            add_flow(demosaics[i], visualizer, { { "transmitter", "receivers" } });
-        }
-
-        // One-shot operator that fires vsync->start() after every
-        // operator's start() (and therefore every camera's bring-up)
-        // has completed.
-        auto vsync_starter = make_operator<VsyncStartOp>(
-            "vsync_start",
-            make_condition<holoscan::CountCondition>("vsync_start_count", 1),
-            holoscan::Arg("vsync", vsync_));
-        add_operator(vsync_starter);
-    }
-
-private:
-    const bool headless_;
-    const CUcontext cuda_context_;
-    const int cuda_device_ordinal_;
-    std::vector<Channel> channels_;
-    const int64_t frame_limit_;
-    const uint32_t window_height_;
-    const uint32_t window_width_;
-    const std::string window_title_;
-    const std::shared_ptr<hololink::module::VsyncInterfaceV1> vsync_;
 };
 
 int main(int argc, char** argv)
@@ -242,11 +96,11 @@ int main(int argc, char** argv)
     std::string window_title;
     std::chrono::seconds discovery_timeout(30);
     holoscan::LogLevel log_level = holoscan::LogLevel::INFO;
-    // Synchronized-shutter mode (PTP-PPS-driven VSYNC) is enabled by
-    // default — that is the canonical stereo configuration. --no-sync
-    // leaves both cameras in free-run mode and skips the
-    // ptp_pps_output enable; --sync-frequency overrides the default
-    // 30 Hz pulse rate (the legacy stereo player's default).
+    bool log_level_given = false;
+    // Synchronized-shutter mode (PTP-PPS-driven VSYNC) is enabled by default -- that is the
+    // canonical stereo configuration. --no-sync leaves both cameras in free-run mode and
+    // skips the ptp_pps_output enable; --sync-frequency overrides the default 30 Hz pulse
+    // rate (the legacy stereo player's default).
     bool disable_sync = false;
     unsigned sync_frequency_hz = 30;
 
@@ -300,6 +154,7 @@ int main(int argc, char** argv)
             } else if (name == "sync-frequency") {
                 sync_frequency_hz = static_cast<unsigned>(std::stoul(argument));
             } else if (name == "log-level") {
+                log_level_given = true;
                 if (argument == "trace" || argument == "TRACE") {
                     log_level = holoscan::LogLevel::TRACE;
                 } else if (argument == "debug" || argument == "DEBUG") {
@@ -342,88 +197,225 @@ int main(int argc, char** argv)
         }
     }
 
-    holoscan::set_log_level(log_level);
-    if (window_title.empty()) {
-        window_title = "Holoviz - " + hololink_ip;
-    }
-    std::cout << "Initializing." << std::endl;
-
-    HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));
-    const int cu_device_ordinal = 0;
-    CUdevice cu_device;
-    HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGet(&cu_device, cu_device_ordinal));
-    CUcontext cu_context;
-    HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
-
-    auto& adapter = hololink::module::Adapter::get_adapter();
-    if (!module_dir.empty()) {
-        adapter.set_module_directory(std::filesystem::path(module_dir));
-    }
-
-    // One bootp announcement covers both cameras on a VB1940-AIO HSB;
-    // Adapter::use_sensor re-points a per-camera clone at the right
-    // sensor (and the supplement's update_metadata stamps the
-    // per-sensor address fields).
-    const hololink::module::EnumerationMetadata base_metadata
-        = adapter.wait_for_channel(hololink_ip, discovery_timeout);
-
-    // Both channels resolve to the same HololinkInterface instance
-    // (same serial). Bring the shared board up once.
-    auto hololink = hololink::module::HololinkInterfaceV1::get_service(base_metadata);
-    if (hololink->start() != HOLOLINK_MODULE_OK) {
-        throw std::runtime_error("HololinkInterface::start failed");
-    }
-    if (hololink->reset() != HOLOLINK_MODULE_OK) {
-        throw std::runtime_error("HololinkInterface::reset failed");
-    }
-
-    std::shared_ptr<hololink::module::VsyncInterfaceV1> vsync = hololink->null_vsync();
-    if (!disable_sync) {
-        auto ptp_pps = hololink->ptp_pps_output();
-        if (ptp_pps->enable(sync_frequency_hz) != HOLOLINK_MODULE_OK) {
-            throw std::runtime_error("PtpPpsOutput::enable failed");
+    // With managed signals, Ctrl+C stops the session cooperatively, so the cameras and the board
+    // are stopped on the way out. CUDA and the Adapter start threads, so the signals come first.
+    return hx::run_with_managed_signals([&](holoscan::ManagedShutdownSignals& signals) {
+        if (log_level_given) {
+            // Without --log-level, the module's logger keeps the level HOLOLINK_LOG_LEVEL chose.
+            hololink::module::operators::set_log_level(log_level);
+        } else {
+            holoscan::set_log_level(log_level);
         }
-        vsync = ptp_pps;
-    }
+        if (window_title.empty()) {
+            window_title = "Holoviz - " + hololink_ip;
+        }
+        std::cout << "Initializing." << std::endl;
 
-    std::vector<Channel> channels;
-    channels.reserve(2);
-    {
-        Channel left;
-        left.metadata = base_metadata;
-        adapter.use_sensor(left.metadata, /*sensor_number=*/0);
-        left.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-            left.metadata, vsync);
-        left.tensor_name = "left";
-        channels.push_back(std::move(left));
-    }
-    {
-        Channel right;
-        right.metadata = base_metadata;
-        adapter.use_sensor(right.metadata, /*sensor_number=*/1);
-        right.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
-            right.metadata, vsync);
-        right.tensor_name = "right";
-        channels.push_back(std::move(right));
-    }
+        HOLOLINK_MODULE_CUDA_CHECK(cuInit(0));
+        const int cu_device_ordinal = 0;
+        CUdevice cu_device;
+        HOLOLINK_MODULE_CUDA_CHECK(cuDeviceGet(&cu_device, cu_device_ordinal));
+        CUcontext cu_context;
+        HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRetain(&cu_context, cu_device));
+        cuCtxSetCurrent(cu_context);
 
-    // Vb1940Cam::configure is idempotent across the stereo pair —
-    // shared board-level bring-up runs once even though we call it
-    // for both cameras.
-    for (Channel& ch : channels) {
-        ch.camera->configure(camera_mode);
-    }
+        auto& adapter = hololink::module::Adapter::get_adapter();
+        if (!module_dir.empty()) {
+            adapter.set_module_directory(std::filesystem::path(module_dir));
+        }
 
-    // Run it.
-    auto application = holoscan::make_application<HoloscanStereoApplication>(
-        headless, cu_context, cu_device_ordinal,
-        std::move(channels), frame_limit,
-        window_height, window_width, window_title,
-        vsync);
-    std::cout << "Calling run" << std::endl;
-    application->run();
+        // One bootp announcement covers both cameras on a VB1940-AIO HSB; Adapter::use_sensor
+        // re-points a per-camera clone at the right sensor (and the supplement's
+        // update_metadata stamps the per-sensor address fields).
+        const hololink::module::EnumerationMetadata base_metadata
+            = adapter.wait_for_channel(hololink_ip, discovery_timeout);
 
-    hololink->stop();
-    HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRelease(cu_device));
-    return 0;
+        // Both channels resolve to the same HololinkInterface instance (same serial). Bring the
+        // shared board up once.
+        auto hololink = hololink::module::HololinkInterfaceV1::get_service(base_metadata);
+        if (hololink->start() != HOLOLINK_MODULE_OK) {
+            throw std::runtime_error("HololinkInterface::start failed");
+        }
+        if (hololink->reset() != HOLOLINK_MODULE_OK) {
+            throw std::runtime_error("HololinkInterface::reset failed");
+        }
+
+        std::shared_ptr<hololink::module::VsyncInterfaceV1> vsync = hololink->null_vsync();
+        if (!disable_sync) {
+            auto ptp_pps = hololink->ptp_pps_output();
+            if (ptp_pps->enable(sync_frequency_hz) != HOLOLINK_MODULE_OK) {
+                throw std::runtime_error("PtpPpsOutput::enable failed");
+            }
+            vsync = ptp_pps;
+        }
+
+        std::vector<Channel> channels;
+        channels.reserve(2);
+        {
+            Channel left;
+            left.metadata = base_metadata;
+            adapter.use_sensor(left.metadata, /*sensor_number=*/0);
+            left.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
+                left.metadata, vsync);
+            left.tensor_name = "left";
+            channels.push_back(std::move(left));
+        }
+        {
+            Channel right;
+            right.metadata = base_metadata;
+            adapter.use_sensor(right.metadata, /*sensor_number=*/1);
+            right.camera = std::make_shared<hololink::module::sensors::vb1940::Vb1940Cam>(
+                right.metadata, vsync);
+            right.tensor_name = "right";
+            channels.push_back(std::move(right));
+        }
+
+        // Vb1940Cam::configure is idempotent across the stereo pair -- shared board-level
+        // bring-up runs once even though we call it for both cameras.
+        for (Channel& ch : channels) {
+            ch.camera->configure(camera_mode);
+        }
+
+        // Build the graph.
+        holoscan::Graph graph { "module_stereo_vb1940_player" };
+        holoscan::CompileOptions compile_options;
+
+        // Both stereo cameras share width / height / formats (same mode).
+        const auto bayer_format = channels[0].camera->bayer_format();
+        const auto pixel_format = channels[0].camera->pixel_format();
+
+        // Pass 1: declare one image layer per channel, side by side -- the LayerStack must be
+        // complete before HolovizOp is constructed.
+        holoscan::visualization::LayerStack layers;
+        for (std::size_t i = 0; i < channels.size(); ++i) {
+            layers.add_image_layer("video_" + channels[i].tensor_name,
+                hx::rgba16_layer(channels[i].camera->width(), channels[i].camera->height(),
+                    holoscan::visualization::ViewTransform {
+                        // Side-by-side: left occupies x=[0, 0.5], right x=[0.5, 1].
+                        .offset_x = 0.5f * static_cast<float>(i),
+                        .offset_y = 0.f,
+                        .scale_x = 0.5f,
+                        .scale_y = 1.f,
+                    }));
+        }
+
+        // Renders once per left image (layer 0); the right layer shows its newest image, which at a
+        // low --sync-frequency can be the previous pulse's.
+        auto viz = hx::add_holoviz(graph, "holoviz", std::move(layers),
+            hx::DisplayConfig {
+                .title = window_title,
+                .width = window_width,
+                .height = window_height,
+                .headless = headless,
+                .max_input_age = hx::max_input_age_for_rate(disable_sync ? 0U : sync_frequency_hz),
+            },
+            compile_options, cu_device_ordinal);
+
+        std::vector<std::string_view> tensor_output_operators;
+
+        for (std::size_t i = 0; i < channels.size(); ++i) {
+            Channel& ch = channels[i];
+
+            hololink::module::csi::CsiGeometry geometry;
+            ch.camera->configure_converter(
+                hololink::module::operators::CsiToBayerOp::make_geometry_adapter(geometry));
+            const size_t frame_size = geometry.start_byte
+                + geometry.bytes_per_line * geometry.pixel_height + geometry.trailing_bytes;
+
+            auto cam = ch.camera;
+            auto receiver = graph.op<hololink::module::operators::RoceReceiverOp>(
+                "receiver_" + ch.tensor_name,
+                ch.metadata,
+                [cam] { cam->start(); },
+                [cam] { cam->stop(); });
+            receiver.set_params(hololink::module::operators::RoceReceiverParams {
+                .frame_context = cu_context,
+                .frame_size = frame_size,
+                // Stops after --frame-limit frames, as HSDK4's CountCondition on each receiver did.
+                .frame_limit = frame_limit,
+                .frame_limit_ends_run = true,
+            });
+
+            auto csi = graph.op<hololink::module::operators::CsiToBayerOp>(
+                "csi_to_bayer_" + ch.tensor_name);
+            csi.set_params(hololink::module::operators::CsiToBayerParams {
+                .cuda_device_ordinal = cu_device_ordinal,
+                .geometry = geometry,
+                .bayer_format = bayer_format,
+            });
+
+            auto ip = graph.op<hololink::module::operators::ImageProcessorOp>(
+                "image_processor_" + ch.tensor_name);
+            ip.set_params(hololink::module::operators::ImageProcessorParams {
+                .pixel_format = static_cast<int>(pixel_format),
+                .bayer_format = static_cast<int>(bayer_format),
+                // Optical black value for VB1940 is 8 (RAW10).
+                .optical_black = 8,
+                .cuda_device_ordinal = cu_device_ordinal,
+                .pixel_width = geometry.pixel_width,
+                .pixel_height = geometry.pixel_height,
+            });
+
+            const auto bayer_grid_pos = static_cast<holoscan::vision::BayerGridPosition>(bayer_format);
+            auto demosaic = graph.op<holoscan::vision::BayerDemosaicOp>(
+                "bayer_demosaic_" + ch.tensor_name);
+            demosaic.set_params(holoscan::vision::BayerDemosaicOpParams {
+                .bayer_grid_pos = bayer_grid_pos,
+                .generate_alpha = true,
+                .alpha_value = 65535U,
+            });
+
+            graph.add_flow(receiver->tensor, csi->input_tensor, hx::pipeline_edge());
+            graph.add_flow(receiver->metadata, csi->input_metadata, hx::pipeline_edge());
+            graph.add_flow(csi->output_tensor, ip->input_tensor, hx::pipeline_edge());
+            graph.add_flow(csi->output_metadata, ip->input_metadata, hx::pipeline_edge());
+            graph.add_flow(ip->output_tensor, demosaic->input, hx::pipeline_edge());
+            graph.add_flow(demosaic->output, viz->image_layer_input(i), hx::display_edge());
+
+            tensor_output_operators.push_back(receiver.name());
+            tensor_output_operators.push_back(csi.name());
+            tensor_output_operators.push_back(ip.name());
+        }
+
+        // One-shot operator that fires vsync->start() after every operator's start() (and
+        // therefore every camera's bring-up) has completed. Not wired into any add_flow call.
+        auto vsync_starter = graph.op<VsyncStartOp>("vsync_start");
+        vsync_starter.set_params(VsyncStartParams { .vsync = vsync });
+
+        graph.set_default_clock(graph.add_clock<holoscan::RealtimeClock>("clock"));
+
+        for (const auto& operator_path : tensor_output_operators) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = operator_path,
+                    .output_port = "tensor",
+                    .device = holoscan::DeviceId { cu_device_ordinal },
+                });
+        }
+        for (const auto& ch : channels) {
+            compile_options.deployment.bind_tensor_output_device(
+                holoscan::TensorOutputDevicePlacement {
+                    .operator_path = "bayer_demosaic_" + ch.tensor_name,
+                    .output_port = "output",
+                    .device = holoscan::DeviceId { cu_device_ordinal },
+                });
+        }
+
+        const auto plan = holoscan::compile(graph, std::move(compile_options));
+        if (!plan.ok()) {
+            hx::print_compile_failure(plan);
+            hololink->stop();
+            HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRelease(cu_device));
+            return EXIT_FAILURE;
+        }
+
+        std::cout << "Calling run" << std::endl;
+        auto session = holoscan::run_async(plan, signals);
+        session.wait();
+        const bool failed = hx::report_session(session, plan);
+
+        hololink->stop();
+        HOLOLINK_MODULE_CUDA_CHECK(cuDevicePrimaryCtxRelease(cu_device));
+        return failed ? EXIT_FAILURE : EXIT_SUCCESS;
+    });
 }

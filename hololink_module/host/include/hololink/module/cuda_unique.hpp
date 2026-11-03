@@ -11,8 +11,11 @@
 #include <stdexcept>
 
 #include <cuda.h>
+#include <cuda_runtime_api.h>
 
 #include "hololink/module/logging.hpp"
+
+/// @cond INCLUDE_INTERNAL_DOCUMENTATION
 
 /* Adapter-owned CUDA RAII helpers and an error-check macro. The host
  * framework deliberately does not depend on src/hololink/common, so the
@@ -85,9 +88,26 @@ inline void cuda_check(CUresult result, const char* file, int line)
     }
 }
 
+/* Runtime-API overload (CUresult and cudaError_t are distinct, non-interconvertible enums, so
+ * this and the driver-API overload above resolve unambiguously by argument type). Lets
+ * HOLOLINK_MODULE_CUDA_CHECK wrap cuda*() runtime calls the same way it already wraps cu*()
+ * driver calls -- module's pre-port code used a separate Holoscan-provided macro
+ * (HOLOSCAN_CUDA_CALL) for this, which doesn't exist in Holoscan SDK 5.0. */
+inline void cuda_check(cudaError_t result, const char* file, int line)
+{
+    if (result != cudaSuccess) {
+        std::stringstream buf;
+        buf << "[" << file << ":" << line << "] CUDA runtime error " << result
+            << " (" << cudaGetErrorName(result) << "): " << cudaGetErrorString(result);
+        throw std::runtime_error(buf.str());
+    }
+}
+
 } // namespace hololink::module
 
 #define HOLOLINK_MODULE_CUDA_CHECK(FUNC) \
     ::hololink::module::cuda_check((FUNC), HOLOLINK_MODULE_FILE, __LINE__)
+
+/// @endcond // INCLUDE_INTERNAL_DOCUMENTATION
 
 #endif // HOLOLINK_MODULE_CUDA_UNIQUE_HPP

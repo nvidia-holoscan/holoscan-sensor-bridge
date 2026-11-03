@@ -13,7 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-cmake_minimum_required(VERSION 3.17)
+# The Emulator-only build is meant for machines the rest of hololink does not support, so
+# it asks for the oldest CMake it can: 3.18 brings CMAKE_CUDA_ARCHITECTURES and FindPython's
+# Development.Module component, which nanobind needs (nanobind itself wants 3.15). Ubuntu
+# 22.04's apt CMake (3.22) qualifies. Policies follow the running CMake up to 3.24, the
+# version the full hololink build requires, so this file behaves the same either way.
+cmake_minimum_required(VERSION 3.18...3.24)
 
 # command line options
 option(HSB_EMULATOR_BUILD_PYTHON "When building standalone HSB Emulator, including building the python environment." ON)

@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright (c) 2024-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2024-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -13,7 +13,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Tests for HSB logging Python wrappers."""
+"""Tests for HSB logging Python wrappers.
+
+hololink's hsb_log_*() log through the SDK's C++ logger, which prints to stderr in its own
+format; capfd reads what it printed.
+"""
+
+import re
 
 import pytest
 
@@ -89,34 +95,44 @@ class TestHsbLogging:
             # Restore original level
             hololink.set_hsb_log_level(original_level)
 
-    def test_hsb_log_with_different_message_types(self):
+    def test_hsb_log_with_different_message_types(self, capfd):
         """Test HSB log functions with different message types."""
         original_level = hololink.get_hsb_log_level()
 
         try:
             hololink.set_hsb_log_level(hololink.HSB_LOG_LEVEL_TRACE)
+            capfd.readouterr()
 
             # Test with different string types
             hololink.hsb_log_info("Simple message")
             hololink.hsb_log_info("Message with numbers: 123")
             hololink.hsb_log_info("Message with special chars: !@#$%^&*()")
             hololink.hsb_log_info("")  # Empty message
+            # The message isn't a format string: braces print as they are.
+            hololink.hsb_log_info("Message with braces: {} {0} {:x}")
 
             # Test with longer message
             long_message = "A" * 1000
             hololink.hsb_log_info(long_message)
+            err = capfd.readouterr().err
         finally:
             hololink.set_hsb_log_level(original_level)
 
-    def test_hsb_log_level_filtering(self):
+        assert "-- Message with braces: {} {0} {:x}\n" in err
+        assert f"-- {long_message}\n" in err
+
+    def test_hsb_log_level_filtering(self, capfd):
         """Test that log level filtering works correctly."""
         original_level = hololink.get_hsb_log_level()
 
         try:
-            # Set level to WARN - should filter out TRACE, DEBUG, INFO
+            # Set level to WARN - should filter out TRACE, DEBUG, INFO. It sticks because
+            # conftest's "Starting" line was the logger's first message, which applies
+            # HOLOLINK_LOG_LEVEL.
             hololink.set_hsb_log_level(hololink.HSB_LOG_LEVEL_WARN)
+            capfd.readouterr()
 
-            # These should be filtered (no exception should occur)
+            # These should be filtered
             hololink.hsb_log_trace("This should be filtered")
             hololink.hsb_log_debug("This should be filtered")
             hololink.hsb_log_info("This should be filtered")
@@ -124,9 +140,13 @@ class TestHsbLogging:
             # These should pass through
             hololink.hsb_log_warn("This should be logged")
             hololink.hsb_log_error("This should be logged")
-
+            err = capfd.readouterr().err
         finally:
             hololink.set_hsb_log_level(original_level)
+
+        assert "This should be filtered" not in err
+        assert re.search(r"^WARN .* -- This should be logged$", err, re.MULTILINE)
+        assert re.search(r"^ERROR .* -- This should be logged$", err, re.MULTILINE)
 
     def test_hsb_log_invalid_arguments(self):
         """Test HSB log functions with invalid arguments."""

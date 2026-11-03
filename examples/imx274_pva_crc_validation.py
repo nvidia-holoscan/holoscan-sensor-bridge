@@ -1,882 +1,959 @@
-# SPDX-FileCopyrightText: Copyright (c) 2023-2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-FileCopyrightText: Copyright (c) 2023-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-"""
-IMX274 Frame Validation with PVA CRC Hardware
-
-This script validates IMX274 camera frames using PVA (Programmable Vision Accelerator)
-hardware for CRC computation, comparing PVA CRC against camera FPGA-embedded CRC values.
-
-PVA computes line-based CRC with GF(2) polynomial merging, which is mathematically
-equivalent to streaming CRC32/JAMCRC when processing the same data.
-"""
+# Single IMX274 sensor via RoceReceiverOp, validating each frame's CRC using NVIDIA PVA
+# (Programmable Vision Accelerator) hardware against the camera's own FPGA-embedded CRC.
+# Python port of this repo's own previous (pre-HSDK5) Python version of this app -- there is no
+# .cpp sibling. See python/hololink/operators/pva_crc/ for the ComputePvaCrcOp/CheckPvaCrcOp
+# binding this app drives (restored from this repo's own `internal` branch and ported from
+# pybind11 to nanobind; see that commit for the full rationale -- these operators were always
+# pure Python wrapping a thin C++ handle, not something needing new C++ design).
+#
+#   RoceReceiverOp -> ComputePvaCrcOp -> FrameValidationOp -> CsiToBayerOp -> ImageProcessorOp ->
+#       CheckPvaCrcOp -> BayerDemosaicOp -> HolovizOp
+#
+# ComputePvaCrcOp launches the (non-blocking) PVA computation immediately after the receiver, on
+# the raw CSI frame -- the same bytes the camera's own embedded CRC covers. CheckPvaCrcOp waits
+# for the result after CsiToBayerOp/ImageProcessorOp have had a chance to run, hiding most of
+# PVA's own ~1ms latency behind that other work (matches the old app's own placement and its own
+# comment on why). FrameValidationOp (examples/linux_imx274_frame_validation.py) is reused
+# unmodified for frame-size/frame-number/timing consistency checks, with crc_frame_check=0 --
+# this app's whole point is validating the PVA *hardware* CRC path specifically, so a second,
+# redundant CPU-side zlib CRC check would be pointless (PVA's purpose is to offload that exact
+# computation from the CPU).
+#
+# Three real architectural differences from the old app, all forced by the same root cause --
+# HSDK5 operators have no free-form per-frame metadata dict (confirmed directly: holoscan's own
+# Sample.metadata is a fixed SampleMetadata struct about sample provenance, not an
+# application-definable key/value store) -- so nothing here can do the old app's own
+# `self.metadata["pva_fence"] = fence` trick:
+#   - The fence handle (and the live PvaCrc instance itself -- check_results()/free_fence() must
+#     run on the same instance that issued launch_compute(), a hard constraint of the precompiled
+#     PVA library, not a design choice) travel through a small Python-side class-level stash,
+#     _PvaCrcShared, instead -- the same kind of workaround this whole porting effort already
+#     uses whenever two pure-Python operators need to share a live object graph.op() can't pass
+#     as a kwarg. Unlike every other such stash in this effort (a single slot), fences are kept
+#     per frame (ComputePvaCrcOp's async launch and CheckPvaCrcOp's later check can be mid-flight
+#     for different frames at once, by design -- that's the whole point of hiding PVA's latency),
+#     so this one is a dict keyed by frame number per operator name. A frame that only one of the
+#     two operators sees (a dropped frame) costs only that frame's check.
+#   - The old app's RecordMetadataOp/validate_frame()/recorder_queue machinery (a rolling
+#     thread-safe queue polled for frame-number/size/timestamp/CRC consistency) is replaced by
+#     reusing FrameValidationOp's own already-proven consolidation of exactly those same checks,
+#     rather than re-deriving bespoke queue-polling logic.
+#   - The old app's InstrumentedTimeProfiler/MonitorOperator pair (wall-clock timestamps stamped
+#     into the per-frame metadata dict as it flowed through a full visualization pipeline) has no
+#     HSDK5 equivalent either -- same reasoning as imx274_latency.py's own port. CheckPvaCrcOp
+#     reports its own CRC-match statistics from the typed hololink.CaptureMetadataT fields each
+#     receiver/operator already stamps, not wall-clock stamping of its own.
+#
+# --frame-limit is the receiver's frame_limit parameter: the receiver ends the run after that
+# many frames. HSDK5 has no CountCondition; this replaces the CountCondition of the old app.
+#
+# Usage:
+#   imx274_pva_crc_validation.py [OPTIONS]
+#
+# Options:
+#   --hololink IP                 IP address of Hololink board (default: 192.168.0.2)
+#   --camera-mode N                IMX274 mode (default: 0 = 3840x2160@60fps)
+#   --ibv-name NAME                IBV device to use (default: the device on the board's network interface)
+#   --ibv-port N                   Port number of IBV device (default: 1)
+#   --expander-configuration N    I2C expander configuration (0 or 1, default: 0)
+#   --pattern N                   Configure a test pattern (0-11) instead of live video
+#   --skip-reset                  Don't call reset on the hololink device
+#   --frame-limit N               Number of frames to capture (default: unlimited)
+#   --headless                    Run without opening a window (still renders, presents nowhere)
+#   --fullscreen                  Run in fullscreen mode
+#   --log-level N                 Python logging level (default: 20 = INFO)
 
 import argparse
-import datetime
 import logging
-import math
-import queue
+import os
+import sys
 import threading
+import time
+import zlib
+from datetime import timedelta
 
+import capture_metadata
 import cupy as cp
-import holoscan
-from cuda.bindings import driver as cuda
+import holoscan as hs
+import holoscan_vision as hv
+import holoscan_visualization as hz  # noqa: F401 -- registers "holoscan.visualization.HolovizOp"
+from cuda.bindings import driver as cuda_driver
 
-import hololink as hololink_module
+import hololink as hl
 
-MS_PER_SEC = 1000.0
-US_PER_SEC = 1000.0 * MS_PER_SEC
-NS_PER_SEC = 1000.0 * US_PER_SEC
-SEC_PER_NS = 1.0 / NS_PER_SEC
+_BAYER_FORMAT_NAMES = ["bggr", "rggb", "gbrg", "grbg"]
+_BAYER_FORMAT_VALUES = {name: index for index, name in enumerate(_BAYER_FORMAT_NAMES)}
 
-# Shared lock for thread-safe access to recorder_queue internals
-recorder_queue_lock = threading.Lock()
+# Matches hololink::operators::kMetadataPairingWindow (capture_metadata_utils.hpp): the
+# receiver/CsiToBayerOp/ImageProcessorOp chain stamps every port pair with an identical
+# capture_time, so this bounded-window OnAligned+Exact{} pairs them precisely. Same constant as
+# examples/linux_imx274_frame_validation.py / imx274_latency.py.
+_METADATA_PAIRING_WINDOW = timedelta(microseconds=500)
+
+NS_PER_S = 1_000_000_000
+
+# PVA CRC timing constants (microseconds), matching the old app's own values.
+PVA_CHECK_TIMEOUT_US = 2_000  # 2ms -- margin over PVA's typical ~1ms execution time.
+
+# Validation-summary trim, matching the old app's own constants exactly: skip frames at the very
+# start/end of the run, where pipeline warmup/shutdown produces artifacts unrelated to PVA itself.
+SKIP_INITIAL_FRAMES = 10
+SKIP_FINAL_FRAMES = 10
 
 
-# Helper operators for metadata recording
-class PassThroughOperator(holoscan.core.Operator):
-    """Pass through operator that optionally renames tensors"""
+def _cuda_check(result):
+    err = result[0]
+    if err != cuda_driver.CUresult.CUDA_SUCCESS:
+        _, description = cuda_driver.cuGetErrorString(err)
+        raise RuntimeError(f"CUDA error: {description}")
+    if len(result) == 2:
+        return result[1]
+    return result[1:]
 
-    def __init__(self, *args, in_tensor_name="", out_tensor_name="", **kwargs):
+
+class _ValidationReportHolder:
+    """Plain Python-side stash so run() can read FrameValidationOp's accumulated state back
+    after session.wait() returns -- there's no frame-limit-triggered self-report here (unlike
+    LatencyReportSinkOp) since --frame-limit defaults to unbounded, matching the old app. Same
+    shape as examples/linux_imx274_frame_validation.py's own (duplicated here, not imported --
+    every custom operator in this porting effort is self-contained per app file)."""
+
+    instance = None
+
+
+def _ns_to_ms(ns):
+    return ns / 1.0e6
+
+
+def _print_stat(label, values):
+    mn = _ns_to_ms(min(values))
+    mx = _ns_to_ms(max(values))
+    avg = _ns_to_ms(sum(values)) / len(values)
+    print(f"{label:<32}{mn:>10.3f} ms{mx:>10.3f} ms{avg:>10.3f} ms")
+
+
+class FrameValidationOp(hs.Operator):
+    """Pass-through: validates each received frame, then forwards tensor+metadata unchanged.
+    Duplicated verbatim from examples/linux_imx274_frame_validation.py (see that file's own
+    header comment for the full design rationale) -- crc_frame_check is disabled (0) by this
+    app's own run() below, since PVA CRC validation is this app's whole point and a second,
+    redundant CPU-side zlib check would be pointless.
+
+    Checks: CRC32 (every crc_frame_check frames, if > 0) against the FPGA-stamped
+    CaptureMetadataT.crc field; received-vs-calculated frame size; frame_number ordering;
+    inter-frame timing. Also accumulates a latency report (sensor frame time / DMA+CPU wakeup /
+    operator dispatch), printed via print_report() once run() calls it after the session ends.
+    """
+
+    in_tensor = hs.Input("in_tensor", hs.payload.Tensor)
+    in_metadata = hs.Input("in_metadata", capture_metadata.CaptureMetadata)
+    tensor = hs.Output("tensor", hs.payload.Tensor)
+    metadata = hs.Output("metadata", capture_metadata.CaptureMetadata)
+
+    calculated_frame_size = hs.Param(0)
+    crc_frame_check = hs.Param(0)
+    expected_frame_period_ms = hs.Param(16.6)
+    frame_limit = hs.Param(0)
+    warmup_frames = hs.Param(5)
+
+    def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._in_tensor_name = in_tensor_name
-        self._out_tensor_name = out_tensor_name
+        self._crc_errors = 0
+        self._crc_checked = 0
+        self._prev_frame_number = None
+        self._prev_entry_ns = None
+        self._frame_count = 0
+        self._latency_samples = []
+        _ValidationReportHolder.instance = self
 
     def setup(self, spec):
-        spec.input("input")
-        spec.output("output")
+        spec.input(self.in_tensor, queue_depth=4)
+        spec.input(self.in_metadata, queue_depth=4)
+        spec.output(self.tensor)
+        spec.output(self.metadata)
 
-    def compute(self, op_input, op_output, context):
-        in_message = op_input.receive("input")
-        tensor = in_message.get(self._in_tensor_name)
-        op_output.emit({self._out_tensor_name: tensor}, "output")
-
-
-class RecordMetadataOp(PassThroughOperator):
-    """Records metadata values for post-run validation"""
-
-    def __init__(self, *args, metadata_names=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._metadata_names = (
-            list(metadata_names) if metadata_names is not None else []
-        )
-        self._record = []
-        self._frame_count = 0
-
-    def compute(self, op_input, op_output, context):
-        super().compute(op_input, op_output, context)
-        metadata = self.metadata
-        value = []
-        for name in self._metadata_names:
-            value.append(metadata[name])
-        self._record.append(value)
-
-        # Log CRC comparison every 20th frame (and first 5 frames) - only if DEBUG level
-        if logging.getLogger().isEnabledFor(logging.DEBUG):
-            if self._frame_count < 5 or self._frame_count % 20 == 0:
-                camera_crc = metadata.get("crc", 0)
-                pva_crc = metadata.get("pva_frame_crc", 0)
-                match_str = "✓ MATCH" if camera_crc == pva_crc else "✗ MISMATCH"
-                logging.info(
-                    f"Frame {self._frame_count}: Camera=0x{camera_crc:08x}, PVA=0x{pva_crc:08x} {match_str}"
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.in_tensor, self.in_metadata],
+                    window=_METADATA_PAIRING_WINDOW,
                 )
+            )
+            .input(self.in_tensor, hs.Exact())
+            .input(self.in_metadata, hs.Exact())
+        )
 
+    def compute(self, context):
+        entry_ns = time.time_ns()
+
+        tensor_sample = self.in_tensor.receive()
+        metadata_sample = self.in_metadata.receive()
+        if tensor_sample.is_missing or metadata_sample.is_missing:
+            return
+
+        frame = metadata_sample.data
+        frame_number = frame.frame_number
         self._frame_count += 1
 
-    def get_record(self):
-        return self._record
+        if self.crc_frame_check > 0 and frame_number % self.crc_frame_check == 0:
+            # A received HSDK5 tensor is read-only, and HSDK5 exports it only as versioned
+            # DLPack on a real CUDA stream (cupy's default legacy stream is refused with
+            # kNotSupported). Import a copy of it on a private non-blocking stream, and
+            # synchronize before the array is used.
+            with cp.cuda.Stream(non_blocking=True) as stream:
+                capsule = tensor_sample.data.__dlpack__(
+                    stream=stream.ptr,
+                    copy=True,
+                )
+                cp_frame = cp.from_dlpack(capsule)
+                stream.synchronize()
+            np_frame = cp.asnumpy(cp_frame, stream=stream)
+            stream.synchronize()
+            crc32_calculated = zlib.crc32(np_frame.tobytes())
+            crc32_expected = frame.crc ^ 0xFFFFFFFF
+            self._crc_checked += 1
+            if crc32_calculated != crc32_expected:
+                logging.debug(
+                    f"frame number {frame_number}: CRC32 mismatch: "
+                    f"calculated={crc32_calculated}, expected={crc32_expected}"
+                )
+                self._crc_errors += 1
 
-
-# Custom CRC validator - compares PVA CRC with camera embedded CRC
-
-
-# The purpose of this function is to parse the recorder queue values, extract the values that needed for:
-# 1. checking frame number of current and last frame
-# 2. checking frame actual size compared to calculated size
-# 3. checking timestamp consistency between current and last frame
-# 4. checking for recorded CRC errors
-def validate_frame(recorder_queue, expected_fps=60):
-
-    if recorder_queue.qsize() > 1:
-        # slice out only the relevant data from the recorder queue for frame validation
-        # use shared lock for thread safety when accessing internal deque
-        with recorder_queue_lock:
-            internal_q = list(recorder_queue.queue)  # Access internal deque (as list)
-            recorder_queue_raw = internal_q[-5:]  # Get last 5 records (peek only)
-            sliced_recorder_queue = [
-                sublist[-5:] for sublist in recorder_queue_raw
-            ]  # slice out the last 5 elements from each record
-
-        # get the last 2 frames of data and unpack the list items to variables
-        (
-            prev_complete_timestamp_s,
-            prev_frame_number,
-            prev_crc32_errors,
-            _,  # prev_received_frame_size (unused)
-            _,  # prev_calculated_frame_size (unused)
-        ) = sliced_recorder_queue[-2]
-
-        (
-            complete_timestamp_s,
-            frame_number,
-            crc32_errors,
-            received_frame_size,
-            calculated_frame_size,
-        ) = sliced_recorder_queue[-1]
-
-        # Variable naming convention: _s suffix = seconds, _ms suffix = milliseconds. Python date/time objects do not have suffixes.
-
-        # make sure frame numbers of current and last frames are in order
-        if frame_number != prev_frame_number + 1:
+        # The received tensor knows its size; only CRC-checked frames are copied.
+        received_frame_size = tensor_sample.data.nbytes
+        if received_frame_size != self.calculated_frame_size:
             logging.info(
-                f"Frame number is not in order, last frame number={prev_frame_number}, current frame number={frame_number}"
+                f"Frame size is not the same as the calculated frame size, "
+                f"received frame size={received_frame_size}, "
+                f"calculated frame size={self.calculated_frame_size}"
             )
 
-        # check if the frame size is the same as the calculated frame size
-        if received_frame_size != calculated_frame_size:
-            logging.info(
-                f"Frame size is not the same as the calculated frame size, received frame size={received_frame_size}, calculated frame size={calculated_frame_size}"
+        if self._prev_frame_number is not None:
+            if frame_number != self._prev_frame_number + 1:
+                logging.info(
+                    f"Frame number is not in order, last frame number="
+                    f"{self._prev_frame_number}, current frame number={frame_number}"
+                )
+            time_difference_ms = (entry_ns - self._prev_entry_ns) / 1.0e6
+            if time_difference_ms > (2 * self.expected_frame_period_ms):
+                logging.info(
+                    f"Frame timestamp mismatch, Diff[ms]={time_difference_ms:.3f}"
+                )
+        self._prev_frame_number = frame_number
+        self._prev_entry_ns = entry_ns
+
+        in_warmup = self._frame_count <= self.warmup_frames or (
+            self.frame_limit
+            and self._frame_count > self.frame_limit - self.warmup_frames
+        )
+        if not in_warmup:
+            frame_start_ns = frame.timestamp_s * NS_PER_S + frame.timestamp_ns
+            frame_end_ns = frame.metadata_s * NS_PER_S + frame.metadata_ns
+            received_ns = frame.received_s * NS_PER_S + frame.received_ns
+            self._latency_samples.append(
+                (
+                    frame_end_ns - frame_start_ns,  # sensor frame time
+                    received_ns - frame_end_ns,  # DMA + CPU wakeup
+                    entry_ns - received_ns,  # operator dispatch
+                )
             )
 
-        # Compare the timestamps of the current and last frames
-        complete_timestamp = datetime.datetime.fromtimestamp(complete_timestamp_s)
-        prev_complete_timestamp = datetime.datetime.fromtimestamp(
-            prev_complete_timestamp_s
-        )
-        time_difference = complete_timestamp - prev_complete_timestamp
+        self.tensor.forward(tensor_sample)
+        self.metadata.forward(metadata_sample)
 
-        # convert time difference to a float in milliseconds
-        time_difference_ms = time_difference.total_seconds() * 1000
-        logging.debug(
-            f"Time difference between current and last frame is {time_difference_ms} ms"
-        )
+    def print_report(self):
+        if self._crc_frame_check_enabled():
+            total = self._crc_checked
+            errors = self._crc_errors
+            if total > 0:
+                success_rate = ((total - errors) / total) * 100
+                print(
+                    f"CRC Validation: {total} frames checked, {errors} errors, "
+                    f"{success_rate:.2f}% success"
+                )
+            else:
+                print("CRC Validation: enabled, but no frames were checked.")
+        else:
+            print("CRC validation was disabled (--crc-frame-check=0).")
 
-        # Calculate frame time threshold dynamically based on expected FPS
-        # Frame time = 1000ms / FPS, we allow 2x frame time before calling an error
-        expected_frame_time_ms = 1000.0 / expected_fps
-        frame_time_threshold_ms = 2 * expected_frame_time_ms
+        if not self._latency_samples:
+            print("No settled frames collected -- nothing to report.")
+            return
 
-        if time_difference_ms > frame_time_threshold_ms:
-            logging.info(
-                f"Frame timestamp mismatch, last frame timestamp={prev_complete_timestamp_s}, current frame timestamp={complete_timestamp_s},Diff[ms]={time_difference_ms}"
+        labels = ["Sensor frame time", "DMA + CPU wakeup", "Operator dispatch"]
+        print(f"\n=== Latency Report ({len(self._latency_samples)} frames) ===")
+        print(f"{'Metric':<32}{'Min':>12}{'Max':>12}{'Avg':>12}")
+        print("-" * 68)
+        for index, label in enumerate(labels):
+            _print_stat(label, [sample[index] for sample in self._latency_samples])
+        print("-" * 68 + "\n")
+
+    def _crc_frame_check_enabled(self):
+        return self.crc_frame_check > 0
+
+
+def _import_pva_crc():
+    """Import the compiled pva_crc extension (ComputePvaCrcOp loads it in start()).
+
+    hololink.operators.pva_crc is a real subpackage (houses the compiled pva_crc.*.so
+    extension), but -- like any Python subpackage -- it isn't an attribute of the
+    already-imported hololink.operators until something actually imports it;
+    hololink.operators.__init__.py itself never does (confirmed empirically: a bare
+    `hl.operators.pva_crc` raises AttributeError without this import first). The extension
+    exists only in builds made with HOLOLINK_BUILD_PVA (PVA SDK present), so run() calls this
+    first and reports a missing extension instead of failing inside the operator's start().
+    """
+    import hololink.operators.pva_crc as pva_crc_pkg
+
+    cpp_dir = os.path.join(os.path.dirname(pva_crc_pkg.__file__), "cpp")
+    if cpp_dir not in sys.path:
+        sys.path.insert(0, cpp_dir)
+    operator_dir = os.path.dirname(os.path.abspath(__file__))
+    dev_build_path = os.environ.get(
+        "PVA_CRC_DEV_BUILD",
+        os.path.join(operator_dir, "..", "build", "pva_crc", "cpp"),
+    )
+    if os.path.exists(dev_build_path) and dev_build_path not in sys.path:
+        sys.path.insert(0, dev_build_path)
+
+    import pva_crc
+
+    return pva_crc
+
+
+class _PvaCrcShared:
+    """Shares one PvaCrc instance (and its pending fences, keyed by frame number) between
+    ComputePvaCrcOp and CheckPvaCrcOp. See this file's own header comment for why this exists --
+    graph.op() can't pass a live Python object as a kwarg even between two pure-Python operators,
+    and fences are kept per frame (not a single slot) because launch and check are deliberately
+    overlapped across frames to hide PVA's own latency. Keying them by frame number means a frame
+    one operator never sees cannot shift every later check onto the wrong frame's CRC.
+    """
+
+    _instances = {}
+    _pending_fences = {}
+    _conditions = {}
+
+    @classmethod
+    def register(cls, name, pva_crc):
+        cls._instances[name] = pva_crc
+        cls._pending_fences[name] = {}
+        cls._conditions[name] = threading.Condition()
+
+    @classmethod
+    def instance(cls, name):
+        return cls._instances[name]
+
+    @classmethod
+    def push_fence(cls, name, frame_number, fence):
+        condition = cls._conditions[name]
+        with condition:
+            cls._pending_fences[name][frame_number] = fence
+            condition.notify_all()
+
+    @classmethod
+    def take_fence(cls, name, frame_number, timeout_s=0.2):
+        """Return (fence, stale): the fence launched for frame_number, or None if it did not
+        arrive within timeout_s, and the fences of earlier frames, which nobody will check; the
+        caller frees them. ComputePvaCrcOp is a side-tap on the receiver, so it is not
+        guaranteed to have launched this frame's CRC before CheckPvaCrcOp (further down the
+        chain) asks for it. It launches frames in order, so once a later frame's fence is there,
+        this frame's will never come."""
+        condition = cls._conditions[name]
+        pending = cls._pending_fences[name]
+        with condition:
+            condition.wait_for(
+                lambda: frame_number in pending
+                or any(number > frame_number for number in pending),
+                timeout=timeout_s,
+            )
+            fence = pending.pop(frame_number, None)
+            stale = [
+                pending.pop(number)
+                for number in sorted(pending)
+                if number < frame_number
+            ]
+        return fence, stale
+
+
+class ComputePvaCrcOp(hs.Operator):
+    """Launch PVA CRC computation (non-blocking) on the raw CSI frame. A pure sink (side-tap on
+    the receiver's tensor output), not a pass-through: when this Python operator forwarded the
+    frame to FrameValidationOp (another Python operator), the runtime failed with
+    RUNTIME_PORT_BINDING_UNAVAILABLE before FrameValidationOp received its first frame. See
+    CheckPvaCrcOp for retrieving the result."""
+
+    in_tensor = hs.Input("in_tensor", hs.payload.Tensor)
+
+    data_size = hs.Param(0)
+    remaining_size = hs.Param(0)
+    is_first_chunk = hs.Param(True)
+    use_dual_vpu = hs.Param(True)
+    start_byte = hs.Param(0)
+    # Key for _PvaCrcShared; must equal CheckPvaCrcOp.compute_op_name. HSDK5 Python
+    # operators have no name attribute.
+    shared_name = hs.Param("compute_pva_crc")
+
+    def setup(self, spec):
+        spec.input(self.in_tensor, queue_depth=4)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.in_tensor))
+
+    def start(self):
+        if not self.data_size:
+            raise ValueError(
+                "ComputePvaCrcOp.data_size is required and must be nonzero."
             )
 
-        # check for CRC errors
-        if crc32_errors is not None and prev_crc32_errors is not None:
-            if crc32_errors > prev_crc32_errors:  # print only on new error
-                logging.info(f"CRC32 errors found so far: {crc32_errors}")
+        pva_crc = _import_pva_crc()
 
-
-def get_timestamp(metadata, name):
-    s = metadata[f"{name}_s"]
-    f = metadata[f"{name}_ns"]
-    f *= SEC_PER_NS
-    return s + f
-
-
-def record_times(recorder_queue, metadata, expected_fps=60):
-    #
-    now = datetime.datetime.now(datetime.timezone.utc)
-    #
-    frame_number = metadata.get("frame_number", 0)
-
-    # get frame crc errors (PVA errors for this pipeline)
-    crc32_errors = metadata.get("pva_errors", 0)
-
-    # frame_start_s is the time that the first data arrived at the FPGA;
-    # the network receiver calls this "timestamp".
-    frame_start_s = get_timestamp(metadata, "timestamp")
-
-    # After the FPGA sends the last sensor data packet for a frame, it follows
-    # that with a 128-byte metadata packet.  This timestamp (which the network
-    # receiver calls "metadata") is the time at which the FPGA sends that
-    # packet; so it's the time immediately after the the last byte of sensor
-    # data in this window.  The difference between frame_start_s and frame_end_s
-    # is how long it took for the sensor to produce enough data for a complete
-    # frame.
-    frame_end_s = get_timestamp(metadata, "metadata")
-
-    # received_timestamp_s is the host time after the background thread woke up
-    # with the nofication that a frame of data was available.  This shows how long
-    # it took for the CPU to actually run the backtground user-mode thread where it observes
-    # the end-of-frame.  This background thread sets a flag that will wake up
-    # the pipeline network receiver operator.
-    received_timestamp_s = get_timestamp(metadata, "received")
-
-    # operator_timestamp_s is the time when the next pipeline element woke up--
-    # the next operator after the network receiver.  This is used to compute
-    # how much time overhead is required for the pipeline to actually receive
-    # sensor data.
-    operator_timestamp_s = get_timestamp(metadata, "operator_timestamp")
-
-    # complete_timestamp_s is the time when visualization finished.
-    complete_timestamp_s = get_timestamp(metadata, "complete_timestamp")
-
-    # get the frame size and calculated frame size from the metadata
-    received_frame_size = metadata.get("received_frame_size")
-    calculated_frame_size = metadata.get("calculated_frame_size")
-
-    # Use thread-safe put() operation instead of append()
-    recorder_queue.put(
-        (
-            now,
-            frame_start_s,
-            frame_end_s,
-            received_timestamp_s,
-            operator_timestamp_s,
-            complete_timestamp_s,
-            frame_number,
-            crc32_errors,
-            received_frame_size,
-            calculated_frame_size,
+        self._pva_crc = pva_crc.PvaCrc()
+        self._pva_crc.initialize(
+            data_size=self.data_size,
+            remaining_size=self.remaining_size,
+            is_first_chunk=self.is_first_chunk,
+            use_dual_vpu=self.use_dual_vpu,
         )
+        _PvaCrcShared.register(self.shared_name, self._pva_crc)
+        logging.info(
+            f"ComputePvaCrcOp initialized: data_size={self.data_size:,} bytes, "
+            f"use_dual_vpu={self.use_dual_vpu}, start_byte={self.start_byte}"
+        )
+
+    def compute(self, context):
+        sample = self.in_tensor.receive()
+        if sample.is_missing:
+            return
+
+        # Import a copy, as in FrameValidationOp. The PVA engine reads the buffer
+        # outside CUDA stream order, so wait until the frame is ready before launching.
+        with cp.cuda.Stream(non_blocking=True) as stream:
+            capsule = sample.data.__dlpack__(
+                stream=stream.ptr,
+                copy=True,
+            )
+            cp_frame = cp.from_dlpack(capsule)
+            stream.synchronize()
+        input_ptr = cp_frame.data.ptr + self.start_byte
+
+        fence = self._pva_crc.launch_compute(input_ptr)
+        _PvaCrcShared.push_fence(self.shared_name, sample.metadata.frame_id, fence)
+
+
+class _PvaValidationReportHolder:
+    """Plain Python-side stash so run() can read CheckPvaCrcOp's accumulated state back after
+    session.wait() returns -- same shape as FrameValidationOp's own _ValidationReportHolder.
+    """
+
+    instance = None
+
+
+class CheckPvaCrcOp(hs.Operator):
+    """Retrieve the PVA CRC result (blocks briefly if not yet ready), compare it against the
+    camera's own FPGA-embedded CRC, and accumulate match/mismatch statistics.
+
+    A pure sink (side-tap on image_processor's output), not a pass-through, even though the old
+    app's own version sat inline in the tensor chain: BayerDemosaicOp's input requires a
+    byte-span bound declared by its *direct* producer, which only a real C++-registered operator
+    can express (confirmed directly -- Python's own OperatorSpec.output() has no equivalent of
+    C++'s produces_tensor(TensorOutputSpec), and inserting any custom Python pass-through here
+    hits PHYSICAL_TENSOR_BYTE_SPAN_INPUT_UNBOUNDED at compile time, regardless of port type). So
+    ImageProcessorOp feeds BayerDemosaicOp directly, same as every image_processor->demosaic
+    wiring elsewhere in this whole porting effort, and this operator taps the same
+    image_processor.tensor/metadata output in parallel instead, as a side branch that does
+    not sit in the chain.
+    """
+
+    in_tensor = hs.Input("in_tensor", hs.schema.Image)
+    in_metadata = hs.Input("in_metadata", capture_metadata.CaptureMetadata)
+
+    compute_op_name = hs.Param("")
+    frame_limit = hs.Param(
+        0
+    )  # 0 = unbounded; only trims the "skip last N" validation window.
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._frame_count = 0
+        self._matches = 0
+        self._mismatches = 0
+        self._not_checked = 0
+        self._output_gpu = None
+        _PvaValidationReportHolder.instance = self
+
+    def setup(self, spec):
+        spec.input(self.in_tensor, queue_depth=4)
+        spec.input(self.in_metadata, queue_depth=4)
+
+    def contract(self):
+        return (
+            hs.Contract()
+            .trigger(
+                hs.OnAligned(
+                    ports=[self.in_tensor, self.in_metadata],
+                    window=_METADATA_PAIRING_WINDOW,
+                )
+            )
+            .input(self.in_tensor, hs.Exact())
+            .input(self.in_metadata, hs.Exact())
+        )
+
+    def start(self):
+        # Pre-allocate once: 2x uint32 (dual-VPU output slots), matching the old app exactly.
+        self._output_gpu = cp.zeros(2, dtype=cp.uint32)
+
+    def compute(self, context):
+        tensor_sample = self.in_tensor.receive()
+        metadata_sample = self.in_metadata.receive()
+        if tensor_sample.is_missing or metadata_sample.is_missing:
+            return
+
+        self._frame_count += 1
+        frame = metadata_sample.data
+        fence, stale = _PvaCrcShared.take_fence(
+            self.compute_op_name, frame.frame_number
+        )
+        pva_crc = _PvaCrcShared.instance(self.compute_op_name)
+        for stale_fence in stale:
+            # Launched for a frame that never reached this operator (dropped on the way).
+            self._free_fence(pva_crc, stale_fence)
+        if fence is None:
+            # ComputePvaCrcOp never got this frame: it cannot be checked.
+            self._not_checked += 1
+            return
+
+        try:
+            result = pva_crc.check_results(
+                fence, self._output_gpu.data.ptr, timeout_us=PVA_CHECK_TIMEOUT_US
+            )
+            if result < 0:
+                raise RuntimeError(f"PVA CRC check failed with error code {result}")
+            if result == 1:
+                raise RuntimeError(
+                    f"PVA CRC timeout after {PVA_CHECK_TIMEOUT_US / 1000}ms "
+                    "(pipeline not pacing frames slower than PVA can compute)"
+                )
+
+            # PVA returns standard CRC32; the camera's own embedded CRC is JAMCRC
+            # (bit-inverted). Convert PVA's result to JAMCRC for a direct comparison --
+            # matches the old app's own conversion exactly.
+            pva_crc32 = int(self._output_gpu[0].get())
+            pva_frame_crc = ~pva_crc32 & 0xFFFFFFFF
+
+            in_window = self._frame_count > SKIP_INITIAL_FRAMES and (
+                not self.frame_limit
+                or self._frame_count <= self.frame_limit - SKIP_FINAL_FRAMES
+            )
+            if in_window:
+                if pva_frame_crc == frame.crc:
+                    self._matches += 1
+                else:
+                    self._mismatches += 1
+                    logging.error(
+                        f"CRC mismatch at frame {self._frame_count}: "
+                        f"camera=0x{frame.crc:08x}, pva=0x{pva_frame_crc:08x}"
+                    )
+        finally:
+            self._free_fence(pva_crc, fence)
+
+    def _free_fence(self, pva_crc, fence):
+        try:
+            pva_crc.free_fence(fence)
+        except Exception as e:
+            logging.warning(
+                f"Error freeing PVA fence on frame {self._frame_count}: {e}"
+            )
+
+    def print_report(self):
+        validated = self._matches + self._mismatches
+        print("\n" + "=" * 80)
+        print("PVA CRC VALIDATION SUMMARY")
+        print("=" * 80)
+        print(f"Total frames: {self._frame_count}")
+        print(
+            f"Validated frames: {validated} "
+            f"(skipped first {SKIP_INITIAL_FRAMES}, last {SKIP_FINAL_FRAMES})"
+        )
+        print()
+        print("PVA Hardware CRC vs Camera FPGA CRC:")
+        print(f"  Matches:    {self._matches}")
+        print(f"  Mismatches: {self._mismatches}")
+        print(
+            f"  Not checked (frame dropped before the PVA launch): {self._not_checked}"
+        )
+        if validated:
+            print(f"  Success:    {(self._matches / validated) * 100:.2f}%")
+        print()
+        print("INTERPRETATION:")
+        print("-" * 50)
+        if validated and self._mismatches == 0:
+            print("SUCCESS! PVA matches camera perfectly (100%)")
+            print("   -> PVA hardware CRC validation is working correctly")
+        elif validated:
+            error_rate = (self._mismatches / validated) * 100
+            print(
+                f"PVA has {self._mismatches} mismatches ({error_rate:.2f}% error rate)"
+            )
+            print("   -> Check PVA configuration and data alignment")
+        else:
+            print("No frames were validated -- nothing to report.")
+        print("=" * 80)
+
+
+class DiscardImageOp(hs.Operator):
+    """With --headless, HolovizOp renders into a CUDA image on its output instead of a window;
+    the output must be consumed, and this drops each rendered frame."""
+
+    input = hs.Input("input", hs.schema.Image)
+
+    def setup(self, spec):
+        spec.input(self.input, queue_depth=1)
+
+    def contract(self):
+        return hs.Contract().trigger(hs.OnEach(self.input))
+
+    def compute(self, context):
+        self.input.receive_data()
+
+
+def run(
+    hololink_ip,
+    camera_mode,
+    ibv_name,
+    ibv_port,
+    expander_configuration,
+    pattern,
+    skip_reset,
+    frame_limit,
+    headless,
+    fullscreen,
+):
+    cuda_device_ordinal = 0
+
+    try:
+        _import_pva_crc()
+    except ImportError as e:
+        print(
+            "imx274_pva_crc_validation.py needs the pva_crc extension, which this hololink build "
+            "does not include: it is built only with HOLOLINK_BUILD_PVA on hosts with the PVA SDK "
+            f"and hardware ({e}).",
+            file=sys.stderr,
+        )
+        return 1
+
+    print("Initializing CUDA...")
+    _cuda_check(cuda_driver.cuInit(0))
+    cu_device = _cuda_check(cuda_driver.cuDeviceGet(cuda_device_ordinal))
+    cu_context = _cuda_check(cuda_driver.cuDevicePrimaryCtxRetain(cu_device))
+    cuda_driver.cuCtxSetCurrent(cu_context)
+
+    print(f"Enumerating HSB board at {hololink_ip}...")
+    metadata = hl.find_channel(hololink_ip)
+    channel = hl.DataChannel(metadata)
+
+    hololink_dev = channel.hololink()
+    hololink_dev.start()
+    if not skip_reset:
+        hololink_dev.reset()
+
+    print("Waiting for PTP sync...")
+    if not hololink_dev.ptp_synchronize():
+        raise ValueError("Failed to synchronize PTP")
+    print("PTP synchronized.")
+
+    camera = hl.NativeImx274Sensor(
+        channel, expander_configuration=expander_configuration
+    )
+    if not skip_reset:
+        camera.setup_clock()
+    camera.configure(camera_mode)
+    camera.set_digital_gain_reg(0x4)
+    if pattern is not None:
+        camera.test_pattern(pattern)
+
+    pixel_format = camera.get_pixel_format()
+    bayer_format = camera.get_bayer_format()
+    frame_width = camera.get_width()
+    frame_height = camera.get_height()
+
+    geometry = hl.resolve_generic_geometry(camera)
+    frame_size = (
+        geometry["start_byte"]
+        + geometry["bytes_per_line"] * geometry["pixel_height"]
+        + geometry["trailing_bytes"]
     )
 
-    # validate the frame
-    validate_frame(recorder_queue, expected_fps)
+    # Build the graph.
+    graph = hs.Graph("imx274_pva_crc_validation")
 
+    rx = graph.op(
+        hl.operators.RoceReceiverOp,
+        "rx",
+        data_channel=channel,
+        frame_context=int(cu_context),
+        device_start=camera.start,
+        device_stop=camera.stop,
+        frame_size=frame_size,
+        ibv_name=ibv_name,
+        ibv_port=ibv_port,
+        frame_limit=frame_limit or 0,
+        frame_limit_ends_run=True,
+    )
 
-def save_timestamp(metadata, name, timestamp):
-    f, s = math.modf(timestamp.timestamp())
-    metadata[f"{name}_s"] = int(s)
-    metadata[f"{name}_ns"] = int(f * NS_PER_SEC)
+    compute_pva_crc = graph.op(
+        ComputePvaCrcOp,
+        "compute_pva_crc",
+        shared_name="compute_pva_crc",
+        data_size=frame_size,
+        remaining_size=0,
+        is_first_chunk=True,
+        use_dual_vpu=True,
+        start_byte=0,
+    )
+    graph.add_flow(rx.tensor, compute_pva_crc.in_tensor, queue_depth=4)
 
+    validation = graph.op(
+        FrameValidationOp,
+        "validation",
+        calculated_frame_size=frame_size,
+        crc_frame_check=0,  # PVA covers CRC validation in this app; avoid a redundant CPU check.
+        frame_limit=frame_limit or 0,
+    )
+    graph.add_flow(rx.tensor, validation.in_tensor, queue_depth=4)
+    graph.add_flow(rx.metadata, validation.in_metadata, queue_depth=4)
 
-class InstrumentedTimeProfiler(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        operator_name="operator",
-        calculated_frame_size=0,
-        crc_frame_check=1,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._operator_name = operator_name
-        self._calculated_frame_size = calculated_frame_size
-        self._crc_frame_check = crc_frame_check
+    csi = graph.op(
+        hl.operators.CsiToBayerOp,
+        "csi_to_bayer",
+        cuda_device_ordinal=cuda_device_ordinal,
+        geometry=geometry,
+        bayer_format=bayer_format,
+    )
+    graph.add_flow(validation.tensor, csi.in_tensor, queue_depth=4)
+    graph.add_flow(validation.metadata, csi.in_metadata, queue_depth=4)
 
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-        spec.output("output")
+    image_processor = graph.op(
+        hl.operators.ImageProcessorOp,
+        "image_processor",
+        pixel_format=pixel_format,
+        pixel_width=geometry["pixel_width"],
+        pixel_height=geometry["pixel_height"],
+        bayer_format=_BAYER_FORMAT_VALUES[bayer_format],
+        optical_black=50,  # Optical black value for imx274 (matches this app's own default).
+        cuda_device_ordinal=cuda_device_ordinal,
+    )
+    graph.add_flow(csi.tensor, image_processor.in_tensor, queue_depth=4)
+    graph.add_flow(csi.metadata, image_processor.in_metadata, queue_depth=4)
 
-    def compute(self, op_input, op_output, context):
-        # What time is it now?
-        operator_timestamp = datetime.datetime.now(datetime.timezone.utc)
+    # Check PVA results after image processing -- hides ~1ms PVA latency behind that other
+    # work, matching the old app's own placement and its own comment on why. A side-tap on
+    # image_processor's own output, not inline in the tensor chain -- see CheckPvaCrcOp's own
+    # class comment for why (BayerDemosaicOp's input needs a byte-span bound only a real
+    # C++-registered producer can declare).
+    check_pva_crc = graph.op(
+        CheckPvaCrcOp,
+        "check_pva_crc",
+        compute_op_name="compute_pva_crc",
+        frame_limit=frame_limit or 0,
+    )
+    graph.add_flow(image_processor.tensor, check_pva_crc.in_tensor, queue_depth=4)
+    graph.add_flow(image_processor.metadata, check_pva_crc.in_metadata, queue_depth=4)
 
-        in_message = op_input.receive("input")
-        cp_frame = cp.asarray(in_message.get(""))
+    demosaic = graph.op(
+        hv.operators.BayerDemosaicOp,
+        "bayer_demosaic",
+        bayer_grid_pos=bayer_format,
+        generate_alpha=True,
+        alpha_value=65535,
+    )
+    graph.add_flow(image_processor.tensor, demosaic.input, queue_depth=4)
 
-        # Save the number of bytes in the frame to compare to CSI calculated frame size
-        self.metadata["received_frame_size"] = cp_frame.nbytes
-        self.metadata["calculated_frame_size"] = self._calculated_frame_size
+    # image_processor.metadata is not connected: nothing uses it, and an
+    # output that is not connected has no queue that can fill.
 
-        save_timestamp(
-            self.metadata, self._operator_name + "_timestamp", operator_timestamp
-        )
-        op_output.emit({"": cp_frame}, "output")
-
-
-class MonitorOperator(holoscan.core.Operator):
-    def __init__(
-        self,
-        *args,
-        recorder_queue=None,
-        expected_fps=60,
-        **kwargs,
-    ):
-        super().__init__(*args, **kwargs)
-        self._recorder_queue = recorder_queue
-        self._expected_fps = expected_fps
-
-    def setup(self, spec):
-        logging.info("setup")
-        spec.input("input")
-
-    def compute(self, op_input, op_output, context):
-        # What time is it now?
-        complete_timestamp = datetime.datetime.now(datetime.timezone.utc)
-        _ = op_input.receive("input")
-
-        # save the complete timestamp and record the times
-        save_timestamp(self.metadata, "complete_timestamp", complete_timestamp)
-        record_times(self._recorder_queue, self.metadata, self._expected_fps)
-
-
-class HoloscanApplication(holoscan.core.Application):
-    def __init__(
-        self,
-        headless,
-        fullscreen,
-        cuda_context,
-        cuda_device_ordinal,
-        hololink_channel,
-        ibv_name,
-        ibv_port,
-        camera,
-        camera_mode,
-        frame_limit,
-        recorder_queue,
-    ):
-        super().__init__()
-        self._headless = headless
-        self._fullscreen = fullscreen
-        self._cuda_context = cuda_context
-        self._cuda_device_ordinal = cuda_device_ordinal
-        self._hololink_channel = hololink_channel
-        self._ibv_name = ibv_name
-        self._ibv_port = ibv_port
-        self._camera = camera
-        self._camera_mode = camera_mode
-        self._frame_limit = frame_limit
-        self._recorder_queue = recorder_queue
-        self.crc_validator = None
-
-    def _validate_pva_frame_size(self, frame_size):
-        """
-        Validate frame size meets PVA 1D API constraints.
-
-        PVA 1D API constraints:
-        - data_size must be a multiple of 4 (hardware alignment)
-        - data_size must be >= 32KB (minimum transfer size)
-        - data_size must be <= 12MB (maximum single transfer)
-
-        Args:
-            frame_size: Total frame size in bytes (including CSI header)
-
-        Raises:
-            ValueError: If frame size doesn't meet PVA constraints
-        """
-        min_size = 32 * 1024  # 32KB minimum
-        max_size = 12 * 1024 * 1024  # 12MB maximum
-
-        if frame_size % 4 != 0:
-            raise ValueError(
-                f"Frame size {frame_size:,} bytes is not a multiple of 4.\n"
-                f"PVA requires data_size to be 4-byte aligned."
-            )
-
-        if frame_size < min_size:
-            raise ValueError(
-                f"Frame size {frame_size:,} bytes is too small.\n"
-                f"PVA requires data_size >= {min_size:,} bytes (32KB)."
-            )
-
-        if frame_size > max_size:
-            raise ValueError(
-                f"Frame size {frame_size:,} bytes is too large.\n"
-                f"PVA supports data_size <= {max_size:,} bytes (12MB).\n"
-                f"Consider processing in chunks using remaining_size parameter."
-            )
-
-        logging.debug(f"✓ Frame size {frame_size:,} bytes is valid for PVA 1D API")
-
-    def compose(self):
-        logging.info("Composing PVA CRC validation pipeline")
-
-        if self._frame_limit:
-            condition = holoscan.conditions.CountCondition(
-                self, name="count", count=self._frame_limit
-            )
-        else:
-            condition = holoscan.conditions.BooleanCondition(
-                self, name="ok", enable_tick=True
-            )
-
-        self._camera.set_mode(self._camera_mode)
-
-        csi_to_bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="pool",
-            storage_type=1,
-            block_size=self._camera._width
-            * 2
-            * self._camera._height,  # 2 bytes per uint16
-            num_blocks=4,
+    if headless:
+        # Renders into a CUDA image on HolovizOp's output (consumed by DiscardImageOp). The
+        # CUDA sink has no framebuffer_srgb: its sRGB format encodes on write instead.
+        sink = {
+            "kind": "cuda",
+            "width": frame_width,
+            "height": frame_height,
+            "format": "rgba8_srgb",
+        }
+    else:
+        sink = {
+            "kind": "window",
+            "framebuffer_srgb": True,
+            "title": f"Holoviz - {hololink_ip}",
+            "width": frame_width,
+            "height": frame_height,
+            "fullscreen": fullscreen,
+            "close_on_escape": True,
+        }
+    viz = graph.op(
+        "holoscan.visualization.HolovizOp",
+        "holoviz",
+        layers=[
+            {
+                "port_name": "video",
+                "kind": "image",
+                "format": "rgba16_unorm",
+                "max_width": frame_width,
+                "max_height": frame_height,
+            }
+        ],
+        sink=sink,
+        # One frame per received frame.
+        trigger={"kind": "layer"},
+    )
+    graph.add_flow(
+        demosaic.output,
+        viz.video,
+        queue_policy=hs.QueuePolicy.DROP_OLDEST,
+        queue_depth=1,
+    )
+    if headless:
+        discard = graph.op(DiscardImageOp, "discard")
+        graph.add_flow(
+            viz.output,
+            discard.input,
+            queue_policy=hs.QueuePolicy.DROP_OLDEST,
+            queue_depth=1,
         )
 
-        csi_to_bayer_operator = hololink_module.operators.CsiToBayerOp(
-            self,
-            name="csi_to_bayer",
-            allocator=csi_to_bayer_pool,
-            cuda_device_ordinal=self._cuda_device_ordinal,
+    clock_key = graph.add_clock(hs.RealtimeClock, "clock")
+    graph.set_default_clock(clock_key)
+
+    options = hs.CompileOptions()
+    for operator_path in ("rx", "csi_to_bayer", "image_processor"):
+        options.deployment.bind_tensor_output_device(
+            operator_path=operator_path,
+            output_port="tensor",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
         )
-        self._camera.configure_converter(csi_to_bayer_operator)
+    options.deployment.bind_tensor_output_device(
+        operator_path="bayer_demosaic",
+        output_port="output",
+        device=hs.execution.DeviceId(cuda_device_ordinal),
+    )
 
-        frame_size = csi_to_bayer_operator.get_csi_length()
-        logging.debug(f"Frame size: {frame_size} bytes")
-
-        receiver_operator = hololink_module.operators.RoceReceiverOp(
-            self,
-            condition,
-            name="receiver",
-            frame_size=frame_size,
-            frame_context=self._cuda_context,
-            ibv_name=self._ibv_name,
-            ibv_port=self._ibv_port,
-            hololink_channel=self._hololink_channel,
-            device=self._camera,
-        )
-
-        # PVA CRC Configuration
-        #
-        # PVA uses line-based CRC with GF(2) polynomial merging, which is mathematically
-        # equivalent to streaming CRC32/JAMCRC when processing the same data.
-        # Both use polynomial 0x04C11DB7 (or bit-reversed 0xEDB88320).
-        #
-        # The camera's embedded CRC is computed over the full CSI frame.
-        # To match, PVA must process the entire frame with valid 2D grid dimensions:
-        #   - width (bytes per row) must be multiple of 4
-        #   - height (number of rows) must be >= 64 and <= 16,384
-        #   - width × height must equal frame_size exactly
-
-        # Calculate bytes per line for RAW10 format
-        # RAW10: 10 bits per pixel = 5 bytes per 4 pixels
-        pixel_width = self._camera._width
-        pixel_height = self._camera._height
-        bytes_per_line_pixel = ((pixel_width + 3) // 4) * 5
-        pixel_data_size = bytes_per_line_pixel * pixel_height
-
-        # The CSI header is: frame_size - pixel_data_size
-        csi_header_size = frame_size - pixel_data_size
-
-        logging.debug("Frame breakdown:")
-        logging.debug(f"  Full CSI frame:  {frame_size:,} bytes")
-        logging.debug(f"  CSI header:      {csi_header_size:,} bytes")
-        logging.debug(
-            f"  Pixel data:      {pixel_data_size:,} bytes ({bytes_per_line_pixel} × {pixel_height})"
+    if headless:
+        options.deployment.bind_tensor_output_device(
+            operator_path="holoviz",
+            output_port="output",
+            device=hs.execution.DeviceId(cuda_device_ordinal),
         )
 
-        # Validate frame size meets PVA 1D API constraints
-        self._validate_pva_frame_size(frame_size)
+    plan = hs.compile(graph, options)
+    if not plan.ok:
+        print("Graph compilation failed:", file=sys.stderr)
+        for diag in plan.diagnostics:
+            print(f"  {diag}", file=sys.stderr)
+        hololink_dev.stop()
+        _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
+        return 1
 
-        logging.debug("Configuring PVA CRC (1D API - full frame):")
-        logging.debug(f"  Camera mode: {pixel_width}x{pixel_height} RAW10")
-        logging.debug(f"  Full CSI frame: {frame_size:,} bytes")
-        logging.debug(f"  PVA data_size: {frame_size:,} bytes")
-        logging.debug("  ✓ 1D API: No 2D dimension constraints")
+    print(
+        f"Capturing mode={camera_mode} {frame_width}x{frame_height} -- running (Ctrl+C to stop)..."
+    )
 
-        # Use async two-operator pattern to hide PVA latency
-        self.compute_pva_crc_op = hololink_module.operators.ComputePvaCrcOp(
-            self,
-            name="compute_pva_crc",
-            data_size=frame_size,
-            remaining_size=0,
-            is_first_chunk=True,
-            use_dual_vpu=True,
-        )
+    with hs.run_async(plan) as session:
+        # With --frame-limit, the receiver ends the run after frame_limit frames.
+        session.wait()
 
-        self.check_pva_crc_op = hololink_module.operators.CheckPvaCrcOp(
-            self,
-            name="check_pva_crc",
-            compute_pva_crc_op=self.compute_pva_crc_op,
-            computed_crc_metadata_name="pva_frame_crc",
-        )
+    hololink_dev.stop()
+    _cuda_check(cuda_driver.cuDevicePrimaryCtxRelease(cu_device))
 
-        # Record both camera CRC and PVA CRC for post-run validation
-        self.record_metadata_op = RecordMetadataOp(
-            self,
-            name="record_metadata",
-            metadata_names=["crc", "pva_frame_crc"],
-        )
+    if _ValidationReportHolder.instance is not None:
+        _ValidationReportHolder.instance.print_report()
+    if _PvaValidationReportHolder.instance is not None:
+        _PvaValidationReportHolder.instance.print_report()
 
-        logging.debug("PVA CRC validation enabled (async compute/check pattern)")
-
-        profiler = InstrumentedTimeProfiler(
-            self,
-            name="profiler",
-            calculated_frame_size=frame_size,
-            crc_frame_check=1,
-        )
-
-        pixel_format = self._camera.pixel_format()
-        bayer_format = self._camera.bayer_format()
-
-        image_processor_operator = hololink_module.operators.ImageProcessorOp(
-            self,
-            name="image_processor",
-            optical_black=50,
-            bayer_format=bayer_format.value,
-            pixel_format=pixel_format.value,
-        )
-
-        bayer_pool = holoscan.resources.BlockMemoryPool(
-            self,
-            name="bayer_pool",
-            storage_type=1,
-            block_size=self._camera._width
-            * 4
-            * 2
-            * self._camera._height,  # 4 channels * 2 bytes per uint16
-            num_blocks=4,
-        )
-
-        demosaic = holoscan.operators.BayerDemosaicOp(
-            self,
-            name="demosaic",
-            pool=bayer_pool,
-            generate_alpha=True,
-            alpha_value=65535,
-            bayer_grid_pos=bayer_format.value,
-            interpolation_mode=0,
-        )
-
-        visualizer = holoscan.operators.HolovizOp(
-            self,
-            name="holoviz",
-            fullscreen=self._fullscreen,
-            headless=self._headless,
-            framebuffer_srgb=True,
-            enable_camera_pose_output=True,
-            camera_pose_output_type="extrinsics_model",
-        )
-
-        camera_fps = hololink_module.sensors.imx274.imx274_mode.imx_frame_format[
-            self._camera_mode.value
-        ].framerate
-
-        monitor = MonitorOperator(
-            self,
-            name="monitor",
-            recorder_queue=self._recorder_queue,
-            expected_fps=camera_fps,
-        )
-
-        # Pipeline with async PVA CRC validation
-        # Launch PVA computation early, then do other work while PVA computes
-        self.add_flow(receiver_operator, self.compute_pva_crc_op, {("output", "input")})
-        self.add_flow(self.compute_pva_crc_op, profiler, {("output", "input")})
-        self.add_flow(profiler, csi_to_bayer_operator, {("output", "input")})
-        self.add_flow(
-            csi_to_bayer_operator, image_processor_operator, {("output", "input")}
-        )
-        # Check PVA results after image processing (hides ~0.9ms PVA latency)
-        self.add_flow(
-            image_processor_operator, self.check_pva_crc_op, {("output", "input")}
-        )
-        self.add_flow(
-            self.check_pva_crc_op, self.record_metadata_op, {("output", "input")}
-        )
-        self.add_flow(self.record_metadata_op, demosaic, {("output", "receiver")})
-        self.add_flow(demosaic, visualizer, {("transmitter", "receivers")})
-        self.add_flow(visualizer, monitor, {("camera_pose_output", "input")})
+    print("Done.")
+    return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description="IMX274 Frame Validation with PVA CRC")
-
-    modes = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode
-    mode_choices = [mode.value for mode in modes]
-    mode_help = " ".join([f"{mode.value}:{mode.name}" for mode in modes])
-
     parser.add_argument(
         "--camera-mode",
         type=int,
-        choices=mode_choices,
-        default=mode_choices[0],
-        help=mode_help,
+        choices=[0, 1, 2],
+        default=0,
+        help="IMX274 mode (default: 0 = 3840x2160@60fps)",
     )
     parser.add_argument("--headless", action="store_true", help="Run in headless mode")
     parser.add_argument(
         "--fullscreen", action="store_true", help="Run in fullscreen mode"
     )
     parser.add_argument(
-        "--frame-limit", type=int, default=None, help="Exit after this many frames"
+        "--frame-limit",
+        type=int,
+        default=None,
+        help="Exit after receiving this many frames",
     )
     parser.add_argument(
         "--hololink", default="192.168.0.2", help="IP address of Hololink board"
     )
-    parser.add_argument("--log-level", type=int, default=20, help="Logging level")
-
-    infiniband_devices = hololink_module.infiniband_devices()
     parser.add_argument(
-        "--ibv-name", default=infiniband_devices[0] if infiniband_devices else None
+        "--log-level", type=int, default=20, help="Python logging level to display"
     )
     parser.add_argument(
-        "--ibv-port", type=int, default=1, help="Port number of IBV device"
+        "--ibv-name",
+        default="",
+        help="IBV device to use (default: the device on the board's network interface)",
+    )
+    parser.add_argument(
+        "--ibv-port",
+        type=int,
+        default=1,
+        help="Port number of IBV device (with --ibv-name)",
     )
     parser.add_argument("--expander-configuration", type=int, default=0, choices=(0, 1))
-    parser.add_argument("--pattern", type=int, choices=range(12), help="Test pattern")
-    parser.add_argument("--skip-reset", action="store_true")
-
+    parser.add_argument(
+        "--pattern", type=int, choices=range(12), help="Configure a test pattern (0-11)"
+    )
+    parser.add_argument(
+        "--skip-reset",
+        action="store_true",
+        help="Don't call reset on the hololink device",
+    )
     args = parser.parse_args()
 
-    hololink_module.logging_level(args.log_level)
+    logging.basicConfig(level=args.log_level)
     logging.info("IMX274 Frame Validation with PVA CRC Hardware")
 
-    # Initialize CUDA
-    (cu_result,) = cuda.cuInit(0)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_device_ordinal = 0
-    cu_result, cu_device = cuda.cuDeviceGet(cu_device_ordinal)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-    cu_result, cu_context = cuda.cuDevicePrimaryCtxRetain(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-    # Initialize Hololink
-    channel_metadata = hololink_module.Enumerator.find_channel(channel_ip=args.hololink)
-    logging.info(f"Hololink channel: {channel_metadata}")
-    hololink_channel = hololink_module.DataChannel(channel_metadata)
-
-    # Initialize camera
-    camera = hololink_module.sensors.imx274.dual_imx274.Imx274Cam(
-        hololink_channel, expander_configuration=args.expander_configuration
-    )
-    camera_mode = hololink_module.sensors.imx274.imx274_mode.Imx274_Mode(
-        args.camera_mode
-    )
-
-    recorder_queue = queue.Queue(maxsize=30_000)
-
-    # Create application
-    application = HoloscanApplication(
-        args.headless,
-        args.fullscreen,
-        cu_context,
-        cu_device_ordinal,
-        hololink_channel,
+    return run(
+        args.hololink,
+        args.camera_mode,
         args.ibv_name,
         args.ibv_port,
-        camera,
-        camera_mode,
+        args.expander_configuration,
+        args.pattern,
+        args.skip_reset,
         args.frame_limit,
-        recorder_queue,
+        args.headless,
+        args.fullscreen,
     )
-
-    # Start Hololink
-    hololink = hololink_channel.hololink()
-    hololink.start()
-    if not args.skip_reset:
-        hololink.reset()
-
-    logging.info("Waiting for PTP sync...")
-    if not hololink.ptp_synchronize():
-        raise ValueError("Failed to synchronize PTP")
-    logging.info("PTP synchronized")
-
-    if not args.skip_reset:
-        camera.setup_clock()
-
-    camera.configure(camera_mode)
-    camera.set_digital_gain_reg(0x4)
-
-    if args.pattern is not None:
-        camera.test_pattern(args.pattern)
-
-    logging.info("Starting application...")
-    application.run()
-
-    hololink.stop()
-
-    (cu_result,) = cuda.cuDevicePrimaryCtxRelease(cu_device)
-    assert cu_result == cuda.CUresult.CUDA_SUCCESS
-
-    # Validate CRCs after pipeline completes
-    SKIP_INITIAL_FRAMES = 10  # Skip first N frames during pipeline initialization
-    SKIP_FINAL_FRAMES = 10  # Skip last N frames during pipeline shutdown
-
-    if hasattr(application, "record_metadata_op"):
-        crcs = application.record_metadata_op.get_record()
-        total_frames = len(crcs)
-
-        if total_frames == 0:
-            logging.warning("No CRC frames recorded")
-        else:
-            logging.info(f"Captured {total_frames} frames")
-
-            # Validate CRCs (skip initial and final frames to avoid artifacts)
-            skip_frames = SKIP_INITIAL_FRAMES
-            pva_errors = 0
-
-            for frame_idx, (camera_crc, pva_crc) in enumerate(crcs):
-                # Skip validation for first N frames (initialization artifacts)
-                if frame_idx < skip_frames:
-                    continue
-                # Skip validation for last N frames (shutdown artifacts)
-                if frame_idx >= (total_frames - SKIP_FINAL_FRAMES):
-                    continue
-
-                if camera_crc != pva_crc:
-                    logging.error(
-                        f"CRC mismatch at frame {frame_idx}: "
-                        f"camera=0x{camera_crc:08x}, pva=0x{pva_crc:08x}"
-                    )
-                    pva_errors += 1
-
-            validated_frames = max(total_frames - skip_frames - SKIP_FINAL_FRAMES, 0)
-            pva_success = (
-                ((validated_frames - pva_errors) / validated_frames) * 100
-                if validated_frames > 0
-                else 0
-            )
-
-            if pva_errors == 0:
-                logging.info(f"✓ Validated {validated_frames} CRCs - all matched!")
-
-            logging.info("\n" + "=" * 80)
-            logging.info("PVA CRC VALIDATION SUMMARY")
-            logging.info("=" * 80)
-            logging.info(f"Total frames: {total_frames}")
-            logging.info(
-                f"Validated frames: {validated_frames} (skipped first {skip_frames}, last {SKIP_FINAL_FRAMES})"
-            )
-            logging.info("")
-
-            # Frame dimensions
-            logging.debug("FRAME DIMENSIONS:")
-            if hasattr(application, "compute_pva_crc_op") and hasattr(
-                application, "_camera"
-            ):
-                camera = application._camera
-                pva_op = application.compute_pva_crc_op
-
-                # Input dimensions from camera
-                camera_width_pixels = camera._width
-                camera_height_pixels = camera._height
-
-                # PVA configuration (1D API)
-                pva_data_size = pva_op._data_size
-                pva_start_byte = pva_op._start_byte
-
-                logging.debug("  Camera:")
-                logging.debug(f"    Width:           {camera_width_pixels:,} pixels")
-                logging.debug(f"    Height:          {camera_height_pixels:,} pixels")
-                logging.debug("  PVA Configuration (1D API):")
-                logging.debug(f"    Data size:       {pva_data_size:,} bytes")
-                logging.debug(f"    Start byte:      {pva_start_byte:,}")
-            logging.info("")
-
-            # PVA vs Camera analysis
-            logging.info("PVA Hardware CRC vs Camera FPGA CRC:")
-            logging.info(f"  Matches:    {validated_frames - pva_errors}")
-            logging.info(f"  Mismatches: {pva_errors}")
-            logging.info(f"  Success:    {pva_success:.2f}%")
-            logging.info("")
-
-            logging.info("INTERPRETATION:")
-            logging.info("-" * 50)
-            if pva_errors == 0:
-                logging.info("✓ SUCCESS! PVA matches camera perfectly (100%)")
-                logging.info("   → PVA hardware CRC validation is working correctly")
-            else:
-                logging.info(
-                    f"✗ PVA has {pva_errors} mismatches ({100-pva_success:.2f}% error rate)"
-                )
-                logging.info("   → Check PVA configuration and data alignment")
-            logging.info("=" * 80)
-
-    # Report stats at the end of the application
-    frame_time_dts = []
-    cpu_latency_dts = []
-    operator_latency_dts = []
-    processing_time_dts = []
-    overall_time_dts = []
-
-    # Extract all items from the thread-safe queue for processing
-    # This creates a snapshot for safe iteration while preserving the queue contents
-    with recorder_queue_lock:
-        recorder_queue_items = list(recorder_queue.queue)
-
-    if len(recorder_queue_items) >= 100:
-        sliced_recorder_queue = [sublist[:7] for sublist in recorder_queue_items]
-        settled_timestamps = sliced_recorder_queue[5:-5]
-
-        for (
-            now,
-            frame_start_s,
-            frame_end_s,
-            received_timestamp_s,
-            operator_timestamp_s,
-            complete_timestamp_s,
-            frame_number,
-        ) in settled_timestamps:
-
-            frame_start = datetime.datetime.fromtimestamp(frame_start_s).isoformat()
-            frame_end = datetime.datetime.fromtimestamp(frame_end_s).isoformat()
-            received_timestamp = datetime.datetime.fromtimestamp(
-                received_timestamp_s
-            ).isoformat()
-            operator_timestamp = datetime.datetime.fromtimestamp(
-                operator_timestamp_s
-            ).isoformat()
-            complete_timestamp = datetime.datetime.fromtimestamp(
-                complete_timestamp_s
-            ).isoformat()
-
-            frame_time_dt = frame_end_s - frame_start_s
-            frame_time_dts.append(round(frame_time_dt, 4))
-
-            cpu_latency_dt = received_timestamp_s - frame_end_s
-            cpu_latency_dts.append(round(cpu_latency_dt, 4))
-
-            operator_latency_dt = operator_timestamp_s - received_timestamp_s
-            operator_latency_dts.append(round(operator_latency_dt, 4))
-
-            processing_time_dt = complete_timestamp_s - operator_timestamp_s
-            processing_time_dts.append(round(processing_time_dt, 4))
-
-            overall_time_dt = complete_timestamp_s - frame_start_s
-            overall_time_dts.append(round(overall_time_dt, 4))
-            logging.debug(f"** Frame Information  for Frame Number = {frame_number}**")
-            logging.debug(f"Frame Start          : {frame_start}")
-            logging.debug(f"Frame End            : {frame_end}")
-            logging.debug(f"Received Timestamp   : {received_timestamp}")
-            logging.debug(f"Operator Timestamp   : {operator_timestamp}")
-            logging.debug(f"Complete Timestamp   : {complete_timestamp}")
-            logging.debug(f"Frame Time (dt)      : {frame_time_dt:.6f} s")
-            logging.debug(f"CPU Latency (dt)     : {cpu_latency_dt:.6f} s")
-            logging.debug(f"Operator Latency (dt): {operator_latency_dt:.6f} s")
-            logging.debug(f"Processing Time (dt) : {processing_time_dt:.6f} s")
-            logging.debug(f"Overall Time (dt)    : {overall_time_dt:.6f} s")
-
-        logging.info("\n** PERFORMANCE REPORT **")
-        logging.info(f"{'Metric':<30}{'Min':<15}{'Max':<15}{'Avg':<15}")
-        #
-        ft_min_time_difference = min(frame_time_dts)
-        ft_max_time_difference = max(frame_time_dts)
-        ft_avg_time_difference = sum(frame_time_dts) / len(frame_time_dts)
-        logging.info("Frame Time (in sec):")
-        logging.info(
-            f"{'Frame Time':<30}{ft_min_time_difference:<15}{ft_max_time_difference:<15}{ft_avg_time_difference:<15}"
-        )
-        #
-        cl_min_time_difference = min(cpu_latency_dts)
-        cl_max_time_difference = max(cpu_latency_dts)
-        cl_avg_time_difference = sum(cpu_latency_dts) / len(cpu_latency_dts)
-        logging.info("FPGA frame transfer latency (in sec):")
-        logging.info(
-            f"{'Frame Transfer Latency':<30}{cl_min_time_difference:<15}{cl_max_time_difference:<15}{cl_avg_time_difference:<15}"
-        )
-        #
-        ol_min_time_difference = min(operator_latency_dts)
-        ol_max_time_difference = max(operator_latency_dts)
-        ol_avg_time_difference = sum(operator_latency_dts) / len(operator_latency_dts)
-        logging.info("FPGA to Operator after network operator latency (in sec):")
-        logging.info(
-            f"{'Operator Latency':<30}{ol_min_time_difference:<15}{ol_max_time_difference:<15}{ol_avg_time_difference:<15}"
-        )
-        #
-        pt_min_time_difference = min(processing_time_dts)
-        pt_max_time_difference = max(processing_time_dts)
-        pt_avg_time_difference = sum(processing_time_dts) / len(processing_time_dts)
-        logging.info("Processing of frame latency (in sec):")
-        logging.info(
-            f"{'Processing Latency':<30}{pt_min_time_difference:<15}{pt_max_time_difference:<15}{pt_avg_time_difference:<15}"
-        )
-        #
-        ot_min_time_difference = min(overall_time_dts)
-        ot_max_time_difference = max(overall_time_dts)
-        ot_avg_time_difference = sum(overall_time_dts) / len(overall_time_dts)
-        logging.info("Frame start till end of SW pipeline latency (in sec):")
-        logging.info(
-            f"{'SW Pipeline Latency':<30}{ot_min_time_difference:<15}{ot_max_time_difference:<15}{ot_avg_time_difference:<15}"
-        )
-    else:
-        logging.info(
-            f"Not enough frames ({len(recorder_queue_items)}) for performance statistics"
-        )
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

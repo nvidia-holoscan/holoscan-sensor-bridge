@@ -41,36 +41,36 @@ public:
     virtual ~AddressMemory() = default;
 
     /**
-     * @brief Write a value to a register
+     * @brief Write a value to a register.
      *
-     * @param address_value Pair of address and value to write
-     * @return 0 on success, 1 on failure
+     * @param address_value Pair of address and value to write.
+     * @return 0 on success, 1 on failure.
      */
     virtual int write(AddressValuePair& address_value) = 0;
 
     /**
-     * @brief Read a value from a register
+     * @brief Read a value from a register.
      *
-     * @param address_value Pair of address and value to read
-     * @return 0 on success, 1 on failure
+     * @param address_value Pair of address and value to read.
+     * @return 0 on success, 1 on failure.
      */
     virtual int read(AddressValuePair& address_value) = 0;
 
     /**
-     * @brief Convenience function to write multiple values to registers under a single lock
+     * @brief Convenience function to write multiple values to registers under a single lock.
      *
-     * @param address_values Pointer to array of pairs of register addresses and values to write
-     * @param num_addresses Number of address-value pairs
-     * @return 0 on success, 1 on failure
+     * @param address_values Pointer to array of pairs of register addresses and values to write.
+     * @param num_addresses Number of address-value pairs.
+     * @return 0 on success, 1 on failure.
      */
     virtual int write_many(AddressValuePair* address_values, int num_addresses) = 0;
 
     /**
-     * @brief Convenience function to read multiple values from registers under a single lock
+     * @brief Convenience function to read multiple values from registers under a single lock.
      *
-     * @param address_values Pointer to array of pairs of register addresses and values to read (caller must allocate at least num_addresses elements)
-     * @param num_addresses Number of addresses to read
-     * @return 0 on success, 1 on failure
+     * @param address_values Pointer to array of pairs of register addresses and values to read (caller must allocate at least num_addresses elements).
+     * @param num_addresses Number of addresses to read.
+     * @return 0 on success, 1 on failure.
      */
     virtual int read_many(AddressValuePair* address_values, int num_addresses) = 0;
 
@@ -81,7 +81,7 @@ public:
      * @param values Pointer to the array of values to write (caller must allocate at least num_addresses elements).
      * @param num_addresses The number of addresses to write.
      * @param stride The address increment between consecutive registers in the range (defaults to 2).
-     * @return 0 on success, 1 on failure
+     * @return 0 on success, 1 on failure.
      */
     virtual int write_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) = 0;
 
@@ -92,7 +92,7 @@ public:
      * @param values Pointer to the array that receives the values read (caller must allocate at least num_addresses elements).
      * @param num_addresses The number of addresses to read.
      * @param stride The address increment between consecutive registers in the range (defaults to 2).
-     * @return 0 on success, 1 on failure
+     * @return 0 on success, 1 on failure.
      */
     virtual int read_range(uint32_t start_address, uint32_t* values, int num_addresses, int stride = 2) = 0;
 };

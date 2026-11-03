@@ -17,7 +17,7 @@ module delayed_io_ctrl_fsm #(
     parameter NUM_OUTPUTS = 1
 )(
     input  logic        clk,
-    input  logic        rst_n,
+    input  logic        rst,
     
     // Control inputs
     input  logic        i_start,
@@ -46,8 +46,8 @@ logic [31:0] counter, counter_nxt;
 logic start_prev;
 logic start_edge;
 
-always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always_ff @(posedge clk) begin
+    if (rst) begin
         start_prev <= 1'b0;
     end else begin
         start_prev <= i_start;
@@ -99,8 +99,8 @@ always_comb begin
 end
 
 // Sequential logic
-always_ff @(posedge clk or negedge rst_n) begin
-    if (!rst_n) begin
+always_ff @(posedge clk) begin
+    if (rst) begin
         state <= IDLE;
         counter <= 32'h0;
     end else begin
