@@ -1,0 +1,28 @@
+---
+title: hololink::emulation::I2CControllerCtxt
+description: Common, target-invariant per-I2CController context.
+---
+
+Common, target-invariant per-I2CController context.
+
+Each platform defines its own extension struct (LinuxI2CControllerCtxt, STM32I2CControllerCtxt) with `struct ``I2CControllerCtxt`` base` as its first member. Standard-layout C++ guarantees `&ext->base == reinterpret_cast<I2CControllerCtxt*>(ext)`, so the [I2CController](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/i2ccontroller) class can hold an `I2CControllerCtxt*` without knowing the platform extension, and platform code downcasts back via `reinterpret_cast<LinuxI2CControllerCtxt*>` (or STM32 equivalent) to reach the platform extras.
+
+`running` is a bare bool: I2C transactions execute synchronously inside the host control-plane callback (i2c_configure_cb -> i2c_transaction), there is no worker thread to coordinate. The Linux extension still carries an `i2c_mutex` because attach_i2c_peripheral() can be called from the application thread while the control-plane callback is running on its own thread; STM32 is single-threaded and needs no mutex.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/hsb_emulator.hpp>
+```
+
+---
+
+## Member variables
+
+| Name              | Type              | Description |
+| ----------------- | ----------------- | ----------- |
+| `i2c_controller`  | `I2CController *` |             |
+| `registers`       | `uint32_t`        |             |
+| `data`            | `uint32_t`        |             |
+| `control_address` | `uint32_t`        |             |
+| `data_address`    | `uint32_t`        |             |
+| `status`          | `uint32_t`        |             |
+| `running`         | `bool`            |             |

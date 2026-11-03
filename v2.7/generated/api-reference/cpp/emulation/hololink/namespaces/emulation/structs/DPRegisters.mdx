@@ -1,0 +1,21 @@
+---
+title: hololink::emulation::DPRegisters
+description: Per-data-plane register slice. One instance per unique data_plane_id,
+  shared by every DataPlane instance with that id. Holds the hif_data registers (DP_PACKET_SIZE,
+  DP_PACKET_UDP_PORT, DP_VP_MASK) the host writes once per physical data plane.
+---
+
+Per-data-plane register slice. One instance per unique data_plane_id, shared by every [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) instance with that id. Holds the hif_data registers (DP_PACKET_SIZE, DP_PACKET_UDP_PORT, DP_VP_MASK) the host writes once per physical data plane.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/data_plane.hpp>
+```
+
+---
+
+## Member variables
+
+| Name          | Type       | Description |
+| ------------- | ---------- | ----------- |
+| `hif_data`    | `uint32_t` |             |
+| `hif_address` | `uint32_t` |             |

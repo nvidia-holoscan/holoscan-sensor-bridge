@@ -1,0 +1,17 @@
+---
+title: hololink::emulation::IPAddress
+description: Encapsulates all the relevant information for transmission from an Emulator
+  device IP address.
+---
+
+Encapsulates all the relevant information for transmission from an Emulator device IP address.
+
+```cpp showLineNumbers={false}
+using IPAddress = struct hololink::emulation::IPAddress;
+```
+
+python (limited API):
+
+`def __init__(self: hemu.IPAddress, ip_address: str, /)`
+
+This structure contains the network interface configuration required for the emulator to send packets, including interface name, IP address, MAC address, optional port and broadcast address (defaulting to 255.255.255.255 if on interface that does not have an explicit broadcast, e.g. loopback).

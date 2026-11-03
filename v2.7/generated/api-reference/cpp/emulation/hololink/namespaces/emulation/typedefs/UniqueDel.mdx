@@ -1,0 +1,14 @@
+---
+title: hololink::emulation::UniqueDel
+---
+
+```cpp showLineNumbers={false}
+template <typename T>
+using UniqueDel = std::unique_ptr<T, std::function<void(T *)>>;
+```
+
+**Template parameters**
+
+**`T`** `typename`
+
+---

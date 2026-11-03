@@ -1,0 +1,142 @@
+---
+title: hololink::emulation::I2CPeripheral
+description: Abstract base class for all I2C-based emulated sensors giving them access
+  to I2C transactions originating from the HSB host.
+---
+
+Abstract base class for all I2C-based emulated sensors giving them access to I2C transactions originating from the HSB host.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/i2c_interface.hpp>
+```
+
+> **Note**
+>
+> configuration of the "bus" is done by [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) calling get_i2c_config(). Derived class can assume this only happens at most once before any calls to start() or reset() without an intervening call to stop()
+
+---
+
+## Constructors
+
+### I2CPeripheral [#i2cperipheral]
+
+```cpp showLineNumbers={false}
+hololink::emulation::I2CPeripheral::I2CPeripheral()
+```
+
+### Destructor [#destructor]
+
+### \~I2CPeripheral
+
+```cpp showLineNumbers={false}
+virtual hololink::emulation::I2CPeripheral::~I2CPeripheral() = default
+```
+
+---
+
+## Methods
+
+### start [#start]
+
+```cpp showLineNumbers={false}
+virtual void hololink::emulation::I2CPeripheral::start()
+```
+
+start the peripheral. This will be called when [I2CController](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/i2ccontroller) itself starts and should not be done by the client code
+
+### attach_to_i2c [#attachtoi2c]
+
+```cpp showLineNumbers={false}
+virtual void hololink::emulation::I2CPeripheral::attach_to_i2c(
+    I2CController &i2c_controller,
+    uint8_t bus_address
+)
+```
+
+attach the peripheral to the I2C controller. This should be called by client code before start() is called
+
+python:
+
+`def `[`attach_to_i2c`](#attachtoi2c)`(self: hemu.I2CPeripheral, i2c_controller: hemu.I2CController, bus_address: int)`
+
+**Parameters**
+
+**`i2c_controller`** `I2CController &`
+
+The I2C controller to attach to. Retrieved from [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) with get_i2c(controller_address)
+
+---
+
+**`bus_address`** `uint8_t`
+
+The bus address of the peripheral.
+
+---
+
+### stop [#stop]
+
+```cpp showLineNumbers={false}
+virtual void hololink::emulation::I2CPeripheral::stop()
+```
+
+stop the peripheral. This will be called when the [I2CController](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/i2ccontroller) is stopped and should not be done by the client code
+
+> **Note**
+>
+> Peripheral should release all resources in case a subsequent start() is called.
+
+### i2c_transaction [#i2ctransaction]
+
+```cpp showLineNumbers={false}
+virtual I2CStatus hololink::emulation::I2CPeripheral::i2c_transaction(
+    uint16_t peripheral_address,
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+)
+```
+
+perform an I2C transaction. This will be called by the [I2CController](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/i2ccontroller) when a transaction is requested.
+
+python:
+
+`def `[`i2c_transaction`](#i2ctransaction)`(self: hemu.I2CPeripheral, peripheral_address: int, write_bytes: List[int], read_bytes: List[int]) -> hemu.I2CStatus`
+
+> **Note**
+>
+> read request size is the size of the read_bytes vector as initialized by the caller
+
+**Returns:** [I2CStatus](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/enums/i2cstatus) The status of the transaction.
+
+**Parameters**
+
+**`peripheral_address`** `uint16_t`
+
+The peripheral address to communicate with.
+
+---
+
+**`write_bytes`** `const uint8_t *`
+
+The bytes to write to the peripheral.
+
+---
+
+**`write_size`** `uint16_t`
+
+The size of the write bytes
+
+---
+
+**`read_bytes`** `uint8_t *`
+
+The bytes to read from the peripheral. This shall be filled with 0s to the requested read size and replaced by peripheral. This is to ensure peripheral can get the read count from read_bytes.size() and enough valid data is returned for no-ops.
+
+---
+
+**`read_size`** `uint16_t`
+
+The size of the read bytes
+
+---

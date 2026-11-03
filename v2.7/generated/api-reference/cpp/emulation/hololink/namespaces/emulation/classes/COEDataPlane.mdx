@@ -1,0 +1,80 @@
+---
+title: hololink::emulation::COEDataPlane
+description: The DataPlane implementation for IEEE 1722B Camera-over-Ethernet link
+  layer transport.
+---
+
+The [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) implementation for IEEE 1722B Camera-over-Ethernet link layer transport.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/coe_data_plane.hpp>
+```
+
+**Inherits from:** `hololink::emulation::DataPlane` (public)
+
+---
+
+## Constructors
+
+### COEDataPlane [#coedataplane]
+
+```cpp showLineNumbers={false}
+hololink::emulation::COEDataPlane::COEDataPlane(
+    HSBEmulator &hsb_emulator,
+    const IPAddress &source_ip,
+    uint8_t data_plane_id,
+    uint8_t sensor_id
+)
+```
+
+Construct a new `COEDataPlane` object.
+
+python:
+
+`def __init__(self: hemu.COEDataPlane, hsb_emulator: hemu.HSBEmulator, source_ip: hemu.IPAddress, data_plane_id: int, sensor_id: int)`
+
+**Parameters**
+
+**`hsb_emulator`** `HSBEmulator &`
+
+The [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) object to attach to.
+
+---
+
+**`source_ip`** `const IPAddress &`
+
+The IP address of the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+**`data_plane_id`** `uint8_t`
+
+The identifying index of the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+**`sensor_id`** `uint8_t`
+
+The identifying index of the sensor interface associated with the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+### Destructor [#destructor]
+
+### \~COEDataPlane
+
+```cpp showLineNumbers={false}
+hololink::emulation::COEDataPlane::~COEDataPlane()
+```
+
+---
+
+## Methods
+
+### update_metadata [#updatemetadata]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::COEDataPlane::update_metadata() override
+```
+
+method to update metadata model for the appropriate transmitter subclass can assume that appropriate locks are held while accessing memory registers and the transmitter metadata

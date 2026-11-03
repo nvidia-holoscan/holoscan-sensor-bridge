@@ -1,0 +1,36 @@
+---
+title: hololink::emulation::DataPlaneCtxt
+description: Common, target-invariant per-DataPlane context.
+---
+
+Common, target-invariant per-DataPlane context.
+
+Each platform defines its own extension struct (LinuxDataPlaneCtxt, STM32DataPlaneCtxt) with `struct ``DataPlaneCtxt`` base` as its first member. Standard-layout C++ guarantees `&ext->base == reinterpret_cast<DataPlaneCtxt*>(ext)`, so the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) base class can hold a `DataPlaneCtxt*` (pointing at the embedded `base`) without knowing the platform extension, and platform code can downcast back via `reinterpret_cast<LinuxDataPlaneCtxt*>` (or STM32 equivalent) to reach the platform extras.
+
+Synchronization: `running` is a plain bool. On platforms where [DataPlane::start](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane#start)/stop and [DataPlane::is_running](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane#isrunning) may be called from concurrent threads (Linux), the platform extension supplies a mutex that the corresponding platform [`DataPlane`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane)`::{start,stop,is_running}` implementations acquire around every read/write of `running`. On single-threaded platforms (STM32) no mutex is needed.
+
+Send paths ([DataPlane::send](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane#send) and any transmitter / subclass update_metadata) must NOT read `running` — sending is intended to be possible at any time the transmitter exists, and checking `running` from a send path would couple the data path to the BootP control path unnecessarily.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/data_plane.hpp>
+```
+
+---
+
+## Member variables
+
+| Name                  | Type                         | Description |
+| --------------------- | ---------------------------- | ----------- |
+| `dp_registers`        | `struct DPRegisters *`       |             |
+| `dp_sensor_registers` | `struct DPSensorRegisters *` |             |
+| `running`             | `bool`                       |             |
+
+---
+
+## Inner classes
+
+### start_time
+
+```cpp showLineNumbers={false}
+struct hololink::emulation::DataPlaneCtxt::start_time
+```

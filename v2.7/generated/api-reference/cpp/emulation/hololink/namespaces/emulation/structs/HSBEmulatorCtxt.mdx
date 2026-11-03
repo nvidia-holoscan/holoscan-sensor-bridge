@@ -1,0 +1,31 @@
+---
+title: hololink::emulation::HSBEmulatorCtxt
+description: Common, target-invariant per-HSBEmulator context.
+---
+
+Common, target-invariant per-HSBEmulator context.
+
+Each platform defines its own extension struct (LinuxHSBEmulatorCtxt, STM32HSBEmulatorCtxt) with `struct ``HSBEmulatorCtxt`` base` as its first member. Standard-layout C++ guarantees `&ext->base == reinterpret_cast<HSBEmulatorCtxt*>(ext)`, so [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) can hold a `HSBEmulatorCtxt*` without knowing the platform extension, and platform code can downcast back via `reinterpret_cast<LinuxHSBEmulatorCtxt*>` (or STM32 equivalent) to reach the platform extras.
+
+Synchronization: `running` is a plain bool. On platforms where [HSBEmulator::start](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator#start)/ stop/is_running may be called from concurrent threads (Linux), the platform extension supplies a mutex that the corresponding platform implementations acquire around every read/write of `running`. STM32 is single-threaded (cooperative loop in main()) so no mutex is needed there.
+
+`AddressMap` capacities are macro-driven (HSB_CP_WRITE_MAP_SIZE, HSB_CP_READ_MAP_SIZE) so the same struct definition compiles into a vector-backed map on Linux and a fixed- capacity map on STM32. Defaults at the top of this header match Linux; the STM32 build overrides via CMake compile definitions.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/hsb_emulator.hpp>
+```
+
+---
+
+## Member variables
+
+| Name               | Type                                                        | Description |
+| ------------------ | ----------------------------------------------------------- | ----------- |
+| `hsb_emulator`     | `HSBEmulator *`                                             |             |
+| `register_memory`  | `RegisterMemory`                                            |             |
+| `ptp_config`       | `struct PTPConfig`                                          |             |
+| `async_event_ctxt` | `struct AsyncEventCtxt`                                     |             |
+| `apb_ram_data`     | `uint32_t`                                                  |             |
+| `cp_write_map`     | `AddressMap< ControlPlaneCallback, HSB_CP_WRITE_MAP_SIZE >` |             |
+| `cp_read_map`      | `AddressMap< ControlPlaneCallback, HSB_CP_READ_MAP_SIZE >`  |             |
+| `running`          | `bool`                                                      |             |

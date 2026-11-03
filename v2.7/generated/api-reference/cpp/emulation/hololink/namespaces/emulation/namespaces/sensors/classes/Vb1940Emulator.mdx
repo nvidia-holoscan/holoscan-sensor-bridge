@@ -1,0 +1,306 @@
+---
+title: hololink::emulation::sensors::Vb1940Emulator
+---
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/sensors/vb1940_emulator.hpp>
+```
+
+**Inherits from:** `hololink::emulation::I2CPeripheral` (public)
+
+---
+
+## Constructors
+
+### Vb1940Emulator [#vb1940emulator]
+
+```cpp showLineNumbers={false}
+hololink::emulation::sensors::Vb1940Emulator::Vb1940Emulator()
+```
+
+### Destructor [#destructor]
+
+### \~Vb1940Emulator
+
+```cpp showLineNumbers={false}
+hololink::emulation::sensors::Vb1940Emulator::~Vb1940Emulator()
+```
+
+---
+
+## Methods
+
+### reset [#reset]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::sensors::Vb1940Emulator::reset()
+```
+
+Reset the `Vb1940Emulator` internal state machines to their initial states.
+
+### attach_to_i2c [#attachtoi2c]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::sensors::Vb1940Emulator::attach_to_i2c(
+    I2CController &i2c_controller,
+    uint8_t bus_address
+) override
+```
+
+Attach the `Vb1940Emulator` to an I2C controller at a specified bus.
+
+python:
+
+`def `[`attach_to_i2c`](#attachtoi2c)`(self: hemu.sensors.Vb1940Emulator, i2c_controller: hemu.I2CController, bus_address: int)`
+
+**Parameters**
+
+**`i2c_controller`** `I2CController &`
+
+The I2C controller to attach to. Retrieved from [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) with get_i2c(controller_address)
+
+---
+
+**`bus_address`** `uint8_t`
+
+The bus address of the I2C controller
+
+---
+
+### i2c_transaction [#i2ctransaction]
+
+```cpp showLineNumbers={false}
+I2CStatus hololink::emulation::sensors::Vb1940Emulator::i2c_transaction(
+    uint16_t peripheral_address,
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+) override
+```
+
+Receive and act on I2C transaction from [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator)'s I2C controller(s).
+
+python:
+
+`def `[`i2c_transaction`](#i2ctransaction)`(self: hemu.sensors.Vb1940Emulator, peripheral_address: int, write_bytes: bytes, write_size: int, read_bytes: bytes, read_size: int) -> hemu.I2CStatus`
+
+**Returns:** The status of the I2C transaction
+
+**Parameters**
+
+**`peripheral_address`** `uint16_t`
+
+The address of the peripheral to transaction with
+
+---
+
+**`write_bytes`** `const uint8_t *`
+
+The bytes to write to the peripheral
+
+---
+
+**`write_size`** `uint16_t`
+
+The size of the write bytes
+
+---
+
+**`read_bytes`** `uint8_t *`
+
+The bytes to read from the peripheral
+
+---
+
+**`read_size`** `uint16_t`
+
+The size of the read bytes
+
+---
+
+### is_streaming [#isstreaming]
+
+```cpp showLineNumbers={false}
+bool hololink::emulation::sensors::Vb1940Emulator::is_streaming() const
+```
+
+Check if the Host application has set the sensor to streaming mode. It is expected that the host application does not send any commands that set the sensor to streaming mode if the sensor is not yet configured.
+
+**Returns:** True if the `Vb1940Emulator` is streaming, false otherwise
+
+### get_pixel_width [#getpixelwidth]
+
+```cpp showLineNumbers={false}
+uint16_t hololink::emulation::sensors::Vb1940Emulator::get_pixel_width() const
+```
+
+Get the width of the configured image in pixels.
+
+**Returns:** The width of the image in pixels or 0 if the sensor has not been configured; see is_streaming().
+
+### get_pixel_height [#getpixelheight]
+
+```cpp showLineNumbers={false}
+uint16_t hololink::emulation::sensors::Vb1940Emulator::get_pixel_height() const
+```
+
+Get the height of the configured image in pixels.
+
+**Returns:** The height of the image in pixels or 0 if the sensor has not been configured; see is_streaming().
+
+### get_bytes_per_line [#getbytesperline]
+
+```cpp showLineNumbers={false}
+uint16_t hololink::emulation::sensors::Vb1940Emulator::get_bytes_per_line() const
+```
+
+Get the number of bytes per line of the sensor CSI image frame - not the packetized CSI image frame.
+
+**Returns:** The number of bytes per line of the CSI image frame or 0 if the sensor has not been configured; see is_streaming().
+
+### get_image_start_byte [#getimagestartbyte]
+
+```cpp showLineNumbers={false}
+uint32_t hololink::emulation::sensors::Vb1940Emulator::get_image_start_byte() const
+```
+
+Get the start byte offset for the CSI image frame.
+
+**Returns:** The byte offset of the CSI image frame where the image starts or 0 if the sensor has not been configured; see is_streaming().
+
+### get_csi_length [#getcsilength]
+
+```cpp showLineNumbers={false}
+uint32_t hololink::emulation::sensors::Vb1940Emulator::get_csi_length() const
+```
+
+Get the length of the CSI data in bytes for the CSI image frame - not the packetized CSI image frame.
+
+**Returns:** The length of the CSI data in bytes or 0 if the sensor has not been configured; see is_streaming().
+
+### get_pixel_bits [#getpixelbits]
+
+```cpp showLineNumbers={false}
+uint8_t hololink::emulation::sensors::Vb1940Emulator::get_pixel_bits() const
+```
+
+Get the number of bits per pixel.
+
+**Returns:** The number of bits per pixel or 0 if the sensor has not been configured; see is_streaming().
+
+### set_eeprom_data [#seteepromdata]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::sensors::Vb1940Emulator::set_eeprom_data(
+    const uint8_t *data,
+    size_t size
+)
+```
+
+Populate the rig calibration EEPROM region served at I²C peripheral 0x51.
+
+The 256-byte region holds 30 big-endian doubles in the layout consumed by `NativeVb1940Sensor::read_calibration_from_eeprom()`. Without this, the emulator no-ops EEPROM reads and downstream cuVSLAM rejects with "Focal length must be > 0" because intrinsics come back zero. Used by Isaac Sim's HSBSender to wire USDA Camera prim values through to the live receiver via the standard I²C calibration channel.
+
+**Parameters**
+
+**`data`** `const uint8_t *`
+
+Source bytes; `nullptr` is accepted and treated as a 0-byte payload (the region is zero-filled).
+
+---
+
+**`size`** `size_t`
+
+Number of bytes available at `data`; clamped to EEPROM_REGION_BYTES. Any remainder beyond `size` is zero-filled so a short payload does not leave stale bytes from a prior call.
+
+---
+
+### build_state_machine [#buildstatemachine]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::sensors::Vb1940Emulator::build_state_machine()
+```
+
+Build the internal state machine for the `Vb1940Emulator`.
+
+### system_up_reg [#systemupreg]
+
+```cpp showLineNumbers={false}
+I2CStatus hololink::emulation::sensors::Vb1940Emulator::system_up_reg(
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+)
+```
+
+state machine callback for writes to the system up register
+
+### boot_reg [#bootreg]
+
+```cpp showLineNumbers={false}
+I2CStatus hololink::emulation::sensors::Vb1940Emulator::boot_reg(
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+)
+```
+
+state machine callback for writes to the boot register
+
+### sw_stby_reg [#swstbyreg]
+
+```cpp showLineNumbers={false}
+I2CStatus hololink::emulation::sensors::Vb1940Emulator::sw_stby_reg(
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+)
+```
+
+state machine callback for writes to the software standby register
+
+### streaming_reg [#streamingreg]
+
+```cpp showLineNumbers={false}
+I2CStatus hololink::emulation::sensors::Vb1940Emulator::streaming_reg(
+    const uint8_t *write_bytes,
+    uint16_t write_size,
+    uint8_t *read_bytes,
+    uint16_t read_size
+)
+```
+
+state machine callback for writes to the streaming register
+
+### get_callback [#getcallback]
+
+```cpp showLineNumbers={false}
+i2c_callback_type hololink::emulation::sensors::Vb1940Emulator::get_callback(
+    uint16_t reg_addr
+)
+```
+
+---
+
+## Types
+
+### Typedefs
+
+| Name                | Definition                    | Description                                                                  |
+| ------------------- | ----------------------------- | ---------------------------------------------------------------------------- |
+| `i2c_callback_type` | `I2CStatus(Vb1940Emulator::*` | The map of register addresses to their corresponding state machine callback. |
+
+---
+
+## Member variables
+
+| Name                                   | Type                | Description                                                                                                                                                              |
+| -------------------------------------- | ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `EEPROM_REGION_BYTES` static constexpr | `size_t`            | Size (bytes) of the rig calibration EEPROM region that NativeVb1940Sensor reads over I²C at EEPROM_I2C_ADDRESS. Must match hololink's EEPROM_PAGE_SIZE \* 4 pages = 256. |
+| `VB1940_CALLBACK_MAP` static constexpr | `i2c_callback_type` |                                                                                                                                                                          |
+| `memory_`                              | `uint8_t`           | The memory map of the `Vb1940Emulator`.                                                                                                                                  |
+| `eeprom_memory_`                       | `uint8_t`           | Backing store for the rig calibration EEPROM at I²C peripheral 0x51.                                                                                                     |

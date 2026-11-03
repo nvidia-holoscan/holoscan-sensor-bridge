@@ -1,0 +1,31 @@
+---
+title: hololink::emulation::IPAddress
+description: Encapsulates all the relevant information for transmission from an Emulator
+  device IP address.
+---
+
+Encapsulates all the relevant information for transmission from an Emulator device IP address.
+
+python (limited API):
+
+`def __init__(self: hemu.IPAddress, ``ip_address``: str, /)`
+
+This structure contains the network interface configuration required for the emulator to send packets, including interface name, IP address, MAC address, optional port and broadcast address (defaulting to 255.255.255.255 if on interface that does not have an explicit broadcast, e.g. loopback).
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/net.hpp>
+```
+
+---
+
+## Member variables
+
+| Name                | Type       | Description                                            |
+| ------------------- | ---------- | ------------------------------------------------------ |
+| `if_name`           | `char`     | Network interface name (e.g., "eth0", "lo").           |
+| `ip_address`        | `uint32_t` | IP address in network byte order.                      |
+| `subnet_mask`       | `uint32_t` | Subnet mask in network byte order.                     |
+| `broadcast_address` | `uint32_t` | Broadcast address in network byte order.               |
+| `mac`               | `uint8_t`  | MAC address of the interface.                          |
+| `port`              | `uint16_t` | UDP port number (defaults to DATA_SOURCE_UDP_PORT).    |
+| `flags`             | `uint8_t`  | Configuration flags indicating which fields are valid. |

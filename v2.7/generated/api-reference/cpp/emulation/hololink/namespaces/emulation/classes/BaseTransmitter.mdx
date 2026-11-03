@@ -1,0 +1,79 @@
+---
+title: hololink::emulation::BaseTransmitter
+description: Abstract base class for all transmitters.
+---
+
+Abstract base class for all transmitters.
+
+Concrete transmitters (COETransmitter, RoCEv2Transmitter, UDPTransmitter) receive a `DataPlaneCtxt*` and downcast to their transport-specific ctxt (COECtxt, RoCEv2Ctxt, UDPCtxt) — those structs embed the platform [DataPlaneCtxt](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/structs/dataplanectxt) extension as their first member, so the pointer cast is sound.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/base_transmitter.hpp>
+```
+
+---
+
+## Constructors
+
+### BaseTransmitter [#basetransmitter]
+
+```cpp showLineNumbers={false}
+hololink::emulation::BaseTransmitter::BaseTransmitter() = default
+```
+
+Construct a new `BaseTransmitter` object.
+
+### Destructor [#destructor]
+
+### \~BaseTransmitter
+
+```cpp showLineNumbers={false}
+virtual hololink::emulation::BaseTransmitter::~BaseTransmitter()
+```
+
+Destroy the `BaseTransmitter` object.
+
+---
+
+## Methods
+
+### send [#send]
+
+```cpp showLineNumbers={false}
+virtual int64_t hololink::emulation::BaseTransmitter::send(
+    DataPlaneCtxt *ctxt,
+    const uint8_t *buffer,
+    size_t buffer_size,
+    FrameMetadata *frame_metadata = nullptr
+)
+```
+
+Send a host buffer to the destination.
+
+**Returns:** Bytes sent, or \< 0 on error.
+
+**Parameters**
+
+**`ctxt`** `DataPlaneCtxt *`
+
+[DataPlaneCtxt](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/structs/dataplanectxt) for the owning [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane). Concrete transmitter downcasts.
+
+---
+
+**`buffer`** `const uint8_t *`
+
+Host-memory buffer.
+
+---
+
+**`buffer_size`** `size_t`
+
+Bytes to send.
+
+---
+
+**`frame_metadata`** `FrameMetadata *` — default: nullptr
+
+Optional frame-flush trigger; see [DataPlane::send](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane#send) for semantics.
+
+---

@@ -1,0 +1,10 @@
+---
+title: hololink::emulation::ControlPlaneCallback_f
+description: callback function type for control plane callback
+---
+
+callback function type for control plane callback
+
+```cpp showLineNumbers={false}
+using ControlPlaneCallback_f = std::function<int(void *ctxt, struct AddressValuePair *addr_val, int count)>;
+```

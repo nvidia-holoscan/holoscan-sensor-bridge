@@ -1,0 +1,683 @@
+{
+  "captured_at": "2026-11-03T06:23:31.575710+00:00",
+  "published_pages": {
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/addressmemory": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/AddressMemory.mdx",
+      "raw_sha256": "7e22876c080c435da345f99655062c2eedb7db4fdefaecde61dc09f8c86a7cf9",
+      "prepared_sha256": "315ad8293c1150ba8f39d2271fa6112a5deddeba4bf80576725503e6710e7736"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/basetransmitter": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/BaseTransmitter.mdx",
+      "raw_sha256": "2e24647d7dfa936928509e334689c9858b6d57dee5b10f83490706b844c24f90",
+      "prepared_sha256": "75c686b8ceefb9447a17973692f74a071e3e694c3dcd01bb24345fe4e2779138"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/coedataplane": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/COEDataPlane.mdx",
+      "raw_sha256": "b7882a7aad1c0f13280c75e4bb6b91521625188e866cb577cef0d1dc9f3bdba9",
+      "prepared_sha256": "54e75e94139a2f49d7bcebff8093ce33dba9bb383cdbfab209ef15a1a8220fba"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/dataplane": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/DataPlane.mdx",
+      "raw_sha256": "82ab9500f8bbee00c0f300c82e06278449e7b60fb91b214fb9584114a71bf9f3",
+      "prepared_sha256": "dc1340736f825fe102e144d373369d0411d56880672cd2cdc1903a0be1411d6e"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/hsbemulator": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/HSBEmulator.mdx",
+      "raw_sha256": "d2bff7ad7e5dd9042b6d21b40683b0913ae33f616bbbc6a1e5eba90e59eeba5f",
+      "prepared_sha256": "e8b9880d6135e5fe46306aa88a491ab75725604242bc2ecdc7013ca627ff4681"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/i2ccontroller": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/I2CController.mdx",
+      "raw_sha256": "856f687f3c582ce525dc539c9b357b551caab1a115088363da5e8478f20eaf64",
+      "prepared_sha256": "489427b1f6b36553a826d6687c42a9a1167ee46ebbe1f5575ae0c1fd7cd55d6f"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/i2cperipheral": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/I2CPeripheral.mdx",
+      "raw_sha256": "d73b4d9e62b7eab15cb60299a039dbcfe2f6bbf1d63ff8e5357b8588f125da52",
+      "prepared_sha256": "657d70eda9e1b77a00385bd0a456fcfb65717da382f30484b1d56747beb62c0d"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/registermemory": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/RegisterMemory.mdx",
+      "raw_sha256": "9cae4d994cfb1e5e90d602f72a8d805ada8e2dcd1ffafbda31d82bc5810628cd",
+      "prepared_sha256": "fec8c6abf7725cb21bb885b6e67599468902f99ed708d8392944f5c98edbd0c4"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/classes/rocev2dataplane": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/classes/RoCEv2DataPlane.mdx",
+      "raw_sha256": "3a3c68d475410a43f9b92050d4813397accd35fecca78f92a6a0eeaad8981383",
+      "prepared_sha256": "3efbd1577d691a72d9c880fbb8456eeb211e3df3275a92907be2b3d45d20cec3"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/enums/ecbcmdcode": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/enums/ECB_CMD_CODE.mdx",
+      "raw_sha256": "a2ad68394b541903785df1aaa960b1a80de6ee5610b5c8fb79a1f5833c7a6826",
+      "prepared_sha256": "e3560ec992bf2dff980a052774c4ebb8f666ccfa31283e6433b77a88e795804b"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/enums/ecbresponsecode": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/enums/ECB_RESPONSE_CODE.mdx",
+      "raw_sha256": "391e56a17efc2c9ba1067e7cd35b83aec33d36f89c2941936517591212215b29",
+      "prepared_sha256": "51dd7438a8c458bfd7c315c9b81c18f810134791877064eb3e627fb8499869be"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/enums/i2cstatus": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/enums/I2CStatus.mdx",
+      "raw_sha256": "6215462b863e80e6667bfa185b269cbd335f10c500aecdee269887aa5466a021",
+      "prepared_sha256": "177c5983e2348da9108bed504f1c93a6f4f6a6ff409c762dbec49bd9ec226399"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/disablebroadcastconfigwarning": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/DISABLE_BROADCAST_CONFIG_WARNING.mdx",
+      "raw_sha256": "0f83b97466b2b4677e94f70c07bb66ac8f533bc55b014a772a4cd94550360e07",
+      "prepared_sha256": "a042dfc7030b6ae3b5b52d76e4d351eba992ef1d58505db24e0e239c89870551"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/dltensornbytes": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/DLTensor_n_bytes.mdx",
+      "raw_sha256": "dd146bd08decd3318748252d26f6909a221e90f01a13c9913a1321028764d428",
+      "prepared_sha256": "27352f5392e960525e47f662c66677bf08e5c7f41f82996ee06cc68a806a01d3"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/errorhandler": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/Error_Handler.mdx",
+      "raw_sha256": "cc26bc8e484d89d4b95d4fd9e865345af884b437aa30a90570adddc5367c94b8",
+      "prepared_sha256": "7a2ddc54b49158d34979ec0d319c4609470e1ad4392e4e00eccced2435f181d0"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/getbroadcastaddress": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/get_broadcast_address.mdx",
+      "raw_sha256": "de7b80c908c4404cb075404139eeba0a98576fce2b3c26f209f3b8fbce888079",
+      "prepared_sha256": "7765662aa5269fe9e1ae39a1e0cf92fecfbb6216407a7939acdafc857c2d7283"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/initbootppacket": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/init_bootp_packet.mdx",
+      "raw_sha256": "b8020793809df4fa76da15947a0150d5199b498694ff4a01f753b55b63d51d68",
+      "prepared_sha256": "2886e288e5cade35fee6041e63cf1cbd6f3cdf55d1b02b4aaf03a432d9666f8a"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/ipaddressfromstring": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/IPAddress_from_string.mdx",
+      "raw_sha256": "ded5a0037c99c42fe1ba8a67fb1e0e7602ebe5288208066a359b1fe79e940ef5",
+      "prepared_sha256": "f10aed7911c509d7ce60ecab4cf68cac15f811b1d0d09eeac68d8fe94d1b6e2e"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/ipaddresstostring": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/IPAddress_to_string.mdx",
+      "raw_sha256": "147581e1ce6267a0abd8fb80e2fbfb79c7516da3fcc05ff491fc57f324882331",
+      "prepared_sha256": "6f91a25a94417cde5e8d5cc3df85fa4288f1724b2c1f53ddc0d8a36d0f57bee5"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/serializeframemetadata": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/serialize_frame_metadata.mdx",
+      "raw_sha256": "d5b25d3a28f62eab0f0463273923cc24904757382a6dfd99ce93898f0e187428",
+      "prepared_sha256": "f8a6124ed324eb93031b6616698dfbc6c1c8597ef7ef613c3f3ad4ce5cd79aa5"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/updatebootppacket": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/update_bootp_packet.mdx",
+      "raw_sha256": "7eafc9eea229a089f0c1c17e377ab39d1823e1a884039ebe632eb3ad1cda6dd9",
+      "prepared_sha256": "b3ce403aabe294a4755b8f6dea1e50ca2e0f268f8e9ce32cb35a87c0ce51111f"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/uuidparse": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/uuid_parse.mdx",
+      "raw_sha256": "8fa665458f7753f8c04a5aa9e33ece653b18ef55cd4a744c8144c53810c64669",
+      "prepared_sha256": "19a847c25aa45a715862a80acf26c9d64e17cd781531a4c6479d51344de97970"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/functions/uuidunparselower": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/functions/uuid_unparse_lower.mdx",
+      "raw_sha256": "cd04a548df01083f39308f5cd60a656ad44343e59f77b4e681a7fbee61ecd524",
+      "prepared_sha256": "a82f894e0d84d8148b64e3599108eb2dcc94ba8290318073f87433ccfe725058"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/namespaces/sensors/classes/imx274emulator": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/namespaces/sensors/classes/IMX274Emulator.mdx",
+      "raw_sha256": "4908b9609c6440c6cab581bf6c3d0ac29671f05e3206ba05fcab9d78c59d4397",
+      "prepared_sha256": "af3fba3d7afcb90ec4566fa29582fd3a978ee034f95ca4d3939259fe2ee92c3b"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/namespaces/sensors/classes/vb1940emulator": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/namespaces/sensors/classes/Vb1940Emulator.mdx",
+      "raw_sha256": "100c352bb4e5891aa83420b11acb38a35868890edeae215a7102ab00d28a95bb",
+      "prepared_sha256": "2368fa1829010943fe3b99d7ecaa7baa7964412cf17b2de070299b62a4b99231"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/asynceventctxt": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/AsyncEventCtxt.mdx",
+      "raw_sha256": "c363fb3a2ae88df53da86742b35a6169d57e9e2205346743aaa9f7f2035c8fb9",
+      "prepared_sha256": "57e3dab7fcff99e4680e3d699dedfa153e021769a91686c61dc3aef8327380d5"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/controlmessage": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/ControlMessage.mdx",
+      "raw_sha256": "c54811de3131a3abc9547fd30bb18e3043a9bdebca2159f9eb7489fb25e1df3b",
+      "prepared_sha256": "36c82abba7ba16b7cfcb7bb5329bbb6bbe3b73a1fe7f00f77c82b5e91364a2f3"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/controlmessageheader": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/ControlMessageHeader.mdx",
+      "raw_sha256": "f27a5c926f909cb4afe04cc3ca7dbc7179a7ec06a5a35e2eebf5e162ecbb1c6f",
+      "prepared_sha256": "52af4f97c5f1b99cbf34bb34a41d46adb2c37036c95c5624e93182f40ca7df82"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/controlplanecallback": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/ControlPlaneCallback.mdx",
+      "raw_sha256": "d7fc0d21017c34056fa06a2919634cd24f01a962021d4d430ddee4cb698c59c5",
+      "prepared_sha256": "08acb5d3d11574c0722cf1cb80a3bc4c1ce5e962356efc67ecd53280d45cf7cf"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/dataplanectxt": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/DataPlaneCtxt.mdx",
+      "raw_sha256": "f24d07af8bd149a337ff56916b11454bb6717e8524fc4b0ba28a5620de4bab3d",
+      "prepared_sha256": "fe92ce3dd3d5177fd07b252f9e5dab2ad126e7f36a0dfddf941d734d0c9f082e"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/dpregisters": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/DPRegisters.mdx",
+      "raw_sha256": "49c20957ca07b383e47c22857abcae37d0c569412cc2dce3a35dc2403a31a88a",
+      "prepared_sha256": "365b90481d00686dd30a1624a82f2fd224875eac4b5003192093e1c17017275f"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/dpsensorregisters": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/DPSensorRegisters.mdx",
+      "raw_sha256": "1fc14ca1ae96c4bdbafe2a9b0de8c3e740cab425dfd315e7cda33ae73f34a720",
+      "prepared_sha256": "97c9c073433907de6b97d0c3ff44f89f38d958c2c464d745fa0a465c7dbd3c56"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/framemetadata": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/FrameMetadata.mdx",
+      "raw_sha256": "7a365c22ba00cac5c80e4a3163eca2a429f1cdad82396e74d26ca4e3eb470a82",
+      "prepared_sha256": "0ccbdf11c9fce885d4608d8c56cb1c7c3a2cd78715a661f47bd5fa4c24461012"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/hsbemulatorctxt": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/HSBEmulatorCtxt.mdx",
+      "raw_sha256": "bfd087bf4d4a739a188146bf25d080fd9efff76265be5fd93a870a0366b13bd6",
+      "prepared_sha256": "0c1ecc7890f6ce128a247d0f6df613b476949860bf3713e55db15cd526c00561"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/i2ccontrollerctxt": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/I2CControllerCtxt.mdx",
+      "raw_sha256": "2965eb8742d163d8897f828cc902a6be2303233b652bedccb16aed6c4282719b",
+      "prepared_sha256": "2a7d883c60e7c6de848e138b6405dcc69ee419c674baa9445b29122b9f92c4ca"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/structs/ipaddress": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/structs/IPAddress.mdx",
+      "raw_sha256": "41b73dc8576fac38a24d21906ea807fb9ca4be9be40b33a13833965973fb120c",
+      "prepared_sha256": "a232da2562aad65285faf92fda332848e6999e75b21e95b328fb745872abde60"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/typedefs/controlplanecallbackf": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/typedefs/ControlPlaneCallback_f.mdx",
+      "raw_sha256": "1bacb4251af6ec5be75644e9c02e564b07db9349c3f94a443ac8a3ae4f8bac8c",
+      "prepared_sha256": "113986755e9b6ef7503dfffa21ed20020aa95809f9e1f3472b61de6de3b01ba2"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/typedefs/ipaddress": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/typedefs/IPAddress.mdx",
+      "raw_sha256": "e162276a85cb7baacdce3e07fa5b0594eddbb0ff41dace52cf5fdb137e0ed77a",
+      "prepared_sha256": "b10cfba26bc5a836e4f41a50b7626a57973a3f4b4ef5ce47fa431ff27264b047"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/typedefs/linuxdataplane": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/typedefs/LinuxDataPlane.mdx",
+      "raw_sha256": "0370759ae2cfc9ced3ac8eb2a3064e90270c2a96f7cb5f6bb34d1ea4e229bc7f",
+      "prepared_sha256": "1c770949775b9e24065e0e882790e8f0d2b0b6f211f803e19a172585ea87f88c"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/typedefs/uniquedel": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/typedefs/UniqueDel.mdx",
+      "raw_sha256": "278e3ce7cacc60d2588175044f5e8db62c674a28bd5830f5307972d4353172cb",
+      "prepared_sha256": "a79347389ee1a32bf2109784e49cc55eed2187ee66ab460992e6efbb7a7f6713"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/typedefs/uuidt": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/typedefs/uuid_t.mdx",
+      "raw_sha256": "f27bafaa3b7707726ee3e6dba73735fe6d5b7a8def12c5ef6e09616637201c8f",
+      "prepared_sha256": "6f6b37470251957a745cfeb64e5fc9c40f3b81ff8ccaef62b32f7e3bbe7f17d8"
+    },
+    "/holoscan/sensor-bridge/api-reference/emulation-api/variables/defaultframemetadata": {
+      "path": "fern/generated/api-reference/cpp/emulation/hololink/namespaces/emulation/variables/DEFAULT_FRAME_METADATA.mdx",
+      "raw_sha256": "1c2ffd3673b23d286a998480d2c6ea4c8fab401197ec048ab80eac937b78eddb",
+      "prepared_sha256": "3db3dcf7e777f4a9d68add5a60cd6e4fa2f30e2adc0998fbb83b98031e6ef422"
+    },
+    "/holoscan/sensor-bridge/applications/applications": {
+      "path": "applications.mdx",
+      "raw_sha256": "2db3d13bef634a7bb05bc405246ca76691ab1b74970930b0548d33f81b9b24d9",
+      "prepared_sha256": "515fc9f7b27fac587aa13006e0c6ca0da775dcfc17860130b608f6c543dcde10"
+    },
+    "/holoscan/sensor-bridge/applications/architecture": {
+      "path": "architecture.mdx",
+      "raw_sha256": "917fc5179b0255b695cf2f8d6ad10c23284263189f515d68ca97d0c6dcec0bc7",
+      "prepared_sha256": "a57ab41d44a9c6a78b6169754ed763f608e95cc4a715d5666d8d19070ea7516e"
+    },
+    "/holoscan/sensor-bridge/applications/hololink-module-application-tutorial": {
+      "path": "module_imx274_tutorial.mdx",
+      "raw_sha256": "229516152e4ea9eed35b0875f716a76e507a42622a600aef431eff6a065d315b",
+      "prepared_sha256": "598fb4db209bb0c5de190785a0bdb5694c87a9965226849ef690a0e6ab2c0f30"
+    },
+    "/holoscan/sensor-bridge/applications/hololink-module-device-driver-tutorial": {
+      "path": "module_device_tutorial.mdx",
+      "raw_sha256": "5a4322831835a139ea5d38692be45d418fb55699369d1eb380ed1e0137284709",
+      "prepared_sha256": "f5b95561a17d14971ace5998b345a44a7dcc187d3903cc995f720e9049a4e754"
+    },
+    "/holoscan/sensor-bridge/applications/latency": {
+      "path": "latency.mdx",
+      "raw_sha256": "d9c2232f13d19fbf84183ea31421162e4ed3b627bdfeaa0b24231ff9c5c74f80",
+      "prepared_sha256": "965499b1b5aff9da7367a13129403b9d2ead02b3541ee5fa6924977374b5ab61"
+    },
+    "/holoscan/sensor-bridge/applications/new-sensors": {
+      "path": "new_sensors.mdx",
+      "raw_sha256": "94b42055fc4d6f36139d84081694fae9d6c63be3b8c9b90a56cb5e6394d4592a",
+      "prepared_sha256": "6b7f16f391e3e2442c47201fb2cdea9e227b4cc0229af1e432efc04489ca0973"
+    },
+    "/holoscan/sensor-bridge/applications/uddf-drivers": {
+      "path": "uddf_drivers.mdx",
+      "raw_sha256": "386dd5aa036829bcb24ba027eaae7d49ab523df87fc4c7a01c7f6203f97f3a10",
+      "prepared_sha256": "3c864a5e49351a194bb70645d911c365e651ac179fbcd55c98272661b15fdb33"
+    },
+    "/holoscan/sensor-bridge/emulation/hsb-emulator": {
+      "path": "emulation.mdx",
+      "raw_sha256": "76e2412ce6dc7d9ef4df492f388a77cb18a2529d163f4f94e39ccf000bbb18d8",
+      "prepared_sha256": "70fc7977824839a54675916d620b5e3218e2296c7d95ce67ddbc2a8a51cb7b8b"
+    },
+    "/holoscan/sensor-bridge/firmware/firmware-setup": {
+      "path": "sensor_bridge_firmware_setup.mdx",
+      "raw_sha256": "0da2df81bff8308db7fbbcb17685eba8cfa89f7e3eda65880bdf3de8ad23dddd",
+      "prepared_sha256": "6cace91cbb1f08a0af035f8ff0b23e55eb94318a33bd36450aa707a9098867d6"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/clocking-and-reset": {
+      "path": "clocking_and_reset.mdx",
+      "raw_sha256": "0470de68827c9b7af3d9131cd2944f40095753c994c01bf7a4dbd5babd3bbc49",
+      "prepared_sha256": "04523a9ec17f43c45720d796a42170aab4807404c32d876dd8650c8093888925"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/control-plane": {
+      "path": "controlplane.mdx",
+      "raw_sha256": "e80ace90940a1dba24814701f51d821c0b1a4509c530e329876ac45a125f93ac",
+      "prepared_sha256": "68aa71b1f0fbb603928d908e74027637b593bb5afd9c87312ffb225c6e7e1f4c"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/dataplane": {
+      "path": "dataplane.mdx",
+      "raw_sha256": "20ab5d4752121c68c11dc43f789c0f7aeeaac62dcd652292a83e3d1d6bd73391",
+      "prepared_sha256": "447197beb45a2e61b1b5616d9aabeb62b648b155886fbceac02d7a0383c00d42"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/hardware-debug": {
+      "path": "hardware_debug.mdx",
+      "raw_sha256": "1e9f682ee5557c1cc1d212e138b8bea57bfcc0b0079ffce0a5cf31e8810ac780",
+      "prepared_sha256": "80e2200815f11c8283015dc945d38e6a59398098ed683a39891d832799034bab"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/ip-integration": {
+      "path": "ip_integration.mdx",
+      "raw_sha256": "5edbde277fd565a2f4dfa1583b6a281d6b57b5956d5fa87e58a140fc62b3c96d",
+      "prepared_sha256": "2ce8ba1b6c6b6655e113d8183ae682d9a24ad7fdce52d3126e9a74d8ef6f8b43"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/known-limitations": {
+      "path": "known_limitations.mdx",
+      "raw_sha256": "37b0f1b593ebb36676acfca6f9c27964ecefcc367442c835546c9be668760ad4",
+      "prepared_sha256": "4627d1d55801b600397c7ee34fe6d9d752244831f5deb87c92ca5dab09fda753"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/overview": {
+      "path": "overview.mdx",
+      "raw_sha256": "273daaa2165ada56d418070025c847cce394b6357714c12f3852f37fac9d2acb",
+      "prepared_sha256": "7ab1df5a7e632000d56dcfc4a298071b43b9f48e2cac8f6eb47ac7f2a6bd6740"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/peripheral-interface": {
+      "path": "peripheral_interface.mdx",
+      "raw_sha256": "2f1c1d934320f32c7134f48724d0a70e1432cf4b137b5e90c2302da3602203eb",
+      "prepared_sha256": "27b7c35ec186b4f3c933634ac85ea2b1e36fa5e5ec976e736c26a11f38426347"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/port-description": {
+      "path": "port_description.mdx",
+      "raw_sha256": "4c66d388afefbada142eb1652d6bd055d9f6c3f941672e5bfc7244157c08ad60",
+      "prepared_sha256": "45123d3f82bc29cc81f09f6e8161b21c4eb1b8d9d9c64ab7c966b182b3eba0e0"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/ptp": {
+      "path": "ptp.mdx",
+      "raw_sha256": "fe6e937ae14cde58aa0354498dc3a26d4835b137d2ba1792d5d83fd27453c0cb",
+      "prepared_sha256": "90e32da5da564eb93e32d266334e79824641fed455602bdab744c2f7340ce166"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/ptp-application-note": {
+      "path": "ptp_app_note.mdx",
+      "raw_sha256": "70b0e644bcb7a1eda3fe423adcbd4132f2d0aa0c8b4af089d5868fd172405fbd",
+      "prepared_sha256": "577c76e881422618bcede2889a4f94229a0c9c4b8c5d2ad3c98daed6c931c5fe"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/register-interface": {
+      "path": "register_interface.mdx",
+      "raw_sha256": "708d959eca50c4e3746744508a0d2b2271a7c25a5ce0f93bd60c2a2f558dc33c",
+      "prepared_sha256": "e3d50f653ad8edc52ff6fe13ad468018adce9224a567a7f7b4c80693d1c6f95d"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/simulation": {
+      "path": "simulation.mdx",
+      "raw_sha256": "073c586b9de0bad173ee2e16ae552504746472915eacd95d5e78c5be23b581a6",
+      "prepared_sha256": "f1eac9e4e3bd569418f169a9fbae159df37bdb0c6f3799efc637cebdc2578b14"
+    },
+    "/holoscan/sensor-bridge/fpga-ip/virtual-lan-vlan": {
+      "path": "vlan.mdx",
+      "raw_sha256": "c51c08f58e00021ea82f277a68130efb34a653ebefaef9a7c2180a069d067cc6",
+      "prepared_sha256": "9457e70713128838c1f2e7e8f759027dac06e9cc4895892109a594a342cd3753"
+    },
+    "/holoscan/sensor-bridge/getting-started/build": {
+      "path": "build.mdx",
+      "raw_sha256": "0f068905f87851b5549a32db78d3aa832d0ff3b712c60258c93b7e2113edf3c1",
+      "prepared_sha256": "2b31e96f8f6ab6ed21d8bce4c4199abfcd9f55d22d62ff86e916541c411998c7"
+    },
+    "/holoscan/sensor-bridge/getting-started/examples": {
+      "path": "examples.mdx",
+      "raw_sha256": "297a4aad14b4c5e5b85ca937972647e5180f6e06d9d83b7f931c3a9e4cc5308e",
+      "prepared_sha256": "8b1a7848b32ab84759ac67398e581ca54d1336afdb5af2a7b0d89f7066bd2a34"
+    },
+    "/holoscan/sensor-bridge/getting-started/hardware-setup": {
+      "path": "sensor_bridge_hardware_setup.mdx",
+      "raw_sha256": "922f421c77841531911372a336f501aa254df4f67f8b43e0807588633411c98a",
+      "prepared_sha256": "e28dac009aae8934f61ffd2322c9c8582d4d91a0310065031624df2e3c7b8987"
+    },
+    "/holoscan/sensor-bridge/getting-started/host-setup": {
+      "path": "setup.mdx",
+      "raw_sha256": "d8d5cecb3429eddee2d4503d913c0cbebbab6991a269c9bd3768c7b3727f8b65",
+      "prepared_sha256": "8ea286425fd9411afa92f81dd43bff78aa9f355e899cdaec920184cdb0632a29"
+    },
+    "/holoscan/sensor-bridge/getting-started/introduction": {
+      "path": "introduction.mdx",
+      "raw_sha256": "3cc2c5fc90148bd2aaee7107e22ac5b11537a2f26be4185814337c401e39646e",
+      "prepared_sha256": "7ceaea289593381f919fe77799d2f93061ee651abcd94f0494088c3eafbc4951"
+    },
+    "/holoscan/sensor-bridge/reference-designs/mipi-cpnx-reference-design": {
+      "path": "mipi_cpnx_reference_design.mdx",
+      "raw_sha256": "1df7c21d46709550ea00b6c00b208a93e87e36c54bb8f08cd1f36c29426b2f8b",
+      "prepared_sha256": "ea60ae2ac3bbdf62305619a38596b2f801797b8a630f0dbf148fd73576755392"
+    },
+    "/holoscan/sensor-bridge/support/notes": {
+      "path": "notes.mdx",
+      "raw_sha256": "9c2e9f486985877d03c37bfb2038c94093818aa570854a2e472b54e7c08b7e84",
+      "prepared_sha256": "d1abb19edac8bc8ae2e2a55aae05e3529642aab93a61117e27af533759e97049"
+    },
+    "/holoscan/sensor-bridge/support/release-notes": {
+      "path": "release_notes.mdx",
+      "raw_sha256": "2886b7f03dc421c628d79dcd2f867ce014ae1d3b2305a86c3dd547b5818d47d8",
+      "prepared_sha256": "1289bd071acae95ec525371af4a7342c62c2b9acf6afeb97d1252722edd71f7d"
+    },
+    "/holoscan/sensor-bridge/support/troubleshooting": {
+      "path": "troubleshooting.mdx",
+      "raw_sha256": "7c38fb852207583025d43a4c617c58aba01e6951a5b831c58049eb7df4f9d217",
+      "prepared_sha256": "e4b116b1a904b0fadaac324a61b0063b791f530be8d15c3da610e9266870a31c"
+    }
+  },
+  "assets": {
+    "/holoscan/sensor-bridge/_fern-files/_img/0323b1c7631f560966a2279a595cd30058cdb32ee5450fd6411ac0fbd76e6d60.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/13dc8313811293de45283dfa0d2ced9f53995a39443f609d4e882dcb528aaca6.webp",
+      "sha256": "13dc8313811293de45283dfa0d2ced9f53995a39443f609d4e882dcb528aaca6",
+      "size": 29942
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/069343378763ee5c087d21ceba149370e89745b4082ecea581cd7ca61f899278.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/2049066f0e5c430146c3613dbd9af959b2d5665cfd51f10f2c143d6c5769cf70.webp",
+      "sha256": "2049066f0e5c430146c3613dbd9af959b2d5665cfd51f10f2c143d6c5769cf70",
+      "size": 3734
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/0d5161320ce50daa2a434228ef9ed076d91ab3461b62fec744f7dffc9982b6ed.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/7e516defc54f077840ad0a6e1ecb1db5679795405dedeabff1de2faf3e500197.webp",
+      "sha256": "7e516defc54f077840ad0a6e1ecb1db5679795405dedeabff1de2faf3e500197",
+      "size": 151246
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/0d77620810513b9a3582aeab0db5f2398b4e8779f4ae546ffe0ba8331ed629ff.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/d30aa29225ac019b7b7889fbe6bbe0a8916f80b9ef51eedb456f0338f8d7f765.webp",
+      "sha256": "d30aa29225ac019b7b7889fbe6bbe0a8916f80b9ef51eedb456f0338f8d7f765",
+      "size": 10214
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/28c84d9796beb23d16c6bc5182bd221392d5d02068c6f10520ed86fd03738d12.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/a8e5ecbb3e8e0a86b7c5df9ba7c1986e8d49714df08dc9fc48e0980bd968e37e.webp",
+      "sha256": "a8e5ecbb3e8e0a86b7c5df9ba7c1986e8d49714df08dc9fc48e0980bd968e37e",
+      "size": 15724
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/315480598b8c9e0c815476957e8f3d341833488fe33ff0b8297dd3ce7f653471.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/6c9519ef5cbf4756d5fefdb070a5f56f2fcc2f5db499b0da21a3816724feec62.webp",
+      "sha256": "6c9519ef5cbf4756d5fefdb070a5f56f2fcc2f5db499b0da21a3816724feec62",
+      "size": 3308
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/3a7bbdf169aa64fd941704893ad7af9686e50b44c27f008168faeceb4494d998.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/a6a0a811833f18c38f84633fe10e3b06e8fb343288eab548372ea90300c7ea62.webp",
+      "sha256": "a6a0a811833f18c38f84633fe10e3b06e8fb343288eab548372ea90300c7ea62",
+      "size": 52690
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/3db599ca46b90c645e33c084eac50ea5b81baf917a0d3ce34b06c4dac438ad09.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/24c3a1c8c907b2c0791b6c629c9fb27d80f05f27fa7d25de2b1a0b78ecbb91fd.webp",
+      "sha256": "24c3a1c8c907b2c0791b6c629c9fb27d80f05f27fa7d25de2b1a0b78ecbb91fd",
+      "size": 69372
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/3dd382dde897c1d10dac036b7ef30b76a95c3745353762eb070912b1f3756ce0.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/22e66a7746931ff67f7c0a068a54b34021c78fcb103477fb7c8fe57ad34317f8.webp",
+      "sha256": "22e66a7746931ff67f7c0a068a54b34021c78fcb103477fb7c8fe57ad34317f8",
+      "size": 42464
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/3ec0e4b262989f0f465216780b4ad096d2cd3c4b60230a4bce2d27c3c5a618d4.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/e567259807c5c043e10aa30230ad910b139d8c7418de97d61781a3db2405bd54.webp",
+      "sha256": "e567259807c5c043e10aa30230ad910b139d8c7418de97d61781a3db2405bd54",
+      "size": 1930
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/42e94527f0cf422f0f7ef50deb49de3f4f604b092ba3e0a548a45d5225ec70c0.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/759e473d1cf23cd3bd2b4c92da0a69692604b3c3ab9e917f13f670da81284ab9.webp",
+      "sha256": "759e473d1cf23cd3bd2b4c92da0a69692604b3c3ab9e917f13f670da81284ab9",
+      "size": 39236
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/474436e534890b3889958ed28cae893189541efc361f5ccd341a794ef0354f42.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/ddee5fabd8d668f57ee0bee94f3b3a1ec51de0f0a40a9b09a474b38e5d2de191.webp",
+      "sha256": "ddee5fabd8d668f57ee0bee94f3b3a1ec51de0f0a40a9b09a474b38e5d2de191",
+      "size": 3278
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/4c457363138dac92c19edc80ced907a8fed78525c3f6d8e4880758cd74dc5cde.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/15c181af2cd116010768b7e5182efe2fab0d6fe799e832da6a60f3bb4048068e.webp",
+      "sha256": "15c181af2cd116010768b7e5182efe2fab0d6fe799e832da6a60f3bb4048068e",
+      "size": 8828
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/4d300011ad27db7b21a4bcf1f643251f0ef91db811e266ec4aca22c1f9b331b9.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/13da21fb25ac950b35b17207b904be17caa5988fa20717786af006838928356b.webp",
+      "sha256": "13da21fb25ac950b35b17207b904be17caa5988fa20717786af006838928356b",
+      "size": 4474
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/5a320052b6664e04ec7a103478b52878f16473784582651edd5dd3060874fd56.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/144ba93705abf8476712834e92bae8ae5f570b2b49475d36fc2e8acf5f53a305.webp",
+      "sha256": "144ba93705abf8476712834e92bae8ae5f570b2b49475d36fc2e8acf5f53a305",
+      "size": 122866
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/604cb07bebf039b57ff318fad3c52c155f0fbbd916ed02cc9613cecde70461f3.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/4336690a19a6c171321f4e1761248c23e5439df7227857b418a8a86d7ef900a5.webp",
+      "sha256": "4336690a19a6c171321f4e1761248c23e5439df7227857b418a8a86d7ef900a5",
+      "size": 8060
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/62094fb3971c01e68c846f083f2c277648faca721b94050117d5c8549277d8df.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/369dc7f5300fd7d9f4c85680347571fbb1d3511ebf0f0e200816b1db6d472ac3.webp",
+      "sha256": "369dc7f5300fd7d9f4c85680347571fbb1d3511ebf0f0e200816b1db6d472ac3",
+      "size": 62198
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/727477919015c555e99f35afc016e6c910bcadc5ec5be19ee21f05f843d75542.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/7144eda4d76c60f9c06ecb32fd8d3c00e7dbc87ca4074fec496aa911e5c23c74.webp",
+      "sha256": "7144eda4d76c60f9c06ecb32fd8d3c00e7dbc87ca4074fec496aa911e5c23c74",
+      "size": 6914
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/755dfa152ec0f859352f5a09ff008bf6b2304ffc55d42e554743dc6c49d1d6f7.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/111082031ab23a0df4e3581c768d62b7e59d6b25b13295ee9e2e13d2e67a0d4b.webp",
+      "sha256": "111082031ab23a0df4e3581c768d62b7e59d6b25b13295ee9e2e13d2e67a0d4b",
+      "size": 95008
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/76b9703771a3f93606a7e7b7133f44e81cdc6749e8a94fddd42cf70ffeb65369.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/4dc3d02fdbc88b6fd8f5f7ce9322f14505cdc4530811b1ed06d979943fb5d622.webp",
+      "sha256": "4dc3d02fdbc88b6fd8f5f7ce9322f14505cdc4530811b1ed06d979943fb5d622",
+      "size": 6190
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/8674902ce3ea37c706585fce24f20a09262e11ac5bfecc9323262698b60b1cc9.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/6ed8e6752a030b7f691db892e6017930fdff57f46bd108e8a8f68afc4c34923d.webp",
+      "sha256": "6ed8e6752a030b7f691db892e6017930fdff57f46bd108e8a8f68afc4c34923d",
+      "size": 13946
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/9967efe33f54e6d68b29ec4ad8d1579ed4efbaa2b120f38685f0a3f0703106df.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/ae751089691ef623eb48c08c1cbecce97f9be21be3451db1a915a34f0905144b.webp",
+      "sha256": "ae751089691ef623eb48c08c1cbecce97f9be21be3451db1a915a34f0905144b",
+      "size": 56066
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/a463524ac67282ff357f19be1608b0e6d529c612d9905341eb80d4f1dc9f831c.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/47f98ea5a8d4882ce13e3a6f6503ca07f16d035e3617cca437525a486e22d88d.webp",
+      "sha256": "47f98ea5a8d4882ce13e3a6f6503ca07f16d035e3617cca437525a486e22d88d",
+      "size": 17638
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/b081f505b2ff38f5856969d23a8f2061bea9ed678a2eaa5a01e3e0951e38ea9d.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/ed1b3f5304de4ec6f42a962fe3c2f45c9df22359f341964811dfe637673cfd11.webp",
+      "sha256": "ed1b3f5304de4ec6f42a962fe3c2f45c9df22359f341964811dfe637673cfd11",
+      "size": 6494
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/c3c0971d5617e4d704de708dfd296cfe9a5cf82b09c4805ee7cdc2d85bde5ef8.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/fd5340e32b6772ae255d748a877db615a9929ccb1e8783f1a757099c07a6038f.webp",
+      "sha256": "fd5340e32b6772ae255d748a877db615a9929ccb1e8783f1a757099c07a6038f",
+      "size": 46532
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/c565e4ce0d4fb542ca6d78b94822bf296564eb0f253a138bc3a867084450afdc.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/5f80e4d8df2de1481d73134fe584726a3aef0a03712944d6c9c7211407a2e65d.webp",
+      "sha256": "5f80e4d8df2de1481d73134fe584726a3aef0a03712944d6c9c7211407a2e65d",
+      "size": 107208
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/c61c09798bfe74ca1dd3b15f3cae5d34165a8a63f3ca80beda8cbac45ea9430b.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/7e4bfc11940c7854159a7c57a9ba620eaf0f216784758896fbfc384a6fc038f6.webp",
+      "sha256": "7e4bfc11940c7854159a7c57a9ba620eaf0f216784758896fbfc384a6fc038f6",
+      "size": 93538
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/cedb5b0e569ab85d56302964e3289bab9fe21ed515e82029957ba96a1dd023a5.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/660539363cd5829ebfd0be0405606a38393f60c6aaf826d0dbff67b1bc83bea6.webp",
+      "sha256": "660539363cd5829ebfd0be0405606a38393f60c6aaf826d0dbff67b1bc83bea6",
+      "size": 21078
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/d9ee7fd71b30b6c2ed2b2c5931738169b8cea15f1526931199931593a7efd9b9.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/f6fd4661d62b1474c48ac50952ac483bc4396bdc63fb3f8100aadee101f66ee3.webp",
+      "sha256": "f6fd4661d62b1474c48ac50952ac483bc4396bdc63fb3f8100aadee101f66ee3",
+      "size": 9206
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/df45a87b5e46e088dc599fa9a39b9a40c38653192b4979210593b901541f4d46.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/a1cc3c45a358cbcc531d14e557d39271361acbb1ca7b1af9f63f898bb1a56741.webp",
+      "sha256": "a1cc3c45a358cbcc531d14e557d39271361acbb1ca7b1af9f63f898bb1a56741",
+      "size": 42644
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/e4b65f1e9d76f381e3111ab1eb1c308b3b2d757ed573165bf3964142d9171326.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/e13c7c43568242d79260502de2e61c311fa347c405f404a3025f1660963c9782.webp",
+      "sha256": "e13c7c43568242d79260502de2e61c311fa347c405f404a3025f1660963c9782",
+      "size": 176752
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/eb25e7bcf06265fdf9a5fbd0bba58dda537ddc477e5b76af711523778e005cf6.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/322aa4fc33cccba96d07743a560f46d37ba1615c13b24a940ad018949f0fb6cf.webp",
+      "sha256": "322aa4fc33cccba96d07743a560f46d37ba1615c13b24a940ad018949f0fb6cf",
+      "size": 86268
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f1aa48c185281093b38a6b0df206e10bcd5a7026d99d9a986ee3252df110c062.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/795f381d66f7cfb18f2b37b94764b628f7b4569c356bc098b3c3045307653a85.webp",
+      "sha256": "795f381d66f7cfb18f2b37b94764b628f7b4569c356bc098b3c3045307653a85",
+      "size": 105752
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f2806132279deb8dc1db6000f0f4466ac286bbffe4bca4b907116764b971a9ff.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/4a18aa8b6cccef8d8c2df8399b3be41da63526647e6d0a0093c8e0bac347270e.webp",
+      "sha256": "4a18aa8b6cccef8d8c2df8399b3be41da63526647e6d0a0093c8e0bac347270e",
+      "size": 10768
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f4f08cf1f2812c316b435307b774036282eab76f1ff8ffa8cf09bc4f44a2a9e3.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/50d15be30e393550840b5b6422ff408286a7cb2dfaa3ca6cdc3c15b1a91dcbe5.webp",
+      "sha256": "50d15be30e393550840b5b6422ff408286a7cb2dfaa3ca6cdc3c15b1a91dcbe5",
+      "size": 16450
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f5c9ef555c72031705b8f290cb7319de2cd3f130ac4aeb65272834170de1af44.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/f30d8786e995bc35d71a0076f2e944c09d9b7f7397485111a462ce34fe3dcf2b.webp",
+      "sha256": "f30d8786e995bc35d71a0076f2e944c09d9b7f7397485111a462ce34fe3dcf2b",
+      "size": 63752
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f66d3cf76512c8107dba280c7a4f5766f2427db7b66c7aeec6117d62769113de.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/69cc54320236e58940b27381a6f0921c035d811a4e9a63237a114e111d37eaac.webp",
+      "sha256": "69cc54320236e58940b27381a6f0921c035d811a4e9a63237a114e111d37eaac",
+      "size": 2530
+    },
+    "/holoscan/sensor-bridge/_fern-files/_img/f7d0add5068b61f611a30d05c821407d99c018a746c44d344ea25a1bf60308a3.webp": {
+      "status": 200,
+      "type": "image/webp",
+      "path": "captured-assets/7596ee07a7b64b30a8baaecd7b13ec035aad57458f55dd0ada29fe70b34bca49.webp",
+      "sha256": "7596ee07a7b64b30a8baaecd7b13ec035aad57458f55dd0ada29fe70b34bca49",
+      "size": 7424
+    },
+    "/holoscan/sensor-bridge/_fern-files/nvidia-holoscan.docs.buildwithfern.com/60b191b3ee0d89c53d6a214e32fd346213bc7f0ad2b38423f5c5c5378e52999b/_dot_dot_/latency.svg": {
+      "status": 200,
+      "type": "image/svg+xml",
+      "path": "captured-assets/60b191b3ee0d89c53d6a214e32fd346213bc7f0ad2b38423f5c5c5378e52999b.svg",
+      "sha256": "60b191b3ee0d89c53d6a214e32fd346213bc7f0ad2b38423f5c5c5378e52999b",
+      "size": 18678
+    }
+  },
+  "restored_assets": {
+    "vsync.png": {
+      "path": "restored-assets/vsync.png",
+      "sha256": "00ebaf16126535e5472a1510cee6e1fb159dc3a2521e26790239651b5f722489",
+      "public_source_commit": "e4e3042d014c89ed14f92669f6b8f28045d96a25",
+      "reason": "Repair a published VSYNC image URL that incorrectly points to a developer filesystem; the live image has zero natural width."
+    },
+    "vsync_reg.png": {
+      "path": "restored-assets/vsync_reg.png",
+      "sha256": "fc5e9e6923fa7b825d3d86c9433f577fe625dc455777a80df258aceecfbe9ec7",
+      "public_source_commit": "e4e3042d014c89ed14f92669f6b8f28045d96a25",
+      "reason": "Repair a published VSYNC image URL that incorrectly points to a developer filesystem; the live image has zero natural width."
+    }
+  },
+  "page_count": 74,
+  "api_page_count": 42,
+  "navigation_verified_on": [
+    "getting-started/introduction",
+    "api-reference/emulation-api/classes/hsbemulator"
+  ],
+  "navigation_source_sha256": "bf14397c07f6f09c8d008e56a4bebc6e73e68908cac0f294179618800e6df953",
+  "public_repository_commit_at_capture": "e4e3042d014c89ed14f92669f6b8f28045d96a25",
+  "transformations": [
+    "Remove Fern's generated Latest and AI-index delivery preamble; keep the authored body.",
+    "Restore explicit heading anchors escaped by the published Markdown exporter.",
+    "Restore captured API title/description metadata rather than duplicating its delivery wrapper.",
+    "Mirror published assets and replace delivery URLs with local relative paths.",
+    "Pin the archive's GitHub repository resource to the public commit observed at capture.",
+    "Restore two rendered legacy anchors omitted by the Markdown exporter, and repair the pre-existing missing GPUDirect anchor at its matching public-source location.",
+    "Repair two broken published VSYNC image URLs using the matching assets from the pinned public repository; record their hashes separately from the served image inventory.",
+    "Archive helper subsequently normalizes links to explicit 2.7 version routes.",
+    "Trim line-end whitespace while retaining the captured prose and code."
+  ]
+}

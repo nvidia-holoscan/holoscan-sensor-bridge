@@ -1,0 +1,144 @@
+---
+title: hololink::emulation::I2CController
+description: class that manages virtual I2C peripherals from the host. This is mostly
+  for the linux emulator where the use case is for virtual sensors
+---
+
+class that manages virtual I2C peripherals from the host. This is mostly for the linux emulator where the use case is for virtual sensors
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/hsb_emulator.hpp>
+```
+
+> **Note**
+>
+> This should not be instantiated directly by user code. Use HSBEmulator::get_i2c() instead. The default and primary `I2CController` is at address hololink::I2C_CTRL.
+
+---
+
+## Constructors
+
+### I2CController [#i2ccontroller]
+
+```cpp showLineNumbers={false}
+hololink::emulation::I2CController::I2CController(
+    HSBEmulator &hsb_emulator,
+    uint32_t controller_address
+)
+```
+
+construct an I2C controller on HSB Emulator at the specified address.
+
+**Parameters**
+
+**`hsb_emulator`** `HSBEmulator &`
+
+The HSB emulator to attach to.
+
+---
+
+**`controller_address`** `uint32_t`
+
+The address of the I2C controller.
+
+---
+
+### Destructor [#destructor]
+
+### \~I2CController
+
+```cpp showLineNumbers={false}
+hololink::emulation::I2CController::~I2CController()
+```
+
+---
+
+## Methods
+
+### attach_i2c_peripheral [#attachi2cperipheral]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::I2CController::attach_i2c_peripheral(
+    uint32_t bus_address,
+    uint16_t peripheral_address,
+    I2CPeripheral *peripheral
+)
+```
+
+attach an I2C peripheral as a callback on the specified (bus address, peripheral address) pair.
+
+python:
+
+`def `[`attach_i2c_peripheral`](#attachi2cperipheral)`(self: hemu.I2CController, bus_address: int, peripheral_address: int, peripheral: hemu.I2CPeripheral)`
+
+**Parameters**
+
+**`bus_address`** `uint32_t`
+
+The bus address of the peripheral. For multiplexing or bus expanded addressing, this is the bus address of the peripheral.
+
+---
+
+**`peripheral_address`** `uint16_t`
+
+The peripheral address of the peripheral.
+
+---
+
+**`peripheral`** `I2CPeripheral *`
+
+The peripheral to attach. This is a pointer to the peripheral object. The caller is responsible for managing the lifetime of the peripheral object.
+
+---
+
+### start [#start]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::I2CController::start()
+```
+
+start the I2C controller. Initializes the underlying I2C hardware (STM32) or attached peripherals (Linux) and marks the controller running. No worker thread is launched: host-driven I2C transactions execute synchronously inside the i2c_configure_cb control-plane callback via the free-function i2c_transaction().
+
+### stop [#stop]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::I2CController::stop()
+```
+
+stop the I2C controller. Stops attached peripherals (Linux) and marks the controller not running.
+
+### is_running [#isrunning]
+
+```cpp showLineNumbers={false}
+bool hololink::emulation::I2CController::is_running()
+```
+
+check if the I2C controller is running.
+
+**Returns:** true if the I2C controller is running, false otherwise.
+
+### reset [#reset]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::I2CController::reset(
+    uint32_t controller_address
+)
+```
+
+Initialize the platform-invariant fields of the already-allocated [I2CControllerCtxt](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/structs/i2ccontrollerctxt) the subclass-shared ctxt\_ points at. Wires control/data addresses, zeroes the register + data scratch, sets the back-pointer, and marks the controller stopped. Called by the platform-specific `I2CController` constructor right after it claims a ctxt slot.
+
+**Parameters**
+
+**`controller_address`** `uint32_t`
+
+Base address of the I2C controller in the host register space. Matched against the address the host writes to trigger each I2C transaction.
+
+---
+
+---
+
+## Member variables
+
+| Name    | Type                                    | Description |
+| ------- | --------------------------------------- | ----------- |
+| `ctxt_` | `UniqueDel< struct I2CControllerCtxt >` |             |

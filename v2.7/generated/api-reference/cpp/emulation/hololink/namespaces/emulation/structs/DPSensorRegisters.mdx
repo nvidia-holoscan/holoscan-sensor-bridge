@@ -1,0 +1,26 @@
+---
+title: hololink::emulation::DPSensorRegisters
+description: Per-sensor register slice. One instance per unique sensor_id, shared
+  by every DataPlane instance that targets that sensor. Holds the vp_data registers
+  (DP_QP, DP_RKEY, DP_PAGE_*, DP_BUFFER_LENGTH, DP_HOST_MAC/IP/UDP_PORT, ...) the
+  host writes per stream.
+---
+
+Per-sensor register slice. One instance per unique sensor_id, shared by every [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) instance that targets that sensor. Holds the vp_data registers (DP_QP, DP_RKEY, DP_PAGE\_\*, DP_BUFFER_LENGTH, DP_HOST_MAC/IP/UDP_PORT, ...) the host writes per stream.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/data_plane.hpp>
+```
+
+---
+
+## Member variables
+
+| Name                     | Type       | Description |
+| ------------------------ | ---------- | ----------- |
+| `vp_data`                | `uint32_t` |             |
+| `vp_address`             | `uint32_t` |             |
+| `sif_address`            | `uint32_t` |             |
+| `packetizer_mode`        | `uint32_t` |             |
+| `packetizer_ram_pointer` | `uint32_t` |             |
+| `packetizer_ram`         | `uint32_t` |             |

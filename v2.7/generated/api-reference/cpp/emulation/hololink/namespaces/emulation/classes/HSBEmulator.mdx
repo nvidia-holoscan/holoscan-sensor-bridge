@@ -1,0 +1,333 @@
+---
+title: hololink::emulation::HSBEmulator
+description: The HSBEmulator class represents the interface that a host application
+  has to an HSB and acts as the emulation device's controller. It manages the DataPlane
+  objects and the I2CController and all communication with the internal memory model;
+  see AddressMemory for more details.
+---
+
+The `HSBEmulator` class represents the interface that a host application has to an HSB and acts as the emulation device's controller. It manages the [`DataPlane`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) objects and the [`I2CController`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/i2ccontroller) and all communication with the internal memory model; see [`AddressMemory`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/addressmemory) for more details.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/hsb_emulator.hpp>
+```
+
+---
+
+## Constructors
+
+### HSBEmulator [#hsbemulator]
+
+#### Copy
+
+```cpp showLineNumbers={false}
+hololink::emulation::HSBEmulator::HSBEmulator(
+    const HSBConfiguration &config
+)
+```
+
+Construct a new `HSBEmulator` object with the specified configuration.
+
+python:
+
+`hemu.HSBEmulator(config: hemu.HSBConfiguration = hemu.HSB_EMULATOR_CONFIG)`
+
+> **Note**
+>
+> HSB_EMULATOR_CONFIG is roughly equivalent to a Lattice board.
+
+> **Note**
+>
+> HSB_LEOPARD_EAGLE_CONFIG is roughly equivalent to a Leopard Eagle board.
+
+**Parameters**
+
+**`config`** `const HSBConfiguration &`
+
+The configuration of the emulator. Two fully populated options are provided in `hsb_config.hpp`: HSB_EMULATOR_CONFIG or HSB_LEOPARD_EAGLE_CONFIG.
+
+---
+
+#### Default
+
+```cpp showLineNumbers={false}
+hololink::emulation::HSBEmulator::HSBEmulator()
+```
+
+Construct a new `HSBEmulator` object. Defaults to HSB_EMULATOR_CONFIG, which is roughly equivalent to a Lattice board.
+
+### Destructor [#destructor]
+
+### \~HSBEmulator
+
+```cpp showLineNumbers={false}
+hololink::emulation::HSBEmulator::~HSBEmulator()
+```
+
+---
+
+## Methods
+
+### start [#start]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::HSBEmulator::start()
+```
+
+Start the emulator. This will start the BootP broadcasting via the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) objects as well as the control thread to listen for control messages from the host.
+
+> **Note**
+>
+> It is safe to call this function multiple times and after a subsequent call to stop()
+
+### stop [#stop]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::HSBEmulator::stop()
+```
+
+Stop the emulator. This will shut down the control message thread, all BootP broadcasts in [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) objects. Data transmission is still possible until `HSBEmulator` object is destroyed.
+
+> **Note**
+>
+> It is safe to call this function multiple times
+
+### reset [#reset]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::HSBEmulator::reset()
+```
+
+Reset the platform-invariant emulator state and (re-)register the control-plane callbacks that are identical on every target (HSB IP version, RESET_REG_CTRL, PTP, APB RAM, async events, I2C register block). Called from each platform's constructor after the ctxt\_ and i2c_controller\_ are wired up. Platform-specific callback registrations (GPIO/SPI on STM32; Linux peripheral attach) remain in the platform constructor.
+
+Future: a default reset callback is applied that will call this, but that callback can be overridden
+
+### is_running [#isrunning]
+
+```cpp showLineNumbers={false}
+bool hololink::emulation::HSBEmulator::is_running()
+```
+
+Check if the emulator is running.
+
+**Returns:** true if the emulator is running, false otherwise.
+
+### write [#write]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::write(
+    uint32_t address,
+    uint32_t value
+)
+```
+
+Write a value to a register.
+
+python:
+
+`def `[`write`](#write)`(self: hemu.HSBEmulator, address: int, value: int)`
+
+**Returns:** 0 on success, 1 on address error.
+
+**Parameters**
+
+**`address`** `uint32_t`
+
+The address of the register to write.
+
+---
+
+**`value`** `uint32_t`
+
+The value to write.
+
+---
+
+### read [#read]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::read(
+    uint32_t address,
+    uint32_t &value
+)
+```
+
+Read a value from a register.
+
+python:
+
+`def `[`read`](#read)`(self: hemu.HSBEmulator, address: int) -> int`
+
+**Returns:** 0 on success, 1 on address error.
+
+**Parameters**
+
+**`address`** `uint32_t`
+
+The address of the register to read.
+
+---
+
+**`value`** `uint32_t &`
+
+The value read will be stored here.
+
+---
+
+### register_read_callback [#registerreadcallback]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::register_read_callback(
+    uint32_t start_address,
+    uint32_t end_address,
+    ControlPlaneCallback_f callback,
+    void *ctxt = nullptr
+)
+```
+
+Set a read callback for a range of addresses. See [ControlPlaneCallback_f](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/typedefs/controlplanecallbackf) for more details.
+
+> **Note**
+>
+> This method is not yet implemented for linux targets
+
+**Returns:** 0 on success, else error code.
+
+**Parameters**
+
+**`start_address`** `uint32_t`
+
+The start address of the range.
+
+---
+
+**`end_address`** `uint32_t`
+
+The end address of the range (exclusive).
+
+---
+
+**`callback`** `ControlPlaneCallback_f`
+
+The callback to set.
+
+---
+
+**`ctxt`** `void *` — default: nullptr
+
+The context to pass to the callback.
+
+---
+
+### register_write_callback [#registerwritecallback]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::register_write_callback(
+    uint32_t start_address,
+    uint32_t end_address,
+    ControlPlaneCallback_f callback,
+    void *ctxt = nullptr
+)
+```
+
+Register a write callback for a range of addresses. See [ControlPlaneCallback_f](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/typedefs/controlplanecallbackf) for more details.
+
+> **Note**
+>
+> This method is not yet implemented for linux targets
+
+**Returns:** 0 on success, else error code.
+
+**Parameters**
+
+**`start_address`** `uint32_t`
+
+The start address of the range.
+
+---
+
+**`end_address`** `uint32_t`
+
+The end address of the range (exclusive).
+
+---
+
+**`callback`** `ControlPlaneCallback_f`
+
+The callback to set.
+
+---
+
+**`ctxt`** `void *` — default: nullptr
+
+The context to pass to the callback.
+
+---
+
+### handle_msgs [#handlemsgs]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::handle_msgs()
+```
+
+method to explicitly handle pending control messages to the `HSBEmulator` client. This method is required for MCU targets, but optional for linux targets
+
+### get_i2c [#geti2c]
+
+```cpp showLineNumbers={false}
+I2CController & hololink::emulation::HSBEmulator::get_i2c(
+    uint32_t controller_address = hololink::I2C_CTRL
+)
+```
+
+Get a reference to the I2C controller.
+
+python:
+
+`def `[`get_i2c`](#geti2c)`(self: hemu.HSBEmulator, controller_address: int = hololink.I2C_CTRL) -> hemu.I2CController`
+
+**Returns:** A reference to the I2C controller.
+
+### get_config [#getconfig]
+
+```cpp showLineNumbers={false}
+const HSBConfiguration & hololink::emulation::HSBEmulator::get_config()
+```
+
+### add_data_plane [#adddataplane]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::HSBEmulator::add_data_plane(
+    DataPlane &data_plane
+)
+```
+
+Add a data plane to the emulator for start()/stop()/is_running() management.
+
+**Returns:** 0 on success, 1 on failure.
+
+**Parameters**
+
+**`data_plane`** `DataPlane &`
+
+The data plane to add.
+
+---
+
+### get_memory [#getmemory]
+
+```cpp showLineNumbers={false}
+AddressMemory & hololink::emulation::HSBEmulator::get_memory()
+```
+
+**Returns:** The register map of the emulated fpga
+
+---
+
+## Member variables
+
+| Name              | Type                           | Description |
+| ----------------- | ------------------------------ | ----------- |
+| `ctxt_`           | `UniqueDel< HSBEmulatorCtxt >` |             |
+| `configuration_`  | `HSBConfiguration`             |             |
+| `i2c_controller_` | `I2CController`                |             |

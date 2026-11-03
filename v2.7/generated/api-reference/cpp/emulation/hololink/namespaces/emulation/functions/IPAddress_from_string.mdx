@@ -1,0 +1,25 @@
+---
+title: hololink::emulation::IPAddress_from_string
+description: Construct an IPAddress object from a string representation of the IP
+  address.
+---
+
+```cpp showLineNumbers={false}
+IPAddress hololink::emulation::IPAddress_from_string(
+    const std::string &ip_address
+)
+```
+
+Construct an [IPAddress](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/typedefs/ipaddress) object from a string representation of the IP address.
+
+python (use [IPAddress](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/typedefs/ipaddress) object constructor)
+
+**Returns:** An [IPAddress](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/typedefs/ipaddress) instance
+
+**Parameters**
+
+**`ip_address`** `const std::string &`
+
+The string representation of the IP address. Currently must be in format accepted by inet_addr().
+
+---

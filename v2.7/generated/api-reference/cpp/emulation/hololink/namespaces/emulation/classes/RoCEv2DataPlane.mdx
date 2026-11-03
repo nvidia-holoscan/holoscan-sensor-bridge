@@ -1,0 +1,91 @@
+---
+title: hololink::emulation::RoCEv2DataPlane
+description: The DataPlane implementation for RoCEv2 UDP transport.
+---
+
+The [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane) implementation for RoCEv2 UDP transport.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/rocev2_data_plane.hpp>
+```
+
+**Inherits from:** `hololink::emulation::DataPlane` (public)
+
+---
+
+## Constructors
+
+### RoCEv2DataPlane [#rocev2dataplane]
+
+```cpp showLineNumbers={false}
+hololink::emulation::RoCEv2DataPlane::RoCEv2DataPlane(
+    HSBEmulator &hsb_emulator,
+    const IPAddress &source_ip,
+    uint8_t data_plane_id,
+    uint8_t sensor_id
+)
+```
+
+Construct a new `RoCEv2DataPlane` object.
+
+python:
+
+`def __init__(self: hemu.RoCEv2DataPlane, hsb_emulator: hemu.HSBEmulator, source_ip: hemu.IPAddress, data_plane_id: int, sensor_id: int)`
+
+**Parameters**
+
+**`hsb_emulator`** `HSBEmulator &`
+
+The [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) object to attach to.
+
+---
+
+**`source_ip`** `const IPAddress &`
+
+The IP address of the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+**`data_plane_id`** `uint8_t`
+
+The identifying index of the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+**`sensor_id`** `uint8_t`
+
+The identifying index of the sensor interface associated with the [DataPlane](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane).
+
+---
+
+### Destructor [#destructor]
+
+### \~RoCEv2DataPlane
+
+```cpp showLineNumbers={false}
+hololink::emulation::RoCEv2DataPlane::~RoCEv2DataPlane()
+```
+
+---
+
+## Methods
+
+### update_metadata [#updatemetadata]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::RoCEv2DataPlane::update_metadata() override
+```
+
+Update the TransmissionMetadata for the `RoCEv2DataPlane`.
+
+> **Note**
+>
+> Only one thread may call [RoCEv2DataPlane::send](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/dataplane#send) at a time. DataPlane::send() ensures thread safety.
+
+---
+
+## Member variables
+
+| Name    | Type       | Description |
+| ------- | ---------- | ----------- |
+| `page_` | `uint32_t` |             |

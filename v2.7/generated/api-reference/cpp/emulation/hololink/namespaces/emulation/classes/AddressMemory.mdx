@@ -1,0 +1,207 @@
+---
+title: hololink::emulation::AddressMemory
+description: Representation of the internal memory space of the HSBEmulator and its
+  registers.
+---
+
+Representation of the internal memory space of the [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) and its registers.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/address_memory.hpp>
+```
+
+> **Note**
+>
+> This currently implemented as a simple map, but the underlying implementation should be expected to change, though the public methods should remain available.
+
+---
+
+## Constructors
+
+### Destructor [#destructor]
+
+### \~AddressMemory
+
+```cpp showLineNumbers={false}
+virtual hololink::emulation::AddressMemory::~AddressMemory() = default
+```
+
+---
+
+## Methods
+
+### write [#write]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::write(
+    AddressValuePair &address_value
+)
+```
+
+Write a value to a register.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`address_value`** `AddressValuePair &`
+
+Pair of address and value to write
+
+---
+
+### read [#read]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::read(
+    AddressValuePair &address_value
+)
+```
+
+Read a value from a register.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`address_value`** `AddressValuePair &`
+
+Pair of address and value to read
+
+---
+
+### write_many [#writemany]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::write_many(
+    AddressValuePair *address_values,
+    int num_addresses
+)
+```
+
+Convenience function to write multiple values to registers under a single lock.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`address_values`** `AddressValuePair *`
+
+Pointer to array of pairs of register addresses and values to write
+
+---
+
+**`num_addresses`** `int`
+
+Number of address-value pairs
+
+---
+
+### read_many [#readmany]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::read_many(
+    AddressValuePair *address_values,
+    int num_addresses
+)
+```
+
+Convenience function to read multiple values from registers under a single lock.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`address_values`** `AddressValuePair *`
+
+Pointer to array of pairs of register addresses and values to read (caller must allocate at least num_addresses elements)
+
+---
+
+**`num_addresses`** `int`
+
+Number of addresses to read
+
+---
+
+### write_range [#writerange]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::write_range(
+    uint32_t start_address,
+    uint32_t *values,
+    int num_addresses,
+    int stride = 2
+)
+```
+
+Write a range of values to registers. Allow optimizations if it is known that the addresses are contiguous.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`start_address`** `uint32_t`
+
+The first register address in the range.
+
+---
+
+**`values`** `uint32_t *`
+
+Pointer to the array of values to write (caller must allocate at least num_addresses elements).
+
+---
+
+**`num_addresses`** `int`
+
+The number of addresses to write.
+
+---
+
+**`stride`** `int` — default: 2
+
+The address increment between consecutive registers in the range (defaults to 2).
+
+---
+
+### read_range [#readrange]
+
+```cpp showLineNumbers={false}
+virtual int hololink::emulation::AddressMemory::read_range(
+    uint32_t start_address,
+    uint32_t *values,
+    int num_addresses,
+    int stride = 2
+)
+```
+
+Read a range of values from registers. Allow optimizations if it is known that the addresses are contiguous.
+
+**Returns:** 0 on success, 1 on failure
+
+**Parameters**
+
+**`start_address`** `uint32_t`
+
+The first register address in the range.
+
+---
+
+**`values`** `uint32_t *`
+
+Pointer to the array that receives the values read (caller must allocate at least num_addresses elements).
+
+---
+
+**`num_addresses`** `int`
+
+The number of addresses to read.
+
+---
+
+**`stride`** `int` — default: 2
+
+The address increment between consecutive registers in the range (defaults to 2).
+
+---

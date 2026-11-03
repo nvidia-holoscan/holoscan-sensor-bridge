@@ -1,0 +1,288 @@
+---
+title: hololink::emulation::DataPlane
+description: DataPlane is the partially implemented Abstract Base Class with which
+  HSB Emulator applications control data transmission and HSB Host applications establish
+  "connections" and data flow via Bootp enumeration. The parent instance of any DataPlane
+  implementation will manage Bootp broadcasting. Each implementation must interface
+  with the HSB Emulator's internal memory model (AddressMemory) to update and manage
+  metadata and any state needed for the metadata or transport layer for the corresponding
+  Transmitter.
+---
+
+`DataPlane` is the partially implemented Abstract Base Class with which HSB Emulator applications control data transmission and HSB Host applications establish "connections" and data flow via Bootp enumeration. The parent instance of any `DataPlane` implementation will manage Bootp broadcasting. Each implementation must interface with the HSB Emulator's internal memory model ([`AddressMemory`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/addressmemory)) to update and manage metadata and any state needed for the metadata or transport layer for the corresponding `Transmitter`.
+
+```cpp showLineNumbers={false}
+#include <hololink/emulation/data_plane.hpp>
+```
+
+> **Note**
+>
+> The `DataPlane` lifecycle operations are managed by the [`HSBEmulator`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) instance it is attached to and therefore `DataPlane` lifetime must be at least as long as the [`HSBEmulator`](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) instance or at least until the final `HSBEmulator::stop()` is called.
+
+---
+
+## Constructors
+
+### DataPlane [#dataplane]
+
+#### Overload 1
+
+```cpp showLineNumbers={false}
+hololink::emulation::DataPlane::DataPlane(
+    HSBEmulator &hsb_emulator,
+    const IPAddress &ip_address,
+    uint8_t data_plane_id,
+    uint8_t sensor_id
+)
+```
+
+Constructs a `DataPlane` object with a platform-default per-DataPlane context. Application code uses this overload; the platform .cpp allocates the LinuxDataPlaneCtxt on the heap (Linux) or claims a slot from the file-scope DATA_PLANE_CTXT\[] pool (STM32).
+
+**Parameters**
+
+**`hsb_emulator`** `HSBEmulator &`
+
+A reference to an [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) instance that the `DataPlane` will configure itself from.
+
+---
+
+**`ip_address`** `const IPAddress &`
+
+The IP address of the `DataPlane`.
+
+---
+
+**`data_plane_id`** `uint8_t`
+
+The data plane index of the `DataPlane`.
+
+---
+
+**`sensor_id`** `uint8_t`
+
+The sensor index of the `DataPlane` to associate with the `DataPlane`. The data_plane_id and sensor_id are used to identify registers needed to compile metadata.
+
+---
+
+#### Overload 2
+
+```cpp showLineNumbers={false}
+hololink::emulation::DataPlane::DataPlane(
+    HSBEmulator &hsb_emulator,
+    const IPAddress &ip_address,
+    uint8_t data_plane_id,
+    uint8_t sensor_id,
+    std::unique_ptr<DataPlaneCtxt, std::function<void(DataPlaneCtxt *)>> ctxt
+)
+```
+
+Subclass-only overload that lets the subclass supply a pre-constructed per-DataPlane context with its own deleter baked in. The unique_ptr is moved into `data_plane_ctxt_`; the deleter the caller chose at construction time encodes the ownership semantics (heap delete vs. no-op for static-pool slots). Application code cannot reach this overload — use the public 4-arg constructor.
+
+**Parameters**
+
+**`hsb_emulator`** `HSBEmulator &`
+
+A reference to an [HSBEmulator](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/classes/hsbemulator) instance that the `DataPlane` will configure itself from.
+
+---
+
+**`ip_address`** `const IPAddress &`
+
+The IP address of the `DataPlane`.
+
+---
+
+**`data_plane_id`** `uint8_t`
+
+The data plane index of the `DataPlane`.
+
+---
+
+**`sensor_id`** `uint8_t`
+
+The sensor index of the `DataPlane` to associate with the `DataPlane`.
+
+---
+
+**`ctxt`** `std::unique_ptr<DataPlaneCtxt, std::function<void(DataPlaneCtxt *)>>`
+
+Owning unique_ptr to a [DataPlaneCtxt](/holoscan/sensor-bridge/2-7/api-reference/emulation-api/structs/dataplanectxt) (must be the `base` member of a platform-specific extension: LinuxDataPlaneCtxt or STM32DataPlaneCtxt). Must be non-null; the caller is responsible for choosing the deleter.
+
+---
+
+### Destructor [#destructor]
+
+### \~DataPlane
+
+```cpp showLineNumbers={false}
+virtual hololink::emulation::DataPlane::~DataPlane()
+```
+
+---
+
+## Methods
+
+### start [#start]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::DataPlane::start()
+```
+
+Start the `DataPlane` by initiating the BootP broadcast.
+
+### stop [#stop]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::DataPlane::stop()
+```
+
+Stop the `DataPlane` by stopping the BootP broadcast.
+
+### stop_bootp [#stopbootp]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::DataPlane::stop_bootp()
+```
+
+This is a clear alias for stop().
+
+### is_running [#isrunning]
+
+```cpp showLineNumbers={false}
+bool hololink::emulation::DataPlane::is_running()
+```
+
+Check if the `DataPlane` is running. (Bootp is broadcasting).
+
+**Returns:** True if the `DataPlane` is running, false otherwise.
+
+### send [#send]
+
+#### Send a tensor over the \`DataPlane\`
+
+```cpp showLineNumbers={false}
+int64_t hololink::emulation::DataPlane::send(
+    const DLTensor &tensor,
+    FrameMetadata *frame_metadata = DEFAULT_FRAME_METADATA
+)
+```
+
+Send a tensor over the `DataPlane`.
+
+> **Note**
+>
+> This method is synchronous. It will block and metadata will be protected by a mutex until the send is complete.
+
+**Returns:** The number of bytes sent or \< 0 if error occurred.
+
+**Parameters**
+
+**`tensor`** `const DLTensor &`
+
+The tensor object reference to send. Supported device types are kDLCPU, kDLCUDA, kDLCUDAHost (host pinned), and kDLCUDAManaged (Unified Memory)
+
+---
+
+**`frame_metadata`** `FrameMetadata *` — default: DEFAULT_FRAME_METADATA
+
+The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
+
+---
+
+#### Send a buffer over the \`DataPlane\`
+
+```cpp showLineNumbers={false}
+int64_t hololink::emulation::DataPlane::send(
+    const uint8_t *buffer,
+    size_t buffer_size,
+    FrameMetadata *frame_metadata = nullptr
+)
+```
+
+Send a buffer over the `DataPlane`.
+
+**Returns:** The number of bytes sent or \< 0 if error occurred.
+
+**Parameters**
+
+**`buffer`** `const uint8_t *`
+
+The buffer to send.
+
+---
+
+**`buffer_size`** `size_t`
+
+The size of the buffer.
+
+---
+
+**`frame_metadata`** `FrameMetadata *` — default: nullptr
+
+The frame metadata to send. Acts as a buffer flush. If nullptr, the data is by default buffered until the next send command that fills an MTU or a non-nullptr frame_metadata is provided.
+
+---
+
+### get_sensor_id [#getsensorid]
+
+```cpp showLineNumbers={false}
+uint8_t hololink::emulation::DataPlane::get_sensor_id() const
+```
+
+Get the sensor ID associated with the `DataPlane`.
+
+**Returns:** The sensor ID.
+
+### packetizer_enabled [#packetizerenabled]
+
+```cpp showLineNumbers={false}
+bool hololink::emulation::DataPlane::packetizer_enabled() const
+```
+
+Check if the packetizer is enabled.
+
+**Returns:** True if the packetizer is enabled, false otherwise.
+
+### get_start_time [#getstarttime]
+
+```cpp showLineNumbers={false}
+struct timespec hololink::emulation::DataPlane::get_start_time() const
+```
+
+### broadcast_bootp [#broadcastbootp]
+
+```cpp showLineNumbers={false}
+int hololink::emulation::DataPlane::broadcast_bootp()
+```
+
+### update_metadata [#updatemetadata]
+
+```cpp showLineNumbers={false}
+virtual void hololink::emulation::DataPlane::update_metadata()
+```
+
+method to update metadata model for the appropriate transmitter subclass can assume that appropriate locks are held while accessing memory registers and the transmitter metadata
+
+### init [#init]
+
+```cpp showLineNumbers={false}
+void hololink::emulation::DataPlane::init(
+    HSBEmulator &hsb_emulator
+)
+```
+
+Initialize the `DataPlane` by validating the configuration and registers. This is platform specific and should assume the internal configuration has been set and resources allocated, but no other state.
+
+---
+
+## Member variables
+
+| Name               | Type                                                                             | Description |
+| ------------------ | -------------------------------------------------------------------------------- | ----------- |
+| `registers_`       | `AddressMemory &`                                                                |             |
+| `ip_address_`      | `IPAddress`                                                                      |             |
+| `configuration_`   | `HSBConfiguration`                                                               |             |
+| `sensor_id_`       | `uint8_t`                                                                        |             |
+| `data_plane_id_`   | `uint8_t`                                                                        |             |
+| `transmitter_`     | `BaseTransmitter *`                                                              |             |
+| `data_plane_ctxt_` | `std::unique_ptr< struct DataPlaneCtxt, std::function< void(DataPlaneCtxt *)> >` |             |
