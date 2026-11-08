@@ -55,15 +55,16 @@ int ArpWrapper::arp_set(int socket_fd, char const* eth_device, char const* ip, c
     arpreq.arp_flags = ATF_COM;
     r = ioctl(socket_fd, SIOCSARP, &arpreq);
     if (r != 0) {
-        if (r == 1) {
+        int e = errno;
+        if (e == EPERM) {
             HSB_LOG_WARN("SIOCSARP operation not permitted, rediscovering HSB after a "
                          "reset may take a while. To avoid this warning, run as root");
-        } else {
-            HSB_LOG_ERROR("SIOCSARP operation failed: r={}, e={}", r, errno);
-            return EINVAL;
+            return EPERM;
         }
+        HSB_LOG_ERROR("SIOCSARP operation failed: r={}, e={}", r, e);
+        return EINVAL;
     }
-    return r;
+    return 0;
 }
 
 } // namespace hololink::core
