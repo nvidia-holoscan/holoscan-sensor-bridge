@@ -60,7 +60,15 @@ logic [W_USER-1:0]              r_tuser;
 logic                           r_partial_last;
 logic                           extra_cycle;
 logic [AXI_TKEEP_WIDTH-1:0]     byte_len_rem;
-assign byte_len_rem = AXI_TKEEP_WIDTH'(byte_len);
+// byte_len can encode values larger than the buffer (e.g. 69..127 for a 68-byte buffer), and r_d_cycles is
+// only wide enough for D_CYCLES.  An out-of-range length, such as garbage presented by a CDC that is still in
+// reset, can make (byte_len>>$clog2(AXI_TKEEP)) + extra_cycle overflow r_d_cycles (e.g. 121..127 -> 16 -> 0),
+// and the SEND exit below could then never match.  Saturate the length at the buffer size so the cycle count
+// always fits.
+localparam [$bits(byte_len)-1:0] MAX_BYTE_LEN = DATA_WIDTH/8;
+logic [$bits(byte_len)-1:0]     blen_c;
+assign blen_c       = (byte_len > MAX_BYTE_LEN) ? MAX_BYTE_LEN : byte_len;
+assign byte_len_rem = AXI_TKEEP_WIDTH'(blen_c);
 assign extra_cycle = AXI_TKEEP>1 ? byte_len_rem != '0 : 1'b0;
 
 always_ff @(posedge clk) begin
@@ -84,11 +92,11 @@ always_ff @(posedge clk) begin
         cnt                     <= '0;
         if ({r_trigger,trigger} == 2'b01) begin
           r_data              <= {'0,data};
-          r_d_cycles          <= byte_len <= AXI_TKEEP ? 1 :
-                                 (byte_len >> $clog2(AXI_TKEEP)) + extra_cycle;
+          r_d_cycles          <= blen_c <= AXI_TKEEP ? 1 :
+                                 (blen_c >> $clog2(AXI_TKEEP)) + extra_cycle;
           r_tuser             <= tuser;
           r_partial_last      <= extra_cycle;
-          vec_state           <= (byte_len <= AXI_TKEEP) ? AXI_LAST : AXI_SEND;
+          vec_state           <= (blen_c <= AXI_TKEEP) ? AXI_LAST : AXI_SEND;
           r_tkeep_val         <= ~('1 << byte_len_rem);
           r_busy              <= '1;
         end
@@ -96,7 +104,10 @@ always_ff @(posedge clk) begin
       AXI_SEND: begin
         if (i_axis_tx_tready) begin
           cnt                     <= cnt + 1'b1;
-          vec_state               <= (cnt == r_d_cycles-2) ? AXI_LAST : vec_state ;
+          // cnt+2 >= r_d_cycles rather than cnt == r_d_cycles-2: identical for r_d_cycles >= 2, but with no
+          // subtraction to underflow (r_d_cycles-2 is evaluated as unsigned 32-bit, so 0 or 1 gives a value cnt
+          // can never reach and the FSM would stay in SEND forever).
+          vec_state               <= (32'(cnt) + 32'd2 >= 32'(r_d_cycles)) ? AXI_LAST : vec_state ;
         end
       end
       AXI_LAST: begin
