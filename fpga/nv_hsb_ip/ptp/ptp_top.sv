@@ -138,6 +138,8 @@ logic        fa_adj_vld;
 logic [PTP_EGRESS_WIDTH-1:0]           ptp_tx_data;
 logic                                  ptp_tx_vld;
 logic [$clog2(PTP_EGRESS_WIDTH/8+1)-1:0] ptp_tx_len;
+logic                                    ptp_egress_vld;
+logic [3:0]                              ptp_rst_hif_sr;
 
 //IP specific Delay Asymmetry
 logic [W_DLY-1:0] ip_dly_asymm;
@@ -483,6 +485,23 @@ dpll #(
 );
 
 //------------------------------------------------------------------------------------------------//
+// Hold off PTP egress while the PTP clock domain is in (or has just left) reset.
+// The PTP-side registers of the egress reg_cdc (u_ptp_egress_data_cdc in ptp_dly) have synchronous resets
+// that only take effect once the PTP clock runs.  When the hif domain leaves reset first they can present a
+// garbage valid + length, which starts a spurious egress message after reset.  Gate the trigger until i_prst
+// has been released and seen in the hif domain for a few cycles (this also lets the reg_cdc handshake flush).
+//------------------------------------------------------------------------------------------------//
+always_ff @(posedge i_hif_clk) begin
+  if (i_hif_rst) begin
+    ptp_rst_hif_sr <= '1;
+  end
+  else begin
+    ptp_rst_hif_sr <= {ptp_rst_hif_sr[2:0], i_prst};
+  end
+end
+assign ptp_egress_vld = ptp_tx_vld & ~ptp_rst_hif_sr[3];
+
+//------------------------------------------------------------------------------------------------//
 // Egress
 //------------------------------------------------------------------------------------------------//
 
@@ -496,7 +515,7 @@ ptp_egress #(
   .i_hif_clk         ( i_hif_clk        ),
   .i_hif_rst         ( i_hif_rst        ),
   .i_ptp_egress_data ( ptp_tx_data      ),
-  .i_ptp_egress_vld  ( ptp_tx_vld       ),
+  .i_ptp_egress_vld  ( ptp_egress_vld   ),
   .i_ptp_egress_len  ( ptp_tx_len       ),
   .o_ptp_egress_busy (                  ),
   .o_axis_tdata      ( o_axis_tdata     ),
