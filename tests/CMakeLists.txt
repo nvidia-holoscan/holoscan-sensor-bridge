@@ -186,6 +186,16 @@ ConfigureTest(
     holoargs_test.cpp
 )
 
+# The expression evaluator (hololink/expr_eval/expr_eval.cuh). GPU only: no board or NIC.
+ConfigureTest(
+    hololink_expr_eval_test
+  SOURCES
+    expr_eval_test.cpp
+  LINK_LIBRARIES
+    hololink::expr_eval
+    CUDA::cudart
+)
+
 # Standalone integration test for UdpTransmitterOp (no GTest dependency).
 # Only needs a loopback UDP socket and GPU access (--gpus all); no RoCE hardware required.
 add_executable(udp_transmitter_test udp_transmitter_test.cpp)
