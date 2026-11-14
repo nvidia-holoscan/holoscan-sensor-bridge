@@ -358,6 +358,9 @@ Expression Parser::compile(const std::string& expression_str,
   tokens_ = tokenize(expression_str); // Validate expression_str and create a string of tokens
 
   std::stringstream ss;
+  // Write each float constant and number with enough digits to read back the same float.
+  // The default precision of 6 digits changes PI to 3.14159 and 1.0000001 to "1f".
+  ss << std::setprecision(std::numeric_limits<float>::max_digits10);
   // Check if curand is available
   if (!cuda_toolkit_include_paths_.empty())
     ss << 
