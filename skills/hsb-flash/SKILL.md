@@ -16,7 +16,7 @@ tools:
   - Glob
   - Bash
 disable-model-invocation: true
-allowed-tools: Read,Write,Edit,MultiEdit,Grep,Glob,Bash
+allowed-tools: Read Write Edit MultiEdit Grep Glob Bash
 metadata:
   author: "Holoscan Team <holoscan-team@nvidia.com>"
   team: holoscan
